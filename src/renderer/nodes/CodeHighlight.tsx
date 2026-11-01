@@ -1,5 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { highlightCodeBlocks, highlightableBlocks, type Colorize } from '../lib/codeHighlight'
+import { highlightCodeBlocks, highlightableBlocks, recolorCodeBlocks, type Colorize } from '../lib/codeHighlight'
 import { monacoTheme, type ResolvedAppTheme } from '../lib/appTheme'
 import { useAppTheme } from '../state/useAppTheme'
 
@@ -72,8 +72,16 @@ export function useCodeHighlight(container: RefObject<HTMLElement | null>, html:
     }
   }, [container, html])
 
-  // Monaco's token colors live in one global stylesheet; re-assert the theme when the app's moves.
+  // On a theme switch: put Monaco on the new theme (its token colors are one global stylesheet), then
+  // color this container's blocks again — their classes index the old theme's color map. Skipped on
+  // mount: nothing here is colored yet, and the effect above colors it in the current theme.
+  const shownTheme = useRef(theme)
   useEffect(() => {
-    loaded?.setTheme(theme)
-  }, [theme])
+    if (shownTheme.current === theme) return
+    shownTheme.current = theme
+    const root = container.current
+    if (loaded === null || root === null) return
+    loaded.setTheme(theme)
+    void recolorCodeBlocks(root, loaded.colorize)
+  }, [container, theme])
 }

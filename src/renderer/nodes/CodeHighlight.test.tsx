@@ -96,6 +96,48 @@ describe('code block syntax colors', () => {
     expect(host.querySelector('code[data-highlighted]')).toBeNull()
   })
 
+  it('a message mounted after Monaco has loaded is colored once too', async () => {
+    await render(TS_BLOCK)
+    const second = document.createElement('div')
+    document.body.appendChild(second)
+    const secondRoot = createRoot(second)
+    await act(async () => secondRoot.render(<MarkdownText text={'```sh\nls -la\n```\n'} />))
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(colorize).toHaveBeenCalledTimes(2)
+    expect(second.querySelector('code[data-highlighted="shell"]')).not.toBeNull()
+    await act(async () => secondRoot.unmount())
+    second.remove()
+  })
+
+  it('recolors a colored block when the theme changes, keeping its text', async () => {
+    // Each theme numbers its token classes from its own color map, so a block colored under the old
+    // theme reads the new stylesheet's colors through the wrong classes until it is colored again.
+    let monacoThemeNow = 'dark'
+    setTheme.mockImplementation((t) => {
+      monacoThemeNow = t
+    })
+    colorize.mockImplementation(async (text) =>
+      monacoShaped(text).replace(/mtk6/g, monacoThemeNow === 'light' ? 'mtk8' : 'mtk6')
+    )
+    await render(TS_BLOCK)
+    expect(host.querySelectorAll('code span.mtk6')).toHaveLength(2)
+
+    await act(async () => useSettings.setState({ settings: { ...DEFAULT_SETTINGS, appTheme: 'light' } }))
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+
+    expect(colorize).toHaveBeenCalledTimes(2)
+    const code = host.querySelector('code[data-highlighted="typescript"]')!
+    expect(code.querySelectorAll('span.mtk8')).toHaveLength(2)
+    expect(code.querySelector('span.mtk6')).toBeNull()
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Copy code"]')!.click())
+    expect(writeText).toHaveBeenCalledWith('const a = 1\nlet b')
+  })
+
   it('puts Monaco on the app theme, and keeps it there when the theme changes', async () => {
     await render(TS_BLOCK)
     expect(setTheme).toHaveBeenLastCalledWith('dark')

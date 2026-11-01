@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fenceLanguage, highlightCodeBlocks } from './codeHighlight'
+import { fenceLanguage, highlightCodeBlocks, recolorCodeBlocks } from './codeHighlight'
 
 /**
  * Syntax colors for the ⌘M chat view's fenced code blocks (glue: nodes/CodeHighlight.tsx). The fence
@@ -141,5 +141,38 @@ describe('highlightCodeBlocks', () => {
 
     expect(code.hasAttribute('data-highlighted')).toBe(false)
     expect(code.innerHTML).toBe('ls')
+  })
+
+  it('recolors an already-colored block from its text, which is still the source afterwards', async () => {
+    root.innerHTML = '<pre><code class="language-ts">const a = 1</code></pre>'
+    await highlightCodeBlocks(root, async (t) => monacoShaped(t))
+    // The other theme's color map: the same token, another class.
+    const recolor = vi.fn(async (t: string) => monacoShaped(t).replace(/mtk6/g, 'mtk8'))
+
+    await recolorCodeBlocks(root, recolor)
+
+    const code = root.querySelector('code')!
+    expect(recolor).toHaveBeenCalledWith('const a = 1', 'typescript')
+    expect(code.querySelectorAll('span.mtk8')).toHaveLength(1)
+    expect(code.querySelector('span.mtk6')).toBeNull()
+    expect(code.dataset.highlighted).toBe('typescript')
+    expect(code.textContent).toBe('const a = 1')
+  })
+
+  it('an older colorize that answers late does not land over a newer one', async () => {
+    root.innerHTML = '<pre><code class="language-ts">x</code></pre>'
+    let finishOld: (html: string) => void = () => {}
+    let finishNew: (html: string) => void = () => {}
+    const older = highlightCodeBlocks(root, () => new Promise<string>((r) => (finishOld = r)))
+    const newer = recolorCodeBlocks(root, () => new Promise<string>((r) => (finishNew = r)))
+
+    finishOld('<span class="mtk6">x</span>')
+    await older
+    finishNew('<span class="mtk8">x</span>')
+    await newer
+
+    const code = root.querySelector('code')!
+    expect(code.querySelector('span.mtk8')).not.toBeNull()
+    expect(code.querySelector('span.mtk6')).toBeNull()
   })
 })

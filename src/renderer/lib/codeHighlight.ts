@@ -70,6 +70,11 @@ export function highlightableBlocks(root: ParentNode): Array<{ code: HTMLElement
   return blocks
 }
 
+// The latest colorize asked for each block. Only its answer may land: a theme switch re-colors a
+// block whose first colorize can still be in flight, and that older answer — in the old theme's
+// classes — must not arrive after the new one and stay on screen.
+const latestRequest = new WeakMap<Element, object>()
+
 /**
  * Color every fenced block under `root` in a language the table knows, once each (the colored block
  * is marked `data-highlighted="<language>"`). A block that left the document while it was being
@@ -80,19 +85,35 @@ export async function highlightCodeBlocks(root: ParentNode, colorize: Colorize):
   await Promise.all(
     highlightableBlocks(root).map(async ({ code, language }) => {
       const source = code.textContent ?? ''
+      const request = {}
+      latestRequest.set(code, request)
       let html: string
       try {
         html = await colorize(source, language)
       } catch {
         return
       }
-      if (!code.isConnected || code.hasAttribute('data-highlighted')) return
+      if (!code.isConnected || latestRequest.get(code) !== request) return
       const colored = withSourceText(code.ownerDocument, html, source)
       if (colored === null) return
       code.replaceChildren(colored)
       code.dataset.highlighted = language
     })
   )
+}
+
+/**
+ * Color the blocks under `root` again, the already-colored ones included — after a theme switch.
+ * A token's class (`mtk<n>`) indexes the CURRENT theme's color map, and the light and dark maps
+ * differ, so a block colored under the old theme keeps classes that now name other colors (a
+ * keyword drawn in the comment color). Re-coloring from the block's text is lossless: that text is
+ * exactly the source (see withSourceText).
+ */
+export function recolorCodeBlocks(root: ParentNode, colorize: Colorize): Promise<void> {
+  for (const code of Array.from(root.querySelectorAll('pre > code[data-highlighted]'))) {
+    code.removeAttribute('data-highlighted')
+  }
+  return highlightCodeBlocks(root, colorize)
 }
 
 /**
