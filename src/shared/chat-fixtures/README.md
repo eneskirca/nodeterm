@@ -105,6 +105,12 @@ nothing above changes. What it adds:
   when `file_path` is a non-empty string and the texts are strings (an empty `new_string` is a
   deletion and still a diff). Each text is capped like a tool `body` (65536 UTF-16 units, then
   `TOOL_BODY_TRUNCATED`). Any other shape yields no `diff`; `arg` and `result` are unchanged.
+- A `{type:"system", subtype:"compact_boundary", compactMetadata}` record becomes ONE assistant
+  message with ONE tool part `{name:"Compaction", arg, result?}`: `arg` is `compactMetadata.trigger`
+  (`""` when not a string; its first 200 UTF-16 units, `CHAT_TOOL_ARG_MAX`), and `result` is
+  `"<preTokens> → <postTokens> tokens"` (plain digits, U+2192) only when both are finite numbers. It
+  is a system record (a turn boundary, never folded). The `type:"user"` record with
+  `isCompactSummary: true` (the summary the model continues from) is skipped.
 
 Decision cases: plan `restore` / `acceptEdits` / `manual` / `revise` (the revise text is trimmed),
 question single / multi (labels joined with `, `) / free text (trimmed), and three refusals: a

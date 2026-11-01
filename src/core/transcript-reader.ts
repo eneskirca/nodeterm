@@ -15,6 +15,7 @@ import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../sh
 import {
   AGENT_MESSAGE_TOOL,
   BACKGROUND_TASK_TOOL,
+  COMPACTION_TOOL,
   SYSTEM_TOOL,
   expandPastedContent
 } from '../shared/chat-system-records'
@@ -375,7 +376,9 @@ export interface ChatParseOptions {
    * media type is in `CHAT_IMAGE_TYPES` and `data` is a non-empty string. An image inside a
    * `tool_result` is tool output and stays out (`summarizeResult` ignores it, as before). Off by
    * default, like `thinking`: the golden fixtures and the phone's `chat.page` never set it.
-   * Also: a `diff` on each `Edit` / `Write` tool part whose input reads (`toolDiff`).
+   * Also: a `diff` on each `Edit` / `Write` tool part whose input reads (`toolDiff`), and a
+   * `Compaction` chip for each context compaction (`compactionPart`) in place of the long summary
+   * record the model continues from, which is skipped.
    */
   rich?: boolean
 }
@@ -415,6 +418,28 @@ function toolDiff(name: string, input: unknown): ChatToolDiff | undefined {
     return typeof input.content === 'string' ? { filePath, oldText: '', newText: capBody(input.content) } : undefined
   }
   return undefined
+}
+
+/**
+ * A context compaction (`ChatParseOptions.rich`) as ONE tool part, from the `compactMetadata` of the
+ * `type:'system'` record claude writes at the boundary — measured (CLI 2.1.314) as
+ * `{subtype:'compact_boundary', content:'Conversation compacted', compactMetadata:{trigger:'auto' |
+ * 'manual', preTokens, postTokens, …}}`. The trigger is the `arg` ('' when it is not a string; capped
+ * like any tool arg); the `result` is `<preTokens> → <postTokens> tokens` in plain digits, only when
+ * both are finite numbers.
+ */
+function compactionPart(meta: unknown): Extract<ChatPart, { kind: 'tool' }> {
+  const m: Record<string, unknown> = isRecord(meta) ? meta : {}
+  const part: Extract<ChatPart, { kind: 'tool' }> = {
+    kind: 'tool',
+    name: COMPACTION_TOOL,
+    arg: typeof m.trigger === 'string' ? m.trigger.slice(0, CHAT_TOOL_ARG_MAX) : ''
+  }
+  const { preTokens: pre, postTokens: post } = m
+  if (typeof pre === 'number' && Number.isFinite(pre) && typeof post === 'number' && Number.isFinite(post)) {
+    part.result = `${pre} → ${post} tokens`
+  }
+  return part
 }
 
 const userTextOf = (text: string, opts: ChatParseOptions | undefined): string =>
@@ -597,6 +622,9 @@ function parseChatRecords(
     let o: Parameters<typeof isHiddenMetaRecord>[0] & {
       timestamp?: unknown
       effort?: unknown
+      subtype?: unknown
+      compactMetadata?: unknown
+      isCompactSummary?: unknown
       message?: { content?: unknown; model?: unknown }
     }
     try {
@@ -616,6 +644,14 @@ function parseChatRecords(
       model = metaString(o.message?.model)
       effort = metaString(o.effort)
     }
+    // Opt-in (see `ChatParseOptions.rich`): without it the boundary yields nothing and the summary
+    // is a user message, as before. The summary is the model's own recap of the conversation so far,
+    // not the user's words: the chip carries the fact, and the summary is skipped whatever its shape.
+    if (opts?.rich && o.type === 'system' && o.subtype === 'compact_boundary') {
+      push({ role: 'assistant', parts: [compactionPart(o.compactMetadata)] }, offset)
+      continue
+    }
+    if (opts?.rich && o.type === 'user' && o.isCompactSummary === true) continue
     if (o.type === 'assistant' && Array.isArray(content)) {
       const parts: ChatPart[] = []
       for (const c of content as Array<{

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatPart } from '@shared/types'
-import { BACKGROUND_TASK_TOOL } from '@shared/chat-system-records'
+import { BACKGROUND_TASK_TOOL, COMPACTION_TOOL } from '@shared/chat-system-records'
 import { COMMAND_OUTPUT_TOOL } from '@shared/chat-command'
 import { groupToolCalls, memberKey, partPosition, toolGroupSummary } from './chatToolGroups'
 
@@ -84,6 +84,22 @@ describe('groupToolCalls', () => {
     const layout = groupToolCalls(messages)
 
     expect(layout.groupAt.size).toBe(0)
+  })
+
+  it('a Compaction chip between tool calls splits the run and is never folded (it is a system record)', () => {
+    const compaction: ChatMessage = {
+      role: 'assistant',
+      parts: [tool(COMPACTION_TOOL, { arg: 'auto', result: '274430 → 16889 tokens' })]
+    }
+    const messages = [call('Bash'), call('Bash'), compaction, call('Bash'), call('Bash')]
+
+    const layout = groupToolCalls(messages)
+
+    expect(runs(messages)).toEqual([
+      ['0:0', '1:0'],
+      ['3:0', '4:0']
+    ])
+    expect(layout.absorbed.has('2:0')).toBe(false)
   })
 
   it('keys a group by its first line offset, so it keeps its key while the run grows', () => {

@@ -66,13 +66,13 @@ describe('assistantTurnEnds (one action row per assistant turn)', () => {
     expect(ends.get(0)).toEqual({ copyText: '', at: undefined })
   })
 
-  it('a system chip (Background task / Agent message / System) stands alone and splits the turns around it', () => {
+  it('a system chip (Background task / Agent message / System / Compaction) stands alone and splits the turns around it', () => {
     const chip = (name: string, at?: number): ChatMessage => ({
       role: 'assistant',
       parts: [{ kind: 'tool', name, arg: 'x', result: 'y' }],
       ...(at === undefined ? {} : { at })
     })
-    for (const name of ['Background task', 'Agent message', 'System']) {
+    for (const name of ['Background task', 'Agent message', 'System', 'Compaction']) {
       const msgs = [say('user', 'q'), say('assistant', 'first answer', 10), chip(name, 20), say('assistant', 'reply', 30)]
       const ends = assistantTurnEnds(msgs)
       expect([...ends.keys()]).toEqual([1, 3])

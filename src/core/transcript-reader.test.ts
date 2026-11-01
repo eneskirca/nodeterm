@@ -603,6 +603,107 @@ describe('Edit / Write diffs (opt-in `rich`)', () => {
   })
 })
 
+describe('Compaction chip (opt-in `rich`)', () => {
+  // The measured records (CLI 2.1.314): the boundary is a `system` record, and the summary the model
+  // continues from is a `user` record flagged `isCompactSummary` — the model's text, not the user's.
+  const compactBoundary = (trigger: unknown, preTokens?: unknown, postTokens?: unknown): string =>
+    JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: 'Conversation compacted',
+      timestamp: '2026-11-02T10:00:00.000Z',
+      compactMetadata: { trigger, preTokens, postTokens }
+    })
+  const compactSummaryUser = (text: string, flag: unknown = true): string =>
+    JSON.stringify({
+      type: 'user',
+      isCompactSummary: flag,
+      isVisibleInTranscriptOnly: true,
+      timestamp: '2026-11-02T10:00:01.000Z',
+      message: { role: 'user', content: text }
+    })
+
+  it('rich: a compact boundary is a Compaction chip and the compact summary record is skipped', () => {
+    const out = parseChatMessages(
+      [compactSummaryUser('This session is being continued…'), compactBoundary('auto', 274430, 16889)],
+      { rich: true }
+    )
+    expect(out).toEqual([
+      {
+        role: 'assistant',
+        parts: [{ kind: 'tool', name: 'Compaction', arg: 'auto', result: '274430 → 16889 tokens' }],
+        at: expect.any(Number)
+      }
+    ])
+    expect(out[0].at).toBe(Date.parse('2026-11-02T10:00:00.000Z'))
+  })
+
+  it('without rich the boundary yields nothing and the summary is a user message', () => {
+    const raw = [compactBoundary('auto', 274430, 16889), compactSummaryUser('This session is being continued…')]
+    const summary = [
+      {
+        role: 'user',
+        parts: [{ kind: 'text', text: 'This session is being continued…' }],
+        at: Date.parse('2026-11-02T10:00:01.000Z')
+      }
+    ]
+    expect(parseChatMessages(raw)).toEqual(summary)
+    expect(parseChatMessages(raw, { thinking: true })).toEqual(summary)
+  })
+
+  it('a boundary with no token counts has no result', () => {
+    const noMeta = JSON.stringify({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted' })
+    const raw = [
+      compactBoundary('manual'),
+      compactBoundary('auto', 274430), // one count only
+      compactBoundary('auto', '274430', '16889'), // counts that are not numbers
+      compactBoundary(42, 1, 2), // a trigger that is not a string
+      noMeta,
+      JSON.stringify({ type: 'system', subtype: 'compact_boundary', compactMetadata: null })
+    ]
+    expect(parseChatMessages(raw, { rich: true }).flatMap((m) => m.parts)).toEqual([
+      { kind: 'tool', name: 'Compaction', arg: 'manual' },
+      { kind: 'tool', name: 'Compaction', arg: 'auto' },
+      { kind: 'tool', name: 'Compaction', arg: 'auto' },
+      { kind: 'tool', name: 'Compaction', arg: '', result: '1 → 2 tokens' },
+      { kind: 'tool', name: 'Compaction', arg: '' },
+      { kind: 'tool', name: 'Compaction', arg: '' }
+    ])
+  })
+
+  it('the trigger is capped like any tool arg', () => {
+    const [part] = parseChatMessages([compactBoundary('x'.repeat(250))], { rich: true }).flatMap((m) => m.parts)
+    expect(part).toEqual({ kind: 'tool', name: 'Compaction', arg: 'x'.repeat(200) })
+  })
+
+  it('rich: another system record yields nothing, and a summary flag that is not `true` stays a user message', () => {
+    const raw = [
+      JSON.stringify({ type: 'system', subtype: 'turn_duration', durationMs: 1200 }),
+      JSON.stringify({ type: 'system', content: 'Conversation compacted' }),
+      compactSummaryUser('typed by a person', 'true')
+    ]
+    expect(parseChatMessages(raw, { rich: true })).toEqual([
+      { role: 'user', parts: [{ kind: 'text', text: 'typed by a person' }], at: Date.parse('2026-11-02T10:00:01.000Z') }
+    ])
+  })
+
+  it('rich rides the paged parser too: the chip carries its line offset as key', () => {
+    const before = said('user', 'go')
+    const file = Buffer.from(before + compactBoundary('auto', 9, 3) + '\n' + compactSummaryUser('continued…') + '\n')
+    const rich = parseChatWindow(file, 0, claudeChatRecordParser({ rich: true })).messages
+    expect(rich).toEqual([
+      { role: 'user', parts: [{ kind: 'text', text: 'go' }], key: 0 },
+      {
+        role: 'assistant',
+        parts: [{ kind: 'tool', name: 'Compaction', arg: 'auto', result: '9 → 3 tokens' }],
+        at: Date.parse('2026-11-02T10:00:00.000Z'),
+        key: Buffer.byteLength(before)
+      }
+    ])
+    expect(parseChatWindow(file, 0).messages.map((m) => m.role)).toEqual(['user', 'user'])
+  })
+})
+
 describe('readChatWindow — byte windows read from a real file', () => {
   let dir: string
   afterEach(() => {
