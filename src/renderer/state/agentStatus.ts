@@ -1262,10 +1262,11 @@ const instanceByApi = new WeakMap<NodeTerminalApi, AgentStatusSession>()
 export function agentStatusForApi(api: NodeTerminalApi): AgentStatusSession {
   const existing = api ? instanceByApi.get(api) : undefined
   if (existing) return existing
-  // Keyless — remote status is never persisted (4a) — but the done-read ack routes to THAT core's
-  // api (a remote/relay core acks on its own host), so reading a finished remote session dismisses
-  // its phone activity too. A nullish api (node-env tests) gets no ack.
-  const session = createAgentStatusSession(undefined, api ? (id) => api.ackDone(id) : undefined)
+  // Keyless — remote status is never persisted (4a) — and with NO done-read ack: reading a remote
+  // session's finish clears unread on this desktop only (product decision 1). Nothing is sent back
+  // to that core (no `ackDone`, no `agent:ack-done`), so the host's own read state — its notch,
+  // its paired phone's Live Activity — stays as it was.
+  const session = createAgentStatusSession(undefined, undefined)
   if (api) instanceByApi.set(api, session)
   return session
 }

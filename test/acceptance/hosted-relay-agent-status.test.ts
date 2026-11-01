@@ -2,10 +2,10 @@
  * ACCEPTANCE (bug D): on a team tab, agent status reaches the tab's OWN relay session store.
  *
  * A desktop joined to a Server Edition team over the E2EE relay never showed RUNNING / NEEDS YOU /
- * unread on its agent nodes. The host sends `agent:status`, the joiner's relay RpcClient receives
- * it, and nothing on the joiner listens: the only subscriber is Canvas's listener on the LOCAL
- * `window.nodeTerminal`, which writes the DEFAULT agent-status store. The relay session's own store
- * (`SessionStores.agentStatus`) is never written.
+ * unread on its agent nodes. The host sent `agent:status`, the joiner's relay RpcClient received
+ * it, and nothing on the joiner listened: the only subscriber was Canvas's listener on the LOCAL
+ * `window.nodeTerminal`, which writes the DEFAULT agent-status store, so the relay session's own
+ * store (`SessionStores.agentStatus`) was never written.
  *
  * The chain, end to end, with every layer REAL except the relay carrier (an in-memory FrameTransport
  * that also plays the host's request handlers for the requests a hosted tab sends at open):
@@ -14,8 +14,9 @@
  *   → the hosted relay peer's sink, filtered by `wrapSinkForRole` (owner, and viewer)
  *   → the joiner's `buildRelayApi({hosted:true})` RpcClient → `openRelayTab` session + stores
  *
- * The tests marked `it.fails` state the intended behavior and fail until the fix lands; the
- * default-store test already holds (today nothing writes) and must keep holding after it.
+ * Each relay session subscribes its own api's `onAgentStatus` (`wireRelayAgentStatus`, wired in
+ * `openRelayTab`) into its own store; the default-store test pins that none of it leaks into the
+ * local user's store or its persisted keys.
  *
  * Runs in the NODE environment with a real jsdom window installed by hand (`installDom`), not in
  * vitest's jsdom environment: that one loads modules through Vite's client transform, which
@@ -267,7 +268,7 @@ const working = { hook_event_name: 'UserPromptSubmit', session_id: 's1', prompt:
 const done = { hook_event_name: 'Stop', session_id: 's1', last_assistant_message: 'done.' }
 
 describe('hosted team tab: agent status reaches the relay session', () => {
-  it.fails('a host hook event reaches each relay session store', async () => {
+  it('a host hook event reaches each relay session store', async () => {
     h.hook(working)
     await settle()
     expect(relayStore(h.owner.tab).getState().byId[NODE]?.state).toBe('working')
@@ -291,11 +292,11 @@ describe('hosted team tab: agent status reaches the relay session', () => {
     expect(setItem.mock.calls.filter(([k]) => String(k).startsWith('nodeterm.agentStatus'))).toEqual([])
   })
 
-  it.fails('reading a finished relay session acks nothing on the host', async () => {
+  it('reading a finished relay session acks nothing on the host', async () => {
     h.hook(working)
     h.hook(done)
     await settle()
-    expect(relayStore(h.viewer.tab).getState().byId[NODE]?.unread).toBe(true) // fails today: nothing wrote it
+    expect(relayStore(h.viewer.tab).getState().byId[NODE]?.unread).toBe(true)
     expect(relayStore(h.owner.tab).getState().byId[NODE]?.unread).toBe(true)
     relayStore(h.viewer.tab).getState().clearUnread(NODE)
     relayStore(h.owner.tab).getState().clearUnread(NODE)
@@ -309,7 +310,7 @@ describe('hosted team tab: agent status reaches the relay session', () => {
     expect(relayStore(h.owner.tab).getState().byId[NODE]?.unread).toBe(false)
   })
 
-  it.fails('after a relay drop the tab reads unknown and later events write nothing', async () => {
+  it('after a relay drop the tab reads unknown and later events write nothing', async () => {
     h.hook(working)
     await settle()
     expect(relayStore(h.viewer.tab).getState().byId[NODE]?.state).toBe('working')

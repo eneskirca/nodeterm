@@ -115,6 +115,30 @@ describe('agentStatusForApi — one store per core, keyed by api identity', () =
     expect(localStorage.getItem('nodeterm.agentStatus')).toBeNull()
   })
 
+  it('a non-local api never acks a read: clearUnread after done calls no api.ackDone', async () => {
+    const { agentStatusForApi } = await import('./agentStatus')
+    const ackDone = vi.fn()
+    const api = { marker: 'relay', ackDone } as unknown as NodeTerminalApi
+    const { store } = agentStatusForApi(api)
+    store.getState().setState('nt-x', 'done', 'claude')
+    store.getState().markUnread('nt-x')
+    store.getState().clearUnread('nt-x')
+    // Read on this desktop only (product decision 1): nothing goes back to that core.
+    expect(store.getState().byId['nt-x']?.unread).toBe(false)
+    expect(ackDone).not.toHaveBeenCalled()
+  })
+
+  it('the default instance still acks a read to the local api', async () => {
+    const ackDone = vi.fn()
+    const api = { marker: 'preload', ackDone } as unknown as NodeTerminalApi
+    vi.stubGlobal('window', { nodeTerminal: api })
+    const { agentStatusForApi } = await import('./agentStatus')
+    const { store } = agentStatusForApi(api)
+    store.getState().setState('nt-y', 'done', 'claude')
+    store.getState().clearUnread('nt-y')
+    expect(ackDone).toHaveBeenCalledWith('nt-y')
+  })
+
   it('window.nodeTerminal resolves to the default (persisted) instance — the WeakMap seed', async () => {
     const api = { marker: 'preload' } as unknown as NodeTerminalApi
     vi.stubGlobal('window', { nodeTerminal: api })
