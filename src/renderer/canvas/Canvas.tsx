@@ -684,6 +684,7 @@ import {
   sessionForProject,
   boundSessionForProject,
   presenceForProject,
+  agentStatusForProject,
   setActiveSession,
   disposeSession,
   holdSessionTeardown,
@@ -2950,6 +2951,11 @@ export function Canvas() {
   // active id, so the outgoing project's nodes never remount under the incoming project's session.
   const flowOwnerProjectId = useFlowStoreOwner(allNodes, renderedProjectId)
   const nodeSession = sessionForProject(flowOwnerProjectId ?? '')
+  // The same owner for imperative callbacks: a focus marks the node active / read in the agent-status
+  // store of the session the node renders under (`agentStatusForProject(owner)`), never the active
+  // project's — a handed-off SSH project and the team tab serving it share node ids.
+  const flowOwnerProjectIdRef = useRef(flowOwnerProjectId)
+  flowOwnerProjectIdRef.current = flowOwnerProjectId
   // Work that frames a just-loaded project waits for that same ownership (see flowLanding.ts).
   const flowLanding = useFlowLanding(flowOwnerProjectId)
 
@@ -3552,8 +3558,11 @@ export function Canvas() {
               // the target terminal so the user can type without a second click.
               useTerminalFocus.getState().request(pending)
             }
-            useAgentStatus.getState().setActive(pending, true)
-            useAgentStatus.getState().clearUnread(pending)
+            // `project.id` IS the flow-store owner here: flowLanding runs this only once React
+            // Flow's store holds that project, so the node renders under its session.
+            const statusStore = agentStatusForProject(project.id).store
+            statusStore.getState().setActive(pending, true)
+            statusStore.getState().clearUnread(pending)
           }
         }
       })
@@ -11973,8 +11982,9 @@ export function Canvas() {
         // broken there. On the board, "go to" means OPEN THE CARD.
         if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) {
           useViewMode.getState().requestCard(nodeId)
-          useAgentStatus.getState().setActive(nodeId, true)
-          useAgentStatus.getState().clearUnread(nodeId)
+          const statusStore = agentStatusForProject(flowOwnerProjectIdRef.current).store
+          statusStore.getState().setActive(nodeId, true)
+          statusStore.getState().clearUnread(nodeId)
           return
         }
         setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nodeId })))
@@ -11983,10 +11993,12 @@ export function Canvas() {
         // frames it but does not focus xterm on its own (the pan/hover guard owns that), which is
         // why a sidebar click used to need a second click/hover before typing worked.
         useTerminalFocus.getState().request(nodeId)
-        // Mark this node as watched and its completion as read. Read state is independent of the
-        // live `done` workflow state, so it remains under Waiting for your response.
-        useAgentStatus.getState().setActive(nodeId, true)
-        useAgentStatus.getState().clearUnread(nodeId)
+        // Mark this node as watched and its completion as read, in the store of the session it
+        // renders under (the flow-store owner's). Read state is independent of the live `done`
+        // workflow state, so it remains under Waiting for your response.
+        const statusStore = agentStatusForProject(flowOwnerProjectIdRef.current).store
+        statusStore.getState().setActive(nodeId, true)
+        statusStore.getState().clearUnread(nodeId)
         return
       }
       // `nodeOwner`, not the first project holding the id: a closed, handed-off SSH project shares

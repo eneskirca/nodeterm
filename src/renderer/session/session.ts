@@ -1,8 +1,8 @@
-import { createContext, createElement, useContext, type ReactNode } from 'react'
+import { createContext, createElement, useContext, useSyncExternalStore, type ReactNode } from 'react'
 import type { NodeTerminalApi } from '@shared/types'
 import type { PeerIdentity } from '@shared/presence'
 import { createPresenceSession, defaultPresence, type PresenceSession } from '../state/presence'
-import { agentStatusForApi, type AgentStatusSession } from '../state/agentStatus'
+import { agentStatusForApi, defaultAgentStatus, type AgentStatusSession } from '../state/agentStatus'
 import { useProjects } from '../state/projects'
 
 export type SessionSource = 'local' | 'relay' | 'server'
@@ -59,6 +59,40 @@ let offline: Entry | null = null
  *  reconnect re-binds the same id. */
 const KNOWN_REMOTE = new Set<string>()
 
+/** The registry signal: a version bumped by every mutation that can change what a project resolves
+ *  to (a session created, disposed, taken offline or re-statused; a project bound or unbound), and
+ *  the listeners told about it. For readers that cache a per-project store resolution
+ *  (`agentStatusForProject`) and must re-resolve when the registry moves under them. */
+let registryVersion = 0
+const registryListeners = new Set<() => void>()
+
+/** Bump the version and tell every listener, synchronously. Called only where the registry really
+ *  changed (a no-op call does not bump), never from a render path. */
+function bumpRegistry(): void {
+  registryVersion++
+  for (const cb of [...registryListeners]) cb()
+}
+
+/** Subscribe to registry changes. Bumped on createSession, disposeSession, takeSessionOffline,
+ *  setSessionStatus, bind and unbind — each only when it changed something. Returns unsubscribe. */
+export function subscribeSessionRegistry(cb: () => void): () => void {
+  registryListeners.add(cb)
+  return () => {
+    registryListeners.delete(cb)
+  }
+}
+
+/** The registry's current version (see `subscribeSessionRegistry`). Monotonic for the app run. */
+export function sessionRegistryVersion(): number {
+  return registryVersion
+}
+
+/** `useSyncExternalStore` over the registry signal: re-renders the caller whenever a session or a
+ *  binding changes, so a memoized `agentStatusForProject(id)` can be keyed on it. */
+export function useSessionRegistryVersion(): number {
+  return useSyncExternalStore(subscribeSessionRegistry, sessionRegistryVersion)
+}
+
 /** The per-session store instances. `createPresenceSession` is memoized BY API IDENTITY, so the
  *  one-store-per-core guarantee needs no source branch here: the local session's api is
  *  `window.nodeTerminal`, which resolves to the module's default presence instance — the exact
@@ -89,6 +123,7 @@ export function createSession(source: SessionSource, api: NodeTerminalApi, label
   if (existing) return existing.session
   const session: WorkspaceSession = { id, source, label, api, status: 'connected' }
   SESSIONS.set(id, { session, stores: buildStores(api), teardowns: [], disposed: false })
+  bumpRegistry()
   return session
 }
 
@@ -128,6 +163,7 @@ export function disposeSession(sessionId: string): void {
   SESSIONS.delete(sessionId)
   for (const [projectId, sid] of PROJECT_BINDINGS) if (sid === sessionId) PROJECT_BINDINGS.delete(projectId)
   if (activeId === sessionId) activeId = SESSIONS.has('local') ? 'local' : null
+  bumpRegistry()
 }
 
 /** Set a session's live status (Stage 4 Task 7 — a relay tab going offline / reconnecting). No-op
@@ -135,7 +171,9 @@ export function disposeSession(sessionId: string): void {
  *  label (and the offline gate) read the current state without re-registering the session. */
 export function setSessionStatus(sessionId: string, status: WorkspaceSession['status']): void {
   const e = SESSIONS.get(sessionId)
-  if (e) e.session.status = status
+  if (!e || e.session.status === status) return
+  e.session.status = status
+  bumpRegistry()
 }
 
 /** Take a session OFFLINE on an INVOLUNTARY socket drop (host/relay gone) — the counterpart of a
@@ -149,6 +187,7 @@ export function takeSessionOffline(sessionId: string): void {
   if (!e || e.disposed || e.session.status === 'offline') return
   runTeardowns(e)
   e.session.status = 'offline'
+  bumpRegistry()
 }
 
 /** Test-only: clears the registry so each test starts with no sessions. The offline-session
@@ -242,14 +281,16 @@ export function sessionCount(): number {
  *  never persisted. Throws for an unknown session id so a tab can never bind to nothing. */
 export function bindProjectToSession(projectId: string, sessionId: string): void {
   if (!SESSIONS.has(sessionId)) throw new Error(`[session] no session ${sessionId}`)
+  const changed = PROJECT_BINDINGS.get(projectId) !== sessionId
   PROJECT_BINDINGS.set(projectId, sessionId)
   if (useProjects.getState().getProject(projectId)?.remote) KNOWN_REMOTE.add(projectId)
+  if (changed) bumpRegistry()
 }
 
 /** Unbind ONE project (a hosted team stopped sharing it, or the user closed that one of the team's
  *  tabs). The session lives on for its other tabs. No-op when unbound. */
 export function unbindProject(projectId: string): void {
-  PROJECT_BINDINGS.delete(projectId)
+  if (PROJECT_BINDINGS.delete(projectId)) bumpRegistry()
 }
 
 /** Every project bound to `sessionId` (a hosted team's tabs, live or greyed). */
@@ -356,8 +397,15 @@ export function useSession(): WorkspaceSession {
   return s
 }
 
+/** The stores of the session this subtree renders under. Render-safe, unlike `getSessionStores`: a
+ *  node can re-render under a session disposed a moment ago (the last team tab closed, a revoke)
+ *  before Canvas re-keys its provider, and a throw here would take the canvas down. Both stores are
+ *  memoized by api identity (`createPresenceSession`, `agentStatusForApi`), so `buildStores` on the
+ *  dead session's api returns the very instances its entry held — never a fresh twin, and nothing
+ *  is re-subscribed (a store's `connect()` is a separate, held teardown). */
 export function useSessionStores(): SessionStores {
-  return getSessionStores(useSession().id)
+  const session = useSession()
+  return entryFor(session.id)?.stores ?? buildStores(session.api)
 }
 
 /** The presence store for a session id, with the render-safe fallback the two accessors below share:
@@ -389,6 +437,31 @@ export function presenceForProject(projectId: string): PresenceSession {
   const off = offlineForUnboundRemote(projectId)
   if (off) return off.stores.presence
   return presenceForSession(null) // unbound → the local session's presence (defaultPresence in-app)
+}
+
+/** The agent-status store of the session a project belongs to. Never throws; null/undefined → local.
+ *
+ *  Resolves exactly as `presenceForProject` does: a project bound to a live session → that
+ *  session's store (a relay / team tab's keyless store, fed by `wireRelayAgentStatus`); an unbound
+ *  REMOTE project → the OFFLINE relay session's store, which no core feeds (a dead core's tab reads
+ *  Unknown, never the local user's table); every other id — local, unknown, '', null — → the local
+ *  session's store, which in the app IS `defaultAgentStatus`, falling back to `defaultAgentStatus`
+ *  in a local-less registry. NOT the active project's: a handed-off SSH project (local) and the team
+ *  tab serving it (relay) hold the same node ids, so a reader that asked the active project would
+ *  show one project's status on the other's node. Allocation-free; safe in render. A caller that
+ *  caches the result re-resolves on `useSessionRegistryVersion()`. */
+export function agentStatusForProject(projectId: string | null | undefined): AgentStatusSession {
+  if (projectId) {
+    const bound = boundSessionForProject(projectId)
+    if (bound) {
+      const e = entryFor(bound.id)
+      if (e) return e.stores.agentStatus
+    }
+    const off = offlineForUnboundRemote(projectId)
+    if (off) return off.stores.agentStatus
+  }
+  const local = SESSIONS.get('local')
+  return local ? local.stores.agentStatus : defaultAgentStatus
 }
 
 /** The ACTIVE project's presence store (`presenceForProject(activeProjectId)`), resolved
