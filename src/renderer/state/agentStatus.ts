@@ -810,7 +810,14 @@ export function createAgentStatusSession(
         ) {
           // Same-state event: refresh freshness in place — stateAt is never rendered, and a
           // new object here would re-render every node header on each tool event.
-          if (s.byId[id]?.lastSeen?.restored) {
+          // OWN entries only: for an id with no entry of its own, a plain lookup of a name
+          // `Object.prototype` owns (`__proto__`, `constructor`, …) answers the prototype's value,
+          // and the in-place writes below would then land on `Object.prototype` (or `Object`) for
+          // the whole renderer. A relay host's ids are refused before they get here
+          // (`isHostNodeId`); this is the store's own guard, and for every real id it is the same
+          // lookup as before.
+          const own = Object.hasOwn(s.byId, id) ? s.byId[id] : undefined
+          if (own?.lastSeen?.restored) {
             // The FIRST event after a restart for a node whose state is still unknown (a
             // SessionStart from a cold-restore resume, say) is same-state by construction. Not in
             // place: the row must lose its "restored" label and re-sort NOW, not whenever another
@@ -820,20 +827,20 @@ export function createAgentStatusSession(
             return {
               byId: {
                 ...s.byId,
-                [id]: { ...s.byId[id], stateAt: now, stateVerified: verified === true, lastSeen: { at: now, state } }
+                [id]: { ...own, stateAt: now, stateVerified: verified === true, lastSeen: { at: now, state } }
               }
             }
           }
-          if (s.byId[id]) {
-            s.byId[id].stateAt = now
+          if (own) {
+            own.stateAt = now
             // "Last seen" is the last hook EVENT, so a same-state one moves it too — in place, like
             // `stateAt`, and saved on the trailing debounce rather than once per tool event.
-            s.byId[id].lastSeen = { at: now, state }
+            own.lastSeen = { at: now, state }
             scheduleClockSave()
             // The evidence rides along, in place and for the same reason: a re-assert of the SAME
             // state by a legacy POST must not leave an earlier `true` standing, or this copy would
             // disagree with the mirror the gate actually reads.
-            s.byId[id].stateVerified = verified === true
+            own.stateVerified = verified === true
           }
           return s
         }

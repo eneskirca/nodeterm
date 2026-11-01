@@ -9,7 +9,7 @@ import { createAgentStatusSession, STALE_WORKING_MS, type AgentNodeStatus } from
 import { applyAgentEvent } from '../state/applyAgentEvent'
 import { useAgentNodes } from '../state/agentNodes'
 import { playSfx } from '../lib/sfx'
-import { wireRelayAgentStatus } from './relay-agent-status'
+import { applyAgentStatusSnapshot, isHostNodeId, wireRelayAgentStatus } from './relay-agent-status'
 
 // The chime is an interrupt the relay path must never raise. The wiring does not import it; the
 // spy makes a future import that plays it fail here.
@@ -378,6 +378,81 @@ describe('wireRelayAgentStatus — the snapshot a late joiner starts from', () =
     await flush()
     expect(byIdOf().a.state).toBe('working')
     stop()
+  })
+})
+
+describe('wireRelayAgentStatus — a host node id that names a prototype member', () => {
+  // The fields a store write would put on the object a bare `byId[id]` lookup answers.
+  const FIELDS = ['stateAt', 'lastSeen', 'stateVerified', 'sessionEnded', 'state', 'agentId', 'sessionId', 'unread']
+  const PROTO_IDS = ['__proto__', 'constructor']
+  // What `byId['__proto__']` / `byId['constructor']` answer with no own entry.
+  const targets = (): object[] => [Object.prototype, Object]
+  const polluted = (): string[] =>
+    targets().flatMap((t) => FIELDS.filter((k) => Object.hasOwn(t, k)).map((k) => `${t === Object ? 'Object' : 'Object.prototype'}.${k}`))
+
+  afterEach(() => {
+    // A regression must fail THIS test, not every test that runs after it in the worker.
+    for (const t of targets()) for (const k of FIELDS) delete (t as Record<string, unknown>)[k]
+  })
+
+  it('isHostNodeId accepts the ids the app mints and refuses prototype names and unsafe ids', () => {
+    for (const ok of ['term-node-a', 'term-mh3k2x-12', '3f2a9c1e-7b4d-4e8a-9c0f-1a2b3c4d5e6f', 'a.b_c-d']) {
+      expect(isHostNodeId(ok), ok).toBe(true)
+    }
+    for (const bad of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf', '', '.', '..', 'a b', 'a/b']) {
+      expect(isHostNodeId(bad), bad).toBe(false)
+    }
+    for (const bad of [undefined, null, 42, {}]) expect(isHostNodeId(bad)).toBe(false)
+  })
+
+  it('a live event for __proto__ or constructor writes nothing and leaves the prototypes alone', () => {
+    const { api, fire } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
+    fire(working) // a real node, so the table is not empty
+    const before = status.store.getState().byId
+    for (const nodeId of PROTO_IDS) {
+      // The reviewer's frame: a session event with no agent id takes the store's same-state path.
+      fire({ nodeId, kind: 'session', sessionPhase: 'end' } as NormalizedAgentEvent)
+      fire({ nodeId, kind: 'session', sessionPhase: 'start', sessionTitle: 'x' } as NormalizedAgentEvent)
+      fire(ev({ nodeId, state: 'working', newTurn: true, sessionId: 's-evil' }))
+      fire(ev({ nodeId, state: 'done', lastMessage: 'ok' })) // would raise an alert, so a markUnread
+      fire(ev({ nodeId, kind: 'background-task' }))
+    }
+    expect(polluted()).toEqual([])
+    expect(Object.hasOwn(Object.prototype, 'stateAt')).toBe(false)
+    expect(Object.hasOwn(Object.prototype, 'lastSeen')).toBe(false)
+    expect(Object.hasOwn(Object.prototype, 'stateVerified')).toBe(false)
+    const byId = status.store.getState().byId
+    expect(byId).toBe(before) // not one store write
+    for (const nodeId of PROTO_IDS) expect(Object.hasOwn(byId, nodeId), nodeId).toBe(false)
+    expect(Object.keys(byId)).toEqual([N])
+    stop()
+  })
+
+  it('a snapshot entry for __proto__ or constructor is skipped, and the rest is written', async () => {
+    const { api, resolve } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
+    resolve([
+      { nodeId: '__proto__', state: 'working', agentId: 'claude', sessionId: 's-evil', ageMs: 1000 },
+      { nodeId: 'constructor', state: 'blocked', agentId: 'codex' },
+      { nodeId: 'a', state: 'working', agentId: 'claude' }
+    ])
+    await flush()
+    const byId = status.store.getState().byId
+    expect(Object.keys(byId)).toEqual(['a'])
+    for (const nodeId of PROTO_IDS) expect(Object.hasOwn(byId, nodeId), nodeId).toBe(false)
+    expect(polluted()).toEqual([])
+    stop()
+    // The applier on its own says how many it wrote: the two refused entries are not counted.
+    const other = createAgentStatusSession(undefined)
+    const wrote = applyAgentStatusSnapshot(
+      other.store,
+      [{ nodeId: '__proto__', state: 'done' }, { nodeId: 'constructor' }, { nodeId: 'toString', state: 'working' }],
+      new Set()
+    )
+    expect(wrote).toBe(0)
+    expect(other.store.getState().byId).toEqual({})
+    expect(polluted()).toEqual([])
   })
 })
 

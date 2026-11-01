@@ -24,11 +24,31 @@
 import type { StoreApi } from 'zustand'
 import type { AgentStatusSnapshotEntry } from '@shared/agent-status-snapshot'
 import type { NodeTerminalApi } from '@shared/types'
+import { isSafeNodeId } from '@shared/safe-id'
 import type { AgentNodeStatus, AgentStatusSession, AgentStatusStore } from '../state/agentStatus'
 import { applyAgentEvent } from '../state/applyAgentEvent'
 
 /** The Canvas sweep interval for the default store's stale-working decay. */
 const SWEEP_MS = 60_000
+
+/**
+ * Is this host-sent node id one this tab may use as a key of its `byId` table? Every relay write
+ * (a live event and a snapshot entry alike) passes through this first, and anything it refuses is
+ * dropped whole.
+ *
+ * `isSafeNodeId` alone is not enough here: its charset admits `__proto__` and `constructor`, and so
+ * does every other name `Object.prototype` owns (`toString`, `hasOwnProperty`, …). Looked up on a
+ * plain object, such a name answers the PROTOTYPE's value when the table has no own entry, and the
+ * store's same-state fast path then writes into that value in place: one host frame
+ * `{kind:'session', nodeId:'__proto__', sessionPhase:'end'}` defined `stateAt`, `lastSeen` and
+ * `stateVerified` on `Object.prototype` for the whole renderer (every status entry then inherited a
+ * `lastSeen`, which the default store's clock save writes to disk), and `constructor` did the same
+ * to `Object`. No id the app mints is one of those names, so refusing them costs a real node
+ * nothing. The host is another machine, so its ids are input, never trusted.
+ */
+export function isHostNodeId(nodeId: unknown): nodeId is string {
+  return typeof nodeId === 'string' && isSafeNodeId(nodeId) && !Object.hasOwn(Object.prototype, nodeId)
+}
 
 export interface RelayAgentStatusDeps {
   /** Whether this window has focus. Default: `document.hasFocus()` (false without a document). */
@@ -39,7 +59,7 @@ export interface RelayAgentStatusDeps {
 
 /**
  * Write the entries no live event has touched; never stamps a TRANSITION clock. Returns how many it
- * wrote. `now` is this machine's clock.
+ * wrote. `now` is this machine's clock. An entry whose node id `isHostNodeId` refuses is skipped.
  *
  * One `setState` for the whole snapshot. Each entry merges only the fields it carries (`state`,
  * `agentId`, `sessionId`, `account`) onto whatever the node already has, so an identity-only entry
@@ -71,7 +91,7 @@ export function applyAgentStatusSnapshot(
   const writes = new Map<string, AgentNodeStatus>()
   for (const entry of entries) {
     const nodeId = entry?.nodeId
-    if (typeof nodeId !== 'string' || !nodeId || liveSeen.has(nodeId)) continue
+    if (!isHostNodeId(nodeId) || liveSeen.has(nodeId)) continue
     const existing = writes.get(nodeId) ?? (Object.hasOwn(prev, nodeId) ? prev[nodeId] : undefined)
     const merged: AgentNodeStatus = { ...existing, unread: existing?.unread ?? false }
     if (entry.state !== undefined) {
@@ -109,6 +129,8 @@ export function wireRelayAgentStatus(
 
   const unsubscribe = api.onAgentStatus((e) => {
     if (disposed) return
+    // Before anything touches a table keyed by it (see `isHostNodeId`).
+    if (!isHostNodeId(e?.nodeId)) return
     if (e.kind !== 'subagent-start' && e.kind !== 'subagent-end') liveSeen.add(e.nodeId)
     const { nodeId, alert } = applyAgentEvent(store, null, e, { observationRemote: true })
     if (!alert) return

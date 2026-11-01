@@ -653,6 +653,9 @@ holds for a hosted team's tabs and for a Team Access relay tab alike: both open 
   either, so a read recorded on the host clears nothing here.
 - **No notification and no sound** for a team tab's sessions. A finished turn, or a node that needs
   input, marks the node unread unless this window has focus on that very node.
+- **The host's node ids are input.** An event or a snapshot entry whose node id is not a safe id,
+  or is a name `Object.prototype` owns (`__proto__`, `constructor`, …), is dropped whole
+  (`isHostNodeId`) before it reaches the tab's table.
 - **Where it shows (v1):** the terminal node (badge, unread dot, session chip), the sessions
   sidebar, the project tab's unread dot, and kanban cards and the card modal.
 - **What stays off on a team tab's node** (`relayStatusGates`, `terminal/relay-status-gates.ts`):
