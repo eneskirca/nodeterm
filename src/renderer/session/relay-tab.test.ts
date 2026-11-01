@@ -47,12 +47,14 @@ function fakeRelayClient() {
 /** A bridged relay api whose `pty.create` is a spy — this is what `LocalTransport(api)` must hit.
  *  `presenceUnsub` is what the session's held presence teardown calls (onSync's unsubscribe), so a
  *  drop that "runs the presence teardown" is observable in node env. `agentStatusUnsub` is the same
- *  for the session's agent-status subscription (`onAgentStatus`). */
+ *  for the session's agent-status subscription (`onAgentStatus`); `agentStatusSnapshot` answers an
+ *  empty snapshot, as a host with nothing running does. */
 function fakeBridgedApi(ws: Workspace = { version: 2, activeProjectId: '', projects: [] }) {
   const ptyCreate = vi.fn().mockResolvedValue({ sessionId: 's1', fresh: false })
   const presenceUnsub = vi.fn()
   const agentStatusUnsub = vi.fn()
   const onAgentStatus = vi.fn(() => agentStatusUnsub)
+  const agentStatusSnapshot = vi.fn().mockResolvedValue([])
   const workspaceLoad = vi.fn().mockResolvedValue(ws)
   const api = {
     marker: 'relay-bridged',
@@ -64,6 +66,7 @@ function fakeBridgedApi(ws: Workspace = { version: 2, activeProjectId: '', proje
       onPeer: vi.fn(() => () => {}),
     },
     onAgentStatus,
+    agentStatusSnapshot,
   } as unknown as NodeTerminalApi
   return { api, ptyCreate, presenceUnsub, workspaceLoad, onAgentStatus, agentStatusUnsub }
 }

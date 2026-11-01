@@ -2271,6 +2271,15 @@ export function mirrorEntry(nodeId: string): MirrorEntry | undefined {
 }
 
 /**
+ * Every mirror entry, as a fresh array of `[nodeId, entry]` — the `agent:status-snapshot` a late
+ * relay tab starts from reads it (core/agent-status-snapshot.ts). Read-only by contract, like
+ * `mirrorEntry`: the array is a copy, the entries are the live ones.
+ */
+export function mirrorEntries(): ReadonlyArray<readonly [string, Readonly<MirrorEntry>]> {
+  return [...state]
+}
+
+/**
  * Every node whose CURRENT agent session is `sessionId` (usually one; a session resumed in two nodes
  * is two). Read-only peek: the relay access policies attribute a `context:update` — keyed by the
  * agent session, not the node — to the nodes it describes, so a peer limited to some projects

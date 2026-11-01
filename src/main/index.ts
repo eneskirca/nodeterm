@@ -5,6 +5,7 @@ import { createRemoteContextEnsure } from '../core/remote-context-ensure'
 import { isKnownRemoteCodexAccount } from '../core/remote-ssh/codex-home'
 import { createRemoteCodexContext, type RemoteCodexContextTarget } from '../core/remote-ssh/codex-context'
 import { subagentReplay } from '../core/subagent-replay'
+import { registerAgentStatusSnapshotIpc } from '../core/agent-status-snapshot'
 import { grokHomeDir, grokSessionDir, grokSessionsDir } from '../core/agents/grok-paths'
 import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
@@ -3532,6 +3533,8 @@ app.whenReady().then(async () => {
   // (phone Inbox archives the card) and re-sends an 'end' live-update so the paired phone dismisses
   // its lingering DONE Live Activity. Fire-and-forget; the mirror no-ops with no unresolved done.
   corePlatform.handle(IPC.agentSubagentSnapshot, () => subagentReplay.snapshot())
+  // The host's per-node agent states off the mirror, for a relay tab that joins late (bug D).
+  registerAgentStatusSnapshotIpc(corePlatform)
   corePlatform.handle(IPC.agentAckDone, (nodeId: string) => {
     ackDone(nodeId)
   })

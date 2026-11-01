@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NormalizedAgentEvent } from '@shared/agents/normalize'
 import type { NodeTerminalApi } from '@shared/types'
+import type { AgentStatusSnapshotEntry } from '@shared/agent-status-snapshot'
 import { createAgentStatusSession, STALE_WORKING_MS, type AgentNodeStatus } from '../state/agentStatus'
 import { applyAgentEvent } from '../state/applyAgentEvent'
 import { useAgentNodes } from '../state/agentNodes'
@@ -26,21 +27,46 @@ const ev = (over: Partial<NormalizedAgentEvent> = {}): NormalizedAgentEvent => (
 const working = ev({ state: 'working', newTurn: true, task: 'hello', sessionId: 's1' })
 const doneEvent = ev({ state: 'done', lastMessage: 'all green' })
 
-/** A relay api whose only member is `onAgentStatus`: it keeps the listener and hands back a spy. */
+/** A relay api with the two members the wiring uses: `onAgentStatus` keeps the listener and hands
+ *  back a spy; `agentStatusSnapshot` returns a promise the test settles (`resolve` / `reject`).
+ *  `order` records the calls, so the test can see the subscription comes first. */
 function fakeApi() {
   let cb: ((e: NormalizedAgentEvent) => void) | null = null
   const unsub = vi.fn()
-  const api: Pick<NodeTerminalApi, 'onAgentStatus'> = {
+  const order: string[] = []
+  let settle: { resolve: (v: AgentStatusSnapshotEntry[]) => void; reject: (e: unknown) => void } | null = null
+  const api: Pick<NodeTerminalApi, 'onAgentStatus' | 'agentStatusSnapshot'> = {
     onAgentStatus: vi.fn((listener: (e: NormalizedAgentEvent) => void) => {
+      order.push('subscribe')
       cb = listener
       return unsub
+    }),
+    agentStatusSnapshot: vi.fn(() => {
+      order.push('snapshot')
+      return new Promise<AgentStatusSnapshotEntry[]>((resolve, reject) => {
+        settle = { resolve, reject }
+      })
     })
   }
   const fire = (e: NormalizedAgentEvent): void => {
     if (!cb) throw new Error('nothing subscribed')
     cb(e)
   }
-  return { api, unsub, fire }
+  const resolve = (entries: AgentStatusSnapshotEntry[]): void => {
+    if (!settle) throw new Error('no snapshot was asked for')
+    settle.resolve(entries)
+  }
+  const reject = (err: unknown): void => {
+    if (!settle) throw new Error('no snapshot was asked for')
+    settle.reject(err)
+  }
+  return { api, unsub, fire, order, resolve, reject }
+}
+
+/** Let a settled snapshot promise run its handlers. */
+const flush = async (): Promise<void> => {
+  await Promise.resolve()
+  await Promise.resolve()
 }
 
 let status: ReturnType<typeof createAgentStatusSession>
@@ -217,6 +243,113 @@ describe('wireRelayAgentStatus', () => {
     // The sequence exercised what it claims to: a recorded unread, a loop, and the session end.
     expect(B.byId[N]?.unread).toBe(true)
     expect(B.byId[N]?.sessionEnded).toBe(true)
+    stop()
+  })
+})
+
+describe('wireRelayAgentStatus — the snapshot a late joiner starts from', () => {
+  const byIdOf = () => status.store.getState().byId
+  const doneFor = (nodeId: string): NormalizedAgentEvent => ev({ nodeId, state: 'done', lastMessage: 'ok' })
+
+  it('asks for the snapshot after subscribing, and applies it', async () => {
+    const { api, order, resolve } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
+    expect(order).toEqual(['subscribe', 'snapshot'])
+    resolve([{ nodeId: 'a', state: 'working', agentId: 'claude', sessionId: 's' }])
+    await flush()
+    const byId = byIdOf()
+    expect(byId.a.state).toBe('working')
+    expect(byId.a.agentId).toBe('claude')
+    expect(byId.a.sessionId).toBe('s')
+    // No clock: the joiner saw no transition, and a stamped one would claim it did.
+    expect(byId.a.lastEventAt).toBeUndefined()
+    expect(byId.a.stateAt).toBeUndefined()
+    expect(byId.a.lastSeen).toBeUndefined()
+    expect(byId.a.unread).toBe(false)
+    stop()
+  })
+
+  it('a live event that lands before the snapshot is not overwritten by it', async () => {
+    const { api, fire, resolve } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
+    const set = vi.spyOn(status.store, 'setState')
+    fire(doneFor('a'))
+    set.mockClear()
+    resolve([
+      { nodeId: 'a', state: 'working', sessionId: 'stale' },
+      { nodeId: 'b', state: 'blocked', agentId: 'codex' }
+    ])
+    await flush()
+    const byId = byIdOf()
+    expect(byId.a.state).toBe('done')
+    expect(byId.a.sessionId).toBeUndefined()
+    expect(byId.a.unread).toBe(true) // the live finish's own mark, kept
+    // The untouched node is written, and the whole snapshot is ONE store write.
+    expect(byId.b.state).toBe('blocked')
+    expect(set).toHaveBeenCalledTimes(1)
+    stop()
+  })
+
+  it('an entry without state writes identity only', async () => {
+    const { api, resolve } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
+    const account = { configDir: '/home/u/.claude-2', accountId: 'acc-2', known: true }
+    // Already known here (unread, a session title) before the snapshot lands: the merge keeps it.
+    status.store.setState({ byId: { a: { unread: true, session: 'kept title' } } })
+    resolve([{ nodeId: 'a', agentId: 'claude', sessionId: 's-old', account }])
+    await flush()
+    const a = byIdOf().a
+    expect(a.state).toBeUndefined()
+    expect('state' in a).toBe(false)
+    expect(a.sessionId).toBe('s-old')
+    expect(a.agentId).toBe('claude')
+    // The host's account label is another machine's, exactly as a live relay event records it.
+    expect(a.account).toEqual({ ...account, remote: true })
+    expect(a.unread).toBe(true)
+    expect(a.session).toBe('kept title')
+    stop()
+  })
+
+  it('a snapshot that resolves after teardown writes nothing', async () => {
+    const { api, resolve } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
+    stop()
+    resolve([{ nodeId: 'a', state: 'working', agentId: 'claude' }])
+    await flush()
+    expect(byIdOf()).toEqual({})
+  })
+
+  it('a rejected snapshot is ignored', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { api, fire, reject } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
+    fire(working)
+    const before = structuredClone(byIdOf())
+    // An older host has no handler for the channel.
+    reject(Object.assign(new Error('no handler for agent:status-snapshot'), { code: 'E_NO_HANDLER' }))
+    await flush()
+    expect(byIdOf()).toEqual(before)
+    expect(warn).toHaveBeenCalledTimes(1)
+    // A rejection that lands after teardown says nothing: the session is gone, not the host's handler.
+    warn.mockClear()
+    const late = fakeApi()
+    const stopLate = wireRelayAgentStatus(late.api, status, { hasFocus: () => false })
+    stopLate()
+    late.reject(new Error('carrier closed'))
+    await flush()
+    expect(warn).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it('a replayed subagent start does not hold the node out of the snapshot', async () => {
+    // onAgentStatus replays the host's running subagents into the same listener at subscribe time;
+    // a subagent event carries no state, so it is no fresher evidence than the snapshot.
+    const { api, fire, resolve } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
+    fire(ev({ nodeId: 'a', kind: 'subagent-start', toolUseId: 't-1', taskLabel: 'look around' }))
+    resolve([{ nodeId: 'a', state: 'working', agentId: 'claude', sessionId: 's' }])
+    await flush()
+    expect(byIdOf().a.state).toBe('working')
     stop()
   })
 })

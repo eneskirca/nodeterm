@@ -1,6 +1,7 @@
 import type { ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
 import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from './push-webhook'
 import type { IdentitySeedEntry } from './agent-identity-seed'
+import type { AgentStatusSnapshotEntry } from './agent-status-snapshot'
 import type { WhiteboardFile, WhiteboardSaveResult } from './whiteboard'
 import type { PrWaitHold } from './pr-wait'
 import type { SessionBackend } from './session-backend'
@@ -4759,6 +4760,11 @@ export interface NodeTerminalApi {
   onUnreadClear(listener: (nodeId: string) => void): () => void
   /** Fires on each normalized agent hook event (working/done/waiting/subagent/…). Returns unsubscribe. */
   onAgentStatus(listener: (e: NormalizedAgentEvent) => void): () => void
+  /** The core's per-node agent states as they stand now, read off its agent-status mirror (newest
+   *  `AGENT_STATUS_SNAPSHOT_MAX`; no `state` for an identity-only or restored entry). A relay tab asks
+   *  right after subscribing to `onAgentStatus`, so it does not start blank; a non-editor peer gets
+   *  the shared nodes only. Rejects on a core that predates the channel. */
+  agentStatusSnapshot(): Promise<AgentStatusSnapshotEntry[]>
   /** Report a node's Eco hibernation flag to the core (the renderer owns the flag; the core only
    *  mirrors it into the agent-status file so the phone can render SLEEPING). Fire-and-forget;
    *  called on every `setHibernated` change and replayed for the persisted set at boot. */

@@ -16,7 +16,10 @@
  *
  * Each relay session subscribes its own api's `onAgentStatus` (`wireRelayAgentStatus`, wired in
  * `openRelayTab`) into its own store; the default-store test pins that none of it leaks into the
- * local user's store or its persisted keys.
+ * local user's store or its persisted keys. Right after subscribing it asks for
+ * `agent:status-snapshot`, which the carrier answers from the REAL mirror the hooks fed, narrowed for
+ * the peer's role exactly as the host's `narrowResponse` hook does, so a tab that joins late starts
+ * from the host's states.
  *
  * Runs in the NODE environment with a real jsdom window installed by hand (`installDom`), not in
  * vitest's jsdom environment: that one loads modules through Vite's client transform, which
@@ -28,8 +31,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { JSDOM } from 'jsdom'
 import { ServerPlatform } from '../../src/server/platform-server'
 import { wireAgentStatus } from '../../src/server/agent-status'
-import { _resetForTest } from '../../src/core/agent-status-mirror'
-import { wrapSinkForRole, type AccessContext } from '../../src/core/relay/access-policy'
+import { _resetForTest, mirrorEntries } from '../../src/core/agent-status-mirror'
+import { buildAgentStatusSnapshot } from '../../src/core/agent-status-snapshot'
+import { narrowResponseForRole, wrapSinkForRole, type AccessContext } from '../../src/core/relay/access-policy'
 import { testTmpDir } from '../../src/core/test-tmp'
 import { normalizeClaude, type NormalizedAgentEvent } from '../../src/shared/agents/normalize'
 import { IPC } from '../../src/shared/ipc'
@@ -41,6 +45,8 @@ import { getSessionStores, resetSessionsForTest } from '../../src/renderer/sessi
 import { useAgentStatus } from '../../src/renderer/state/agentStatus'
 
 const NODE = 'term-musuoygd-979507b8'
+/** A node the host runs in a project it does not share. */
+const PRIVATE_NODE = 'term-private-1'
 const PROJECT = 'proj-alpha'
 
 const ctxFor = (role: AccessContext['role']): AccessContext => ({
@@ -59,10 +65,13 @@ type ClosedListener = Parameters<RelayClientApi['onClosed']>[1]
 /** The joiner's carrier for ONE connection. Records every frame the joiner sends (`sent`), answers
  *  the requests a hosted tab makes at open the way the host's handlers would (anything else gets
  *  `null`), and stands in for the preload's `relayClient.onClosed` for this connection so a test
- *  can drop it (`drop`). */
+ *  can drop it (`drop`). `agent:status-snapshot` is answered from the real mirror, computed when the
+ *  request arrives; `holdSnapshot()` keeps that answer in transit until `releaseSnapshot()`. */
 class HostTransport implements FrameTransport {
   sent: Array<{ t: string; id?: number; method?: string }> = []
   private msgCb: ((data: string | Uint8Array) => void) | null = null
+  private snapshotHeld = false
+  private heldSnapshots: Array<() => void> = []
   /** Every live `relayClient.onClosed` listener for this connection, in registration order — the
    *  RpcClient's carrier-closed hook among them, as `RelayFrameTransport.onClose` rides it. */
   private closedListeners: ClosedListener[] = []
@@ -83,6 +92,14 @@ class HostTransport implements FrameTransport {
     const m = JSON.parse(json) as { t: string; id?: number; method?: string }
     this.sent.push(m)
     if (m.t !== 'req') return
+    if (m.method === IPC.agentStatusSnapshot) {
+      // The host's handler, then its narrowResponse hook for this peer's role.
+      const result = narrowResponseForRole(IPC.agentStatusSnapshot, buildAgentStatusSnapshot(mirrorEntries()), ctxFor(this.role))
+      const answer = (): void => this.emit(JSON.stringify({ t: 'res', id: m.id, ok: true, result }))
+      if (this.snapshotHeld) this.heldSnapshots.push(answer)
+      else queueMicrotask(answer)
+      return
+    }
     const result =
       m.method === IPC.relayHostedSelf
         ? { role: this.role, label: '', hostLabel: 'srv' }
@@ -94,6 +111,19 @@ class HostTransport implements FrameTransport {
               ? []
               : null
     queueMicrotask(() => this.emit(JSON.stringify({ t: 'res', id: m.id, ok: true, result })))
+  }
+  /** Keep every `agent:status-snapshot` answer in transit (already computed) until released. */
+  holdSnapshot(): void {
+    this.snapshotHeld = true
+  }
+  /** Deliver the held snapshot answers, and answer later ones at once again. */
+  releaseSnapshot(): void {
+    this.snapshotHeld = false
+    for (const answer of this.heldSnapshots.splice(0)) answer()
+  }
+  /** How many `agent:status-snapshot` requests the joiner put on this carrier. */
+  snapshotRequests(): number {
+    return this.sent.filter((f) => f.t === 'req' && f.method === IPC.agentStatusSnapshot).length
   }
   onMessage(cb: (data: string | Uint8Array) => void): void {
     this.msgCb = cb
@@ -153,11 +183,16 @@ interface Peer {
 
 interface Harness {
   /** Fire one claude hook POST at the host core, exactly as the hook server hands it to the shell. */
-  hook(payload: Record<string, unknown>): void
+  hook(payload: Record<string, unknown>, nodeId?: string): void
   /** Drop the VIEWER's relay connection (main reports it closed). */
   drop(): void
+  /** Join one more peer to the same host, on a carrier of its own (disposed after the test).
+   *  `before` runs on that carrier before the tab opens. */
+  join(role: AccessContext['role'], conn: string, before?: (t: HostTransport) => void): Promise<Peer>
   owner: Peer
   viewer: Peer
+  /** The peers `join` added. */
+  extra: Peer[]
 }
 
 let h: Harness
@@ -179,8 +214,14 @@ afterAll(() => {
   dom.window.close()
 })
 
-async function joinAs(platform: ServerPlatform, role: AccessContext['role'], conn: string): Promise<Peer> {
+async function joinAs(
+  platform: ServerPlatform,
+  role: AccessContext['role'],
+  conn: string,
+  before?: (t: HostTransport) => void
+): Promise<Peer> {
   const t = new HostTransport(role, hostWorkspace())
+  before?.(t)
   // The host side of the peer: the hosted service attaches the relay sink, wrapped for the role.
   platform.attach(
     wrapSinkForRole(
@@ -230,15 +271,22 @@ beforeEach(async () => {
   })
   const owner = await joinAs(platform, 'owner', 'conn-owner')
   const viewer = await joinAs(platform, 'viewer', 'conn-viewer')
+  const extra: Peer[] = []
   h = {
-    hook: (payload) => {
-      raw?.('claude', NODE, payload, { verified: false })
-      const e = normalizeClaude({ nodeId: NODE, agentId: 'claude', payload })
+    hook: (payload, nodeId = NODE) => {
+      raw?.('claude', nodeId, payload, { verified: false })
+      const e = normalizeClaude({ nodeId, agentId: 'claude', payload })
       if (e) normalized?.(e)
     },
     drop: () => viewer.t.drop(),
+    join: async (role, conn, before) => {
+      const peer = await joinAs(platform, role, conn, before)
+      extra.push(peer)
+      return peer
+    },
     owner,
-    viewer
+    viewer,
+    extra
   }
   // Harness guard: a relay session's store is never the default one, or the default-store test
   // below would contradict the per-session ones.
@@ -248,6 +296,7 @@ beforeEach(async () => {
 afterEach(() => {
   h.owner.tab.dispose()
   h.viewer.tab.dispose()
+  for (const peer of h.extra) peer.tab.dispose()
   resetSessionsForTest()
   _resetForTest()
   vi.restoreAllMocks()
@@ -319,5 +368,67 @@ describe('hosted team tab: agent status reaches the relay session', () => {
     h.hook(done)
     await settle()
     expect(relayStore(h.viewer.tab).getState().byId[NODE]).toBeUndefined()
+  })
+
+  it('a tab that joins after the host saw working shows working', async () => {
+    h.hook(working)
+    h.hook(working, PRIVATE_NODE) // a node in a project the host does not share
+    await settle()
+    // Both are in the host's mirror, so the viewer's missing PRIVATE_NODE below is the narrowing.
+    expect(mirrorEntries().map(([id]) => id).sort()).toEqual([NODE, PRIVATE_NODE].sort())
+    let carrier: HostTransport | undefined
+    const late = await h.join('viewer', 'conn-late', (t) => {
+      carrier = t
+      t.holdSnapshot()
+    })
+    await settle()
+    // Asked once, on its own carrier; until the answer lands the tab knows nothing.
+    expect(carrier!.snapshotRequests()).toBe(1)
+    expect(relayStore(late.tab).getState().byId[NODE]).toBeUndefined()
+    carrier!.releaseSnapshot()
+    await settle()
+    const a = relayStore(late.tab).getState().byId[NODE]
+    expect(a?.state).toBe('working')
+    expect(a?.agentId).toBe('claude')
+    expect(a?.sessionId).toBe('s1')
+    expect(a?.unread).toBe(false)
+    // The joiner saw no transition: no clock is claimed for one.
+    expect(a?.lastEventAt).toBeUndefined()
+    expect(a?.stateAt).toBeUndefined()
+    // A viewer's snapshot holds the shared nodes only.
+    expect(relayStore(late.tab).getState().byId[PRIVATE_NODE]).toBeUndefined()
+  })
+
+  it('a live event the host sends while the snapshot is in flight wins over it', async () => {
+    h.hook(working)
+    await settle()
+    let carrier: HostTransport | undefined
+    const late = await h.join('viewer', 'conn-race', (t) => {
+      carrier = t
+      t.holdSnapshot()
+    })
+    await settle()
+    // The snapshot (computed as the request arrived: working) is still in transit when the turn ends.
+    h.hook(done)
+    await settle()
+    expect(relayStore(late.tab).getState().byId[NODE]?.state).toBe('done')
+    carrier!.releaseSnapshot()
+    await settle()
+    expect(relayStore(late.tab).getState().byId[NODE]?.state).toBe('done')
+    expect(relayStore(late.tab).getState().byId[NODE]?.unread).toBe(true)
+  })
+
+  it('a reconnected session asks for a fresh snapshot', async () => {
+    h.hook(working)
+    await settle()
+    expect(h.viewer.t.snapshotRequests()).toBe(1)
+    h.drop() // handleRelayDrop → takeSessionOffline: the tab reads unknown
+    expect(relayStore(h.viewer.tab).getState().byId[NODE]).toBeUndefined()
+    // The reconnect is a fresh connection and a fresh session (reconnectRelayTab → mount).
+    const back = await h.join('viewer', 'conn-viewer-2')
+    await settle()
+    expect(h.viewer.t.snapshotRequests() + back.t.snapshotRequests()).toBe(2)
+    // No hook fired since the drop: the working the tab shows again is the fresh snapshot's.
+    expect(relayStore(back.tab).getState().byId[NODE]?.state).toBe('working')
   })
 })
