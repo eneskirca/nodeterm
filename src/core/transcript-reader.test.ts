@@ -112,7 +112,14 @@ describe('readSessionName — remote (SSH project) sessions', () => {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 import os from 'os'
 import path from 'path'
-import { claudeChatRecordParser, parseChatMessages, parseChatWindow, readChatWindow, SYSTEM_RESULT_MAX } from './transcript-reader'
+import {
+  CHAT_IMAGE_TYPES,
+  claudeChatRecordParser,
+  parseChatMessages,
+  parseChatWindow,
+  readChatWindow,
+  SYSTEM_RESULT_MAX
+} from './transcript-reader'
 
 const jl = (o: object): string => JSON.stringify(o) + '\n'
 const said = (role: 'user' | 'assistant', text: string): string =>
@@ -431,6 +438,83 @@ describe('thinking parts (opt-in `thinking`)', () => {
     // The window starts on the thinking line: the buffer begins one lookbehind byte earlier.
     const older = parseChatWindow(file.subarray(prompt.length - 1), prompt.length - 1, parse).messages.flatMap((m) => m.parts)
     expect(older).toEqual([{ kind: 'thinking', text: 'hmm' }])
+  })
+})
+
+describe('image parts (opt-in `rich`)', () => {
+  // The measured shape (CLI 2.1.314): a pasted image is a block of the user record's content array.
+  const userLine = (content: unknown[]): string => JSON.stringify({ type: 'user', message: { content } })
+  const image = (media_type: unknown, data: unknown = 'iVBORw0', sourceType: unknown = 'base64') => ({
+    type: 'image',
+    source: { type: sourceType, media_type, data }
+  })
+
+  it('rich: a pasted image becomes an image part; without rich the record keeps only its text', () => {
+    const line = userLine([{ type: 'text', text: 'see' }, image('image/png')])
+    expect(parseChatMessages([line], { rich: true })[0].parts).toEqual([
+      { kind: 'text', text: 'see' },
+      { kind: 'image', mediaType: 'image/png', data: 'iVBORw0' }
+    ])
+    expect(parseChatMessages([line])[0].parts).toEqual([{ kind: 'text', text: 'see' }])
+    expect(parseChatMessages([line], { thinking: true })[0].parts).toEqual([{ kind: 'text', text: 'see' }])
+  })
+
+  it('rich: each allowlisted media type is kept, in content order; an image-only record is a message', () => {
+    expect([...CHAT_IMAGE_TYPES]).toEqual(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+    const line = userLine(CHAT_IMAGE_TYPES.map((t) => image(t, `d-${t}`)))
+    expect(parseChatMessages([line], { rich: true })).toEqual([
+      { role: 'user', parts: CHAT_IMAGE_TYPES.map((t) => ({ kind: 'image', mediaType: t, data: `d-${t}` })) }
+    ])
+    // Without the option the same record has nothing to show, as before.
+    expect(parseChatMessages([line])).toEqual([])
+  })
+
+  it('rich: an image of an unknown media type, a non-base64 source, or inside a tool_result yields no part', () => {
+    const refused = [
+      image('image/svg+xml'), // scriptable markup, never a data: URL in the thread
+      image('image/bmp'),
+      image('IMAGE/PNG'),
+      image(undefined),
+      image('image/png', ''),
+      image('image/png', 42),
+      { type: 'image', source: { type: 'base64', media_type: 'image/png' } }, // no data
+      image('image/png', 'iVBORw0', 'url'),
+      { type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } },
+      { type: 'image' },
+      { type: 'image', source: null }
+    ]
+    const line = userLine([{ type: 'text', text: 'see' }, ...refused])
+    expect(parseChatMessages([line], { rich: true })[0].parts).toEqual([{ kind: 'text', text: 'see' }])
+
+    // An image a tool returned is tool OUTPUT: its call's result stays the text summary, as today.
+    const raw =
+      toolUse('t1', 'screenshot') +
+      jl({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'shot' }, image('image/png')] }
+          ]
+        }
+      })
+    expect(parseChatMessages(raw.split('\n'), { rich: true }).flatMap((m) => m.parts)).toEqual([
+      { kind: 'tool', name: 'Bash', arg: 'screenshot', result: 'shot' }
+    ])
+  })
+
+  it('rich rides the paged parser too (claudeChatRecordParser), and combines with thinking', () => {
+    const file = Buffer.from(
+      jl({ type: 'user', message: { content: [image('image/webp', 'UklGR')] } }) +
+        jl({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm', signature: 's' }] } })
+    )
+    const parts = (opts: { thinking?: boolean; rich?: boolean }) =>
+      parseChatWindow(file, 0, claudeChatRecordParser(opts)).messages.flatMap((m) => m.parts)
+    expect(parts({ thinking: true, rich: true })).toEqual([
+      { kind: 'image', mediaType: 'image/webp', data: 'UklGR' },
+      { kind: 'thinking', text: 'hmm' }
+    ])
+    expect(parts({ rich: true })).toEqual([{ kind: 'image', mediaType: 'image/webp', data: 'UklGR' }])
+    expect(parts({ thinking: true })).toEqual([{ kind: 'thinking', text: 'hmm' }])
   })
 })
 

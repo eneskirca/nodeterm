@@ -97,6 +97,11 @@ describe('⌘M thread: claude.ai look', () => {
     expect(ruleBody('.term-chat__thinking > summary::before')).toMatch(/transform:\s*rotate\(-45deg\);/)
     expect(ruleBody('.term-chat__thinking[open] > summary::before')).toMatch(/transform:\s*rotate\(45deg\);/)
   })
+
+  it('an attached image is a bounded thumbnail; enlarged, it drops the height cap', () => {
+    expect(ruleBody('.term-chat__image')).toMatch(/max-height:\s*240px;/)
+    expect(ruleBody('.term-chat__image--full')).toMatch(/max-height:\s*none;/)
+  })
 })
 
 describe('the shared .term-chat__input (plan "Revise…", question "Other") keeps a visible field', () => {

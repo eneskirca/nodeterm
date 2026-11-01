@@ -60,6 +60,7 @@ import { assistantTurnEnds, chatAbsoluteTime, chatClockTime, dayDividers } from 
 import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
 import { thinkingLabel } from '../lib/chatThinking'
 import { ChatToolGroup } from './ChatToolGroup'
+import { ChatImage } from './ChatImage'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 
@@ -444,6 +445,7 @@ export function ChatPanel({
     void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
       maxBytes: CHAT_TAIL_PAGE_BYTES,
       thinking: true,
+      rich: true,
       // A hook-driven refresh the user did not ask for: an expensive reader (opencode's export) may
       // space these out. An open, ↻, Retry or a held-request rebind is never marked.
       ...(live && !rebind ? { background: true } : {})
@@ -541,7 +543,8 @@ export function ChatPanel({
     void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
       before,
       maxBytes: CHAT_OLDER_PAGE_BYTES,
-      thinking: true
+      thinking: true,
+      rich: true
     }).then(
       (res) => {
         if (token !== olderReqRef.current) return
@@ -1006,6 +1009,9 @@ export function ChatPanel({
         <summary>{thinkingLabel(p.ms)}</summary>
         <MarkdownText text={p.text} />
       </details>
+    ) : p.kind === 'image' ? (
+      // An image the user attached to the prompt (the opt-in `rich` read): a thumbnail, click to enlarge.
+      <ChatImage key={key} mediaType={p.mediaType} data={p.data} />
     ) : p.body ? (
       // A plan / question is the content itself, not plumbing: shown expanded, in full,
       // flowing with the thread (no inner scroll box). The answer stays under it.

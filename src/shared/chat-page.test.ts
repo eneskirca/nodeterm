@@ -23,6 +23,19 @@ describe('normalizeChatPage — the page arg arrives over IPC/WS and is untruste
     }
   })
 
+  it('keeps `rich` only as a literal true, beside `thinking` and independent of it', () => {
+    expect(normalizeChatPage({ rich: true })).toEqual({ before: null, maxBytes: 262144, rich: true })
+    for (const rich of [false, 'yes', 1, {}]) {
+      expect(normalizeChatPage({ rich })).not.toHaveProperty('rich')
+    }
+    expect(normalizeChatPage({ thinking: true, rich: true })).toEqual({
+      before: null,
+      maxBytes: CHAT_PAGE_DEFAULT_BYTES,
+      thinking: true,
+      rich: true
+    })
+  })
+
   it('clamps maxBytes into [MIN, MAX] and floors fractions', () => {
     expect(normalizeChatPage({ maxBytes: 1 })!.maxBytes).toBe(CHAT_PAGE_MIN_BYTES)
     expect(normalizeChatPage({ maxBytes: 1e12 })!.maxBytes).toBe(CHAT_PAGE_MAX_BYTES)

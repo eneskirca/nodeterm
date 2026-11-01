@@ -3601,6 +3601,18 @@ export type ChatPart =
       ms?: number
     }
   | {
+      /**
+       * An image the user attached to a prompt (a pasted screenshot): `data` is the base64 payload,
+       * drawn as `data:<mediaType>;base64,<data>`. Present only on the opt-in `rich` read
+       * (`ChatParseOptions.rich`), and only for a base64 source whose `mediaType` is in
+       * `CHAT_IMAGE_TYPES` (core/transcript-reader.ts) — never `image/svg+xml`. An image a tool
+       * returned (inside a `tool_result`) is tool output and never becomes one.
+       */
+      kind: 'image'
+      mediaType: string
+      data: string
+    }
+  | {
       kind: 'tool'
       name: string
       arg: string

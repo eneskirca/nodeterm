@@ -4204,6 +4204,20 @@ body,
 .term-chat__thinking > .term-chat__text {
   margin-top: 4px;
 }
+/* An image the user attached to a prompt (ChatImage): a height-capped thumbnail in the bubble; a click
+   drops the cap to show it at full size, still never wider than the bubble. */
+.term-chat__image {
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  margin: 4px 0;
+  border-radius: 8px;
+  cursor: zoom-in;
+}
+.term-chat__image--full {
+  max-height: none;
+  cursor: zoom-out;
+}
 
 /* Transparent overlay that lets you pan across a terminal until you dwell/click. */
 .term-hover-guard {

@@ -367,6 +367,31 @@ export interface ChatParseOptions {
    * how long the model thought, when the stamps can tell (see the `ChatPart` type).
    */
   thinking?: boolean
+  /**
+   * Emit the parts only the desktop ⌘M panel draws. Today: an `image` part for each image block of a
+   * user record's content array — a pasted screenshot, measured (CLI 2.1.314) as
+   * `{type:'image', source:{type:'base64', media_type, data}}` — when the source is base64, its
+   * media type is in `CHAT_IMAGE_TYPES` and `data` is a non-empty string. An image inside a
+   * `tool_result` is tool output and stays out (`summarizeResult` ignores it, as before). Off by
+   * default, like `thinking`: the golden fixtures and the phone's `chat.page` never set it.
+   */
+  rich?: boolean
+}
+
+/**
+ * The image types an `image` part may carry (`ChatParseOptions.rich`): the raster formats claude
+ * accepts as a pasted image. Closed on purpose — anything else (`image/svg+xml` is scriptable markup,
+ * an unknown type is unrenderable) yields no part rather than a `data:` URL of unknown content.
+ */
+export const CHAT_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+/** An image block of a user record, as an `image` part — or null when it is not one we draw. */
+function imagePart(source: unknown): Extract<ChatPart, { kind: 'image' }> | null {
+  if (!source || typeof source !== 'object') return null
+  const { type, media_type: mediaType, data } = source as { type?: unknown; media_type?: unknown; data?: unknown }
+  if (type !== 'base64' || typeof mediaType !== 'string' || !CHAT_IMAGE_TYPES.includes(mediaType)) return null
+  if (typeof data !== 'string' || !data) return null
+  return { kind: 'image', mediaType, data }
 }
 const userTextOf = (text: string, opts: ChatParseOptions | undefined): string =>
   opts?.expandPastes === false ? text : expandPastedContent(text)
@@ -616,11 +641,16 @@ function parseChatRecords(
         text?: string
         tool_use_id?: string
         content?: unknown
+        source?: unknown
       }>) {
         if (!c || typeof c !== 'object') continue
         // A non-string `text` is passed through as before; only a string is a paste to expand.
         if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: typeof c.text === 'string' ? userTextOf(c.text, opts) : c.text })
-        else if (c.type === 'tool_result') {
+        else if (c.type === 'image') {
+          // Opt-in (see `ChatParseOptions.rich`): without it the record keeps only its text, as before.
+          const part = opts?.rich ? imagePart(c.source) : null
+          if (part) parts.push(part)
+        } else if (c.type === 'tool_result') {
           const tool = c.tool_use_id ? toolById.get(c.tool_use_id) : undefined
           const s = summarizeResult(c.content)
           if (tool) {

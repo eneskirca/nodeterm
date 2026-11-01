@@ -147,7 +147,7 @@ describe('ChatPanel live progress', () => {
     expect(pending).toHaveLength(1)
     await advance(CHAT_LIVE_RELOAD_MIN_MS)
     expect(pending).toHaveLength(2)
-    expect(pending[1].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true, thinking: true })
+    expect(pending[1].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true, thinking: true, rich: true })
 
     // A burst while that read is in flight: held, never overlapped…
     await hook('working')
@@ -185,7 +185,7 @@ describe('ChatPanel live progress', () => {
     await settle(1, { messages: [say(0, 'older')], olderCursor: null })
     expect(bubbles()).toEqual(['older', 'tail'])
     expect(pending).toHaveLength(3) // …then served once it landed
-    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true, thinking: true })
+    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true, thinking: true, rich: true })
   })
 
   it('the live read the send itself triggers does not erase the prompt the transcript lacks yet', async () => {
@@ -232,7 +232,7 @@ describe('ChatPanel live progress', () => {
     await hook('working')
     await advance(CHAT_LIVE_RELOAD_MIN_MS)
     expect(pending).toHaveLength(3)
-    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true, thinking: true })
+    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true, thinking: true, rich: true })
     expect(host.querySelector('.term-chat__older--error')).not.toBeNull()
     await settle(2, { messages: [say(1000, 'tail'), say(2000, 'more')], olderCursor: 1000 })
     expect(host.querySelector('.term-chat__older--error')).not.toBeNull()
@@ -437,7 +437,7 @@ describe('ChatPanel — a sent local command', () => {
     expect(pending.length).toBe(1)
     await advance(1)
     expect(pending.length).toBe(2)
-    expect(pending[1].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true, thinking: true })
+    expect(pending[1].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, background: true, thinking: true, rich: true })
     await settle(1, { messages: [say(0, 'hello'), cmd(100, '/model')], olderCursor: 0 })
     expect(activity()).toBeNull()
     // Exactly one read: nothing else is scheduled.

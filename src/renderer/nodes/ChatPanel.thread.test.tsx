@@ -14,11 +14,15 @@ import { useAgentStatus } from '../state/agentStatus'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const { session, reads } = vi.hoisted(() => {
-  const reads: { messages: unknown[] } = { messages: [] }
+  const reads: { messages: unknown[]; lastPage?: Record<string, unknown> } = { messages: [] }
   const session = {
     api: {
       chat: {
-        readTranscript: async () => ({ messages: reads.messages, found: true, olderCursor: null, unmatchedResults: [] })
+        // The trailing `page` argument is recorded, so a test can pin what the panel asks for.
+        readTranscript: async (...args: unknown[]) => {
+          reads.lastPage = args[5] as Record<string, unknown>
+          return { messages: reads.messages, found: true, olderCursor: null, unmatchedResults: [] }
+        }
       },
       pty: { sendText: vi.fn(async () => true as const) }
     }
@@ -56,12 +60,18 @@ afterEach(async () => {
 
 async function mount(messages: ChatMessage[]): Promise<void> {
   reads.messages = messages
+  reads.lastPage = undefined
   await act(async () => {
     root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="claude" />)
   })
   await act(async () => {
     await new Promise((r) => setTimeout(r, 0))
   })
+}
+
+const lastPageArg = (): Record<string, unknown> => {
+  expect(reads.lastPage, 'readTranscript was not called with a page').toBeTruthy()
+  return reads.lastPage!
 }
 
 const now = Date.now()
@@ -226,6 +236,24 @@ describe('⌘M thread look', () => {
       { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 20, at: now - 8_000 }
     ])
     expect(host.querySelector('details.term-chat__thinking > summary')?.textContent).toBe('Thinking')
+  })
+
+  it('renders an image part as a thumbnail that enlarges on click', async () => {
+    await mount([{ role: 'user', parts: [{ kind: 'image', mediaType: 'image/png', data: 'AAAA' }], key: 0 }])
+    const img = host.querySelector<HTMLImageElement>('.term-chat__msg--user img.term-chat__image')!
+    expect(img.src).toBe('data:image/png;base64,AAAA')
+    expect(img.alt).toBe('Attached image')
+    expect(img.getAttribute('loading')).toBe('lazy')
+    expect(img.classList.contains('term-chat__image--full')).toBe(false)
+    await act(async () => img.click())
+    expect(img.classList.contains('term-chat__image--full')).toBe(true)
+    await act(async () => img.click())
+    expect(img.classList.contains('term-chat__image--full')).toBe(false)
+  })
+
+  it('asks the reader for rich parts', async () => {
+    await mount([])
+    expect(lastPageArg().rich).toBe(true)
   })
 
   it('a day that starts inside a folded tool run keeps its divider (drawn where the run ends)', async () => {

@@ -345,6 +345,35 @@ describe('registerTranscriptIpc — paged chat reads', () => {
     expect(without.messages.map((m) => m.parts)).toEqual([[{ kind: 'text', text: 'go' }], [{ kind: 'text', text: 'the answer' }]])
   })
 
+  it('emits image parts only when the page asks for rich, and either flag alone keeps the other off', async () => {
+    writeTranscript(
+      lines(
+        {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'text', text: 'see' },
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0' } }
+            ]
+          }
+        },
+        thinkingLine('looking at it', 'a cat')
+      )
+    )
+    registerTranscriptIpc()
+    const parts = async (page: object) => (await paged({ maxBytes: 65536, ...page })).messages.map((m) => m.parts)
+    const image = { kind: 'image', mediaType: 'image/png', data: 'iVBORw0' }
+    const thought = { kind: 'thinking', text: 'looking at it' }
+
+    expect(await parts({ thinking: true, rich: true })).toEqual([
+      [{ kind: 'text', text: 'see' }, image],
+      [thought, { kind: 'text', text: 'a cat' }]
+    ])
+    expect(await parts({ rich: true })).toEqual([[{ kind: 'text', text: 'see' }, image], [{ kind: 'text', text: 'a cat' }]])
+    expect(await parts({ thinking: true })).toEqual([[{ kind: 'text', text: 'see' }], [thought, { kind: 'text', text: 'a cat' }]])
+    expect(await parts({})).toEqual([[{ kind: 'text', text: 'see' }], [{ kind: 'text', text: 'a cat' }]])
+  })
+
   it('the legacy (unpaged) result gains no model/effort keys', async () => {
     writeTranscript(
       lines({ type: 'assistant', effort: 'high', message: { model: 'claude-opus-5', content: [{ type: 'text', text: 'x' }] } })
