@@ -29,9 +29,14 @@ export function chatAbsoluteTime(at: number): string {
   return new Date(at).toLocaleString()
 }
 
+// One formatter for the whole module: `toLocaleTimeString` builds a fresh Intl.DateTimeFormat per
+// call, and the thread formats every stamped user message on every render (each composer keystroke
+// is one). With hour + minute given, the output is the same as `toLocaleTimeString`'s.
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
+
 /** The clock time under a user message ("09:41"), in the viewer's locale. */
 export function chatClockTime(at: number): string {
-  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return CLOCK.format(at)
 }
 
 const localDay = (d: Date): string => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
