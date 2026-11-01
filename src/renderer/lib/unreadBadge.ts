@@ -66,15 +66,31 @@ export const ORPHAN_STATUS_GRACE_MS = 90 * 24 * 60 * 60_000
  * any project whose content could not be read (an `unavailable` placeholder carries no nodes)
  * would make every one of its live nodes look orphaned.
  */
+/**
+ * Every node id across every project (closed ones included — a closed project keeps its nodes), or
+ * `null` when the list cannot be trusted to be COMPLETE: an empty list (a fresh, failed or corrupt
+ * index load) or any project whose content could not be read (an `unavailable` placeholder carries
+ * no nodes) would make every one of its live nodes look orphaned. Every boot sweep of a per-node
+ * localStorage table (agent status, node prompts) asks this ONE question, so none can judge an
+ * incomplete load more boldly than the others.
+ */
+export function liveNodeIds(
+  projects: ReadonlyArray<ProjectLike & { unavailable?: boolean }>
+): Set<string> | null {
+  if (projects.length === 0 || projects.some((p) => p.unavailable)) return null
+  const live = new Set<string>()
+  for (const p of projects) for (const n of p.nodes) live.add(n.id)
+  return live
+}
+
 export function orphanStatusIds(
   byId: Readonly<Record<string, StatusLike | undefined>>,
   projects: ReadonlyArray<ProjectLike & { unavailable?: boolean }>,
   nowMs: number,
   graceMs: number = ORPHAN_STATUS_GRACE_MS
 ): string[] {
-  if (projects.length === 0 || projects.some((p) => p.unavailable)) return []
-  const live = new Set<string>()
-  for (const p of projects) for (const n of p.nodes) live.add(n.id)
+  const live = liveNodeIds(projects)
+  if (!live) return []
   const out: string[] = []
   for (const [id, st] of Object.entries(byId)) {
     if (live.has(id)) continue

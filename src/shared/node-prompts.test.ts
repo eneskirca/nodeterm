@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  fitStoreBudget,
+  prunePromptNodes,
+  storeBytes,
   NODE_PROMPT_MAX_CHARS,
   NODE_PROMPT_MAX_ENTRIES,
   NODE_PROMPT_MAX_RESEND_CHARS,
@@ -86,6 +89,16 @@ describe('appendPrompt', () => {
     expect(appendPrompt(list, entry('b', 'one'))).toBe(list)
   })
 
+  it('keeps two long prompts that only share their clipped first line', () => {
+    const head = 'x'.repeat(NODE_PROMPT_MAX_CHARS + 10)
+    const a = { id: 'a', at: 1, ...rememberPrompt(`${head} tail one`)! }
+    const b = { id: 'b', at: 2, ...rememberPrompt(`${head} tail two`)! }
+    expect(a.text).toBe(b.text)
+    expect(appendPrompt([a], b)).toHaveLength(2)
+    // The same wording twice in a row is still one entry.
+    expect(appendPrompt([a], { ...b, full: a.full })).toHaveLength(1)
+  })
+
   it('allows a repeat that is not consecutive', () => {
     const next = appendPrompt([entry('a', 'one'), entry('b', 'two')], entry('c', 'one'))
     expect(next.map((p) => p.text)).toEqual(['one', 'two', 'one'])
@@ -136,5 +149,40 @@ describe('isNodePrompt', () => {
     expect(isNodePrompt({ ...entry('a', 'x'), full: 'x\ny', partial: true })).toBe(true)
     expect(isNodePrompt({ ...entry('a', 'x'), full: 5 })).toBe(false)
     expect(isNodePrompt({ ...entry('a', 'x'), partial: false })).toBe(false)
+  })
+})
+
+describe('fitStoreBudget', () => {
+  const p = (id: string, at: number, text = 'x'.repeat(100)): NodePrompt => ({ id, text, at })
+
+  it('returns the same map when it fits', () => {
+    const byId = { n1: [p('a', 1)] }
+    expect(fitStoreBudget(byId, 10_000)).toBe(byId)
+  })
+
+  it('drops the oldest prompts across nodes first, until the map fits', () => {
+    const byId = { n1: [p('old', 1), p('mid', 3)], n2: [p('older', 2), p('new', 4)] }
+    const twoLeft = storeBytes({ n1: [p('mid', 3)], n2: [p('new', 4)] })
+    const fitted = fitStoreBudget(byId, twoLeft)
+    expect(Object.fromEntries(Object.entries(fitted).map(([k, v]) => [k, v.map((x) => x.id)]))).toEqual({
+      n1: ['mid'],
+      n2: ['new']
+    })
+    expect(storeBytes(fitted)).toBeLessThanOrEqual(twoLeft)
+  })
+
+  it('removes a node whose every prompt was dropped rather than leaving an empty list', () => {
+    const byId = { n1: [p('old', 1)], n2: [p('new', 2)] }
+    const fitted = fitStoreBudget(byId, storeBytes({ n2: [p('new', 2)] }))
+    expect(Object.keys(fitted)).toEqual(['n2'])
+  })
+})
+
+describe('prunePromptNodes', () => {
+  it('keeps only live nodes, and returns the same map when nothing is gone', () => {
+    const byId = { n1: [{ id: 'a', text: 'a', at: 1 }], n2: [{ id: 'b', text: 'b', at: 1 }] }
+    expect(prunePromptNodes(byId, new Set(['n1', 'n2']))).toBe(byId)
+    expect(Object.keys(prunePromptNodes(byId, new Set(['n2'])))).toEqual(['n2'])
+    expect(prunePromptNodes(byId, new Set())).toEqual({})
   })
 })

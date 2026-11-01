@@ -12,27 +12,31 @@ const toastError = (message: string): void => {
 }
 
 /**
- * Every prompt the person typed into this agent node, stacked under its header and always visible,
- * so a canvas of many sessions still says what each one is for. Oldest first, so the top line is
- * what the node was started for and the bottom line is where it is now.
+ * The prompts the person typed into this agent node, under its header, so a canvas of many sessions
+ * still says what each one is for.
  *
- * Each prompt is one line (the full text is its tooltip). Clicking it sends that prompt to the
- * session again (`resendPrompt` refuses, with a toast saying why, whenever the keystrokes would not
- * reach the agent's input). The × beside it is always shown — a control that only appears on hover
- * does not exist on a touch screen — and removing is the point: drop "proceed" and "yes". Nothing is
- * hidden for the person: `rememberPrompt` only keeps out what a CLI or nodeterm injected, never what
- * they wrote.
+ * COMPACT BY DEFAULT: one row, the LATEST prompt — what the node is doing now — with a `+N` toggle
+ * when there are older ones. A bar that stacked every prompt cost a tmux redraw per new prompt
+ * (each row resized the terminal) and up to five rows of terminal on EVERY node of a busy canvas;
+ * one row costs one resize, on the first prompt, and never again. The toggle opens the full stack
+ * (oldest first, capped at five rows then scrolling to the newest) for the node, in the node header
+ * and the kanban card modal alike (`useNodePrompts.expanded`, transient — every boot starts compact).
  *
- * The stack grows a row per prompt up to a cap (CSS `max-height`) and scrolls past it, so a long
- * session cannot eat the terminal. A row added or removed below the cap resizes the terminal; that
- * is the price of always-visible and it stops at the cap.
+ * Each row is one line (the full text is its tooltip). Clicking it sends that prompt to the session
+ * again (`resendPrompt` refuses, with a toast saying why, whenever the keystrokes would not reach the
+ * agent's input). The × beside it is always shown — a control that only appears on hover does not
+ * exist on a touch screen — and removing is the point: drop "proceed" and "yes". Nothing is hidden
+ * for the person: `rememberPrompt` only keeps out what a CLI or nodeterm injected, never what they
+ * wrote.
  *
  * Renders nothing until the node has a prompt, so a plain terminal and a session that predates the
  * feature carry no empty strip.
  */
 export function NodePromptBar({ nodeId }: { nodeId: string }): React.JSX.Element | null {
   const prompts = useNodePrompts((s) => s.byId[nodeId]) ?? NO_PROMPTS
+  const expanded = useNodePrompts((s) => s.expanded[nodeId] === true)
   const remove = useNodePrompts((s) => s.remove)
+  const setExpanded = useNodePrompts((s) => s.setExpanded)
   const stack = useRef<HTMLOListElement>(null)
   const sending = useRef(false)
   const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -66,15 +70,18 @@ export function NodePromptBar({ nodeId }: { nodeId: string }): React.JSX.Element
   // Past the cap the newest prompt is the one that matters; keep it in view as the stack grows.
   useEffect(() => {
     const el = stack.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [count])
+    if (el && expanded) el.scrollTop = el.scrollHeight
+  }, [count, expanded])
 
   if (count === 0) return null
 
+  const shown = expanded ? prompts : prompts.slice(-1)
+  const newest = prompts[count - 1]
+
   return (
-    <div className="prompt-bar nodrag">
+    <div className={`prompt-bar nodrag${expanded ? ' prompt-bar--expanded' : ''}`}>
       <ol ref={stack} className="prompt-bar__stack nowheel" aria-label="Your prompts">
-        {prompts.map((p) => (
+        {shown.map((p) => (
           <li key={p.id} className="prompt-bar__item">
             <button
               type="button"
@@ -88,6 +95,17 @@ export function NodePromptBar({ nodeId }: { nodeId: string }): React.JSX.Element
               <span className="prompt-bar__sent" role="status">
                 Sent
               </span>
+            )}
+            {p === newest && count > 1 && (
+              <button
+                type="button"
+                className="prompt-bar__toggle"
+                aria-expanded={expanded}
+                title={expanded ? 'Show only the latest prompt' : `Show all ${count} prompts`}
+                onClick={() => setExpanded(nodeId, !expanded)}
+              >
+                {expanded ? '▴' : `+${count - 1}`}
+              </button>
             )}
             <button
               type="button"

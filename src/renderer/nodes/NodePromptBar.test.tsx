@@ -2,7 +2,8 @@
 //
 // The bar is how a person remembers what a node is for, and how they delete "proceed". Pinned:
 //  - nothing renders until the node has a prompt (a plain terminal carries no empty strip),
-//  - EVERY prompt is on screen at once, oldest first, with no toggle to open,
+//  - COMPACT by default: only the latest prompt, with a `+N` toggle that opens every prompt oldest
+//    first and closes again (one row = one terminal resize ever, not one per prompt),
 //  - each row has its own ×, and it removes exactly that prompt,
 //  - clicking a row sends that prompt again (the original, not the one-line copy), says "Sent", and when
 //    it cannot be sent safely says why in a toast instead of typing anything,
@@ -50,7 +51,7 @@ beforeEach(() => {
   useAgentStatus.setState({ byId: {} })
   localStorage.clear()
   // jsdom has no layout; the stack scrolls itself to the newest prompt on change.
-  useNodePrompts.setState({ byId: {} })
+  useNodePrompts.setState({ byId: {}, expanded: {} })
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -67,33 +68,78 @@ describe('NodePromptBar', () => {
     expect(host.querySelector('.prompt-bar')).toBeNull()
   })
 
-  it('stacks every prompt, oldest first, always visible', () => {
+  it('shows only the latest prompt by default, with a +N toggle for the rest', () => {
     record('n1', 'build the exporter', 'use csv', 'proceed', 'yes')
     mount()
+    expect(rows()).toEqual(['yes'])
+    const toggle = host.querySelector('.prompt-bar__toggle')
+    expect(toggle?.textContent).toBe('+3')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('has no toggle for a single prompt', () => {
+    record('n1', 'build the exporter')
+    mount()
+    expect(rows()).toEqual(['build the exporter'])
+    expect(host.querySelector('.prompt-bar__toggle')).toBeNull()
+  })
+
+  it('expands to every prompt, oldest first, and collapses again', () => {
+    record('n1', 'build the exporter', 'use csv', 'proceed', 'yes')
+    mount()
+    click(host.querySelector('.prompt-bar__toggle'))
     expect(rows()).toEqual(['build the exporter', 'use csv', 'proceed', 'yes'])
-    expect(host.querySelector('button[aria-expanded]')).toBeNull()
+    expect(host.querySelector('.prompt-bar')?.classList.contains('prompt-bar--expanded')).toBe(true)
+    const toggle = host.querySelector('.prompt-bar__toggle')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
+    click(toggle)
+    expect(rows()).toEqual(['yes'])
+  })
+
+  it('shares its open state between two views of the same node (node header and card modal)', () => {
+    record('n1', 'a', 'b')
+    mount()
+    click(host.querySelector('.prompt-bar__toggle'))
+    const other = document.createElement('div')
+    document.body.appendChild(other)
+    const otherRoot = createRoot(other)
+    act(() => otherRoot.render(<NodePromptBar nodeId="n1" />))
+    expect([...other.querySelectorAll('.prompt-bar__send')].map((n) => n.textContent)).toEqual(['a', 'b'])
+    act(() => otherRoot.unmount())
+    other.remove()
   })
 
   it('gives every row its own ×', () => {
     record('n1', 'a', 'b', 'c')
     mount()
+    click(host.querySelector('.prompt-bar__toggle'))
     expect(host.querySelectorAll('.prompt-bar__remove')).toHaveLength(3)
   })
 
   it('removes exactly the prompt whose × was clicked, and persists it', () => {
     record('n1', 'build the exporter', 'proceed', 'use csv')
     mount()
+    click(host.querySelector('.prompt-bar__toggle'))
     click(host.querySelectorAll('.prompt-bar__remove')[1])
     expect(rows()).toEqual(['build the exporter', 'use csv'])
     expect(useNodePrompts.getState().byId.n1.map((p) => p.text)).toEqual(['build the exporter', 'use csv'])
     expect(JSON.parse(localStorage.getItem('nodeterm.nodePrompts') as string).n1).toHaveLength(2)
   })
 
+  it('removing the latest prompt while compact shows the one before it', () => {
+    record('n1', 'build the exporter', 'proceed')
+    mount()
+    click(host.querySelector('.prompt-bar__remove'))
+    expect(rows()).toEqual(['build the exporter'])
+    expect(host.querySelector('.prompt-bar__toggle')).toBeNull()
+  })
+
   it('shows a prompt that arrives while mounted', () => {
     record('n1', 'first')
     mount()
     act(() => record('n1', 'second'))
-    expect(rows()).toEqual(['first', 'second'])
+    expect(rows()).toEqual(['second'])
+    expect(host.querySelector('.prompt-bar__toggle')?.textContent).toBe('+1')
   })
 
   it('removes the whole bar when the last prompt is deleted, and a new prompt brings it back', () => {
@@ -116,6 +162,7 @@ describe('NodePromptBar', () => {
     it('sends that prompt again and says so', async () => {
       record('n1', 'build the exporter', 'proceed')
       mount()
+      click(host.querySelector('.prompt-bar__toggle'))
       click(host.querySelectorAll('.prompt-bar__send')[1])
       await flush()
       expect(sendText).toHaveBeenCalledWith('n1', 'proceed')

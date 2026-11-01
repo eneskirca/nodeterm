@@ -4647,21 +4647,35 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     reading the server's own `~/.claude`. Adopting it in nodeterm mobile is an iOS
     follow-up.
 - **Node prompt bar** (`nodes/NodePromptBar.tsx`, `state/nodePrompts.ts`, `shared/node-prompts.ts`,
-  `lib/resendPrompt.ts`) — every prompt the person typed into an agent node, stacked under its header
-  and always visible, so a canvas of many sessions still says what each is for. Click a line to send
-  that prompt again; × removes it. Rules a refactor must keep:
+  `lib/resendPrompt.ts`) — the prompts the person typed into an agent node, under its header (and in
+  the kanban card modal), so a canvas of many sessions still says what each is for. Click a line to
+  send that prompt again; × removes it. Rules a refactor must keep:
   - **Source is the `newTurn` + `task` hook event** the Canvas listener already gets, through the one
-    call `recordSubmittedPrompt` (tested against real normalizer output) (claude, copilot,
-    grok carry the prompt; codex and gemini do not, so they get no bar until their payloads are
-    measured). `rememberPrompt` drops only what a CLI or nodeterm injected (a closed list: subagent
-    `<task-notification>`, `<system-reminder>`, `[nodeterm] …` notes, `--- NODETERM MESSAGE`, and
-    housekeeping slash commands incl. the `/rename` and `/branch` nodeterm types itself). It keeps
-    everything else, "proceed" included — the person deletes what they do not want; we cannot undo a
-    line we guessed was noise.
+    call `recordSubmittedPrompt` (tested against real normalizer output). **All five hook agents carry
+    the text**: claude/copilot/codex `UserPromptSubmit.prompt` (REQUIRED in codex's own generated
+    input schema) and gemini `BeforeAgent.prompt` (its reference.md: "the original text submitted by
+    the user") — the codex and gemini normalizers used to drop it; `normalize.prompt-text.test.ts`
+    pins all four forwarding it. `rememberPrompt` drops only what a CLI or nodeterm injected (a closed
+    list: subagent `<task-notification>`, `<system-reminder>`, `[nodeterm] …` notes,
+    `--- NODETERM MESSAGE`, and housekeeping slash commands incl. the `/rename` and `/branch` nodeterm
+    types itself). It keeps everything else, "proceed" included — the person deletes what they do not
+    want; we cannot undo a line we guessed was noise. Consecutive duplicates collapse on the TYPED
+    wording (`full`, else `text`), never on the clipped display line: two long prompts sharing their
+    first 400 chars are different requests.
   - **Machine-local, never in `node.data`.** `project.json` is git-shared and a prompt is free text
     that can hold a pasted token; the store is localStorage (`nodeterm.nodePrompts`), dropped with the
     node at the same four sites as `useAgentStatus.remove`. Consequence: a session that predates the
     feature starts empty, and a Server Edition browser has its own list.
+  - **Storage is the source of truth; the in-memory map is a cache.** Two windows on one origin (a
+    second desktop window, two Server Edition tabs) each hold a copy, so every mutation re-reads the
+    saved map and applies itself to THAT (`current()`), and the `storage` event adopts another
+    window's write. A whole-map write from a stale copy erased the other window's prompts.
+  - **Bounded twice.** `fitStoreBudget` keeps the whole key under `NODE_PROMPT_STORE_MAX_BYTES`
+    (512 KB) by dropping the OLDEST prompts across all nodes (per-node caps alone let 60 nodes fill
+    the origin's ~5 MB quota, which every other key then pays for); a quota throw retries once at half
+    the budget, then reports. And the boot sweep `prune(liveNodeIds(projects))` drops nodes in no
+    project — a node deleted on another machine never reached `drop` — through the SAME completeness
+    guard as `orphanStatusIds` (`liveNodeIds` → `null` = judge nothing on an incomplete load).
   - **Display copy ≠ resend copy.** `text` is one clipped line; `full` is the original (≤ 2000 chars,
     kept only when it differs). A longer prompt is `partial` and is **never resent** — a truncated
     prompt is a different request. Do not resend `text`.
@@ -4669,10 +4683,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     `blocked` node (typed text would ANSWER the permission prompt), a shell-owned pane (the prompt
     would run as a shell command), or an unreadable pane (unknown is not safe). Each refusal is a
     `nodeterm:toast`, never silent. There is no confirm: one click sends.
-  - **Fixed cap, not fixed height.** The stack grows a row per prompt to 5 rows (`max-height: 108px`)
-    then scrolls to the newest, so a new prompt resizes the terminal (a tmux redraw) until the cap.
-    The ids come from `newPromptId`, not `crypto.randomUUID()`, which does not exist on a Server
-    Edition served over plain HTTP.
+  - **Compact by default.** One row — the LATEST prompt — plus a `+N` toggle; the open stack shows
+    every prompt oldest first, capped at 5 rows (`max-height: 108px`) then scrolling to the newest.
+    A stacked bar cost a tmux redraw per prompt (each row resized the terminal) and up to five rows
+    of terminal on every node; the compact bar costs one resize, on the first prompt. The open state
+    is `useNodePrompts.expanded` — transient, per node, shared by the node header and the card modal,
+    never persisted (every boot starts compact). The ids come from `newPromptId`, not
+    `crypto.randomUUID()`, which does not exist on a Server Edition served over plain HTTP.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events drive a transient `state/agentNodes.ts` store. For Claude they come from
   **Claude's own `SubagentStart`/`SubagentStop` hooks** whenever a session sends them (2026-09,

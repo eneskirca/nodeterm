@@ -529,7 +529,7 @@ import {
 } from '../lib/explorerPinHint'
 import { addRelayTab, sameSshEndpoint, setKanbanPublishHook, setStoredCanvasPublishHook, useProjects } from '../state/projects'
 import { useAgentStatus, recordsTurnInterrupt } from '../state/agentStatus'
-import { countUnreadInProjects, orphanStatusIds, unreadIdSet, unreadIdsSig } from '../lib/unreadBadge'
+import { countUnreadInProjects, liveNodeIds, orphanStatusIds, unreadIdSet, unreadIdsSig } from '../lib/unreadBadge'
 import { usePendingPause, startPendingPauseWatcher } from '../state/pendingPause'
 import {
   planBulkPause,
@@ -3314,6 +3314,11 @@ export function Canvas() {
       // resume id.
       const status = useAgentStatus.getState()
       status.removeMany(orphanStatusIds(status.byId, useProjects.getState().projects, Date.now()))
+      // Same sweep for the node prompt bar's table: a node deleted on another machine (or by a
+      // path that never reached `drop`) must not keep its prompts in localStorage forever. No grace
+      // window — a prompt list carries no resume id, so a wrong drop costs only history — but the
+      // same refusal to judge an incomplete load (`liveNodeIds` → null = prune nothing).
+      useNodePrompts.getState().prune(liveNodeIds(useProjects.getState().projects))
       setWorkspaceLoaded(true)
       // Upgrade the on-disk format (e.g. v1 -> v2 migration) right away. Reported like every
       // other save: a `void` here used to make the very first write of the session the one write

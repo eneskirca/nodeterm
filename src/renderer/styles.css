@@ -14289,10 +14289,12 @@ button.pull-checks__name {
 .term-node__mdhint:hover {
   background: rgba(var(--tint-rgb), 0.08);
   color: rgba(var(--tint-rgb), 0.75);
+}
 
-/* ── Prompt bar: every prompt you typed into this node, stacked under its header
-   (nodes/NodePromptBar.tsx). Always visible; it grows a row per prompt up to the cap and scrolls
-   past it, so a long session cannot eat the terminal. Its own opaque background for the same reason
+/* ── Prompt bar: the prompts you typed into this node, under its header (nodes/NodePromptBar.tsx).
+   Compact by default — ONE row, the latest prompt, so the bar costs the terminal one resize on the
+   first prompt and never again; the `+N` toggle opens the full stack, which grows a row per prompt
+   up to the cap and scrolls past it. Its own opaque background for the same reason
    `.term-node__labelrow` has one: the shared glyph renderer makes the node root transparent. */
 .prompt-bar {
   background: var(--panel);
@@ -14350,6 +14352,24 @@ button.pull-checks__name {
   flex-shrink: 0;
   color: var(--success);
   font-size: 10px;
+}
+.prompt-bar__toggle {
+  flex-shrink: 0;
+  height: 16px;
+  padding: 0 5px;
+  background: rgba(var(--tint-rgb), 0.1);
+  border: none;
+  border-radius: 8px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.prompt-bar__toggle:hover,
+.prompt-bar__toggle:focus-visible {
+  background: rgba(var(--tint-rgb), 0.18);
+  color: var(--text-strong);
 }
 .prompt-bar__remove {
   flex-shrink: 0;
