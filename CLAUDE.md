@@ -10778,8 +10778,18 @@ Exposed split over two IPC handlers: `announcements.fetch()` → `messages`, `ap
 `update`. `components/AnnouncementBanner.tsx` (stacked above `UpdateCard` under the tab bar in a
 `.top-banners` column) shows the newest message the user hasn't dismissed (dismissed `id`s persist
 in `localStorage`); `update.mandatory`/`minSupported` flips `UpdateCard` into a blocking required-
-update state. The call no-ops under `DO_NOT_TRACK`/`NODETERM_TELEMETRY_DISABLED` or in unpackaged
-builds (unless `NODETERM_API_BASE` targets a local server). Schema example:
+update state. **One-time popups** ride the same reply under their own `popups` key (admin console:
+Display → "popup (once)") — a separate key, so every build that reads only `messages` (older
+desktops, mobile) never receives one as a banner that would come back every launch.
+`components/AnnouncementPopup.tsx` (pure rules in `lib/announcementPopup.ts`) shows the newest one
+not shown before and records it in localStorage (`nodeterm.seenPopups`) the moment it is SHOWN, not
+when closed; it waits while another modal is on the dialog stack or a key was pressed in the last
+4 s, takes no focus, answers no Enter, and shows at most one per feed read. Its button opens `url`,
+or with `action: 'upgrade'` starts the Pro checkout — an upgrade popup is skipped for a Pro user and
+closes when Pro arrives. Server Edition: the bridge answers `[]` (it does not read the feed). Mobile:
+N/A for v1 (follow-up in the iOS repo). The call no-ops under
+`DO_NOT_TRACK`/`NODETERM_TELEMETRY_DISABLED` or in unpackaged builds (unless `NODETERM_API_BASE`
+targets a local server). Schema example:
 `docs/announcements.example.json`. **The request also states `plan=pro|free`** (offline
 `isPremium()`), because the admin console can aim a message at paid or free users and the feed is
 anonymous — the backend cannot look a device's plan up, and matches only on what we send (a build

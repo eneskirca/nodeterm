@@ -565,7 +565,8 @@ const api: NodeTerminalApi = {
     }
   },
   announcements: {
-    fetch: () => ipcRenderer.invoke(IPC.announcementsFetch)
+    fetch: () => ipcRenderer.invoke(IPC.announcementsFetch),
+    popups: () => ipcRenderer.invoke(IPC.announcementsPopups)
   },
   usage: {
     fetch: (accountId?: string) => ipcRenderer.invoke(IPC.usageFetch, accountId),

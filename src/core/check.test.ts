@@ -119,6 +119,46 @@ describe('/v1/check sanitize — update notes', () => {
   })
 })
 
+// Popups ride their own key, so a build that reads only `messages` never gets one as a banner. The
+// sanitizer is their whole contract: a closed action set, a clamped label, the banner's url rule.
+describe('/v1/check sanitize — popups', () => {
+  it('reads popups apart from the banners, with their button', () => {
+    const r = sanitize({
+      messages: [{ id: 'b', title: 'Banner' }],
+      popups: [
+        { id: 'p', title: 'Popup', body: 'a\nb', url: 'https://nodeterm.dev/pro', level: 'success', ctaLabel: ' See Pro ', action: 'upgrade' }
+      ],
+      update: {}
+    })
+    expect(r.messages.map((m) => m.id)).toEqual(['b'])
+    expect(r.popups).toEqual([
+      { id: 'p', title: 'Popup', body: 'a\nb', url: 'https://nodeterm.dev/pro', level: 'success', ctaLabel: 'See Pro', action: 'upgrade' }
+    ])
+  })
+
+  it('drops what it cannot show and never guesses an action', () => {
+    const r = sanitize({
+      popups: [
+        null,
+        'x',
+        { title: 'no id' },
+        { id: 'p1', title: 'P1', action: 'checkout', url: 'javascript:alert(1)', ctaLabel: '   ' },
+        { id: 'p2', title: 'P2', ctaLabel: 'L'.repeat(200), level: 'danger' }
+      ]
+    })
+    expect(r.popups.map((p) => p.id)).toEqual(['p1', 'p2'])
+    expect(r.popups[0]).toEqual({ id: 'p1', title: 'P1', body: undefined, url: undefined, level: 'info' })
+    expect(r.popups[1].ctaLabel).toHaveLength(40)
+    expect(r.popups[1].level).toBe('info')
+  })
+
+  it('is an empty list when the feed sends none (every server before popups)', () => {
+    expect(sanitize({ messages: [], update: {} }).popups).toEqual([])
+    expect(sanitize({ popups: {} }).popups).toEqual([])
+    expect(sanitize(null).popups).toEqual([])
+  })
+})
+
 // The feed is anonymous, so the backend can aim a message at paid or free users only by the plan
 // the client states. Read per request and part of the cache key: an "upgrade to Pro" message
 // cached as a free user must not be served for five more minutes to the same user once they pay.
@@ -189,7 +229,18 @@ describe('fetchCheck — reports the plan', () => {
     fetchMock.mockResolvedValueOnce(feed('Try Pro', '0.5.0')).mockRejectedValueOnce(new Error('offline'))
     await fetchCheck()
     premium.value = true
-    expect(await fetchCheck()).toEqual({ messages: [], update: { minSupported: '0.5.0', mandatory: false } })
+    expect(await fetchCheck()).toEqual({ messages: [], popups: [], update: { minSupported: '0.5.0', mandatory: false } })
+  })
+
+  it('a failed read after a plan change drops the old plan’s popups too', async () => {
+    const { fetchCheck } = await loadCheck()
+    const body = { messages: [], popups: [{ id: 'p', title: 'Try Pro' }], update: { minSupported: null, mandatory: false } }
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockRejectedValueOnce(new Error('offline'))
+    expect((await fetchCheck()).popups.map((p) => p.id)).toEqual(['p'])
+    premium.value = true
+    expect((await fetchCheck()).popups).toEqual([])
   })
 
   // The open-project count rides the same call, but — unlike the install count above — only while
@@ -380,7 +431,11 @@ describe('fetchCheck — reports the plan', () => {
         const m = await loadCheck()
         const listener = vi.fn()
         m.onCheckAnswer(listener)
-        expect(await m.fetchCheck(), label).toEqual({ messages: [], update: { minSupported: null, mandatory: false } })
+        expect(await m.fetchCheck(), label).toEqual({
+          messages: [],
+          popups: [],
+          update: { minSupported: null, mandatory: false }
+        })
         expect(fetchMock, label).toHaveBeenCalledTimes(1)
         expect(listener.mock.calls, label).toEqual(calls)
       }
@@ -410,12 +465,12 @@ describe('fetchCheck — reports the plan', () => {
       expect(listener.mock.calls).toEqual([[{ kind: 'off' }]])
     })
 
-    it('a 2xx with limits answers on, and fetchCheck still returns only messages and update', async () => {
+    it('a 2xx with limits answers on, and the limits never reach fetchCheck’s result', async () => {
       fetchMock.mockResolvedValue(limitsFeed(5, 3))
       const m = await loadCheck()
       const listener = vi.fn()
       m.onCheckAnswer(listener)
-      expect(await m.fetchCheck()).toEqual({ messages: [], update: { minSupported: null, mandatory: false } })
+      expect(await m.fetchCheck()).toEqual({ messages: [], popups: [], update: { minSupported: null, mandatory: false } })
       expect(listener.mock.calls).toEqual([[{ kind: 'on', free: 5, epoch: 3 }]])
     })
 

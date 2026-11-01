@@ -287,6 +287,7 @@ import { admitPendingPeer } from '../lib/pendingPeerAdmission'
 import { SAS_COMPARE_HINT } from '@shared/remote/sas'
 import { promptDialog } from '../components/promptDialog'
 import { UpgradeDialog } from '../components/UpgradeDialog'
+import { AnnouncementPopup } from '../components/AnnouncementPopup'
 import { ProjectLimitDialog } from '../components/ProjectLimitDialog'
 import {
   checkAgentProjectOpen,
@@ -20735,6 +20736,7 @@ export function Canvas() {
       )}
 
       <UpgradeDialog />
+      <AnnouncementPopup />
       {/* The free-tier limit moment (docs/project-limit.md). Close is the ordinary non-destructive close — never
           `endSessions`: the limit only ever blocks a NEW open, it never ends anything. */}
       <ProjectLimitDialog onCloseProject={(id) => performCloseProject(id)} />

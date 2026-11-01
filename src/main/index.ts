@@ -2063,6 +2063,7 @@ app.whenReady().then(async () => {
     telemetryEnabled: () => settingsStore.get().telemetryEnabled
   })
   ipcMain.handle(IPC.announcementsFetch, async () => (await fetchCheck()).messages)
+  ipcMain.handle(IPC.announcementsPopups, async () => (await fetchCheck()).popups)
   ipcMain.handle(IPC.appUpdatePolicy, async () => (await fetchCheck()).update)
 
   // Writable base dir for app-managed files (e.g. default git worktree location). On the platform:

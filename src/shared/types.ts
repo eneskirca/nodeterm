@@ -3081,9 +3081,20 @@ export interface Announcement {
   level?: 'info' | 'success' | 'warning'
 }
 
+/** A one-time popup from the same feed (`popups` in the check reply): shown once per install. */
+export interface PopupAnnouncement extends Announcement {
+  /** The button's label; absent = "Learn more" for a link, "Upgrade to Pro" for the checkout. */
+  ctaLabel?: string
+  /** 'upgrade' = the button starts the app's own Pro checkout instead of opening `url`. */
+  action?: 'upgrade'
+}
+
 export interface AnnouncementsApi {
   /** Fetch the announcements feed from the website (returns [] on any failure). */
   fetch(): Promise<Announcement[]>
+  /** The feed's one-time popups ([] on any failure, and on the Server Edition, which does not read
+   *  the feed). Which of them were already shown is the renderer's record, not the feed's. */
+  popups(): Promise<PopupAnnouncement[]>
 }
 
 export interface NotifyPayload {
