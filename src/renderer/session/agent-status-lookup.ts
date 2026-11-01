@@ -68,39 +68,61 @@ function sameKey(a: readonly unknown[], b: readonly unknown[]): boolean {
   return true
 }
 
+/** The distinct stores `projectIds` resolve to right now, and a key for that set. */
+function resolveDistinct(projectIds: readonly string[]): { stores: StatusStore[]; key: string } {
+  const stores = [...new Set(projectIds.map(storeFor))]
+  return { stores, key: stores.map(storeId).join(',') }
+}
+
 /**
  * The shared source behind both hooks: one subscription to every DISTINCT store the listed
  * projects resolve to plus the session registry signal, and a snapshot lookup memoized on the
  * tuple (project ids, registry version, each project's `byId` reference).
  *
- * Re-resolution: a registry change (a reconnect swaps a project's session, an unbind sends it to
- * the offline session) notifies the subscriber; the snapshot re-resolves and changes, the caller
- * re-renders, the render resolves the NEW store set, and its changed key re-subscribes. A
- * resolution that moves only because the projects store changed (`remote` read by
- * `agentStatusForProject`) is picked up the same way on the caller's next render — every caller
- * holds the projects it passes, so it re-renders on them.
+ * Re-subscription happens on the SUBSCRIBE side, never by waiting for a render: a registry change
+ * (a reconnect swaps a project's session, a bind takes a remote tab off the offline session, an
+ * unbind sends it back) re-resolves the store set inside the registry listener, moves the store
+ * subscriptions to the new set, and only then notifies. `useAgentStatusSig` depends on that: a
+ * reconnect of a tab with nothing unread leaves its signature unchanged, so React re-renders
+ * nothing, and a re-subscribe that waited for the render would have kept listening to the dead
+ * store. A resolution that moves only because the projects store changed (`remote` read by
+ * `agentStatusForProject`) is picked up on the caller's next render instead — every caller holds
+ * the projects it passes, so it re-renders on them, and the render's store-set key re-subscribes.
  */
 function useLookupSource(projectIds: readonly string[]): {
   subscribe: (onChange: () => void) => () => void
   getLookup: () => AgentStatusLookup
 } {
-  const distinct = [...new Set(projectIds.map(storeFor))]
-  const storesKey = distinct.map(storeId).join(',')
-  // The callback closes over THIS render's distinct stores; its identity changes exactly when the
-  // set does, which is what makes React re-subscribe.
+  const idsRef = useRef(projectIds)
+  idsRef.current = projectIds
+  // The render's view of the store set: its key changes the callback (and so re-subscribes) when a
+  // render resolves a different set than the one subscribed — the projects-store case above.
+  const storesKey = resolveDistinct(projectIds).key
   const subscribe = useCallback(
     (onChange: () => void) => {
-      const offs = distinct.map((store) => store.subscribe(onChange))
-      offs.push(subscribeSessionRegistry(onChange))
+      let attachedKey: string | null = null
+      let offStores: Array<() => void> = []
+      const attach = (): void => {
+        const { stores, key } = resolveDistinct(idsRef.current)
+        if (key === attachedKey) return
+        for (const off of offStores) off()
+        offStores = stores.map((store) => store.subscribe(onChange))
+        attachedKey = key
+      }
+      attach()
+      const offRegistry = subscribeSessionRegistry(() => {
+        attach()
+        onChange()
+      })
       return () => {
-        for (const off of offs) off()
+        offRegistry()
+        for (const off of offStores) off()
+        offStores = []
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [storesKey]
   )
-  const idsRef = useRef(projectIds)
-  idsRef.current = projectIds
   const cache = useRef<Snapshot | null>(null)
   const getLookup = useCallback((): AgentStatusLookup => {
     const ids = idsRef.current

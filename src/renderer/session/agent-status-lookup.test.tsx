@@ -13,6 +13,7 @@ import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NodeTerminalApi, Project } from '@shared/types'
 import {
+  agentStatusForProject,
   bindProjectToSession,
   createSession,
   disposeSession,
@@ -139,6 +140,42 @@ describe('useAgentStatusLookup', () => {
     act(() => relayStore(relay).getState().markUnread(NODE))
     expect(host.textContent).toBe('unread')
     expect(renders).toBe(settled + 1)
+  })
+  it('useAgentStatusSig re-subscribes after a reconnect that leaves the signature unchanged', () => {
+    // The common case: a team tab with nothing unread reconnects ('read' -> 'read'), or an offline
+    // remote tab binds. The signature does not move, so nothing re-renders, and the hook must still
+    // follow the project to its NEW store — a re-subscribe that waited for a render never happened,
+    // and the tab dot stayed dark for every later unread.
+    let renders = 0
+    function Probe() {
+      renders++
+      const sig = useAgentStatusSig([TEAM_PROJECT], (lookup) => (lookup(TEAM_PROJECT, NODE)?.unread ? 'unread' : 'read'))
+      return <span>{sig}</span>
+    }
+    // Unbound remote tab: the offline session's empty store.
+    act(() => root.render(<Probe />))
+    expect(host.textContent).toBe('read')
+
+    // It binds: same signature, no re-render — and the relay store is the one listened to.
+    let first = ''
+    act(() => {
+      first = joinTeam()
+    })
+    expect(host.textContent).toBe('read')
+    act(() => relayStore(first).getState().markUnread(NODE))
+    expect(host.textContent).toBe('unread')
+    act(() => relayStore(first).getState().clearUnread(NODE))
+    expect(host.textContent).toBe('read')
+
+    // A reconnect: a new session (new api, new store) takes the tab, the old one is disposed.
+    const settled = renders
+    act(() => {
+      joinTeam()
+      disposeSession(first)
+    })
+    expect(renders, 'an unchanged signature re-renders nothing').toBe(settled)
+    act(() => agentStatusForProject(TEAM_PROJECT).store.getState().markUnread(NODE))
+    expect(host.textContent).toBe('unread')
   })
 })
 
