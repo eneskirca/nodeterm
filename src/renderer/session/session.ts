@@ -128,7 +128,8 @@ export function createSession(source: SessionSource, api: NodeTerminalApi, label
 }
 
 /** Register a teardown the owning tab owes when this session is disposed (obligation 1): the
- *  presence `connect()` teardown, the relay socket close. `disposeSession` runs them once, in order.
+ *  presence `connect()` teardown, the agent-status subscription (`wireRelayAgentStatus`, which also
+ *  clears the session's store), the relay socket close. `disposeSession` runs them once, in order.
  *  Throws for an unknown id so a caller can never silently strand a live subscription. */
 export function holdSessionTeardown(sessionId: string, teardown: () => void): void {
   const e = SESSIONS.get(sessionId)
@@ -178,7 +179,8 @@ export function setSessionStatus(sessionId: string, status: WorkspaceSession['st
 
 /** Take a session OFFLINE on an INVOLUNTARY socket drop (host/relay gone) — the counterpart of a
  *  user close. Unlike disposeSession, this KEEPS the entry and its project binding: run the held
- *  teardowns once (presence leaves every peer's facepile; the already-dead relay socket close is a
+ *  teardowns once (presence leaves every peer's facepile; the agent-status subscription ends and
+ *  empties its store, so the greyed tab reads Unknown; the already-dead relay socket close is a
  *  safe no-op) and flip status to 'offline', but leave the tab bound to a 'relay' source so the
  *  greyed "unavailable" tab can reconnect IN PLACE (see relay-tab `handleRelayDrop` / `tabClickAction`).
  *  Idempotent; no-op once offline/disposed/unknown. */

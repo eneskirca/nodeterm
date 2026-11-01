@@ -3041,7 +3041,8 @@ app.whenReady().then(async () => {
   })
   // Every context tail pushes through here, so an agent's meter reaches the renderer, the Notch HUD
   // and the phone's context ring identically whichever CLI produced the numbers. `broadcast` is the
-  // main window (sendToMain) plus every non-quiet relay peer, so a joined team tab's meter fills too.
+  // main window (sendToMain) plus every non-quiet relay peer. A joined team tab does not subscribe
+  // `context:update`, so its meter stays empty (docs/hosted-team-relay.md, follow-ups).
   const pushContextUpdate = (payload: unknown): void => {
     corePlatform.broadcast(IPC.contextUpdate, payload)
     // Feed the macOS Notch HUD the model name (keyed by sessionId; no-op off/non-darwin).

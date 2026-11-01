@@ -2852,7 +2852,11 @@ shared 4-state model, and a **transient** zustand store `state/agentStatus.ts`
 **not** persisted — only `unread`/`session`/`sessionId`/`agentId`/`loop`/`hibernated` go to
 localStorage under `nodeterm.agentStatus`, migrated once from the legacy `nodeterm.claudeStatus`
 key. `agentId` is durable because a hand-launched `claude` in a plain terminal is known nowhere
-else, and its context links must keep classifying across restarts).
+else, and its context links must keep classifying across restarts). That is the DEFAULT instance,
+the local core's. A relay / team tab's session gets its own **keyless** store (`agentStatusForApi`):
+it persists nothing, never acks a read (no `ackDone` callback), and is fed by `applyAgentEvent`
+(`state/applyAgentEvent.ts`), the same reducer Canvas's listener uses — see "A relay session owns
+its agent status" under Hosted team relay.
 
 - **Agent registry + capabilities** — `src/shared/agents/config.ts` holds `AGENT_CONFIG`
   (claude/codex/gemini/copilot/opencode/grok: id, label, spawn command, color, `promptInjectionMode`, …) keyed
@@ -3414,8 +3418,12 @@ else, and its context links must keep classifying across restarts).
   (`normalizeClaude`/`normalizeCodex`/`normalizeGemini`/`normalizeCopilot`/`normalizeOpencode`/`normalizeGrok`/`normalizeAntigravity`) that map each agent's native hook
   events to a `NormalizedAgentEvent` over the shared `AgentState` (`working | waiting | blocked
   | done`) plus subagent/recurring/session kinds. Canvas's listener consumes
-  `NormalizedAgentEvent` from `agent:status`, drives the `agentStatus` store, fires throttled
-  (5s/node) background notifications, and records the session id. Header shows a pulsing
+  `NormalizedAgentEvent` from `agent:status` and hands it to `applyAgentEvent`, the pure reducer
+  that does every store write (state, session id, account, loop, subagent cards) and reports which
+  alert the event raised; the listener keeps what is a fact about THIS window — the unread mark and
+  its ack, the sound, the throttled (5s/node) background notifications, the handoff fold. A relay
+  session feeds the same reducer into its own keyless store (`wireRelayAgentStatus`), with no ack,
+  sound, notification or subagent cards. Header shows a pulsing
   **RUNNING** (working) / **NEEDS YOU** (waiting/blocked) badge.
 - **DROPPED — the CLI died and nobody told us** (`renderer/terminal/agent-liveness.ts`, issue #616).
   Every ORDERLY exit announces itself: Eco's `/exit` sets `hibernated`, "Pause session" sets
@@ -10373,6 +10381,41 @@ invariants:
   project keeps the agent status of node ids another project still holds (`nodeIdsHeldElsewhere`).
   Deliberately NOT moved to it: `routeControlSource` (a control request comes from a LOCAL agent, so
   preferring an open relay tab would route it to another machine).
+- **A relay session owns its agent status** (bug D: a team tab never showed RUNNING / NEEDS YOU /
+  unread, because the joiner's only `agent:status` subscriber was Canvas's listener on the LOCAL
+  api, which writes the DEFAULT store). `wireRelayAgentStatus` (`session/relay-agent-status.ts`,
+  held as a session teardown in `openRelayTab` right after `createSession`, before any further
+  await, so the RpcClient's early buffer flushes into it) subscribes the session's OWN api's `onAgentStatus` for the session's
+  lifetime and feeds `applyAgentEvent` into that session's keyless store
+  (`getSessionStores(id).agentStatus`). Routing is by api, never by a project lookup: two relay
+  sessions may serve one project id. **A reader of a team tab's node must not ask the default
+  store** (the ones that still do are the doc's follow-ups): after Share with team the handed-off
+  SSH project (local session, default store) and its team tab (relay session) hold the SAME node
+  ids, so a reader that asked the default store, or the active project's, shows one project's status
+  on the other's node, and a restart that read it would quit a host session the badge shows as
+  RUNNING. Readers resolve per project
+  (`agentStatusForProject`; `useAgentStatusLookup` / `useAgentStatusSig` re-subscribe inside the
+  session-registry listener, so a reconnect that leaves the signature unchanged still moves them to
+  the new store) or per node (`useSessionStores()`, render-safe for a session disposed a moment
+  ago). **No ack**: a read on a team tab clears unread on this desktop only (`agentStatusForApi`
+  builds the store with no `ackDone` callback), because an `agent:ack-done` would dismiss the
+  OWNER's phone Live Activity for a session they never looked at; the tab subscribes neither
+  `agent:unread-clear` nor `agent:subagent-activity`, and plays no sound and raises no notification.
+  **Snapshot ordering**: subscribe FIRST, then ask `agent:status-snapshot` (served by both shells
+  through `registerAgentStatusSnapshotIpc`, the newest 2000 mirror entries, narrowed for VIEW roles
+  and scoped guests by `narrowResponseForRole` via `sharedNode`), and apply it only to nodes no live
+  event touched in between (`liveSeen`; subagent events do not count, or the subscribe-time subagent
+  replay would hold the busiest nodes blank). A restored or identity-only mirror entry travels with
+  no `state`. A stateful one carries `ageMs` (an age, so no host clock crosses the wire) and sets
+  ONLY `stateAt = now - ageMs`, never `lastEventAt` / `lastSeen`: the joiner saw no transition, and
+  a fabricated one would claim it did. The teardown empties the store, so a dropped tab reads
+  Unknown. The status-driven readers that act on THIS machine are off for a relay node
+  (`relayStatusGates`: Approve/Deny, title sync, transcript search, the ⌘M chat view); only
+  `'local'` runs them, and `'relay'`, `'server'` and an unknown source fail closed. A desktop Team
+  Access host's agent emits go through `corePlatform.broadcast` (its window plus every non-quiet
+  peer); `agent:unread-clear` stays main-window only. Mobile: N/A (the phone speaks the legacy
+  dialect and reads the mirror file). Follow-ups, including the Canvas-level readers still on the
+  default store: docs/hosted-team-relay.md, "Agent status on a joined tab".
 - **Admin errors are stable codes, and a `--json` refusal goes to STDOUT.** `E_BAD_KEY`,
   `E_BAD_CWD`, `E_HOSTING_OFF`, `E_ADOPT_FAILED`, `E_BAD_REQUEST`, `E_UNSUPPORTED`
   (`core/relay/admin-error.ts`); a remote caller branches on the code, never the sentence, and
