@@ -225,6 +225,8 @@ detects your platform. Everything is also listed at
   [report what breaks](https://github.com/eneskirca/nodeterm/issues).
 - **iOS** — **nodeterm mobile** on the
   [App Store](https://apps.apple.com/app/nodeterm/id6790581233).
+- **Android** — **nodeterm mobile** on
+  [Google Play](https://play.google.com/store/apps/details?id=com.nodeterm.android).
 
 **Trying it out?** Removal is one script — it stops every process nodeterm started, reverts
 the status-hook/skill entries it merged into your agent CLIs' config (your own hooks and
