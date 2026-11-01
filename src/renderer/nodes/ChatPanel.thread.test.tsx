@@ -131,4 +131,30 @@ describe('⌘M thread look', () => {
     expect(host.querySelector('.term-chat__actions time')).toBeNull()
     expect(host.querySelector('button[aria-label="Copy message"]')).toBeNull()
   })
+
+  it('a turn-ending message whose every part is folded keeps its action row but no empty body', async () => {
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0, at: now - 3 * MIN },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10, at: now - 2 * MIN },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'b' }], key: 20, at: now - MIN }
+    ])
+    const last = [...host.querySelectorAll('.term-chat__msg--assistant')].at(-1)!
+    expect(last.classList.contains('term-chat__msg--folded')).toBe(true)
+    expect(last.querySelector('.term-chat__actions time')?.textContent).toBe('1 min ago')
+    expect(last.querySelector('.term-chat__tool')).toBeNull()
+    // ONLY the action row: its calls are drawn in the block above it.
+    expect(last.childElementCount).toBe(1)
+  })
+
+  it('while the agent is working, the trailing run of tool calls is not folded', async () => {
+    // The afterEach drops NODE's entry, which restores the beforeEach's `done` for the next test.
+    useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'working' } as (typeof s.byId)[string] } }))
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Read', arg: 'b' }], key: 20 }
+    ])
+    expect(host.querySelector('.term-chat__tool-group')).toBeNull()
+    expect(host.querySelectorAll('.term-chat__tool')).toHaveLength(2)
+  })
 })

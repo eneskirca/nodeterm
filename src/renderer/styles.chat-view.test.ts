@@ -76,6 +76,10 @@ describe('⌘M thread: claude.ai look', () => {
     expect(ruleBody('.term-chat__actions')).toMatch(/opacity:\s*0;/)
     expect(CSS).toMatch(/\.term-chat__msg:hover \.term-chat__actions,\s*\n?\s*\.term-chat__actions:focus-within,\s*\n?\s*\.term-chat__actions--latest\s*{[^}]*opacity:\s*1;/)
   })
+
+  it('a folded message collapses to its action row', () => {
+    expect(ruleBody('.term-chat__msg--folded')).toMatch(/padding:\s*0;/)
+  })
 })
 
 describe('the shared .term-chat__input (plan "Revise…", question "Other") keeps a visible field', () => {

@@ -1,5 +1,5 @@
 import type { ChatMessage, ChatPart } from '@shared/types'
-import { partPosition, toolGroupSummary, type ToolGroup } from '../lib/chatToolGroups'
+import { memberKey, toolGroupSummary, type ToolGroup } from '../lib/chatToolGroups'
 
 export interface ChatToolGroupProps {
   messages: readonly ChatMessage[]
@@ -24,9 +24,11 @@ export function ChatToolGroup({ messages, group, renderPart }: ChatToolGroupProp
         <span className="term-chat__tool-group-names">{names}</span>
       </summary>
       <div className="term-chat__tool-group-body">
-        {group.members.map(({ message, part }) => {
-          const p = messages[message]?.parts[part]
-          return p ? renderPart(p, message, part, partPosition(message, part)) : null
+        {group.members.map((member) => {
+          const p = messages[member.message]?.parts[member.part]
+          // Keyed by the source line, like the thread's bubbles: a prepended page shifts every
+          // position, and a position key would remount each chip and close whatever was open.
+          return p ? renderPart(p, member.message, member.part, memberKey(messages, member)) : null
         })}
       </div>
     </details>

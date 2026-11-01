@@ -3506,6 +3506,12 @@ body,
 .term-chat__msg--assistant + .term-chat__msg--assistant {
   margin-top: -8px;
 }
+/* Every part of this message is drawn in a tool block above it (ChatPanel): it is only its turn's
+   action row, with no body of its own to pad. */
+.term-chat__msg--folded {
+  padding: 0;
+  min-height: 0;
+}
 .term-chat__actions {
   display: flex;
   align-items: center;

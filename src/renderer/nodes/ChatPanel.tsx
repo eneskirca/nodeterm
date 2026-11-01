@@ -968,8 +968,11 @@ export function ChatPanel({
   // the turn's last message. `now` is ONE clock for every row's relative time, ticked once a minute
   // (a per-row timer would be a timer per turn for a label that changes once a minute).
   const turnEnds = useMemo(() => assistantTurnEnds(messages), [messages])
-  // Runs of consecutive tool calls, folded into one closed block each (lib/chatToolGroups.ts).
-  const toolGroups = useMemo(() => groupToolCalls(messages), [messages])
+  // Runs of consecutive tool calls, folded into one closed block each (lib/chatToolGroups.ts) —
+  // except, while the agent works, the run at the end of the thread: that is the live turn, and its
+  // calls stay open chips until something else ends the run.
+  const foldTail = refusal !== 'working'
+  const toolGroups = useMemo(() => groupToolCalls(messages, { foldTail }), [messages, foldTail])
   // The last key IS the latest turn end: `assistantTurnEnds` inserts in thread order.
   const latestTurnEnd = useMemo(() => {
     let last = -1
@@ -1107,17 +1110,31 @@ export function ChatPanel({
           )}
           {messages.map((m, i) => {
             // A message whose every part is drawn inside an earlier message's tool block has nothing of
-            // its own to draw, unless it ends a turn (its action row) or is queued.
+            // its own to draw, unless it ends a turn: then it draws that turn's action row and nothing
+            // else. (Only assistant parts fold, so a queued message — the user's — never does.)
             const folded = m.parts.length > 0 && m.parts.every((_, j) => toolGroups.absorbed.has(partPosition(i, j)))
-            if (folded && !turnEnds.has(i) && !queuedRef.current.has(m)) return null
+            const turnEnd = turnEnds.get(i)
+            if (folded && !turnEnd) return null
+            // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
+            // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
+            // bubble) fall back to their position.
+            const key = m.key !== undefined ? `k${m.key}` : `i${i}`
+            const actions = turnEnd && (
+              <ChatTurnActions copyText={turnEnd.copyText} at={turnEnd.at} now={now} latest={i === latestTurnEnd} />
+            )
+            if (folded) {
+              return (
+                <div key={key} className={`term-chat__msg term-chat__msg--${m.role} term-chat__msg--folded`}>
+                  {actions}
+                </div>
+              )
+            }
+            const queued = queuedRef.current.has(m)
             return (
-              // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
-              // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
-              // bubble) fall back to their position.
               <div
-                key={m.key !== undefined ? `k${m.key}` : `i${i}`}
+                key={key}
                 className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
-                  queuedRef.current.has(m) ? ' term-chat__msg--queued' : ''
+                  queued ? ' term-chat__msg--queued' : ''
                 }`}
               >
                 {m.parts.map((p, j) => {
@@ -1127,15 +1144,8 @@ export function ChatPanel({
                   if (toolGroups.absorbed.has(at)) return null
                   return renderPart(p, i, j)
                 })}
-                {queuedRef.current.has(m) && <div className="term-chat__queued-label">Queued</div>}
-                {turnEnds.has(i) && (
-                  <ChatTurnActions
-                    copyText={turnEnds.get(i)!.copyText}
-                    at={turnEnds.get(i)!.at}
-                    now={now}
-                    latest={i === latestTurnEnd}
-                  />
-                )}
+                {queued && <div className="term-chat__queued-label">Queued</div>}
+                {actions}
               </div>
             )
           })}

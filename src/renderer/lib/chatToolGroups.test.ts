@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatPart } from '@shared/types'
 import { BACKGROUND_TASK_TOOL } from '@shared/chat-system-records'
 import { COMMAND_OUTPUT_TOOL } from '@shared/chat-command'
-import { groupToolCalls, partPosition, toolGroupSummary } from './chatToolGroups'
+import { groupToolCalls, memberKey, partPosition, toolGroupSummary } from './chatToolGroups'
 
 const tool = (name: string, extra: Partial<Extract<ChatPart, { kind: 'tool' }>> = {}): ChatPart => ({
   kind: 'tool',
@@ -101,6 +101,19 @@ describe('groupToolCalls', () => {
     const layout = groupToolCalls([user('go'), call('Bash'), call('Read')])
 
     expect(layout.groupAt.get('1:0')?.key).toBe('i1:0')
+  })
+
+  it('foldTail:false leaves the run that reaches the end of the thread as chips', () => {
+    const messages = [user('go'), call('Bash'), call('Read'), say('mid'), call('Bash'), call('Edit')]
+    const layout = groupToolCalls(messages, { foldTail: false })
+    expect(runs(messages)).toEqual([['1:0', '2:0'], ['4:0', '5:0']]) // default folds both
+    expect([...layout.groupAt.keys()]).toEqual(['1:0']) // tail run left alone
+    expect(layout.absorbed.has('5:0')).toBe(false)
+  })
+
+  it('memberKey uses the transcript line key, so a prepended page does not re-key a member', () => {
+    expect(memberKey([call('Bash', 120)], { message: 0, part: 0 })).toBe('k120:0')
+    expect(memberKey([call('Bash')], { message: 0, part: 0 })).toBe('i0:0')
   })
 })
 

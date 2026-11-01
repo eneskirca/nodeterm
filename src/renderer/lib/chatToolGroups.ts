@@ -36,6 +36,25 @@ export interface ToolGroupLayout {
 export const partPosition = (message: number, part: number): string => `${message}:${part}`
 
 /**
+ * A React key for one member: the transcript line's byte offset when the message has one (paged
+ * reads), so a prepended older page does not re-key it; else its position (grok, the optimistic
+ * bubble). The group's own key is its first member's.
+ */
+export function memberKey(messages: readonly ChatMessage[], m: ToolGroupMember): string {
+  const key = messages[m.message]?.key
+  return key !== undefined ? `k${key}:${m.part}` : `i${m.message}:${m.part}`
+}
+
+export interface GroupToolCallsOptions {
+  /**
+   * `false` leaves the run that reaches the END of the thread as chips: while the agent is still
+   * working that run is its live turn, and folding it would close each new call as it lands.
+   * Default `true`.
+   */
+  foldTail?: boolean
+}
+
+/**
  * A tool call the agent made, shown as a chip. Not one:
  * - a plan / question card (`body`): that IS the content, never folded away;
  * - the user's own `/command`, `!` line or command output: the person did that, not the agent;
@@ -50,20 +69,17 @@ function isFoldableTool(p: ChatPart): boolean {
  * The runs of consecutive tool calls, across message boundaries: a transcript writes each call as
  * its own line, so the thread holds one message per call. A run ends at anything else in the thread
  * — text, a thinking summary, a card, a user message, a system record — exactly where the TUI starts
- * a new line. Runs shorter than `TOOL_GROUP_MIN` stay as chips.
+ * a new line. Runs shorter than `TOOL_GROUP_MIN` stay as chips, and so does the trailing run when
+ * `opts.foldTail` is `false`.
  */
-export function groupToolCalls(messages: readonly ChatMessage[]): ToolGroupLayout {
+export function groupToolCalls(messages: readonly ChatMessage[], opts: GroupToolCallsOptions = {}): ToolGroupLayout {
   const groupAt = new Map<string, ToolGroup>()
   const absorbed = new Set<string>()
   let run: ToolGroupMember[] = []
   const flush = (): void => {
     if (run.length >= TOOL_GROUP_MIN) {
       const first = run[0]
-      const key = messages[first.message].key
-      groupAt.set(partPosition(first.message, first.part), {
-        key: key !== undefined ? `k${key}:${first.part}` : `i${first.message}:${first.part}`,
-        members: run
-      })
+      groupAt.set(partPosition(first.message, first.part), { key: memberKey(messages, first), members: run })
       for (const m of run.slice(1)) absorbed.add(partPosition(m.message, m.part))
     }
     run = []
@@ -78,7 +94,8 @@ export function groupToolCalls(messages: readonly ChatMessage[]): ToolGroupLayou
       else flush()
     })
   })
-  flush()
+  // Whatever run is still open here reaches the end of the thread.
+  if (opts.foldTail !== false) flush()
   return { groupAt, absorbed }
 }
 

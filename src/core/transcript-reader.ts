@@ -184,8 +184,6 @@ export function classifyLocalCommand(content: string): LocalCommandRecord | null
   return null
 }
 
-export { COMMAND_OUTPUT_TOOL }
-
 // ── System-injected user records ─────────────────────────────────────────────────────────────────
 // Claude Code writes several things that are NOT the user's words as `type:"user"` records. Measured
 // on 200 real transcripts (2026-09), user records without a tool_result, by `origin.kind`:
