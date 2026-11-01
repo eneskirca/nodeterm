@@ -575,7 +575,8 @@ function parseChatRecords(
         if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: c.text })
         else if (c.type === 'thinking') {
           if (opts?.thinking && typeof c.thinking === 'string' && c.thinking.trim()) {
-            parts.push({ kind: 'thinking', text: c.thinking })
+            // Capped like a system record's body: one runaway block must not size the whole page.
+            parts.push({ kind: 'thinking', text: c.thinking.slice(0, SYSTEM_RESULT_MAX) })
           }
         }
         else if (c.type === 'tool_use') {

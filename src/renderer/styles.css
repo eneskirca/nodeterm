@@ -4167,11 +4167,42 @@ body,
 .term-chat__refresh:hover {
   background: rgba(var(--tint-rgb), 0.1);
 }
-/* Claude's thinking summary between tool calls: inline like the TUI, dimmed so it never reads as
-   the answer. */
+/* Claude's thinking summary between tool calls (a <details>, closed by default): a dimmed line —
+   chevron + "Thought for 12s" — so it never reads as the answer; open, the text stays dimmed too. */
 .term-chat__thinking {
   margin: 4px 0;
   color: var(--muted);
+}
+.term-chat__thinking > summary {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+}
+.term-chat__thinking > summary::-webkit-details-marker {
+  display: none;
+}
+/* Drawn like the tool block's chevron: '▸' at this size renders as a dot. */
+.term-chat__thinking > summary::before {
+  content: '';
+  flex: 0 0 auto;
+  align-self: center;
+  width: 5px;
+  height: 5px;
+  margin: 0 2px 0 1px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.12s ease;
+}
+.term-chat__thinking[open] > summary::before {
+  transform: rotate(45deg);
+}
+.term-chat__thinking > .term-chat__text {
+  margin-top: 4px;
 }
 
 /* Transparent overlay that lets you pan across a terminal until you dwell/click. */

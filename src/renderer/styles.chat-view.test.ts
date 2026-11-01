@@ -87,6 +87,16 @@ describe('⌘M thread: claude.ai look', () => {
     expect(ruleBody('.term-chat__day')).toMatch(/text-align:\s*center;/)
     expect(ruleBody('.term-chat__time--user')).toMatch(/font-size:\s*11px;/)
   })
+
+  it('a thinking fold is a dimmed, clickable summary line with a drawn chevron, not the native marker', () => {
+    const summary = ruleBody('.term-chat__thinking > summary')
+    expect(summary).toMatch(/color:\s*var\(--muted\);/)
+    expect(summary).toMatch(/cursor:\s*pointer;/)
+    expect(summary).toMatch(/list-style:\s*none;/)
+    expect(ruleBody('.term-chat__thinking > summary::-webkit-details-marker')).toMatch(/display:\s*none;/)
+    expect(ruleBody('.term-chat__thinking > summary::before')).toMatch(/transform:\s*rotate\(-45deg\);/)
+    expect(ruleBody('.term-chat__thinking[open] > summary::before')).toMatch(/transform:\s*rotate\(45deg\);/)
+  })
 })
 
 describe('the shared .term-chat__input (plan "Revise…", question "Other") keeps a visible field', () => {

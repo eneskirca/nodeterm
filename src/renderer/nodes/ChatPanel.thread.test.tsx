@@ -207,6 +207,28 @@ describe('⌘M thread look', () => {
     expect(days[1].nextElementSibling?.classList.contains('term-chat__msg--folded')).toBe(true)
   })
 
+  it('a thinking part is a closed fold labelled with its duration', async () => {
+    const u: ChatMessage = { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0, at: now - 30_000 }
+    await mount([
+      u,
+      { role: 'assistant', parts: [{ kind: 'thinking', text: 'hmm **deep**' }], key: 10, at: now - 20_000 },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 20, at: now - 8_000 }
+    ])
+    const d = host.querySelector<HTMLDetailsElement>('details.term-chat__thinking')!
+    expect(d.open).toBe(false)
+    expect(d.querySelector('summary')?.textContent).toBe('Thought for 12s')
+    expect(d.querySelector('.term-chat__text strong')?.textContent).toBe('deep')
+  })
+
+  it('a thinking fold with no measurable duration just says Thinking', async () => {
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'thinking', text: 'hmm' }], key: 10 },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 20 }
+    ])
+    expect(host.querySelector('details.term-chat__thinking > summary')?.textContent).toBe('Thinking')
+  })
+
   it('a day that starts inside a folded tool run keeps its divider (drawn where the run ends)', async () => {
     const midnight = new Date(now).setHours(0, 0, 0, 0)
     await mount([

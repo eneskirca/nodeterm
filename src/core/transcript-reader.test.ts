@@ -112,7 +112,7 @@ describe('readSessionName — remote (SSH project) sessions', () => {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 import os from 'os'
 import path from 'path'
-import { parseChatMessages, parseChatWindow, readChatWindow } from './transcript-reader'
+import { parseChatMessages, parseChatWindow, readChatWindow, SYSTEM_RESULT_MAX } from './transcript-reader'
 
 const jl = (o: object): string => JSON.stringify(o) + '\n'
 const said = (role: 'user' | 'assistant', text: string): string =>
@@ -360,6 +360,23 @@ describe('message time (`at`, from the line\'s ISO `timestamp`)', () => {
       (said('user', 'none') + stamped('user', 'bad', 'yesterday') + stamped('user', 'num', 12345)).split('\n')
     )
     expect(msgs.map((m) => 'at' in m)).toEqual([false, false, false])
+  })
+})
+
+describe('thinking parts (opt-in `thinking`)', () => {
+  const assistantThinkingLine = (thinking: string): string =>
+    jl({ type: 'assistant', message: { content: [{ type: 'thinking', thinking, signature: 'sig' }] } })
+
+  it('caps a thinking text at SYSTEM_RESULT_MAX, like a system record\'s body', () => {
+    const msgs = parseChatMessages([assistantThinkingLine('x'.repeat(SYSTEM_RESULT_MAX + 5))], { thinking: true })
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0].parts).toHaveLength(1)
+    expect(msgs[0].parts[0].kind).toBe('thinking')
+    expect((msgs[0].parts[0] as { text: string }).text).toHaveLength(SYSTEM_RESULT_MAX)
+  })
+
+  it('without the option a thinking-only line is still no message (unchanged)', () => {
+    expect(parseChatMessages([assistantThinkingLine('x'.repeat(SYSTEM_RESULT_MAX + 5))])).toEqual([])
   })
 })
 

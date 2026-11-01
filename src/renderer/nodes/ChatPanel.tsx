@@ -58,6 +58,7 @@ import { useCodeBlockCopy } from './CodeBlockCopy'
 import { useCodeHighlight } from './CodeHighlight'
 import { assistantTurnEnds, chatAbsoluteTime, chatClockTime, dayDividers } from '../lib/chatThread'
 import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
+import { thinkingDuration, thinkingLabel } from '../lib/chatThinking'
 import { ChatToolGroup } from './ChatToolGroup'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
@@ -997,11 +998,14 @@ export function ChatPanel({
     p.kind === 'text' ? (
       <MarkdownText key={key} text={p.text} />
     ) : p.kind === 'thinking' ? (
-      // Claude's thinking summary — the "thinking out loud" line its TUI prints between
-      // tool calls. Shown inline like the TUI does, dimmed so it never reads as the answer.
-      <div key={key} className="term-chat__thinking">
+      // Claude's thinking summary — the "thinking out loud" line its TUI prints between tool calls.
+      // A fold, closed by default and dimmed, so it never reads as the answer; its line says how long
+      // the thinking took when the stamps can tell (lib/chatThinking.ts). Native and uncontrolled,
+      // like the tool block: it keeps whatever the user opened while the thread re-renders.
+      <details key={key} className="term-chat__thinking">
+        <summary>{thinkingLabel(thinkingDuration(messages, i))}</summary>
         <MarkdownText text={p.text} />
-      </div>
+      </details>
     ) : p.body ? (
       // A plan / question is the content itself, not plumbing: shown expanded, in full,
       // flowing with the thread (no inner scroll box). The answer stays under it.
