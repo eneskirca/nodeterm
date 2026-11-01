@@ -112,7 +112,7 @@ describe('readSessionName — remote (SSH project) sessions', () => {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 import os from 'os'
 import path from 'path'
-import { parseChatMessages, parseChatWindow, readChatWindow, SYSTEM_RESULT_MAX } from './transcript-reader'
+import { claudeChatRecordParser, parseChatMessages, parseChatWindow, readChatWindow, SYSTEM_RESULT_MAX } from './transcript-reader'
 
 const jl = (o: object): string => JSON.stringify(o) + '\n'
 const said = (role: 'user' | 'assistant', text: string): string =>
@@ -364,8 +364,17 @@ describe('message time (`at`, from the line\'s ISO `timestamp`)', () => {
 })
 
 describe('thinking parts (opt-in `thinking`)', () => {
-  const assistantThinkingLine = (thinking: string): string =>
-    jl({ type: 'assistant', message: { content: [{ type: 'thinking', thinking, signature: 'sig' }] } })
+  const T0 = Date.parse('2026-11-02T10:00:00.000Z')
+  const iso = (ms: number): string => new Date(T0 + ms).toISOString()
+  const assistantThinkingLine = (thinking: string, timestamp?: string): string =>
+    jl({ type: 'assistant', timestamp, message: { id: 'msg_1', content: [{ type: 'thinking', thinking, signature: 'sig' }] } })
+  const promptAt = (timestamp?: string): string => jl({ type: 'user', timestamp, message: { content: 'go' } })
+  const thinkingPart = (raw: string, opts = { thinking: true }) => {
+    const msgs = parseChatMessages(raw.split('\n'), opts)
+    const parts = msgs.flatMap((m) => m.parts).filter((p) => p.kind === 'thinking')
+    expect(parts).toHaveLength(1)
+    return parts[0] as { kind: 'thinking'; text: string; ms?: number }
+  }
 
   it('caps a thinking text at SYSTEM_RESULT_MAX, like a system record\'s body', () => {
     const msgs = parseChatMessages([assistantThinkingLine('x'.repeat(SYSTEM_RESULT_MAX + 5))], { thinking: true })
@@ -377,6 +386,51 @@ describe('thinking parts (opt-in `thinking`)', () => {
 
   it('without the option a thinking-only line is still no message (unchanged)', () => {
     expect(parseChatMessages([assistantThinkingLine('x'.repeat(SYSTEM_RESULT_MAX + 5))])).toEqual([])
+    expect(parseChatMessages((promptAt(iso(0)) + assistantThinkingLine('hmm', iso(12_400))).split('\n'))).toEqual([
+      { role: 'user', parts: [{ kind: 'text', text: 'go' }], at: T0 }
+    ])
+  })
+
+  it('stamps how long the model thought: from the user prompt 12.4 s earlier', () => {
+    expect(thinkingPart(promptAt(iso(0)) + assistantThinkingLine('hmm', iso(12_400)))).toEqual({ kind: 'thinking', text: 'hmm', ms: 12_400 })
+  })
+
+  it('measures from the newest USER record, not the record right before the thinking (the shape claude writes)', () => {
+    // Measured: the record right before a thinking summary is an EMPTY encrypted thinking block of
+    // the same message ~10 ms earlier, with attachment / api-request lines in between; the request
+    // started at the tool_result.
+    const raw =
+      toolUse('t1', 'ls') +
+      jl({ type: 'user', timestamp: iso(0), message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'x' }] } }) +
+      jl({ type: 'attachment', timestamp: iso(5), attachment: { type: 'todo_reminder' } }) +
+      jl({ type: 'api-request', timestamp: iso(20) }) +
+      jl({ type: 'assistant', timestamp: iso(8_990), message: { id: 'msg_1', content: [{ type: 'thinking', thinking: '', signature: 'sig' }] } }) +
+      assistantThinkingLine('now the fix', iso(9_000))
+    expect(thinkingPart(raw).ms).toBe(9_000)
+  })
+
+  it('a hidden meta user line is a request too', () => {
+    const meta = jl({ type: 'user', isMeta: true, timestamp: iso(3_000), message: { content: 'caveat' } })
+    expect(thinkingPart(promptAt(iso(0)) + meta + assistantThinkingLine('hmm', iso(5_000))).ms).toBe(2_000)
+  })
+
+  it('no `ms` when the newest user record is unstamped, the gap is negative, or no user record precedes it', () => {
+    expect('ms' in thinkingPart(promptAt(iso(0)) + promptAt(undefined) + assistantThinkingLine('hmm', iso(12_400)))).toBe(false)
+    expect('ms' in thinkingPart(promptAt(iso(0)) + assistantThinkingLine('hmm', undefined))).toBe(false)
+    expect('ms' in thinkingPart(promptAt(iso(12_400)) + assistantThinkingLine('hmm', iso(0)))).toBe(false)
+    // The first record in the window.
+    expect('ms' in thinkingPart(assistantThinkingLine('hmm', iso(12_400)))).toBe(false)
+  })
+
+  it('a paged window that starts after the prompt carries no `ms` (it cannot see the request)', () => {
+    const prompt = promptAt(iso(0))
+    const file = Buffer.from(prompt + assistantThinkingLine('hmm', iso(12_400)))
+    const parse = claudeChatRecordParser({ thinking: true })
+    const whole = parseChatWindow(file, 0, parse).messages.flatMap((m) => m.parts)
+    expect(whole[1]).toEqual({ kind: 'thinking', text: 'hmm', ms: 12_400 })
+    // The window starts on the thinking line: the buffer begins one lookbehind byte earlier.
+    const older = parseChatWindow(file.subarray(prompt.length - 1), prompt.length - 1, parse).messages.flatMap((m) => m.parts)
+    expect(older).toEqual([{ kind: 'thinking', text: 'hmm' }])
   })
 })
 

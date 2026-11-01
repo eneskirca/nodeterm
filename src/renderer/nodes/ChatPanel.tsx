@@ -58,7 +58,7 @@ import { useCodeBlockCopy } from './CodeBlockCopy'
 import { useCodeHighlight } from './CodeHighlight'
 import { assistantTurnEnds, chatAbsoluteTime, chatClockTime, dayDividers } from '../lib/chatThread'
 import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
-import { thinkingDuration, thinkingLabel } from '../lib/chatThinking'
+import { thinkingLabel } from '../lib/chatThinking'
 import { ChatToolGroup } from './ChatToolGroup'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
@@ -1000,10 +1000,10 @@ export function ChatPanel({
     ) : p.kind === 'thinking' ? (
       // Claude's thinking summary — the "thinking out loud" line its TUI prints between tool calls.
       // A fold, closed by default and dimmed, so it never reads as the answer; its line says how long
-      // the thinking took when the stamps can tell (lib/chatThinking.ts). Native and uncontrolled,
-      // like the tool block: it keeps whatever the user opened while the thread re-renders.
+      // the thinking took when the parser could stamp it (`p.ms`). Native and uncontrolled, like the
+      // tool block: it keeps whatever the user opened while the thread re-renders.
       <details key={key} className="term-chat__thinking">
-        <summary>{thinkingLabel(thinkingDuration(messages, i))}</summary>
+        <summary>{thinkingLabel(p.ms)}</summary>
         <MarkdownText text={p.text} />
       </details>
     ) : p.body ? (

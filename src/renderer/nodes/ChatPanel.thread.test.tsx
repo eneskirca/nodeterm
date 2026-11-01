@@ -207,12 +207,11 @@ describe('⌘M thread look', () => {
     expect(days[1].nextElementSibling?.classList.contains('term-chat__msg--folded')).toBe(true)
   })
 
-  it('a thinking part is a closed fold labelled with its duration', async () => {
-    const u: ChatMessage = { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0, at: now - 30_000 }
+  it('a thinking part is a closed fold labelled with the duration the parser stamped', async () => {
     await mount([
-      u,
-      { role: 'assistant', parts: [{ kind: 'thinking', text: 'hmm **deep**' }], key: 10, at: now - 20_000 },
-      { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 20, at: now - 8_000 }
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'thinking', text: 'hmm **deep**', ms: 12_400 }], key: 10 },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 20 }
     ])
     const d = host.querySelector<HTMLDetailsElement>('details.term-chat__thinking')!
     expect(d.open).toBe(false)
@@ -220,11 +219,11 @@ describe('⌘M thread look', () => {
     expect(d.querySelector('.term-chat__text strong')?.textContent).toBe('deep')
   })
 
-  it('a thinking fold with no measurable duration just says Thinking', async () => {
+  it('a thinking fold without a stamped duration just says Thinking, whatever its neighbours\' times', async () => {
     await mount([
-      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
-      { role: 'assistant', parts: [{ kind: 'thinking', text: 'hmm' }], key: 10 },
-      { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 20 }
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0, at: now - 30_000 },
+      { role: 'assistant', parts: [{ kind: 'thinking', text: 'hmm' }], key: 10, at: now - 20_000 },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 20, at: now - 8_000 }
     ])
     expect(host.querySelector('details.term-chat__thinking > summary')?.textContent).toBe('Thinking')
   })

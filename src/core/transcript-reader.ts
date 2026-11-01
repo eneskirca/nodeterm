@@ -363,7 +363,8 @@ export interface ChatParseOptions {
    * claude's TUI prints between tool calls. Most thinking blocks carry only an encrypted
    * `signature` and an empty `thinking` (measured: 137 of 913 on one machine had text); those, and
    * every `redacted_thinking`, yield nothing either way. Off by default: the shared golden fixtures
-   * (`thinking.pages.json`) and the phone's `chat.page` keep dropping them.
+   * (`thinking.pages.json`) and the phone's `chat.page` keep dropping them. Each part carries `ms`,
+   * how long the model thought, when the stamps can tell (see the `ChatPart` type).
    */
   thinking?: boolean
 }
@@ -532,6 +533,9 @@ function parseChatRecords(
   // its output record (cleared by any other push, so output attaches only to the record right
   // before it).
   let awaitingOutput: { family: 'slash' | 'bash'; part: Extract<ChatPart, { kind: 'tool' }> } | null = null
+  // The stamp of the newest `user` record so far, hidden meta lines included: when the request a
+  // thinking record answers was made, so its `ms` (see the type). Read only on the opt-in branch.
+  let lastUserAt: number | undefined
   const push = (m: ChatMessage, offset: number): void => {
     awaitingOutput = null
     // `at` rides BOTH paths (additive): the time the line was written, for the thread's relative
@@ -554,6 +558,8 @@ function parseChatRecords(
     // `null` / a number / a string parse fine and would throw on the reads below, failing the whole
     // page over one line another program wrote. One bad line costs one line (the Swift port agrees).
     if (!o || typeof o !== 'object' || Array.isArray(o)) continue
+    // Before the meta check: a hidden user line is still a request the model answers.
+    if (o.type === 'user') lastUserAt = lineTime(o.timestamp)
     if (isHiddenMetaRecord(o)) continue
     at = lineTime(o.timestamp)
     const content = o.message?.content
@@ -576,7 +582,13 @@ function parseChatRecords(
         else if (c.type === 'thinking') {
           if (opts?.thinking && typeof c.thinking === 'string' && c.thinking.trim()) {
             // Capped like a system record's body: one runaway block must not size the whole page.
-            parts.push({ kind: 'thinking', text: c.thinking.slice(0, SYSTEM_RESULT_MAX) })
+            const part: Extract<ChatPart, { kind: 'thinking' }> = {
+              kind: 'thinking',
+              text: c.thinking.slice(0, SYSTEM_RESULT_MAX)
+            }
+            const ms = at !== undefined && lastUserAt !== undefined ? at - lastUserAt : undefined
+            if (ms !== undefined && ms >= 0) part.ms = ms
+            parts.push(part)
           }
         }
         else if (c.type === 'tool_use') {

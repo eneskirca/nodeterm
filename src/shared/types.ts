@@ -3584,7 +3584,22 @@ export interface TranscriptLine {
  *  metadata so committed tool cards keep the same summary/diff-click treatment as live ones. */
 export type ChatPart =
   | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string }
+  | {
+      kind: 'thinking'
+      text: string
+      /**
+       * How long the model thought, in ms — this record's timestamp minus that of the newest `user`
+       * record before it (the prompt, tool_result or meta line the request answered). Present only on
+       * the opt-in `thinking` read, only when both stamps exist and the gap is ≥ 0. Measured 2026-11-02
+       * on CLI 2.1.275–2.1.316: a thinking record is written when the thinking ENDS, and the record
+       * after it is a tool call whose write time scales with its input, so the gap to the NEXT record
+       * is not thinking time; nor is the gap to the record right BEFORE it, which is an empty
+       * encrypted thinking record of the same message written ~10 ms earlier (1,018 of 1,037).
+       * A paged read sees only its own window, so a thinking record with no `user` record before it
+       * in that window (the start of an older page) carries no `ms`.
+       */
+      ms?: number
+    }
   | {
       kind: 'tool'
       name: string
