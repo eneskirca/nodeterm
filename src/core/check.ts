@@ -1,6 +1,6 @@
 // Polls the backend /v1/check feed from the main process (so the renderer CSP stays 'self').
 // Successor to the static announcements.json: returns targeted messages for the announcement
-// banner AND the mandatory-update policy for the Update Card. It also carries the anonymous
+// banner, one-time popups (`popups`), AND the mandatory-update policy for the Update Card. It also carries the anonymous
 // install id (deviceId + os/arch/version), which the backend upserts into `devices` as a
 // passive active-install counter — so the version distribution reflects EVERY install, not only
 // the (few) that also opt into the telemetry ping. It also states the plan (`pro` | `free`) so a
@@ -15,17 +15,20 @@
 import { platform } from './platform'
 import { getDeviceId } from './device-id'
 import { isPremium } from './license'
-import type { Announcement, UpdatePolicy } from '../shared/types'
+import type { Announcement, PopupAnnouncement, UpdatePolicy } from '../shared/types'
 
 const API_BASE = process.env.NODETERM_API_BASE || 'https://api.nodeterm.dev'
 const CACHE_MS = 5 * 60 * 1000
 
 export interface CheckResult {
   messages: Announcement[]
+  /** One-time popups. The server sends them under their own key so that a build reading only
+   *  `messages` (every one before this, and mobile) never receives one as a recurring banner. */
+  popups: PopupAnnouncement[]
   update: UpdatePolicy
 }
 
-const EMPTY: CheckResult = { messages: [], update: { minSupported: null, mandatory: false } }
+const EMPTY: CheckResult = { messages: [], popups: [], update: { minSupported: null, mandatory: false } }
 
 // Same build + DO_NOT_TRACK gate as telemetry: dev never hits the prod API unless a local
 // server is targeted explicitly. Deliberately NOT gated on the in-app telemetry toggle: this
@@ -41,17 +44,26 @@ function allowed(): boolean {
 function sanitize(data: unknown): CheckResult {
   if (!data || typeof data !== 'object') return EMPTY
   const d = data as Record<string, unknown>
-  const rawMessages = Array.isArray(d.messages) ? d.messages : []
-  const messages: Announcement[] = rawMessages
-    .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
-    .filter((m) => typeof m.id === 'string' && typeof m.title === 'string')
-    .map((m) => ({
-      id: m.id as string,
-      title: m.title as string,
-      body: typeof m.body === 'string' ? m.body : undefined,
-      url: typeof m.url === 'string' && /^https?:\/\//.test(m.url) ? m.url : undefined,
-      level: m.level === 'success' || m.level === 'warning' ? m.level : 'info'
-    }))
+  const items = (raw: unknown): Record<string, unknown>[] =>
+    (Array.isArray(raw) ? raw : [])
+      .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object')
+      .filter((m) => typeof m.id === 'string' && typeof m.title === 'string')
+  const toMessage = (m: Record<string, unknown>): Announcement => ({
+    id: m.id as string,
+    title: m.title as string,
+    body: typeof m.body === 'string' ? m.body : undefined,
+    url: typeof m.url === 'string' && /^https?:\/\//.test(m.url) ? m.url : undefined,
+    level: m.level === 'success' || m.level === 'warning' ? m.level : 'info'
+  })
+  const messages = items(d.messages).map(toMessage)
+  const popups = items(d.popups).map((m): PopupAnnouncement => {
+    const p: PopupAnnouncement = toMessage(m)
+    const label = typeof m.ctaLabel === 'string' ? m.ctaLabel.trim() : ''
+    if (label) p.ctaLabel = label.slice(0, CTA_LABEL_MAX)
+    // A closed set: an action this build does not know is no action, never a guess at one.
+    if (m.action === 'upgrade') p.action = 'upgrade'
+    return p
+  })
   const u = (d.update ?? {}) as Record<string, unknown>
   const update: UpdatePolicy = {
     minSupported: typeof u.minSupported === 'string' ? u.minSupported : null,
@@ -63,10 +75,11 @@ function sanitize(data: unknown): CheckResult {
     update.notes = u.notes.slice(0, NOTES_MAX)
     update.latestVersion = u.latestVersion.slice(0, 64)
   }
-  return { messages, update }
+  return { messages, popups, update }
 }
 
 const NOTES_MAX = 16 * 1024
+const CTA_LABEL_MAX = 40
 
 /** Test seam: the sanitizer is the whole contract with the feed's shape. */
 export const sanitizeCheckForTest = sanitize
@@ -193,10 +206,10 @@ export async function fetchCheck(): Promise<CheckResult> {
   // or was fetched with the toggle off, is reused exactly as before.
   const countNowKnown = cache?.countOwed === true && Object.hasOwn(count.param, 'openProjects')
   if (cache && cache.plan === plan && now - cache.at < CACHE_MS && !countNowKnown) return cache.data
-  // A failed read keeps the last good answer, except the messages it fetched for another plan.
-  // The update policy does not depend on the plan, so it survives.
+  // A failed read keeps the last good answer, except the messages and popups it fetched for another
+  // plan. The update policy does not depend on the plan, so it survives.
   const fallback = (): CheckResult =>
-    !cache ? EMPTY : cache.plan === plan ? cache.data : { messages: [], update: cache.data.update }
+    !cache ? EMPTY : cache.plan === plan ? cache.data : { messages: [], popups: [], update: cache.data.update }
   try {
     const q = new URLSearchParams({
       deviceId: getDeviceId(),

@@ -7177,6 +7177,32 @@ body,
   white-space: nowrap;
 }
 
+/* One-time popup from the check feed (components/AnnouncementPopup.tsx), in the `.confirm` shell.
+   The level shows as the top edge, the banner's left edge turned on its side. */
+.confirm.announce-popup {
+  border-top: 3px solid var(--accent);
+}
+
+/* It takes focus itself (so keys stop reaching the terminal under the scrim); no ring for that. */
+.confirm.announce-popup:focus {
+  outline: none;
+}
+
+.confirm.announce-popup--success {
+  border-top-color: var(--success);
+}
+
+.confirm.announce-popup--warning {
+  border-top-color: var(--warn);
+}
+
+.announce-popup__title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .confirm.project-limit__checking {
   width: auto;
 }

@@ -10839,8 +10839,24 @@ Exposed split over two IPC handlers: `announcements.fetch()` → `messages`, `ap
 `update`. `components/AnnouncementBanner.tsx` (stacked above `UpdateCard` under the tab bar in a
 `.top-banners` column) shows the newest message the user hasn't dismissed (dismissed `id`s persist
 in `localStorage`); `update.mandatory`/`minSupported` flips `UpdateCard` into a blocking required-
-update state. The call no-ops under `DO_NOT_TRACK`/`NODETERM_TELEMETRY_DISABLED` or in unpackaged
-builds (unless `NODETERM_API_BASE` targets a local server). Schema example:
+update state. **One-time popups** ride the same reply under their own `popups` key (admin console:
+Display → "popup (once)") — a separate key, so every build that reads only `messages` (older
+desktops, mobile) never receives one as a banner that would come back every launch.
+`components/AnnouncementPopup.tsx` (pure rules in `lib/announcementPopup.ts`) shows the newest one
+not shown before and records it in localStorage (`nodeterm.seenPopups`) the moment it is SHOWN, not
+when closed, and shows at most one per feed read. It waits — re-reading the feed every 5 min, so a
+deactivated popup is dropped — until settings AND the license are known (`useEntitlement.known`:
+`isPremium` is a default `false` before that, and an upgrade popup must never reach a Pro user),
+nothing is open on the dialog stack OR among Canvas's own non-stack surfaces (`blocked`: setup
+tour, Settings, palette, dictation, …), and no key was pressed for 4 s. It then focuses its own box
+— never a button, so Enter/Space press nothing, and keys stop reaching the terminal under the scrim
+— and takes Escape in the CAPTURE phase: xterm stops propagation of Escape, so a bubble listener
+never hears it and the agent in the pane gets an ESC that interrupts its turn. Its button opens
+`url`, or with `action: 'upgrade'` starts the Pro checkout — an upgrade popup is skipped for a Pro
+user, dropped the moment the plan flips, and closes when Pro arrives. Server Edition: the bridge answers `[]` (it does not read the feed). Mobile:
+N/A for v1 (follow-up in the iOS repo). The call no-ops under
+`DO_NOT_TRACK`/`NODETERM_TELEMETRY_DISABLED` or in unpackaged builds (unless `NODETERM_API_BASE`
+targets a local server). Schema example:
 `docs/announcements.example.json`. **The request also states `plan=pro|free`** (offline
 `isPremium()`), because the admin console can aim a message at paid or free users and the feed is
 anonymous — the backend cannot look a device's plan up, and matches only on what we send (a build

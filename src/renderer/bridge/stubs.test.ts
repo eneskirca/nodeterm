@@ -83,6 +83,7 @@ describe('bridge stubs', () => {
   it('boot-path promise members resolve benignly', async () => {
     const s = buildStubApi()
     await expect(s.announcements.fetch()).resolves.toEqual([])
+    await expect(s.announcements.popups()).resolves.toEqual([])
     // UpdateCard reads `p.mandatory` with no null guard, so the stub must return a real
     // UpdatePolicy — a `null` here was a TypeError on every Server Edition page load.
     await expect(s.updates.getPolicy()).resolves.toEqual({ minSupported: null, mandatory: false })

@@ -271,7 +271,9 @@ export function buildStubApi(): Omit<
       prepareQuit: noop
     },
     announcements: {
-      fetch: () => Promise.resolve([])
+      fetch: () => Promise.resolve([]),
+      // The Server Edition does not read the check feed, so there is never a popup to show.
+      popups: () => Promise.resolve([])
     },
     license: {
       upgrade: U('license.upgrade'),
