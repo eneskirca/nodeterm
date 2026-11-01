@@ -12,6 +12,10 @@ ordinary work.
 
 ## Getting set up
 
+You need Node.js 20+ (22 for the Server Edition) on Linux or **macOS 12 Monterey or newer** —
+the macOS floor is Electron's and esbuild's, and the README's *Build from source* section says
+what fails on an older Mac.
+
 ```bash
 npm install        # also patches + rebuilds node-pty against Electron's ABI (postinstall)
 npm run dev        # dev mode with renderer HMR
