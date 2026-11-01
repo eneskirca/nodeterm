@@ -67,6 +67,42 @@ describe('TerminalNode reads its own session store', () => {
     )
   })
 
+  it('restart, pause, wake, liveness and the held-launch dep tooltips read the session store', () => {
+    // The rule: nothing in the node reaches the default store directly — not an import, not a
+    // getState(), not a selector. (These run on a relay session too: plain restart, shallow pause,
+    // the wake, the liveness poll, the tooltips; under a node id shared with a handed-off SSH project
+    // the default store is the OTHER project's entry.)
+    expect(src).not.toMatch(/import \{[^}]*\buseAgentStatus\b[^}]*\} from '\.\.\/state\/agentStatus'/)
+    expect(src).not.toMatch(/useAgentStatus\s*\.getState\(\)/)
+    expect(src).not.toMatch(/useAgentStatus\(/)
+
+    const restart = between(src, 'const unregisterRestart = registerAgentRestart(', 'const unregisterHibernate = registerAgentHibernate(')
+    expect(restart).toContain('const st = agentStatusStore.getState().byId[id]')
+
+    const hibernatePair = between(src, 'const unregisterHibernate = registerAgentHibernate(', 'const unregisterPause = registerAgentPause(')
+    expect(hibernatePair).toContain('agentStatusStore.getState().byId[id]')
+    expect(hibernatePair).toContain('agentStatusStore.getState().setWakeBlocked(id,')
+
+    const pause = between(src, 'const unregisterPause = registerAgentPause(', '// Coalesce observer bursts')
+    expect(pause).toContain('const st = agentStatusStore.getState().byId[id]')
+    expect(pause).toContain('agentStatusStore.getState().setPaused(id, true)')
+    expect(pause).toContain('agentStatusStore.getState().setHibernated(id, true)')
+
+    // The wake and its triggers: the closure, the mount timer and the visibility edge.
+    const wake = between(src, 'wakeRef.current = (attempt = 0): void => {', '// Ask once shortly after mount')
+    expect(wake).toContain('const stNow = agentStatusStore.getState().byId[id]')
+    expect(wake).toContain('agentStatusStore.getState().setHibernated(id, false)')
+    expect(wake).toContain('agentStatusStore.getState().setPaused(id, false)')
+    expect(wake).toContain('agentStatusStore.getState().setDropped(id, false)')
+    expect(src).toContain('const stMount = agentStatusStore.getState().byId[id]')
+    expect(src).toContain('const stVisible = agentStatusStore.getState().byId[id]')
+
+    // The held-launch dep tooltips keep their primitive-signature selector shape, on the session store.
+    expect(src).toMatch(/const erroredDepIds = agentStatusStore\(\(s\) => \{/)
+    expect(src).toMatch(/const interruptedDepIds = agentStatusStore\(\(s\) => \{/)
+    expect(between(src, 'const successWait = useSuccessWait(', '\n  )\n')).toMatch(/,\s*agentStatusStore\s*$/)
+  })
+
   it('Approve/Deny, title sync, transcript search and the chat view are gated', () => {
     expect(src).toContain('relayStatusGates(session.source)')
     expect(src).toMatch(/const gates = relayStatusGates\(session\.source\)/)

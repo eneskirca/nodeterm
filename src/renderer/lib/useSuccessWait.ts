@@ -21,7 +21,7 @@ import {
   type SuccessWaitHold,
   type SuccessWaitStatus
 } from '@shared/station-outcome'
-import { useAgentStatus } from '../state/agentStatus'
+import { useAgentStatus, type AgentStatusSession } from '../state/agentStatus'
 import { useStationOutcomes } from '../state/stationOutcomes'
 import { useStationHandovers } from '../state/stationHandovers'
 import { successDepFacts } from './pendingLaunch'
@@ -40,7 +40,12 @@ const NO_IDS: readonly string[] = []
 export function useSuccessWait(
   rawHold: unknown,
   /** A node's display title, if it is still on the canvas (`undefined` = gone). */
-  titleOf: (id: string) => string | undefined
+  titleOf: (id: string) => string | undefined,
+  /** The agent-status store the stations' states are read from: the waiting node's own session's
+   *  (`useSessionStores().agentStatus.store`), so a team tab's node judges its host's stations and
+   *  never the entries a handed-off SSH project holds under the same ids. Default: the local one.
+   *  Must be stable for the caller's lifetime (it is subscribed to as a hook). */
+  status: AgentStatusSession['store'] = useAgentStatus
 ): SuccessWaitView {
   const hold = useMemo(() => normalizeSuccessWaitHold(rawHold), [rawHold])
   const depIds = hold && !hold.invalid ? hold.deps : NO_IDS
@@ -52,7 +57,7 @@ export function useSuccessWait(
       })
       .join('|')
   )
-  const stateSig = useAgentStatus((s) =>
+  const stateSig = status((s) =>
     depIds.map((d) => `${d}:${s.byId[d]?.state ?? '-'}:${s.byId[d]?.lastTurnError ? 'e' : ''}`).join('|')
   )
   // Handed-over work holds a station's turn open (core/station-handover.ts), like the launch loop.
@@ -75,7 +80,7 @@ export function useSuccessWait(
     const facts = (d: string) =>
       successDepFacts(
         d,
-        useAgentStatus.getState().byId,
+        status.getState().byId,
         live,
         useStationOutcomes.getState().byId,
         useStationHandovers.getState().byId
@@ -89,6 +94,6 @@ export function useSuccessWait(
         : new Date(hold.deadlineAt).toLocaleString()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the signatures and the clock are the triggers
-  }, [hold, outcomeSig, stateSig, handoverSig, existSig, clock])
+  }, [hold, outcomeSig, stateSig, handoverSig, existSig, clock, status])
   return { hold, depIds, tooltip }
 }

@@ -276,7 +276,6 @@ import { announceUserClosedSession } from '../lib/lastSessionClose'
 import { useSettings } from '../state/settings'
 import { useCodexIdentity, codexSharedIdentity, codexFallbackText } from '../state/codexIdentity'
 import { ensureCodexLaunchCaps } from '../state/codexCli'
-import { useAgentStatus } from '../state/agentStatus'
 import { useLaunchDelivery } from '../state/launchDelivery'
 import { erroredDeps, firstOpenInFlight as isFirstOpenInFlight, handedOverDeps, holdReason, interruptedDeps, launchTooltip } from '../lib/pendingLaunch'
 import { useStationHandovers } from '../state/stationHandovers'
@@ -1366,20 +1365,34 @@ export function TerminalNode({
    * default store for a relay node: a handed-off SSH project shares its node ids with the team tab
    * now serving them, and the two must not read or mark each other's status.
    *
-   * What reads and writes it: the badge (`status`) and everything derived from it, every focus mark
-   * (`setActive` / `clearUnread`: the dwell, a click, a "go to node" focus, selection, a file
-   * insert, the lifecycle teardown), the OSC session-title chip, the Esc / Ctrl-C interrupt
-   * inference (`agentStatusSession.inferInterruptAfterSettle`, bound to this same store), and the
-   * memory levers that must not kill live work (`readAgentState`, `readAgentProcess`, the park's
-   * `readSessionEnded`). A relay node's own status thereby also protects its park —
-   * `persistent:false` can arrive from a tmux-less relay HOST, i.e. a plain-shell agent session on
-   * someone else's machine. The status-driven readers that would act on THIS machine are switched
-   * off for a relay node by `gates` below (`relayStatusGates`).
+   * EVERY agent-status read and write in this node goes through it; nothing here touches the
+   * default store (`useAgentStatus`) directly, and that is pinned
+   * (nodes/terminal-agent-status.source.test.ts). That covers: the badge (`status`) and everything
+   * derived from it, every focus mark (`setActive` / `clearUnread`: the dwell, a click, a "go to
+   * node" focus, selection, a file insert, the lifecycle teardown), the OSC session-title chip, the
+   * Esc / Ctrl-C interrupt inference (`agentStatusSession.inferInterruptAfterSettle`, bound to this
+   * same store), the memory levers that must not kill live work (`readAgentState`,
+   * `readAgentProcess`, the park's `readSessionEnded`), the in-place restart's busy check, pause
+   * (both depths), the hibernate / wake pair and its auto-wake triggers, the liveness check, the cold
+   * restore, the Eco viewer-release deferral and the held-launch dep tooltips (`erroredDepIds`,
+   * `interruptedDepIds`, `useSuccessWait`).
    *
-   * Deliberately still on the default store (`useAgentStatus`): Eco / hibernation, restart, pause,
-   * the liveness check, the cold restore and the pending-launch deps. Those features are refused on
-   * relay sessions, so their reads only ever concern a local node. Stable for the session's
-   * lifetime (memoized by api identity), so the once-mounted lifecycle effect may close over it.
+   * Several of those RUN on a relay session, which is why none of them may read another table: the
+   * plain restart (only its clearEnv / model-switch / restartShell branches refuse relay), a SHALLOW
+   * pause (deliberately allowed over relay; only `deep` refuses), the wake / resume, the liveness
+   * poll (over the session api), the dep tooltips. Reading the default store there would judge the
+   * node by — and write into — the entry a handed-off SSH project holds under the same node id (a
+   * restart that saw `undefined` would quit a host session the badge shows as RUNNING). The rest are
+   * refused on relay before they act (the cold auto-resume: `session.source !== 'relay'`; the Eco exit:
+   * `offscreenRemoteRef`, true for a relay session; deep pause, restartShell, model switch,
+   * clearEnv), so reading the session store there changes nothing and keeps ONE rule. A relay
+   * node's own status also protects its park — `persistent:false` can arrive from a tmux-less relay
+   * HOST, i.e. a plain-shell agent session on someone else's machine. The status-driven readers that
+   * would act on THIS machine are switched off for a relay node by `gates` below
+   * (`relayStatusGates`).
+   *
+   * Stable for the session's lifetime (memoized by api identity), so the once-mounted lifecycle
+   * effect and the registered closures may close over it.
    */
   const agentStatusSession = useSessionStores().agentStatus
   const agentStatusStore = agentStatusSession.store
@@ -2010,7 +2023,7 @@ export function TerminalNode({
     // node may or may not also be `hibernated` (the deep "pause & end session" recycles the tmux
     // session instead, leaving `hibernated` unset), but either flag means there is a conversation
     // this closure knows how to bring back.
-    const stNow = useAgentStatus.getState().byId[id]
+    const stNow = agentStatusStore.getState().byId[id]
     // `dropped` joins the two pause flags here because it is the same job with a different cause:
     // the pane holds a bare shell and there is a conversation this closure knows how to bring back.
     // The resume half is what makes it safe to admit — it re-reads the pane itself and refuses
@@ -2030,11 +2043,11 @@ export function TerminalNode({
         // drop on anything else (`expired` — the pane became something we did not resume into).
         wakeInputBufferRef.current.endWake(outcome === 'resumed', paneWriteRef.current)
         if (outcome === 'resumed') {
-          useAgentStatus.getState().setHibernated(id, false)
-          useAgentStatus.getState().setPaused(id, false)
+          agentStatusStore.getState().setHibernated(id, false)
+          agentStatusStore.getState().setPaused(id, false)
           // The resume line is in the pane; the CLI's own SessionStart will confirm it shortly, but
           // the chip must not survive the click that answered it.
-          useAgentStatus.getState().setDropped(id, false)
+          agentStatusStore.getState().setDropped(id, false)
           return
         }
         // 'not-eligible' — usually timing, not a refusal that will stand: at mount the spawn is
@@ -2047,7 +2060,7 @@ export function TerminalNode({
         // that the genuinely-transient cases need, and re-asks a question whose answer cannot
         // change without the user doing something. The chip carries the sentence; its click is
         // the way forward, and it re-checks.
-        if (useAgentStatus.getState().byId[id]?.wakeBlocked) return
+        if (agentStatusStore.getState().byId[id]?.wakeBlocked) return
         retryLater()
       })
       .catch(() => {
@@ -2073,7 +2086,7 @@ export function TerminalNode({
       // A `paused` node never auto-wakes, mount included — the trigger published above (and the
       // chip's own click) remain the explicit way back. `hibernated`-only nodes are unaffected:
       // this is the everyday Eco auto-resume-on-view path. See `shouldAutoWake`.
-      const stMount = useAgentStatus.getState().byId[id]
+      const stMount = agentStatusStore.getState().byId[id]
       if (isNodeWatched(id) && shouldAutoWake(stMount?.hibernated, stMount?.paused)) wakeRef.current()
     }, WAKE_MOUNT_DELAY_MS)
     return () => {
@@ -2087,7 +2100,7 @@ export function TerminalNode({
       // again. (Absent = not offscreen; see `offscreenNodes`.)
       setNodeOffscreen(id, false)
     }
-  }, [id])
+  }, [id, agentStatusStore])
   /**
    * LIVENESS — did this node's agent CLI die without telling us? (See `agent-liveness.ts` for the
    * rule and every refusal in it; this effect only supplies the pane reading and records the
@@ -2113,7 +2126,7 @@ export function TerminalNode({
     let asking = false
     const ask = async (): Promise<void> => {
       if (asking || stopped) return
-      const st = useAgentStatus.getState().byId[id]
+      const st = agentStatusStore.getState().byId[id]
       // Cheap gate first, so a canvas of healthy or plain-terminal nodes never reaches the pane.
       // Note it admits an ALREADY-dropped node too: that is how the chip clears itself when the
       // user relaunches the CLI by hand (no hook has to arrive for the pane to answer).
@@ -2126,8 +2139,8 @@ export function TerminalNode({
         if (stopped || pane === null) return
         // Re-read: the await is long enough for a turn to have started, or for the user to have
         // paused the node from the menu.
-        const now = useAgentStatus.getState().byId[id]
-        useAgentStatus
+        const now = agentStatusStore.getState().byId[id]
+        agentStatusStore
           .getState()
           .setDropped(
             id,
@@ -2155,7 +2168,7 @@ export function TerminalNode({
       clearInterval(t)
       if (livenessAskRef.current === ask) livenessAskRef.current = null
     }
-  }, [id, agentId, api])
+  }, [id, agentId, api, agentStatusStore])
   // Held launch (canvas-control `--after`). Canvas owns firing it; the node only surfaces that
   // it is armed, and by WHAT it is blocked — dep titles read straight off the live canvas, since
   // "waits for term-17" tells the user nothing.
@@ -2180,7 +2193,8 @@ export function TerminalNode({
     (depId) => {
       const n = getNode(depId) as CanvasNode | undefined
       return n ? ((n.data.title as string) || '') : undefined
-    }
+    },
+    agentStatusStore
   )
   // The stations a `--after-success` wait names are ALSO in `after`; the tooltip speaks of them in
   // the success sentence, so the plain list leaves them out rather than naming them twice.
@@ -2197,7 +2211,7 @@ export function TerminalNode({
   // is idle, so without naming them the tooltip would promise a wait that will never end on its
   // own. Selected as a joined string so the selector returns a primitive and an unarmed node never
   // re-renders on another node's status.
-  const erroredDepIds = useAgentStatus((s) => {
+  const erroredDepIds = agentStatusStore((s) => {
     const after = pendingLaunch?.after ?? []
     if (!after.length) return ''
     // Same liveness rule `depSatisfied` uses: a dep that is gone counts as satisfied, so it is
@@ -2206,7 +2220,7 @@ export function TerminalNode({
     return erroredDeps({ id, data: { pendingLaunch } }, s.byId, live).join(',')
   })
   // Same selector shape for deps held because the user interrupted their last turn (Esc/Ctrl+C).
-  const interruptedDepIds = useAgentStatus((s) => {
+  const interruptedDepIds = agentStatusStore((s) => {
     const after = pendingLaunch?.after ?? []
     if (!after.length) return ''
     const live = new Set(after.filter((d) => !!getNode(d)))
@@ -3548,7 +3562,7 @@ export function TerminalNode({
     // would clear it on its SessionStart anyway; cursor fires none on `--resume`, so without this the
     // chat composer and the phone keep refusing a running CLI as "exited" until its next turn.
     // note: a sessionEnd POST that lands after the relaunch re-sets it; none has been observed.
-    const markRelaunched = (): void => useAgentStatus.getState().setSessionEnded(id, false)
+    const markRelaunched = (): void => agentStatusStore.getState().setSessionEnded(id, false)
 
     // Copy-on-select (issue #759). REGISTERED ONCE, at construction, and disposed WITH THE TERMINAL
     // — the OSC 52 handler's lifecycle, not a per-mount one: its only persistent listener lives on
@@ -4154,7 +4168,7 @@ export function TerminalNode({
         // command-building path through the registered hibernate/wake pair) may relaunch it. Read
         // HERE because the late cold-start check below is gated on it too: a paused node has
         // nothing to relaunch, so it must not pay two probe round trips to find that out.
-        const pausedNow = !!useAgentStatus.getState().byId[id]?.paused
+        const pausedNow = !!agentStatusStore.getState().byId[id]?.paused
         // LATE COLD-START DETECTION (see terminal/cold-self-heal.ts). `freshUnverified` says the
         // create's `fresh:false` came from a freshness read that never completed, so "a session
         // already exists" was a fold and not an answer — and `new-session -A` may have made the
@@ -4207,8 +4221,8 @@ export function TerminalNode({
         //    wake path, which (rightly) refuses a pane it cannot see a shell in.
         //  - a real warm attach: the shell we exited to is still sitting in the pane, by design.
         //    Nothing auto-resumes here and the wake path owns the relaunch. That is the feature.
-        if (coldStart && useAgentStatus.getState().byId[id]?.hibernated) {
-          useAgentStatus.getState().setHibernated(id, false)
+        if (coldStart && agentStatusStore.getState().byId[id]?.hibernated) {
+          agentStatusStore.getState().setHibernated(id, false)
         }
         // The clear-env strip is one-shot: once this spawn has applied it, clear the flag so a later
         // ordinary Restart re-applies the gateway. (The recycle action re-sets it for its own spawn.)
@@ -4273,7 +4287,7 @@ export function TerminalNode({
           // no hook ever landed. That is not hypothetical: hook POSTs from an SSH node ride the
           // reverse tunnel, and after one host reboot 18 of 40 agent nodes had no id at all and
           // relaunched empty while their transcripts sat on disk, unreachable.
-          const st = useAgentStatus.getState().byId[id]
+          const st = agentStatusStore.getState().byId[id]
           const priorId = st?.sessionId || data.agentSessionId
           // …and is that conversation still THERE? A persisted id outlives its transcript
           // (claude's 30-day cleanup, a `/clear`, a removed account, an id minted for a session
@@ -4408,7 +4422,7 @@ export function TerminalNode({
                   agentEnvSnapshot()
                 )
                 if (!fresh) return
-                useAgentStatus.getState().setSessionId(id, undefined)
+                agentStatusStore.getState().setSessionId(id, undefined)
                 if (data.agentSessionId) updateNodeData(id, { agentSessionId: undefined })
                 writeWhenShellReady(fresh)
               })()
@@ -4440,7 +4454,7 @@ export function TerminalNode({
           // No ownership gate here, and none is owed: nothing is being QUIT: this pane was just
           // respawned by tmux and holds a brand-new shell, which is the context the later resume
           // is meant to launch into. The gate belongs where an exit is written.
-          useAgentStatus.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
+          agentStatusStore.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
         }
       })
       .catch((err: unknown) => {
@@ -4499,7 +4513,7 @@ export function TerminalNode({
     const unregisterRestart = registerAgentRestart(
       id,
       guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean, clearEnv?: boolean, beforeRecycle?: () => Promise<RecyclePatch | void>) => {
-        const st = useAgentStatus.getState().byId[id]
+        const st = agentStatusStore.getState().byId[id]
         const currentNode = getNode(id)
         const agentSessionId = restartSessionId(st?.sessionId, currentNode?.data.agentSessionId)
         // `data.agentId` can change after a successful same-base swap while this deliberately
@@ -4725,7 +4739,7 @@ export function TerminalNode({
         // relay lifecycle, and a wake that cannot reach the host leaves a dead conversation behind.
         // Read at CALL time — a local project can BECOME an SSH project long after this mount.
         if (offscreenRemoteRef.current) return 'not-eligible'
-        const st = useAgentStatus.getState().byId[id]
+        const st = agentStatusStore.getState().byId[id]
         // Already paused (shallow OR deep — deep has `hibernated` unset, so this is the only
         // thing that catches it): the plan already excludes this via `HibernationCandidate.paused`,
         // but a dropped SessionEnd hook POST could otherwise leave a deep-paused node reading as
@@ -4756,10 +4770,10 @@ export function TerminalNode({
           // Only the TERMINAL verdict is recorded. `'unreadable'` is a probe that failed (no tmux,
           // a pane mid-teardown, a lapsed deadline) and the next sweep re-asks; latching it would
           // drop the node out of the plan for the rest of the run on no evidence at all.
-          useAgentStatus.getState().setPaneUnverified(id, exitVerdict === 'not-in-this-pane')
+          agentStatusStore.getState().setPaneUnverified(id, exitVerdict === 'not-in-this-pane')
           return 'not-eligible'
         }
-        useAgentStatus.getState().setPaneUnverified(id, false)
+        agentStatusStore.getState().setPaneUnverified(id, false)
         const outcome = await performExitPhase({
           agentId,
           sessionId: agentSessionId,
@@ -4780,12 +4794,12 @@ export function TerminalNode({
           // record: absent is refused, and that is the correct answer for an exit whose landing we
           // did not witness. A stale record must never stand in as permission to type into today's
           // pane.
-          useAgentStatus.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
+          agentStatusStore.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
         }
         return outcome
       }),
       resume: guardConcurrentRestart(id, async (): Promise<ResumePhaseOutcome> => {
-        const st = useAgentStatus.getState().byId[id]
+        const st = agentStatusStore.getState().byId[id]
         const agentSessionId = st?.sessionId
         if (!agentId || !agentSessionId || !restartTarget()) return 'not-eligible'
         // Command FIRST, pane check LAST. Both of these awaits can take a moment (the claude
@@ -4851,7 +4865,7 @@ export function TerminalNode({
         // session and a `dropped` node's CLI died on its own, so neither has a pane of ours to
         // match; both keep exactly the shell recognition they have today, and both gain the
         // agent-running refusal they did not.
-        const stWake = useAgentStatus.getState().byId[id]
+        const stWake = agentStatusStore.getState().byId[id]
         const verdict: WakeVerdict = decideWakeResume({
           owner: await readPaneOwner(),
           recorded: stWake?.hibernatedContext,
@@ -4862,7 +4876,7 @@ export function TerminalNode({
         // Always written, so a refusal that has since been fixed does not leave a stale sentence on
         // the chip. `null` for `'resume'` and for the transient `'unreadable'` — the latter is
         // timing, and the trigger's bounded retry (which reads this field) owns it.
-        useAgentStatus.getState().setWakeBlocked(id, wakeRefusalReason(verdict))
+        agentStatusStore.getState().setWakeBlocked(id, wakeRefusalReason(verdict))
         if (verdict !== 'resume') return 'not-eligible'
         // Clear the line before the launch line goes in. The shell above is the one WE exited to,
         // hours ago — nothing stops a passer-by (or a stray paste, or the user's own aborted
@@ -4904,7 +4918,7 @@ export function TerminalNode({
         // run on a relay session's core (its shell env belongs to the HOST, not this one). Shallow
         // pause touches no shell env and is allowed over SSH/relay, same as ordinary Restart/exit.
         if (deep && session.source === 'relay') return 'not-eligible'
-        const st = useAgentStatus.getState().byId[id]
+        const st = agentStatusStore.getState().byId[id]
         const agentSessionId = st?.sessionId
         const gate = restartEligibility(agentId, st?.state, agentSessionId)
         if (!gate.ok || !agentId || !agentSessionId || !restartTarget()) return 'not-eligible'
@@ -4942,7 +4956,7 @@ export function TerminalNode({
           // exact mechanism `restartAgentNode(…, restartShell: true)` uses, minus the auto-relaunch:
           // the next mount is `fresh`, and `paused` (set below, before the recycle takes effect)
           // is what keeps that mount's cold-restore auto-resume from firing.
-          useAgentStatus.getState().setPaused(id, true)
+          agentStatusStore.getState().setPaused(id, true)
           transport.recycle(id)
           updateNodeData(id, (node) => ({
             respawnNonce: ((node.data.respawnNonce as number | undefined) ?? 0) + 1
@@ -4950,15 +4964,15 @@ export function TerminalNode({
         } else if (alreadyExited) {
           // The pane and its recorded `hibernatedPane` are already correct (Eco/a prior pause set
           // them); only the durability changes.
-          useAgentStatus.getState().setPaused(id, true)
+          agentStatusStore.getState().setPaused(id, true)
         } else {
           // Shallow "Pause": identical to an Eco exit — tmux/pane untouched, `hibernated` records
           // it so the SLEEPING machinery (pane-recognition on wake) still applies — plus `paused`,
           // which is the only thing that changes: no auto-wake on reveal, and no auto-resume should
           // the tmux session itself later die and come back `fresh` (a reboot, e.g.).
-          useAgentStatus.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
-          useAgentStatus.getState().setHibernated(id, true)
-          useAgentStatus.getState().setPaused(id, true)
+          agentStatusStore.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
+          agentStatusStore.getState().setHibernated(id, true)
+          agentStatusStore.getState().setPaused(id, true)
         }
         return 'paused'
       })
@@ -4971,7 +4985,7 @@ export function TerminalNode({
     const unregisterUpdateExit = registerAgentUpdateExit(
       id,
       guardConcurrentRestart(id, async (): Promise<ExitPhaseOutcome> => {
-        const st = useAgentStatus.getState().byId[id]
+        const st = agentStatusStore.getState().byId[id]
         const agentSessionId = st?.sessionId
         const gate = restartEligibility(agentId, st?.state, agentSessionId)
         if (!gate.ok || !agentId || !agentSessionId || !restartTarget()) return 'not-eligible'
@@ -4986,8 +5000,8 @@ export function TerminalNode({
           isLive: restartTarget
         })
         if (outcome === 'exited') {
-          useAgentStatus.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
-          useAgentStatus.getState().setHibernated(id, true)
+          agentStatusStore.getState().setHibernatedContext(id, captureWakeContext(await readPaneOwner()))
+          agentStatusStore.getState().setHibernated(id, true)
         }
         return outcome
       })
@@ -5388,7 +5402,7 @@ export function TerminalNode({
       // conversation resumed before they can reach for the chip. No-op (one map lookup) for a
       // node that is not hibernated, which is every node in the default case. A `paused` node is
       // excluded — see the mount-timer trigger above for why (`shouldAutoWake`).
-      const stVisible = useAgentStatus.getState().byId[id]
+      const stVisible = agentStatusStore.getState().byId[id]
       if (visible && !wasVisible && shouldAutoWake(stVisible?.hibernated, stVisible?.paused))
         wakeRef.current()
       // …and the liveness check, for the same reason and on the same edge: a node whose CLI died
@@ -5495,7 +5509,7 @@ export function TerminalNode({
           // ~15 MB; the CLI is hundreds. So wait for the big prize, on the sweep's own cadence,
           // and only up to the capped total — a node that can never hibernate must not hold its
           // viewer forever.
-          const ecoStatus = useAgentStatus.getState().byId[id]
+          const ecoStatus = agentStatusStore.getState().byId[id]
           if (
             shouldDeferReleaseForEco({
               ecoEnabled: liveSettings.agentHibernationEnabled,
