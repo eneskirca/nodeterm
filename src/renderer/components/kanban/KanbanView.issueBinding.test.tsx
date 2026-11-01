@@ -16,9 +16,17 @@ import { useProjects } from '../../state/projects'
 import { useViewMode } from '../../state/viewMode'
 import { useGitHubIssues } from '../../state/githubIssues'
 
-vi.mock('../../session/session', () => ({
-  useSession: () => ({ source: 'local', api: window.nodeTerminal })
-}))
+vi.mock('../../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../../state/agentStatus')
+  return {
+    useSession: () => ({ source: 'local', api: window.nodeTerminal }),
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 
 const ISSUE: GitHubIssueCardView = {
   id: 9001, number: 42, title: 'Parser drops the last line', body: 'body text', state: 'open',

@@ -182,6 +182,11 @@ export const IPC = {
   canvasTrackpadGesture: 'canvas:trackpad-gesture',
   agentStatus: 'agent:status',
   agentSubagentSnapshot: 'agent:subagent-snapshot',
+  /** Renderer → main/server: the host's current per-node agent states, read off the agent-status
+   *  mirror (`AgentStatusSnapshotEntry[]`, shared/agent-status-snapshot.ts). A relay tab asks right
+   *  after subscribing to `agent:status`, so a node that went working before it joined is not blank.
+   *  The response is view-filtered for non-editors like `agent:status` (access-policy.ts). */
+  agentStatusSnapshot: 'agent:status-snapshot',
   /** Renderer → main/server: answer a held Claude permission hook (deterministic approvals).
    *  Payload: `{ nodeId, pendingId, decision: 'allow'|'deny' }`; resolves boolean. See
    *  docs/hook-reply-approvals.md. */

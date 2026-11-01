@@ -13,18 +13,20 @@
 // is no harness that can dispatch an `agent:status` event at it (the renderer's component tests all
 // mount small leaf components), and building one for this fix would be a far bigger change than the
 // fix. So the invariant is pinned over the source, like `core/no-electron.test.ts` pins its
-// boundary: both gates in the `state` branch must consult the same skip flag.
+// boundary: both gates in the `state` branch must consult the same skip flag. The listener's store
+// writes have since moved into `state/applyAgentEvent.ts` (behaviour-tested in its own suite), so
+// that is the source read here.
 
 import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 
-const src = fs.readFileSync(path.resolve(__dirname, 'Canvas.tsx'), 'utf8')
+const src = fs.readFileSync(path.resolve(__dirname, '../state/applyAgentEvent.ts'), 'utf8')
 
 /** The `case 'state':` body of the agent-status listener. */
 function stateBranch(): string {
   const start = src.indexOf('const stuckRescueSkip')
-  expect(start, 'Canvas must still compute a stuck-rescue skip flag').toBeGreaterThan(-1)
+  expect(start, 'the agent-event reducer must still compute a stuck-rescue skip flag').toBeGreaterThan(-1)
   const end = src.indexOf("case 'subagent-start'", start)
   expect(end).toBeGreaterThan(start)
   return src.slice(start, end)

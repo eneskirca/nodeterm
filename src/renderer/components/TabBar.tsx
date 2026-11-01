@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useProjects } from '../state/projects'
 import { isOmniKanbanEnabled, toggleBoardView, useViewMode, viewFor } from '../state/viewMode'
-import { useAgentStatus } from '../state/agentStatus'
-import { unreadIdSet, unreadIdsSig } from '../lib/unreadBadge'
+import { useAgentStatusSig, type AgentStatusLookup } from '../session/agent-status-lookup'
 import { usePauseCounts } from '../state/pauseCounts'
 import { useSettings } from '../state/settings'
 import { accountsForProject, sshAccountsHint, systemAccountDisplay } from '../state/workspace'
@@ -73,6 +72,44 @@ interface TabBarProps {
 }
 
 /**
+ * The unread count of every project that has one, as ONE primitive — the tab dots' selector shape,
+ * so a working/waiting flip of any agent does not re-render the tab bar. Each node is asked through
+ * ITS project (`lookup(project.id, node.id)`): a team tab's unread lives in its relay session's
+ * store, and its node ids are the handed-off SSH project's too, so counting one store for every tab
+ * put one project's dot on the other's tab. Written with `JSON.stringify` (`[[projectId, count]…]`),
+ * never a raw join — ids come from git-shared, hand-editable project files. `''` when nothing is
+ * unread. Counts `p.nodes` entries, exactly as the dot always did.
+ */
+export function unreadSigFor(
+  projects: readonly { id: string; nodes: readonly { id: string }[] }[],
+  lookup: AgentStatusLookup
+): string {
+  const entries: Array<[string, number]> = []
+  for (const p of projects) {
+    let count = 0
+    for (const n of p.nodes) if (lookup(p.id, n.id)?.unread) count++
+    if (count > 0) entries.push([p.id, count])
+  }
+  return entries.length ? JSON.stringify(entries) : ''
+}
+
+/** Parse `unreadSigFor` back into projectId → unread count (projects with none are absent). */
+export function parseUnreadSig(sig: string): ReadonlyMap<string, number> {
+  const out = new Map<string, number>()
+  if (!sig) return out
+  try {
+    const entries: unknown = JSON.parse(sig)
+    if (!Array.isArray(entries)) return out
+    for (const e of entries) {
+      if (Array.isArray(e) && typeof e[0] === 'string' && typeof e[1] === 'number') out.set(e[0], e[1])
+    }
+  } catch {
+    /* our own output; an unparseable one reads as nothing unread */
+  }
+  return out
+}
+
+/**
  * The runtime session dimension of a tab (which core the project lives on). Rendered ONLY when
  * more than one session exists, `sessionCount()` is 1 for a solo user today, so this never
  * mounts and the solo tab bar is pixel-identical. Its own component because
@@ -125,10 +162,12 @@ export function TabBar({
   const perProjectKanban = useViewMode((s) => !!activeId && viewFor(s, activeId) === 'kanban')
   const kanbanActive = isGlobal || perProjectKanban
   const highlightedId = useViewMode((s) => s.highlightedSwimlaneId)
-  // Unread dots need only the unread id set — subscribing to the whole status map re-rendered
-  // the TabBar on every working/waiting flip of any agent. Primitive signature → rare updates.
-  const unreadIds = useAgentStatus((s) => unreadIdsSig(s.byId))
-  const unreadSet = useMemo(() => unreadIdSet(unreadIds), [unreadIds])
+  // Unread dots need only each tab's unread count — subscribing to the whole status map re-rendered
+  // the TabBar on every working/waiting flip of any agent. Primitive signature → rare updates. Each
+  // tab counts from ITS project's session store (`unreadSigFor`).
+  const projectIds = useMemo(() => projects.map((p) => p.id), [projects])
+  const unreadSig = useAgentStatusSig(projectIds, (lookup) => unreadSigFor(projects, lookup))
+  const unreadCounts = useMemo(() => parseUnreadSig(unreadSig), [unreadSig])
   // ⏸ badge + the "Cancel pending pauses" row. Computed HERE, not in Canvas: this component
   // already holds the projects array, and Canvas subscribing to it would re-render the whole canvas
   // on every node serialization.
@@ -365,7 +404,7 @@ export function TabBar({
           {projects.map((p) => {
             const active = isGlobal ? (highlightedId ? p.id === highlightedId : p.id === activeId) : p.id === activeId
             const swimlaneHighlight = isGlobal && p.id === highlightedId
-            const unreadCount = p.nodes.filter((n) => unreadSet.has(n.id)).length
+            const unreadCount = unreadCounts.get(p.id) ?? 0
             return (
               <div
                 key={p.id}

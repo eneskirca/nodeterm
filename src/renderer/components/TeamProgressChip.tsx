@@ -1,5 +1,5 @@
 import { memo, useState } from 'react'
-import { useAgentStatus } from '../state/agentStatus'
+import { useAgentStatus, type AgentStatusSession } from '../state/agentStatus'
 import {
   parseTeamProgressSig,
   STATION_LABEL,
@@ -20,19 +20,26 @@ const RING_C = 2 * Math.PI * RING_R
  * to that node.
  *
  * It subscribes to a primitive signature of its OWN stations' states (`teamProgressSig`), never to
- * the whole status map, so a hook event elsewhere on the canvas re-renders nothing here.
+ * the whole status map, so a hook event elsewhere on the canvas re-renders nothing here. The map is
+ * the host surface's session store (`statusStore`): a team tab's stations report into its relay
+ * session's store, and share node ids with the handed-off SSH project, so the default store would
+ * count that project's stations.
  */
 export const TeamProgressChip = memo(function TeamProgressChip({
   stations,
   onTravel,
-  menuZIndex = 70
+  menuZIndex = 70,
+  statusStore
 }: {
   stations: readonly TeamStation[]
   onTravel: (nodeId: string) => void
   /** Above the host surface: the card modal's scrim sits at 55. */
   menuZIndex?: number
+  /** The agent-status store of the session the host node's project belongs to. Absent = the
+   *  default store. */
+  statusStore?: AgentStatusSession['store']
 }): React.JSX.Element | null {
-  const sig = useAgentStatus((s) => teamProgressSig(s.byId, stations))
+  const sig = (statusStore ?? useAgentStatus)((s) => teamProgressSig(s.byId, stations))
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   if (stations.length === 0) return null
   const kinds = parseTeamProgressSig(sig)

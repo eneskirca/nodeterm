@@ -1196,7 +1196,8 @@ describe('a delivered relaunch withdraws the recorded exit (cursor)', () => {
 
   it('TerminalNode wires restart, wake and the cold-restore relaunch (model switch) to it', () => {
     const src = readFileSync(new URL('../nodes/TerminalNode.tsx', import.meta.url), 'utf8')
-    expect(src).toContain('const markRelaunched = (): void => useAgentStatus.getState().setSessionEnded(id, false)')
+    // On the node's own session store (the default one for a local node).
+    expect(src).toContain('const markRelaunched = (): void => agentStatusStore.getState().setSessionEnded(id, false)')
     // restart + wake: both resume calls hand it over.
     expect(src.match(/onResumed: markRelaunched/g)?.length).toBe(2)
     // cold restore (also what a model switch and "restart agent and shell" recycle into).

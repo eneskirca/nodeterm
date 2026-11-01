@@ -6,31 +6,34 @@
 // `agent-status-rescue.test.ts`, which pins its sibling invariant the same way). The DECISION is
 // pure and behaviourally tested in `renderer/lib/completionAlert.test.ts`; what only the source can
 // show is that Canvas asks it, asks it for the right event, and puts the quiet gate BELOW the
-// unread write rather than above it.
+// unread write rather than above it. The asking now happens in the listener's store half,
+// `state/applyAgentEvent.ts`, which hands the verdict back as the alert's `quiet`.
 
 import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 
 const src = fs.readFileSync(path.resolve(__dirname, 'Canvas.tsx'), 'utf8').replace(/\r\n/g, '\n')
+const reducerSrc = fs
+  .readFileSync(path.resolve(__dirname, '../state/applyAgentEvent.ts'), 'utf8')
+  .replace(/\r\n/g, '\n')
 
 /** The body of the `alert` closure in the agent-status listener. */
 function alertBody(): string {
   const start = src.indexOf('const alert = (')
   expect(start, 'Canvas must still build its alert closure').toBeGreaterThan(-1)
-  const end = src.indexOf('const an = useAgentNodes.getState()', start)
+  const end = src.indexOf('const r = applyAgentEvent(', start)
   expect(end).toBeGreaterThan(start)
   return src.slice(start, end)
 }
 
 describe('Canvas completion alert — background fan-out (issue #708)', () => {
   it('asks the shared predicate rather than re-deriving "still working" inline', () => {
-    expect(src).toContain("import { fanoutStillWorking } from '@renderer/lib/completionAlert'")
+    expect(reducerSrc).toContain("import { fanoutStillWorking } from '@renderer/lib/completionAlert'")
     // The verdict must be computed from the LIVE store, not from the `an` snapshot taken at
     // listener entry, and it must be handed to the alert as `quiet`.
-    expect(src).toMatch(
-      /fanoutStillWorking\(\s*Object\.values\(useAgentNodes\.getState\(\)\.byId\),\s*e\.nodeId\s*\)/
-    )
+    expect(reducerSrc).toMatch(/fanoutStillWorking\(\s*Object\.values\(nodes\.getState\(\)\.byId\),\s*e\.nodeId\s*\)/)
+    expect(reducerSrc).toMatch(/alert = \{ kind: 'finished', quiet: fanoutBusy \}/)
   })
 
   it('gates only the completion alert, never "needs input"', () => {

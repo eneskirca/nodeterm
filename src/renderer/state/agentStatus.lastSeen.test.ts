@@ -3,6 +3,15 @@ import { buildHibernationCandidates } from '../lib/hibernationCandidates'
 import { planHibernation } from '../terminal/hibernation-policy'
 import { shouldDeferReleaseForEco } from '../terminal/offscreen-policy'
 import { buildStatusList } from '../lib/sessionList'
+import type { AgentNodeStatus } from './agentStatus'
+import type { AgentStatusLookup } from '../session/agent-status-lookup'
+
+// `buildStatusList` reads status per PROJECT (bug D); these cases have one store, so a map that
+// ignores the project stands in.
+const lookupFromMap =
+  (byId: Record<string, AgentNodeStatus>): AgentStatusLookup =>
+  (_projectId, nodeId) =>
+    byId[nodeId]
 
 // The persisted "last seen" clock (`AgentNodeStatus.lastSeen`): restored across an app restart as a
 // CLOCK that orders and ages sidebar rows — never as a live state, never as Eco's idle clock. It
@@ -154,7 +163,7 @@ describe('the first event after a restart (SessionStart of a cold-restore resume
       color: '#fff',
       nodes: [{ id: 'r', kind: 'terminal' as const, title: 'r', color: '#fff', agentId: 'claude' as const }]
     }
-    const row = buildStatusList([project], null, 'p', after, '').flatMap((g) => g.rows)[0]
+    const row = buildStatusList([project], null, 'p', lookupFromMap(after), '').flatMap((g) => g.rows)[0]
     expect(row.statusClock).toBe('seen') // NOT "before nodeterm restarted"
     const { sessionStateAgeTitle } = await import('../lib/sessionList')
     expect(sessionStateAgeTitle('seen just now', row.statusClock)).not.toMatch(/restarted/)
@@ -311,7 +320,7 @@ describe('sidebar ordering and age label', () => {
         { id: 'recent', kind: 'terminal' as const, title: 'c-recent', color: '#fff', agentId: 'claude' as const }
       ]
     }
-    const groups = buildStatusList([project], null, 'p', useAgentStatus.getState().byId, '')
+    const groups = buildStatusList([project], null, 'p', lookupFromMap(useAgentStatus.getState().byId), '')
     const unknown = groups.find((g) => g.kind === 'unknown')!
     expect(unknown.rows.map((r) => r.id)).toEqual(['recent', 'old', 'noClock'])
     expect(groups.flatMap((g) => g.rows).some((r) => r.id === 'ghost')).toBe(false)
@@ -325,7 +334,7 @@ describe('sidebar ordering and age label', () => {
     expect(sessionStateAgeTitle(label!, 'restored', 'working')).toMatch(/Running/)
     // A live transition wins.
     useAgentStatus.getState().setState('old', 'done', 'claude')
-    const after = buildStatusList([project], null, 'p', useAgentStatus.getState().byId, '')
+    const after = buildStatusList([project], null, 'p', lookupFromMap(useAgentStatus.getState().byId), '')
     const oldRow = after.flatMap((g) => g.rows).find((r) => r.id === 'old')!
     expect(oldRow.statusClock).toBe('transition')
     expect(sessionStateAgeLabel(oldRow.statusUpdatedAt, Date.now(), oldRow.statusClock)).toBe('just now')

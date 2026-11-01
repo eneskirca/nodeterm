@@ -19,9 +19,9 @@ import { liveProjectJumpTarget } from '../../lib/projectJump'
 import { terminalChordBubbles, terminalShortcutPolicy } from '../../lib/keybindingOverrides'
 import { focusXtermUnlessCovered, useMdModeFocus } from '../../terminal/useMdModeFocus'
 import { FindBar } from '../FindBar'
-import { useAgentStatus } from '../../state/agentStatus'
 import { useProjects } from '../../state/projects'
-import { isRemoteProjectId, useSession } from '../../session/session'
+import { isRemoteProjectId, useSession, useSessionStores } from '../../session/session'
+import { relayStatusGates } from '../../terminal/relay-status-gates'
 import { REMOTE_PROJECT_SPAWN_REFUSAL, spawnBelongsElsewhere, useOwningProjectId } from '../../session/owning-project'
 import { isHostedReadOnly } from '../../state/hostedTeams'
 import { useSettings } from '../../state/settings'
@@ -160,6 +160,13 @@ export function ModalTerminal({
 }: ModalTerminalProps) {
   const session = useSession()
   const { api } = session
+  // MIRROR TerminalNode: which status-driven readers this viewer may run (relay-status-gates.ts) —
+  // all of them on the local session, none on a relay / team tab, whose status is its host's.
+  const gates = relayStatusGates(session.source)
+  // The agent status of the session this card's project runs under (mounted through
+  // `ProjectSessionScope`), never the default store: a team tab's node shares its id with the
+  // handed-off SSH project, whose entry is the default store's.
+  const agentStatusStore = useSessionStores().agentStatus.store
   // Read at click time from the lifecycle effect, which runs once per mount.
   const projectIdRef = useRef(projectId)
   projectIdRef.current = projectId
@@ -206,12 +213,12 @@ export function ModalTerminal({
   const sessionIdRef = useRef<string | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const transportRef = useRef<LocalTransport | null>(null)
-  const agentSessionId = useAgentStatus((s) => s.byId[nodeId]?.sessionId)
-  const observedAgentId = useAgentStatus((s) => s.byId[nodeId]?.agentId)
+  const agentSessionId = agentStatusStore((s) => s.byId[nodeId]?.sessionId)
+  const observedAgentId = agentStatusStore((s) => s.byId[nodeId]?.agentId)
   // MIRROR TerminalNode: transcript READS go to the account the session is actually running as,
   // which for a plain terminal is only ever the observed one. The spawn below keeps
   // `spawn.accountId` — launch identity stays creation-time.
-  const observedAccount = useAgentStatus((s) => s.byId[nodeId]?.account)
+  const observedAccount = agentStatusStore((s) => s.byId[nodeId]?.account)
   // …resolved against the live account list, so linking the dir repoints the reader at once.
   const claudeAccounts = useSettings((s) => s.settings.claudeAccounts)
   // MIRROR TerminalNode: the meter's rehydration reads the same session the ⌘M view does.
@@ -262,8 +269,10 @@ export function ModalTerminal({
     accountId: effectiveAccountId(spawn.accountId, observedAccount, claudeAccounts),
     // MIRROR TerminalNode: the transcript index reads claude's JSONL through claude's resolver, so
     // it is gated on the claude-transcript fact, NOT on the context meter's `hasUsage` (which now
-    // spans codex and gemini too) — see lib/transcriptGates.ts.
-    searchTranscript: readsClaudeTranscript(spawn.agentId),
+    // spans codex and gemini too) — see lib/transcriptGates.ts. And on `gates.transcriptSearch`: it
+    // reads THIS machine's transcripts (`window.nodeTerminal.claude`), never a relay host's, and a
+    // team tab's card holds the HOST's session id.
+    searchTranscript: gates.transcriptSearch && readsClaudeTranscript(spawn.agentId),
     open: searchOpen,
     readBuffer
   })
@@ -713,7 +722,7 @@ export function ModalTerminal({
     if (!term || !files.length) return
     // Clipboard bytes must be written before they have a path, which is not instant either.
     const needsWrite = files.some((f) => !window.nodeTerminal.getPathForFile(f))
-    const st = useAgentStatus.getState().byId[nodeId]
+    const st = agentStatusStore.getState().byId[nodeId]
     const paneAgent = spawn.agentId ?? st?.agentId
     const agentPane = agentProcessInPane(paneAgent, st)
     // MIRROR TerminalNode.dropDialectFor: spelled for the core that owns the pane, not this window.

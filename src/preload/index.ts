@@ -978,6 +978,7 @@ const api: NodeTerminalApi = {
     ipcRenderer.on(IPC.agentStatus, handler)
     return () => ipcRenderer.removeListener(IPC.agentStatus, handler)
   }, () => ipcRenderer.invoke(IPC.agentSubagentSnapshot), listener),
+  agentStatusSnapshot: () => ipcRenderer.invoke(IPC.agentStatusSnapshot),
   reportHibernated: (nodeId, on) => ipcRenderer.send(IPC.agentHibernated, { nodeId, on }),
   seedAgentIdentity: (entries) => ipcRenderer.send(IPC.agentSeedIdentity, entries),
   onAgentWake: (listener) => {

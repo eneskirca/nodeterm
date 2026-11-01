@@ -42,10 +42,11 @@ describe('sessionEnded — an announced exit is its own fact, not an idle state'
     expect(useAgentStatus.getState().byId[id]?.sessionEnded).toBeUndefined()
   })
 
-  it('Canvas records it on SessionEnd and withdraws it on SessionStart', () => {
+  it('the agent-event reducer records it on SessionEnd and withdraws it on SessionStart', () => {
     // A store flag with no writer is the bug in a new place: the levers would type-check and stay
     // protected forever. Pinned at source level, like the setState argument list above.
-    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/canvas/Canvas.tsx'), 'utf8')
+    // (The listener's store writes moved out of Canvas into state/applyAgentEvent.ts.)
+    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/state/applyAgentEvent.ts'), 'utf8')
     const end = src.slice(src.indexOf("if (e.sessionPhase === 'end') {"))
     expect(end.slice(0, 600)).toMatch(/cs\.setSessionEnded\(e\.nodeId, true\)/)
     const start = src.slice(src.indexOf("if (e.sessionPhase === 'start') {"), src.indexOf("if (e.sessionPhase === 'end') {"))
@@ -300,10 +301,11 @@ describe('the verified evidence for a transition', () => {
     expect(useAgentStatus.getState().byId[id].stateVerified).toBe(false)
   })
 
-  it('Canvas hands the event\'s flag to the store — the drop this whole change exists to fix', () => {
+  it('the agent-event reducer hands the event\'s flag to the store — the drop this whole change exists to fix', () => {
     // A store field with no writer is the same bug in a new place, and this one is a plain
     // argument list: nothing else in the suite would notice if the last argument disappeared.
-    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/canvas/Canvas.tsx'), 'utf8')
+    // (The listener's store writes moved out of Canvas into state/applyAgentEvent.ts.)
+    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/state/applyAgentEvent.ts'), 'utf8')
     expect(src).toMatch(
       /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored,\s*e\.held,\s*recordsTurnInterrupt\(e\)\s*\)/
     )
@@ -431,5 +433,45 @@ describe('onHookEvent — a per-node pulse for EVERY hook event, same-state ones
     useAgentStatus.getState().setState(id, 'working', 'claude', true)
     expect(seen).toBe('working')
     unsub()
+  })
+})
+
+describe('same-state fast path — own entries only', () => {
+  // The fields the in-place refresh writes, and the objects a bare `byId[id]` lookup answers for a
+  // prototype name with no own entry: `Object.prototype`, `Object`, `Object.prototype.toString`.
+  const FIELDS = ['stateAt', 'lastSeen', 'stateVerified']
+  const targets = (): object[] => [Object.prototype, Object, Object.prototype.toString]
+  const polluted = (): string[] =>
+    targets().flatMap((t, i) => FIELDS.filter((k) => Object.hasOwn(t, k)).map((k) => `${i}.${k}`))
+  afterEach(() => {
+    // A regression must fail THIS test, not every later test in the worker.
+    for (const t of targets()) for (const k of FIELDS) delete (t as Record<string, unknown>)[k]
+  })
+
+  it('a same-state event for an id with no own entry never writes into the prototype', () => {
+    const { store } = createAgentStatusSession(undefined)
+    for (const id of ['__proto__', 'constructor', 'toString']) {
+      // Unknown → unknown with no agent id: same-state by construction, so the in-place path.
+      store.getState().setState(id, undefined, undefined)
+      store.getState().setState(id, undefined, undefined, undefined, undefined, true)
+    }
+    expect(polluted()).toEqual([])
+    expect(Object.hasOwn(Object.prototype, 'stateAt')).toBe(false)
+    expect(Object.hasOwn(Object.prototype, 'lastSeen')).toBe(false)
+    expect(Object.hasOwn(Object.prototype, 'stateVerified')).toBe(false)
+  })
+
+  it('a real node still refreshes in place (no new table, freshness and evidence move)', () => {
+    const { store } = createAgentStatusSession(undefined)
+    const id = nid()
+    store.getState().setState(id, 'working', 'claude', true, undefined, true)
+    const table = store.getState().byId
+    const t0 = table[id].stateAt
+    vi.advanceTimersByTime(1000)
+    store.getState().setState(id, 'working', 'claude')
+    expect(store.getState().byId).toBe(table)
+    expect(store.getState().byId[id].stateAt).toBe((t0 ?? 0) + 1000)
+    expect(store.getState().byId[id].lastSeen?.at).toBe((t0 ?? 0) + 1000)
+    expect(store.getState().byId[id].stateVerified).toBe(false)
   })
 })

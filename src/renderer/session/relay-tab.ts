@@ -19,6 +19,7 @@ import { buildRelayApi, type RelayApiHandle } from '../bridge/relay-api'
 import { E_DISCONNECTED } from '../../shared/rpc'
 import { onLocalRelayClose } from '../bridge/relay-local-close'
 import { sanitizeRelayProject } from './relay-ssh'
+import { wireRelayAgentStatus } from './relay-agent-status'
 import { closedReasonMessage, RelayApprovalError } from '../lib/hostedTeam'
 import { attachHostedOwner } from '../lib/hostedOwner'
 import { useHostedTeams, type HostedTeamInfo } from '../state/hostedTeams'
@@ -131,8 +132,13 @@ export async function openRelayTab(
   const session = createSession('relay', handle.api, label)
   if (hostedInfo) useHostedTeams.getState().set(session.id, hostedInfo)
   // The teardowns the tab owes on disconnect (obligation 1): the presence subscription this session
-  // just opened, and the relay socket. Both run exactly once in disposeSession.
+  // just opened, its agent-status subscription, and the relay socket. All run exactly once, in
+  // disposeSession or takeSessionOffline.
   holdSessionTeardown(session.id, getSessionStores(session.id).presence.connect())
+  // The host's agent status, into THIS session's own store (bug D) — subscribed by this session's
+  // api, never through a project lookup (two sessions may serve one project id). Before any await,
+  // so the RpcClient's early buffer flushes into it.
+  holdSessionTeardown(session.id, wireRelayAgentStatus(handle.api, getSessionStores(session.id).agentStatus))
   holdSessionTeardown(session.id, () => handle.close())
 
   // Populate the tab from the host's workspace, which the relay boundary already SCOPED to the one

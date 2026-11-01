@@ -13,9 +13,17 @@ import type { KanbanSession } from './KanbanView'
 import type { MenuItem } from '../ContextMenu'
 
 const generateName = vi.fn()
-vi.mock('../../session/session', () => ({
-  useSession: () => ({ api: { pty: { generateName }, shell: { openExternal: vi.fn() } } })
-}))
+vi.mock('../../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../../state/agentStatus')
+  return {
+    useSession: () => ({ api: { pty: { generateName }, shell: { openExternal: vi.fn() } } }),
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 vi.mock('./BoardLogPanel', () => ({ BoardLogPanel: () => null }))
 vi.mock('./CardMetaBar', () => ({ CardMetaBar: () => null }))
 vi.mock('../ContextMeter', () => ({ ContextMeter: () => null }))

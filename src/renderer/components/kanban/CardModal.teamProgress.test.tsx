@@ -12,9 +12,17 @@ import { CardModal } from './CardModal'
 import type { KanbanSession } from './KanbanView'
 import type { TeamStation } from '../../lib/teamProgress'
 
-vi.mock('../../session/session', () => ({
-  useSession: () => ({ api: { pty: {}, shell: { openExternal: vi.fn(async () => {}) } } })
-}))
+vi.mock('../../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../../state/agentStatus')
+  return {
+    useSession: () => ({ api: { pty: {}, shell: { openExternal: vi.fn(async () => {}) } } }),
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 vi.mock('./BoardLogPanel', () => ({ BoardLogPanel: () => null }))
 vi.mock('../ContextMeter', () => ({ ContextMeter: () => null }))
 vi.mock('./ModalTerminal', () => ({ ModalTerminal: () => <div className="kanban-modal__term" /> }))

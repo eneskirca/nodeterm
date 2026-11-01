@@ -7,6 +7,14 @@ import {
   type NeedsYouProject
 } from './nextNeedingYou'
 import type { AgentNodeStatus } from '../state/agentStatus'
+import type { AgentStatusLookup } from '../session/agent-status-lookup'
+
+// The queue reads status per PROJECT (`buildStatusList`'s lookup). These cases have one store, so
+// a map that ignores the project stands in.
+const lookupFromMap =
+  (byId: Record<string, AgentNodeStatus>): AgentStatusLookup =>
+  (_projectId, nodeId) =>
+    byId[nodeId]
 
 const node = (id: string, title = id) => ({ id, kind: 'terminal' as const, title, color: '#888' })
 
@@ -32,20 +40,20 @@ describe('needsYouQueue', () => {
       c1: st('waiting', 200)
     }
     // Working, done and unread rows are not "needing you"; the active project is irrelevant to order.
-    expect(needsYouQueue(projects(), null, 'p1', status)).toEqual(['b1', 'c1', 'a1'])
-    expect(needsYouQueue(projects(), null, 'p3', status)).toEqual(['b1', 'c1', 'a1'])
+    expect(needsYouQueue(projects(), null, 'p1', lookupFromMap(status))).toEqual(['b1', 'c1', 'a1'])
+    expect(needsYouQueue(projects(), null, 'p3', lookupFromMap(status))).toEqual(['b1', 'c1', 'a1'])
   })
 
   it('breaks clock ties by project store order, then title, deterministically', () => {
     const ps = projects()
     ps[0].nodes = [node('a1', 'zeta'), node('a2', 'Alpha')]
     const status = { a1: st('waiting', 100), a2: st('waiting', 100), b1: st('waiting', 100) }
-    expect(needsYouQueue(ps, null, 'p1', status)).toEqual(['a2', 'a1', 'b1'])
+    expect(needsYouQueue(ps, null, 'p1', lookupFromMap(status))).toEqual(['a2', 'a1', 'b1'])
   })
 
   it('sorts a row with no clock last instead of first', () => {
     const status = { a1: st('waiting'), b1: st('waiting', 999) }
-    expect(needsYouQueue(projects(), null, 'p1', status)).toEqual(['b1', 'a1'])
+    expect(needsYouQueue(projects(), null, 'p1', lookupFromMap(status))).toEqual(['b1', 'a1'])
   })
 
   it('matches the sidebar: closed projects are out, an unavailable one cannot be travelled to', () => {
@@ -53,17 +61,17 @@ describe('needsYouQueue', () => {
     ps[1].closed = true
     ps[2].unavailable = true
     const status = { a1: st('waiting', 3), b1: st('waiting', 1), c1: st('waiting', 2) }
-    expect(needsYouQueue(ps, null, 'p1', status)).toEqual(['a1'])
+    expect(needsYouQueue(ps, null, 'p1', lookupFromMap(status))).toEqual(['a1'])
   })
 
   it('counts a live active-project node that is not committed to the store yet', () => {
     const live = [...projects()[0].nodes, node('fresh')]
     const status = { fresh: st('blocked', 5), b1: st('waiting', 9) }
-    expect(needsYouQueue(projects(), live, 'p1', status)).toEqual(['fresh', 'b1'])
+    expect(needsYouQueue(projects(), live, 'p1', lookupFromMap(status))).toEqual(['fresh', 'b1'])
   })
 
   it('is empty when nothing needs the user', () => {
-    expect(needsYouQueue(projects(), null, 'p1', { a1: st('working', 1) })).toEqual([])
+    expect(needsYouQueue(projects(), null, 'p1', lookupFromMap({ a1: st('working', 1) }))).toEqual([])
   })
 })
 
@@ -108,8 +116,8 @@ describe('after a restart: agents last seen waiting, with nothing reported since
       b1: restored('working'),
       c1: restored('waiting')
     }
-    expect(needsYouQueue(projects(), null, 'p1', status)).toEqual([])
-    expect(waitingBeforeRestart(projects(), null, 'p1', status)).toBe(3)
+    expect(needsYouQueue(projects(), null, 'p1', lookupFromMap(status))).toEqual([])
+    expect(waitingBeforeRestart(projects(), null, 'p1', lookupFromMap(status))).toBe(3)
   })
 
   it('a clock from THIS run, a live state, or a closed project does not count', () => {
@@ -120,7 +128,7 @@ describe('after a restart: agents last seen waiting, with nothing reported since
       a2: { ...restored('waiting'), state: 'working', lastEventAt: 9 }, // it reported since
       c1: restored('waiting') // its project is closed, like the queue's membership
     }
-    expect(waitingBeforeRestart(ps, null, 'p1', status)).toBe(0)
+    expect(waitingBeforeRestart(ps, null, 'p1', lookupFromMap(status))).toBe(0)
   })
 
   it('says why the queue is empty instead of "no agent is waiting"', () => {

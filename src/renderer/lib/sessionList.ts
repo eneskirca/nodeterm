@@ -1,4 +1,5 @@
 import type { AgentNodeStatus } from '../state/agentStatus'
+import type { AgentStatusLookup } from '../session/agent-status-lookup'
 import type { AgentId } from '@shared/agents/config'
 import type { AgentState } from '@shared/agents/normalize'
 import type { NodeKind, ObservedClaudeAccount } from '@shared/types'
@@ -442,7 +443,7 @@ export function buildSessionList(
   projects: ProjectInput[],
   liveActiveNodes: SessionNodeInput[] | null,
   activeProjectId: string,
-  statusById: Record<string, AgentNodeStatus>,
+  statusFor: AgentStatusLookup,
   filter: string
 ): SessionGroup[] {
   const needle = filter.trim().toLowerCase()
@@ -486,7 +487,7 @@ export function buildSessionList(
     const buildBucket = (gn: SessionNodeInput): GroupBucket | null => {
       const sessions = terminals
         .filter((n) => n.parentId === gn.id)
-        .map((n) => toRow(n, statusById[n.id]))
+        .map((n) => toRow(n, statusFor(p.id, n.id)))
         .filter(keep)
       const children = (childGroups.get(gn.id) ?? [])
         .map(buildBucket)
@@ -507,7 +508,7 @@ export function buildSessionList(
 
     const ungrouped = terminals
       .filter((n) => !n.parentId || !groupById.has(n.parentId))
-      .map((n) => toRow(n, statusById[n.id]))
+      .map((n) => toRow(n, statusFor(p.id, n.id)))
       .filter(keep)
 
     return {
@@ -548,16 +549,16 @@ export interface StatusSection {
  * re-sort within project. Within a section, rows are ordered by most-recent state transition first,
  * so the freshest work in each bucket is easiest to reach.
  *
- * Status comes from the same global `statusById` map `buildSessionList` reads; for local-core
- * projects that map is live for every node regardless of which project is active. Remote/relay
- * nodes are absent from it, so they fall through to `unknown` — the same way they render in project
- * mode today, so this introduces no regression.
+ * Status comes from the same per-project lookup `buildSessionList` reads (`AgentStatusLookup`):
+ * each row is asked through ITS project, so a relay/team tab's node reads that tab's session store
+ * and a local node the default one, whichever project is active. A node id held by two projects (a
+ * handed-off SSH project and the team tab serving it) therefore reads each project's own answer.
  */
 export function buildStatusList(
   projects: ProjectInput[],
   liveActiveNodes: SessionNodeInput[] | null,
   activeProjectId: string,
-  statusById: Record<string, AgentNodeStatus>,
+  statusFor: AgentStatusLookup,
   filter: string
 ): StatusSection[] {
   const needle = filter.trim().toLowerCase()
@@ -605,7 +606,7 @@ export function buildStatusList(
       const node = isActive && liveById.has(n.id) ? liveById.get(n.id)! : n
       if (seen.has(node.id)) continue
       seen.add(node.id)
-      const row = toRow(node, statusById[node.id], p)
+      const row = toRow(node, statusFor(p.id, node.id), p)
       if (keep(row, p.id)) tagged.push({ row, pidx })
     }
   })
@@ -619,7 +620,7 @@ export function buildStatusList(
       for (const n of liveActiveNodes) {
         if (n.kind !== 'terminal' || seen.has(n.id) || ownerById.has(n.id)) continue
         seen.add(n.id)
-        const row = toRow(n, statusById[n.id], active)
+        const row = toRow(n, statusFor(active.id, n.id), active)
         if (keep(row, active.id)) tagged.push({ row, pidx: activePidx })
       }
     }

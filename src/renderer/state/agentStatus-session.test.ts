@@ -115,6 +115,81 @@ describe('agentStatusForApi — one store per core, keyed by api identity', () =
     expect(localStorage.getItem('nodeterm.agentStatus')).toBeNull()
   })
 
+  it('a non-local api never acks a read: clearUnread after done calls no api.ackDone', async () => {
+    const { agentStatusForApi } = await import('./agentStatus')
+    const ackDone = vi.fn()
+    const api = { marker: 'relay', ackDone } as unknown as NodeTerminalApi
+    const { store } = agentStatusForApi(api)
+    store.getState().setState('nt-x', 'done', 'claude')
+    store.getState().markUnread('nt-x')
+    store.getState().clearUnread('nt-x')
+    // Read on this desktop only (product decision 1): nothing goes back to that core.
+    expect(store.getState().byId['nt-x']?.unread).toBe(false)
+    expect(ackDone).not.toHaveBeenCalled()
+  })
+
+  it('the default instance still acks a read to the local api', async () => {
+    const ackDone = vi.fn()
+    const api = { marker: 'preload', ackDone } as unknown as NodeTerminalApi
+    vi.stubGlobal('window', { nodeTerminal: api })
+    const { agentStatusForApi } = await import('./agentStatus')
+    const { store } = agentStatusForApi(api)
+    store.getState().setState('nt-y', 'done', 'claude')
+    store.getState().clearUnread('nt-y')
+    expect(ackDone).toHaveBeenCalledWith('nt-y')
+  })
+
+  it('a non-local api never reports hibernated: a team tab pause stays off this desktop mirror', async () => {
+    // This desktop's own bridge, as the preload would expose it: the mirror a report would reach.
+    const local = { marker: 'preload', reportHibernated: vi.fn() }
+    vi.stubGlobal('window', { nodeTerminal: local })
+    const { agentStatusForApi, defaultAgentStatus } = await import('./agentStatus')
+    const relay = { marker: 'relay', reportHibernated: vi.fn() }
+    const session = agentStatusForApi(relay as unknown as NodeTerminalApi)
+    expect(session).not.toBe(defaultAgentStatus)
+    const { store } = session
+    // A shallow pause on a team tab's node (TerminalNode writes both flags), then a wake.
+    store.getState().setHibernated('nt-x', true)
+    store.getState().setPaused('nt-x', true)
+    expect(store.getState().byId['nt-x']?.hibernated).toBe(true)
+    expect(store.getState().byId['nt-x']?.paused).toBe(true)
+    store.getState().setHibernated('nt-x', false)
+    store.getState().setPaused('nt-x', false)
+    // Local-only in v1: not this desktop's mirror (under the host's node id), not the host.
+    expect(local.reportHibernated).not.toHaveBeenCalled()
+    expect(relay.reportHibernated).not.toHaveBeenCalled()
+  })
+
+  it('the default instance still reports hibernated to the local api, on each edge', async () => {
+    const reportHibernated = vi.fn()
+    const api = { marker: 'preload', reportHibernated } as unknown as NodeTerminalApi
+    vi.stubGlobal('window', { nodeTerminal: api })
+    const { agentStatusForApi, defaultAgentStatus } = await import('./agentStatus')
+    const session = agentStatusForApi(api)
+    expect(session).toBe(defaultAgentStatus)
+    session.store.getState().setHibernated('nt-y', true)
+    session.store.getState().setHibernated('nt-y', true) // no edge, no report
+    session.store.getState().setHibernated('nt-y', false)
+    expect(reportHibernated.mock.calls).toEqual([
+      ['nt-y', true],
+      ['nt-y', false]
+    ])
+  })
+
+  it('an injected reportHibernated is the only place the flag goes, and a throwing one breaks nothing', async () => {
+    const local = { marker: 'preload', reportHibernated: vi.fn() }
+    vi.stubGlobal('window', { nodeTerminal: local })
+    const { createAgentStatusSession } = await import('./agentStatus')
+    const report = vi.fn(() => {
+      throw new Error('bridge gone')
+    })
+    const { store } = createAgentStatusSession(undefined, undefined, report)
+    store.getState().setHibernated('nt-z', true)
+    expect(report).toHaveBeenCalledWith('nt-z', true)
+    expect(store.getState().byId['nt-z']?.hibernated).toBe(true)
+    expect(local.reportHibernated).not.toHaveBeenCalled()
+  })
+
   it('window.nodeTerminal resolves to the default (persisted) instance — the WeakMap seed', async () => {
     const api = { marker: 'preload' } as unknown as NodeTerminalApi
     vi.stubGlobal('window', { nodeTerminal: api })
