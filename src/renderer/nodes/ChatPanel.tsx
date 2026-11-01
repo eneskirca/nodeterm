@@ -55,6 +55,7 @@ import type { PermissionAnswer } from '@shared/agents/permission-answer'
 import { ChatComposer } from './ChatComposer'
 import { ChatTurnActions } from './ChatTurnActions'
 import { useCodeBlockCopy } from './CodeBlockCopy'
+import { useCodeHighlight } from './CodeHighlight'
 import { assistantTurnEnds } from '../lib/chatThread'
 import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
 import { ChatToolGroup } from './ChatToolGroup'
@@ -65,11 +66,13 @@ import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
 // `breaks`: a single newline is a line break, as Claude Code's own TUI renders it — without it a
 // multi-line prompt, or a reply quoting one line by line (`> a` / `> b`), collapsed onto one line.
-// Every code block gets a Copy button in its top-right corner (useCodeBlockCopy).
+// Every code block gets a Copy button in its top-right corner (useCodeBlockCopy), and a fenced block
+// whose language lib/codeHighlight.ts names is syntax-colored by Monaco (useCodeHighlight).
 export const MarkdownText = memo(function MarkdownText({ text }: { text: string }) {
   const html = useMemo(() => renderMarkdown(text, { breaks: true }), [text])
   const ref = useRef<HTMLDivElement>(null)
   const copyButtons = useCodeBlockCopy(ref, html)
+  useCodeHighlight(ref, html)
   return (
     <>
       <div ref={ref} className="term-chat__text" dangerouslySetInnerHTML={{ __html: html }} />

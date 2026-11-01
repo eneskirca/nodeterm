@@ -3583,6 +3583,11 @@ body,
 .term-chat__code > pre {
   margin: 0;
 }
+/* A syntax-colored block (nodes/CodeHighlight.tsx): its text is split across Monaco's token spans,
+   which must not collapse the code's spaces or line breaks. */
+.term-chat__text pre code[data-highlighted] {
+  white-space: pre;
+}
 /* Same control as the per-turn Copy (.term-chat__action), in the block's top-right corner. Hidden
    until the block is hovered or the button is keyboard-focused, and kept while it says "Copied".
    A solid backing so the code underneath does not show through it. */

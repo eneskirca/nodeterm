@@ -108,3 +108,9 @@ describe('the shared .term-chat__input (plan "Revise…", question "Other") keep
     expect(ruleBody('.term-chat__msg--assistant .term-chat__text > p:last-child')).toMatch(/margin-bottom:\s*0;/)
   })
 })
+
+describe('⌘M code block syntax colors', () => {
+  it('a colored block keeps its whitespace: the code is split across token spans', () => {
+    expect(ruleBody('.term-chat__text pre code[data-highlighted]')).toMatch(/white-space:\s*pre;/)
+  })
+})
