@@ -10,7 +10,7 @@ import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
 import { toolBody } from './chat-tool-body'
 import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
-import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX } from '../shared/chat-command'
+import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../shared/chat-command'
 import {
   AGENT_MESSAGE_TOOL,
   BACKGROUND_TASK_TOOL,
@@ -184,8 +184,7 @@ export function classifyLocalCommand(content: string): LocalCommandRecord | null
   return null
 }
 
-/** The name an output record's tool part gets when there is no command to attach it to. */
-export const COMMAND_OUTPUT_TOOL = 'command output'
+export { COMMAND_OUTPUT_TOOL }
 
 // ── System-injected user records ─────────────────────────────────────────────────────────────────
 // Claude Code writes several things that are NOT the user's words as `type:"user"` records. Measured
