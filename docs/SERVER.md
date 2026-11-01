@@ -12,6 +12,11 @@ unchanged. It boots the same Electron-free core services (`src/core/`) through a
 
 ## Quickstart
 
+Host requirements: Linux, or macOS 12 Monterey or newer. Building the server runs the same
+`esbuild` binary Vite uses, and that binary needs macOS 12+ (see **Build from source** in the
+README) — a Big Sur Mac cannot build or run the Server Edition, but any browser on it can open
+one hosted elsewhere.
+
 ```bash
 npm run server:dev
 ```
