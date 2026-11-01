@@ -296,11 +296,17 @@ describe('hosted team tab: agent status reaches the relay session', () => {
     h.hook(done)
     await settle()
     expect(relayStore(h.viewer.tab).getState().byId[NODE]?.unread).toBe(true) // fails today: nothing wrote it
+    expect(relayStore(h.owner.tab).getState().byId[NODE]?.unread).toBe(true)
     relayStore(h.viewer.tab).getState().clearUnread(NODE)
+    relayStore(h.owner.tab).getState().clearUnread(NODE)
     await settle()
+    // A viewer's ack would be refused by its role gate before the carrier, so only the OWNER's
+    // carrier (ungated) can show an ack the relay store sent through the relay api.
     expect(h.viewer.t.sent.filter((m) => m.method === IPC.agentAckDone)).toEqual([])
+    expect(h.owner.t.sent.filter((m) => m.method === IPC.agentAckDone)).toEqual([])
     expect((window.nodeTerminal as unknown as { ackDone: ReturnType<typeof vi.fn> }).ackDone).not.toHaveBeenCalled()
     expect(relayStore(h.viewer.tab).getState().byId[NODE]?.unread).toBe(false)
+    expect(relayStore(h.owner.tab).getState().byId[NODE]?.unread).toBe(false)
   })
 
   it.fails('after a relay drop the tab reads unknown and later events write nothing', async () => {
