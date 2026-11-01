@@ -251,6 +251,78 @@ describe('⌘M thread look', () => {
     expect(img.classList.contains('term-chat__image--full')).toBe(false)
   })
 
+  it('an Edit renders as a diff chip with counts and colored lines', async () => {
+    await mount([
+      {
+        role: 'assistant',
+        parts: [
+          {
+            kind: 'tool',
+            name: 'Edit',
+            arg: '/a.ts',
+            diff: { filePath: '/a.ts', oldText: 'a\nb', newText: 'a\nc' },
+            result: 'The file /a.ts has been updated.'
+          }
+        ],
+        key: 0
+      }
+    ])
+    expect(host.querySelector('.term-chat__diff-counts')?.textContent).toBe('+1 −1')
+    expect(host.querySelectorAll('.term-chat__diff-line--add')).toHaveLength(1)
+    const chip = host.querySelector<HTMLDetailsElement>('details.term-chat__tool.term-chat__tool--diff')!
+    expect(chip.open).toBe(false)
+    expect(chip.querySelector('summary .term-chat__tool-name')?.textContent).toBe('Edit')
+    expect(chip.querySelector('summary .term-chat__tool-arg')?.textContent).toBe('/a.ts')
+    const lines = [...chip.querySelectorAll('pre.term-chat__diff > .term-chat__diff-line')]
+    expect(lines.map((l) => [l.className, l.textContent])).toEqual([
+      ['term-chat__diff-line term-chat__diff-line--ctx', ' a'],
+      ['term-chat__diff-line term-chat__diff-line--del', '-b'],
+      ['term-chat__diff-line term-chat__diff-line--add', '+c']
+    ])
+    // The result follows the diff, as on the plain chip.
+    expect(chip.querySelector('pre.term-chat__diff + pre.term-chat__tool-result')?.textContent).toBe(
+      'The file /a.ts has been updated.'
+    )
+  })
+
+  it('a Write with no result is all added lines; a tool without a diff stays the plain chip', async () => {
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      {
+        role: 'assistant',
+        parts: [{ kind: 'tool', name: 'Write', arg: '/b.ts', diff: { filePath: '/b.ts', oldText: '', newText: 'x\ny\n' } }],
+        key: 10
+      },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'Done.' }], key: 20 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Edit', arg: '/c.ts' }], key: 30 }
+    ])
+    const diffs = host.querySelectorAll('.term-chat__tool--diff')
+    expect(diffs).toHaveLength(1)
+    expect(diffs[0].querySelector('.term-chat__diff-counts')?.textContent).toBe('+2 −0')
+    expect(diffs[0].querySelector('.term-chat__tool-result')).toBeNull()
+    const plain = [...host.querySelectorAll('.term-chat__tool')].filter((t) => !t.classList.contains('term-chat__tool--diff'))
+    expect(plain).toHaveLength(1)
+    expect(plain[0].querySelector('.term-chat__diff')).toBeNull()
+  })
+
+  it('a diff chip inside a folded tool run is drawn as a diff chip there too', async () => {
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Read', arg: '/a.ts' }], key: 10 },
+      {
+        role: 'assistant',
+        parts: [{ kind: 'tool', name: 'Edit', arg: '/a.ts', diff: { filePath: '/a.ts', oldText: 'a', newText: 'b' } }],
+        key: 20
+      },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'Done.' }], key: 30 }
+    ])
+    const group = host.querySelector('.term-chat__tool-group')!
+    expect(group.querySelector('.term-chat__tool-group-count')?.textContent).toBe('2 tool calls')
+    expect(group.querySelector('.term-chat__tool-group-body .term-chat__tool--diff .term-chat__diff-counts')?.textContent).toBe(
+      '+1 −1'
+    )
+  })
+
   it('asks the reader for rich parts', async () => {
     await mount([])
     expect(lastPageArg().rich).toBe(true)

@@ -3626,10 +3626,27 @@ export type ChatPart =
        *  the SAME reader the held request's texts come from, so a surface can match the card to the
        *  held ticket. Absent = unreadable input = the card stays read-only. */
       questions?: ChatQuestion[]
+      /** `Edit` / `Write` only, on the opt-in `rich` read (`ChatParseOptions.rich`): the change the
+       *  call asked for, read from its INPUT — never from the result — so the renderer can draw it as
+       *  a diff. Absent = any other tool, an unreadable input, or a read without `rich`. */
+      diff?: ChatToolDiff
       /** The transcript's `tool_use` id. Set only by a PAGED read (`ChatTranscriptResult.olderCursor`
        *  present): a result carried across a page boundary (`unmatchedResults`) is attached by it. */
       id?: string
     }
+
+/**
+ * The change an `Edit` / `Write` tool call asked for (`ChatPart` tool `diff`). Edit's
+ * `{file_path, old_string, new_string}` maps to `{filePath, oldText, newText}`; Write's
+ * `{file_path, content}` to `{filePath, oldText: '', newText: content}`. An empty `newText` on an
+ * Edit is a deletion. Each text is capped like a tool body (`capBody`, core/chat-tool-body.ts: 64K
+ * characters, then `TOOL_BODY_TRUNCATED`).
+ */
+export interface ChatToolDiff {
+  filePath: string
+  oldText: string
+  newText: string
+}
 
 /** A structured chat message reconstructed from a Claude session transcript. */
 export interface ChatMessage {

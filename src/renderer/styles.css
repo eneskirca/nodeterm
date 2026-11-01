@@ -3688,6 +3688,44 @@ body,
   font-size: 11px;
   opacity: 0.85;
 }
+/* An Edit / Write call (nodes/ChatToolDiff.tsx): the chip's summary ends in the `+N −M` counts, and
+   it opens to the line diff. The block is a one-column grid sized to its widest line (at least the
+   chip's width), so a line's tint spans the whole row even while the block is scrolled sideways;
+   code keeps its indentation (`pre`, never wrapped), and a long Write scrolls inside its own box. */
+.term-chat__diff-counts {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+}
+.term-chat__diff {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+  margin: 6px 0 0;
+  padding: 4px 0;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--surface-sunken);
+  border-radius: 6px;
+}
+.term-chat__diff-line {
+  padding: 0 8px;
+}
+.term-chat__diff-line--ctx {
+  color: var(--muted);
+}
+.term-chat__diff-line--add {
+  color: var(--success);
+  background: color-mix(in srgb, var(--state-success) 12%, transparent);
+}
+.term-chat__diff-line--del {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--state-error) 12%, transparent);
+}
 /* A run of consecutive tool calls folded into one block (nodes/ChatToolGroup.tsx), closed by
    default. Closed, it is one chip-sized line: a chevron, the count, the tools used. Open, the same
    chips follow, indented under a hairline so they read as belonging to the line above. */

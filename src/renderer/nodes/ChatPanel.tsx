@@ -61,6 +61,7 @@ import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
 import { thinkingLabel } from '../lib/chatThinking'
 import { ChatToolGroup } from './ChatToolGroup'
 import { ChatImage } from './ChatImage'
+import { ChatToolDiff } from './ChatToolDiff'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 
@@ -1043,6 +1044,9 @@ export function ChatPanel({
           <AnswerControlsUpdating chip={mdChip} />
         )}
       </div>
+    ) : p.diff ? (
+      // An Edit / Write (the opt-in `rich` read): the plain chip plus `+N −M`, opening to the diff.
+      <ChatToolDiff key={key} name={p.name} diff={p.diff} result={p.result} />
     ) : (
       <details key={key} className="term-chat__tool">
         <summary>

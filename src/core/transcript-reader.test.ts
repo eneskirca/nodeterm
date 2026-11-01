@@ -120,6 +120,7 @@ import {
   readChatWindow,
   SYSTEM_RESULT_MAX
 } from './transcript-reader'
+import { TOOL_BODY_CAP, TOOL_BODY_TRUNCATED } from './chat-tool-body'
 
 const jl = (o: object): string => JSON.stringify(o) + '\n'
 const said = (role: 'user' | 'assistant', text: string): string =>
@@ -515,6 +516,90 @@ describe('image parts (opt-in `rich`)', () => {
     ])
     expect(parts({ rich: true })).toEqual([{ kind: 'image', mediaType: 'image/webp', data: 'UklGR' }])
     expect(parts({ thinking: true })).toEqual([{ kind: 'thinking', text: 'hmm' }])
+  })
+})
+
+describe('Edit / Write diffs (opt-in `rich`)', () => {
+  // The measured inputs (CLI 2.1.314): Edit → {file_path, old_string, new_string, replace_all?},
+  // Write → {file_path, content}.
+  const call = (id: string, name: string, input: unknown): string =>
+    jl({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
+  const toolPart = (raw: string, opts?: { rich?: boolean; thinking?: boolean }) =>
+    parseChatMessages(raw.split('\n'), opts).flatMap((m) => m.parts)
+
+  it('rich: Edit and Write tool calls carry a diff; a malformed input carries none', () => {
+    const raw =
+      call('e1', 'Edit', { file_path: '/a.ts', old_string: 'a\nb', new_string: 'a\nc', replace_all: false }) +
+      toolResult('e1', 'The file /a.ts has been updated.') +
+      call('w1', 'Write', { file_path: '/b.ts', content: 'x\ny\n' }) +
+      // An empty new_string deletes the old text: still a diff.
+      call('e2', 'Edit', { file_path: '/c.ts', old_string: 'gone', new_string: '' })
+    expect(toolPart(raw, { rich: true })).toEqual([
+      {
+        kind: 'tool',
+        name: 'Edit',
+        arg: '/a.ts',
+        diff: { filePath: '/a.ts', oldText: 'a\nb', newText: 'a\nc' },
+        result: 'The file /a.ts has been updated.'
+      },
+      { kind: 'tool', name: 'Write', arg: '/b.ts', diff: { filePath: '/b.ts', oldText: '', newText: 'x\ny\n' } },
+      { kind: 'tool', name: 'Edit', arg: '/c.ts', diff: { filePath: '/c.ts', oldText: 'gone', newText: '' } }
+    ])
+
+    const malformed = [
+      call('m1', 'Edit', { file_path: '', old_string: 'a', new_string: 'b' }),
+      call('m2', 'Edit', { file_path: 42, old_string: 'a', new_string: 'b' }),
+      call('m3', 'Edit', { old_string: 'a', new_string: 'b' }),
+      call('m4', 'Edit', { file_path: '/a.ts', old_string: 'a' }),
+      call('m5', 'Edit', { file_path: '/a.ts', old_string: null, new_string: 'b' }),
+      call('m6', 'Write', { file_path: '/a.ts' }),
+      call('m7', 'Write', { file_path: '/a.ts', content: ['x'] }),
+      call('m8', 'Edit', null),
+      call('m9', 'Write', 'not an object'),
+      // Another tool with the same field names is not an edit.
+      call('m10', 'MultiEdit', { file_path: '/a.ts', old_string: 'a', new_string: 'b' }),
+      call('m11', 'Read', { file_path: '/a.ts', content: 'x' })
+    ].join('')
+    const parts = toolPart(malformed, { rich: true })
+    expect(parts).toHaveLength(11)
+    for (const part of parts) {
+      expect(part.kind).toBe('tool')
+      expect('diff' in part, JSON.stringify(part)).toBe(false)
+    }
+  })
+
+  it('rich: each text is capped like a tool body, with the truncation marker', () => {
+    const long = 'x'.repeat(TOOL_BODY_CAP + 10)
+    const raw =
+      call('e1', 'Edit', { file_path: '/a.ts', old_string: long, new_string: long + 'y' }) +
+      call('w1', 'Write', { file_path: '/b.ts', content: long })
+    const diffs = toolPart(raw, { rich: true }).map((p) => (p.kind === 'tool' ? p.diff : undefined))
+    const capped = 'x'.repeat(TOOL_BODY_CAP) + TOOL_BODY_TRUNCATED
+    expect(diffs).toEqual([
+      { filePath: '/a.ts', oldText: capped, newText: capped },
+      { filePath: '/b.ts', oldText: '', newText: capped }
+    ])
+  })
+
+  it('without rich an Edit is the same chip as before', () => {
+    const raw =
+      call('e1', 'Edit', { file_path: '/a.ts', old_string: 'a', new_string: 'b' }) +
+      toolResult('e1', 'ok') +
+      call('w1', 'Write', { file_path: '/b.ts', content: 'x' })
+    const chips = [
+      { kind: 'tool', name: 'Edit', arg: '/a.ts', result: 'ok' },
+      { kind: 'tool', name: 'Write', arg: '/b.ts' }
+    ]
+    expect(toolPart(raw)).toEqual(chips)
+    expect(toolPart(raw, { thinking: true })).toEqual(chips)
+  })
+
+  it('rich rides the paged parser too: the diff sits beside the id', () => {
+    const file = Buffer.from(call('e1', 'Edit', { file_path: '/a.ts', old_string: 'a', new_string: 'b' }))
+    expect(parseChatWindow(file, 0, claudeChatRecordParser({ rich: true })).messages[0].parts).toEqual([
+      { kind: 'tool', name: 'Edit', arg: '/a.ts', diff: { filePath: '/a.ts', oldText: 'a', newText: 'b' }, id: 'e1' }
+    ])
+    expect(parseChatWindow(file, 0).messages[0].parts).toEqual([{ kind: 'tool', name: 'Edit', arg: '/a.ts', id: 'e1' }])
   })
 })
 

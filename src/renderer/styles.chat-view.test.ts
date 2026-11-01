@@ -102,6 +102,16 @@ describe('⌘M thread: claude.ai look', () => {
     expect(ruleBody('.term-chat__image')).toMatch(/max-height:\s*240px;/)
     expect(ruleBody('.term-chat__image--full')).toMatch(/max-height:\s*none;/)
   })
+
+  it('an Edit/Write diff keeps its whitespace, and added and removed lines are tinted differently', () => {
+    expect(ruleBody('.term-chat__diff')).toMatch(/white-space:\s*pre;/)
+    const bg = (selector: string): string => {
+      const m = ruleBody(selector).match(/background:\s*([^;]+);/)
+      expect(m, `no background in ${selector}`).toBeTruthy()
+      return m![1].trim()
+    }
+    expect(bg('.term-chat__diff-line--add')).not.toBe(bg('.term-chat__diff-line--del'))
+  })
 })
 
 describe('the shared .term-chat__input (plan "Revise…", question "Other") keeps a visible field', () => {

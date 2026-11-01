@@ -17,7 +17,9 @@ export const TOOL_BODY_TRUNCATED = '\n\n… (truncated)'
 
 const FENCE = /^\s*```/
 
-function capBody(s: string): string {
+/** Caps a long text at `TOOL_BODY_CAP`, then appends `TOOL_BODY_TRUNCATED` (a tool body, and each
+ *  side of an Edit/Write diff in the chat parse). */
+export function capBody(s: string): string {
   if (s.length <= TOOL_BODY_CAP) return s
   let end = TOOL_BODY_CAP
   // Do not leave half a surrogate pair (an emoji) dangling at the cut.

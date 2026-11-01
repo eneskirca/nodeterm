@@ -4,11 +4,12 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import type { TranscriptLine, ChatMessage, ChatPart, ChatCarriedToolResult } from '../shared/types'
+import type { TranscriptLine, ChatMessage, ChatPart, ChatCarriedToolResult, ChatToolDiff } from '../shared/types'
 import { transcriptRootFor } from './claude-accounts-core'
 import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
-import { toolBody } from './chat-tool-body'
+import { capBody, toolBody } from './chat-tool-body'
+import { isRecord } from '../shared/is-record'
 import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
 import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../shared/chat-command'
 import {
@@ -374,6 +375,7 @@ export interface ChatParseOptions {
    * media type is in `CHAT_IMAGE_TYPES` and `data` is a non-empty string. An image inside a
    * `tool_result` is tool output and stays out (`summarizeResult` ignores it, as before). Off by
    * default, like `thinking`: the golden fixtures and the phone's `chat.page` never set it.
+   * Also: a `diff` on each `Edit` / `Write` tool part whose input reads (`toolDiff`).
    */
   rich?: boolean
 }
@@ -393,6 +395,28 @@ function imagePart(source: unknown): Extract<ChatPart, { kind: 'image' }> | null
   if (typeof data !== 'string' || !data) return null
   return { kind: 'image', mediaType, data }
 }
+
+/**
+ * The change an `Edit` / `Write` call asked for (`ChatParseOptions.rich`), from its INPUT — measured
+ * (CLI 2.1.314) as `Edit → {file_path, old_string, new_string, replace_all?}` and
+ * `Write → {file_path, content}`. Undefined for any other tool or shape: the plain chip, as before.
+ * An empty `new_string` is a deletion and still a diff. Each text is capped like a tool body.
+ */
+function toolDiff(name: string, input: unknown): ChatToolDiff | undefined {
+  if (!isRecord(input)) return undefined
+  const filePath = input.file_path
+  if (typeof filePath !== 'string' || !filePath) return undefined
+  if (name === 'Edit') {
+    const { old_string: oldText, new_string: newText } = input
+    if (typeof oldText !== 'string' || typeof newText !== 'string') return undefined
+    return { filePath, oldText: capBody(oldText), newText: capBody(newText) }
+  }
+  if (name === 'Write') {
+    return typeof input.content === 'string' ? { filePath, oldText: '', newText: capBody(input.content) } : undefined
+  }
+  return undefined
+}
+
 const userTextOf = (text: string, opts: ChatParseOptions | undefined): string =>
   opts?.expandPastes === false ? text : expandPastedContent(text)
 
@@ -624,6 +648,9 @@ function parseChatRecords(
           }
           const body = toolBody(part.name, c.input)
           if (body) part.body = body
+          // Opt-in (see `ChatParseOptions.rich`): without it an Edit is the plain chip, as before.
+          const diff = opts?.rich ? toolDiff(part.name, c.input) : undefined
+          if (diff) part.diff = diff
           if (part.name === ASK_USER_QUESTION_TOOL) {
             const questions = readQuestions(c.input)
             if (questions) part.questions = questions

@@ -100,6 +100,11 @@ nothing above changes. What it adds:
   non-empty string. Any other type (`image/svg+xml` included) or source yields no part. An image
   inside a `tool_result` is tool output and never becomes one. An image-only record yields no
   message without the option and a user message with it.
+- A `diff: {filePath, oldText, newText}` on an `Edit` tool part (`{file_path, old_string,
+  new_string}`) or a `Write` one (`{file_path, content}`, `oldText: ""`), read from the call's input
+  when `file_path` is a non-empty string and the texts are strings (an empty `new_string` is a
+  deletion and still a diff). Each text is capped like a tool `body` (65536 UTF-16 units, then
+  `TOOL_BODY_TRUNCATED`). Any other shape yields no `diff`; `arg` and `result` are unchanged.
 
 Decision cases: plan `restore` / `acceptEdits` / `manual` / `revise` (the revise text is trimmed),
 question single / multi (labels joined with `, `) / free text (trimmed), and three refusals: a
