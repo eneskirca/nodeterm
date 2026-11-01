@@ -25,7 +25,7 @@ function between(text: string, start: string, end: string): string {
 
 describe('TerminalNode reads its own session store', () => {
   it('the node badge reads the session store, not the default one', () => {
-    expect(src).toMatch(/const agentStatusStore = useSessionStores\(\)\.agentStatus\.store/)
+    expect(src).toMatch(/const agentStatusSession = useSessionStores\(\)\.agentStatus\n\s*const agentStatusStore = agentStatusSession\.store/)
     expect(src).not.toMatch(/useAgentStatus\(\(s\) => s\.byId\[id\]\)/)
     expect(src).toMatch(/agentStatusStore\(\(s\) => s\.byId\[id\]\)/) // the bound store is its own hook
     expect(src).toMatch(/const status = agentStatusStore\(\(s\) => s\.byId\[id\]\)/)
@@ -54,6 +54,17 @@ describe('TerminalNode reads its own session store', () => {
     expect(src).toContain('agentStatusStore.getState().setActive(id, false)')
     const insertFiles = between(src, 'const insertFiles = async (', 'const onBodyDrop = async')
     expect(insertFiles).toContain('agentStatusStore.getState().setActive(id, true)')
+  })
+
+  it('the Esc / Ctrl-C interrupt inference writes the session store, not the default one', () => {
+    // The default instance's bound helper must not be reachable from the node at all.
+    expect(src).not.toMatch(/import \{[^}]*\binferInterruptAfterSettle\b[^}]*\} from '\.\.\/state\/agentStatus'/)
+    expect(src).not.toMatch(/useAgentStatus[^\n]*inferInterruptAfterSettle/)
+    const calls = src.match(/inferInterruptAfterSettle\(id\)/g) ?? []
+    expect(calls).toHaveLength(1)
+    expect(src).toMatch(
+      /if \(showStatus && \(input === '\\x1b' \|\| input === '\\x03'\)\) agentStatusSession\.inferInterruptAfterSettle\(id\)/
+    )
   })
 
   it('Approve/Deny, title sync, transcript search and the chat view are gated', () => {

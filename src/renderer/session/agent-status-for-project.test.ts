@@ -118,6 +118,31 @@ describe('agentStatusForProject', () => {
   })
 })
 
+describe('the interrupt inference of a project session', () => {
+  it("writes only that session's store, never the default one under a shared node id", () => {
+    vi.useFakeTimers()
+    try {
+      const relay = createSession('relay', RELAY_API, 'Team')
+      bindProjectToSession(TEAM_PROJECT, relay.id)
+      defaultAgentStatus.store.getState().setState(NODE, 'working', 'claude')
+      agentStatusForProject(TEAM_PROJECT).store.getState().setState(NODE, 'working', 'claude')
+
+      // A lone Esc typed into the team tab's node: its session's own helper, bound to its store.
+      agentStatusForProject(TEAM_PROJECT).inferInterruptAfterSettle(NODE, 1000)
+      vi.advanceTimersByTime(1000)
+      expect(agentStatusForProject(TEAM_PROJECT).store.getState().byId[NODE]?.state).toBe('done')
+      expect(agentStatusForProject(TEAM_PROJECT).store.getState().byId[NODE]?.lastTurnInterrupted).toBeDefined()
+      // The handed-off SSH project's entry under the same id is untouched.
+      expect(agentStatusForProject(SSH_PROJECT).store.getState().byId[NODE]?.state).toBe('working')
+
+      // And the local node's helper is the default one, exactly as before.
+      expect(agentStatusForProject(SSH_PROJECT).inferInterruptAfterSettle).toBe(defaultAgentStatus.inferInterruptAfterSettle)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('the session registry signal', () => {
   it('the registry version moves on create, bind, offline and dispose', () => {
     const heard: number[] = []

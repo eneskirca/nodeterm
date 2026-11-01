@@ -276,7 +276,7 @@ import { announceUserClosedSession } from '../lib/lastSessionClose'
 import { useSettings } from '../state/settings'
 import { useCodexIdentity, codexSharedIdentity, codexFallbackText } from '../state/codexIdentity'
 import { ensureCodexLaunchCaps } from '../state/codexCli'
-import { useAgentStatus, inferInterruptAfterSettle } from '../state/agentStatus'
+import { useAgentStatus } from '../state/agentStatus'
 import { useLaunchDelivery } from '../state/launchDelivery'
 import { erroredDeps, firstOpenInFlight as isFirstOpenInFlight, handedOverDeps, holdReason, interruptedDeps, launchTooltip } from '../lib/pendingLaunch'
 import { useStationHandovers } from '../state/stationHandovers'
@@ -1368,19 +1368,21 @@ export function TerminalNode({
    *
    * What reads and writes it: the badge (`status`) and everything derived from it, every focus mark
    * (`setActive` / `clearUnread`: the dwell, a click, a "go to node" focus, selection, a file
-   * insert, the lifecycle teardown), the OSC session-title chip, and the memory levers that must
-   * not kill live work (`readAgentState`, `readAgentProcess`, the park's `readSessionEnded`). A
-   * relay node's own status thereby also protects its park — `persistent:false` can arrive from a
-   * tmux-less relay HOST, i.e. a plain-shell agent session on someone else's machine. The
-   * status-driven readers that would act on THIS machine are switched off for a relay node by
-   * `gates` below (`relayStatusGates`).
+   * insert, the lifecycle teardown), the OSC session-title chip, the Esc / Ctrl-C interrupt
+   * inference (`agentStatusSession.inferInterruptAfterSettle`, bound to this same store), and the
+   * memory levers that must not kill live work (`readAgentState`, `readAgentProcess`, the park's
+   * `readSessionEnded`). A relay node's own status thereby also protects its park —
+   * `persistent:false` can arrive from a tmux-less relay HOST, i.e. a plain-shell agent session on
+   * someone else's machine. The status-driven readers that would act on THIS machine are switched
+   * off for a relay node by `gates` below (`relayStatusGates`).
    *
    * Deliberately still on the default store (`useAgentStatus`): Eco / hibernation, restart, pause,
    * the liveness check, the cold restore and the pending-launch deps. Those features are refused on
    * relay sessions, so their reads only ever concern a local node. Stable for the session's
    * lifetime (memoized by api identity), so the once-mounted lifecycle effect may close over it.
    */
-  const agentStatusStore = useSessionStores().agentStatus.store
+  const agentStatusSession = useSessionStores().agentStatus
+  const agentStatusStore = agentStatusSession.store
   const readAgentState = useCallback(
     (): AgentState | undefined => agentStatusStore.getState().byId[id]?.state,
     [agentStatusStore, id]
@@ -4049,7 +4051,9 @@ export function TerminalNode({
             // Lone Esc / Ctrl-C while the agent works: Claude Code fires NO hook on a user
             // interrupt, so probe the cancelled turn (still-silent working → done). Exact
             // match — arrow keys etc. arrive as multi-byte \x1b[… sequences.
-            if (showStatus && (input === '\x1b' || input === '\x03')) inferInterruptAfterSettle(id)
+            // On THIS node's session store (the default one for a local node): a relay node's guess
+            // must never flip the entry a handed-off SSH project holds under the same node id.
+            if (showStatus && (input === '\x1b' || input === '\x03')) agentStatusSession.inferInterruptAfterSettle(id)
             // While a wake is in flight, HOLD this input rather than write it: the resume line is
             // sitting un-submitted in the pane and a keystroke would splice into it. The buffer is
             // bounded — a `queueFull`/`buffered` verdict means "held, do not write". Flushed (or
