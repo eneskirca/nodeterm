@@ -690,6 +690,7 @@ import {
   holdSessionTeardown,
   projectIdsBoundToSession,
 } from '../session/session'
+import { lookupFromStores } from '../session/agent-status-lookup'
 import {
   openRelayTab,
   handleRelayDrop,
@@ -10748,8 +10749,9 @@ export function Canvas() {
   /**
    * "Go to next agent needing you" (`node.nextNeedingYou`, ⌘K): one chord to a waiting agent in
    * another project. The queue is built ON DEMAND from `getState()` reads — Canvas never
-   * subscribes to the status store's `byId` (every working/waiting flip would re-render the whole
-   * canvas; see StatusAwareMiniMap). The cycle
+   * subscribes to a status store's `byId` (every working/waiting flip would re-render the whole
+   * canvas; see StatusAwareMiniMap). Each project's rows are read from ITS session's store
+   * (`lookupFromStores`), so a team tab's waiting agent is in the queue too. The cycle
    * cursor is memory only: a restart starts again at the oldest wait, which is the right answer.
    * Travel is `travelToNodeRef` (declared above this point; the callback itself is defined much
    * further down) so a closed-project hop keeps travelToNode's hosted-team reopen guard.
@@ -10771,7 +10773,7 @@ export function Canvas() {
               color: n.data.color ?? '#888'
             }))
         : null
-    return [projects, live, active, useAgentStatus.getState().byId] as const
+    return [projects, live, active, lookupFromStores(projects.map((p) => p.id))] as const
   }, [nodesRef, nodesProjectIdRef])
   const needsYouQueueNow = useCallback((): string[] => needsYouQueue(...needsYouInputs()), [needsYouInputs])
   const goToNextNeedingYou = useCallback((): void => {

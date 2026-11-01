@@ -27,7 +27,17 @@ vi.mock('./BrowserSurface', () => ({
 }))
 // CardModal's non-browser children are irrelevant to partition parity — stub them so the modal
 // renders without their store/context burden.
-vi.mock('../session/session', () => ({ useSession: () => ({ api: { pty: { generateName: vi.fn() } } }) }))
+vi.mock('../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../state/agentStatus')
+  return {
+    useSession: () => ({ api: { pty: { generateName: vi.fn() } } }),
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 vi.mock('../components/kanban/BoardLogPanel', () => ({ BoardLogPanel: () => null }))
 vi.mock('../components/kanban/CardMetaBar', () => ({ CardMetaBar: () => null }))
 vi.mock('../components/kanban/ModalTerminal', () => ({ ModalTerminal: () => null }))

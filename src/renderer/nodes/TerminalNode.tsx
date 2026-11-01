@@ -1964,7 +1964,7 @@ export function TerminalNode({
    * stays creation-time (`transport.create` keeps passing `data.accountId`).
    */
   const observedAccount = status?.account
-  const accountChip = useAccountChip(data.accountId, observedAccount)
+  const accountChip = useAccountChip(data.accountId, observedAccount, agentStatusStore)
   // This node's team (the stations it opened), published by Canvas from the live ropes. The store
   // keeps each unchanged team's array identity, so this re-renders only when THIS team changes.
   const team = useTeamStations((s) => s.byNode.get(id))
@@ -6319,7 +6319,7 @@ export function TerminalNode({
         />
         {/* The stations this session opened, and how far along they are — the same ring its board
             card and card modal draw (lib/teamProgress). A row travels to that station. */}
-        {team && <TeamProgressChip stations={team} onTravel={travelToStation} menuZIndex={60} />}
+        {team && <TeamProgressChip stations={team} onTravel={travelToStation} menuZIndex={60} statusStore={agentStatusStore} />}
         {/* The fallback, made visible. A Codex node that could not get a managed shared identity
             runs a perfectly good plain `codex` — but the user has to be able to SEE that it did,
             without reading a log, so the chip states it and its tooltip says why. Absent (and the

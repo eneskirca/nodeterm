@@ -44,8 +44,7 @@ import type { GitHubCloseReason, GitHubIssueCardView } from '@shared/github-issu
 import { issueKey, issueRefFromHtmlUrl, issueUrl, type IssueRef } from '@shared/github-issue-ref'
 import { NO_ISSUE_RUNS, boundRunsByIssue, type IssueRun } from '../../lib/issueRuns'
 import { useGitHubIssues } from '../../state/githubIssues'
-import { useAgentStatus } from '../../state/agentStatus'
-import { useSession } from '../../session/session'
+import { agentStatusForProject, useSession, useSessionRegistryVersion } from '../../session/session'
 import { ProjectSessionScope } from '../../session/owning-project'
 import { KanbanSourceFilter, type KanbanSource } from './KanbanSourceFilter'
 import { GitHubIssueSummaryModal } from './GitHubIssueSummaryModal'
@@ -311,6 +310,17 @@ export const KanbanView = memo(function KanbanView({
   // Which machine this board's nodes run on — only a local board shows this machine's LIVE chips
   // (R57). A primitive, so the memoized cards are not re-rendered by it.
   const liveLinkSource = projectSessionSource(projectId)
+  // The agent-status store of the session this board's PROJECT belongs to: a team tab's cards read
+  // its relay session's store (they share node ids with the handed-off SSH project, whose entries
+  // are the default store's). Every card, the chips' signature and the open card's read mark use it.
+  const registryVersion = useSessionRegistryVersion()
+  const statusStore = useMemo(
+    () => agentStatusForProject(projectId).store,
+    // `registryVersion`: a reconnect swaps the project's session (and so its store) under the same
+    // id, and an unbind sends it to the offline session's; the memo must re-resolve on either.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectId, registryVersion]
+  )
   // The card face's Ports chip: this board is always the project on the canvas, which is the one
   // the dev-port scanner covers. Stable identities, because SessionCard is memoized.
   const portsRemote = useProjects((s) => !!s.getProject(projectId)?.ssh)
@@ -404,9 +414,11 @@ export const KanbanView = memo(function KanbanView({
     setLabelFilter((f) => (f.includes(id) ? f.filter((x) => x !== id) : [...f, id]))
   // Report the open node to the canvas (dictation shortcut targeting) and mark its completion read.
   // This clears notification affordances only; the live `done` state remains waiting for a prompt.
+  // On the board project's own store: a relay card's read stays on this desktop (that store sends
+  // no ack to the host) and never clears the handed-off SSH project's entry under the same id.
   useEffect(() => {
     onModalNodeChange(modalNodeId)
-    if (modalNodeId) useAgentStatus.getState().clearUnread(modalNodeId)
+    if (modalNodeId) statusStore.getState().clearUnread(modalNodeId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modalNodeId])
   // Someone asked for a card while the board is up (notch Go, a notification, ⌘K…). Open it here
@@ -579,7 +591,7 @@ export const KanbanView = memo(function KanbanView({
   // running / needs-you / unread fact does) — never `byId`, which changes on every hook event of
   // every node and would re-render the whole board each time.
   const chipCards = useMemo<StatusChipCard[]>(() => sessions.map((s) => ({ id: s.id, kind: s.kind })), [sessions])
-  const statusSig = useAgentStatus((st) => statusChipSig(st.byId, chipCards))
+  const statusSig = statusStore((st) => statusChipSig(st.byId, chipCards))
   const statusFacts = useMemo(() => parseStatusChipSig(statusSig), [statusSig])
   const statusCounts = useMemo(() => chipCounts(statusFacts), [statusFacts])
   const toggleStatusChip = (chip: StatusChip): void =>
@@ -962,6 +974,7 @@ export const KanbanView = memo(function KanbanView({
             ports={cardPorts}
             onOpenPort={openPort}
             onRunQueued={onRunQueued}
+            statusStore={statusStore}
           />
         ))
       })

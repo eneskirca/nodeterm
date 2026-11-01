@@ -11,12 +11,20 @@ import { KanbanView, type KanbanSession } from './KanbanView'
 import { defaultKanban } from '../../lib/kanban'
 import type { MenuItem } from '../ContextMenu'
 
-vi.mock('../../session/session', () => ({
-  useSession: () => ({ source: 'local', api: window.nodeTerminal }),
-  // The card modal's `ProjectSessionScope` asks for the card project's session and provides it.
-  sessionForProject: () => ({ id: 'local', source: 'local', api: window.nodeTerminal }),
-  SessionProvider: ({ children }: { children: unknown }) => children
-}))
+vi.mock('../../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../../state/agentStatus')
+  return {
+    useSession: () => ({ source: 'local', api: window.nodeTerminal }),
+    // The card modal's `ProjectSessionScope` asks for the card project's session and provides it.
+    sessionForProject: () => ({ id: 'local', source: 'local', api: window.nodeTerminal }),
+    SessionProvider: ({ children }: { children: unknown }) => children,
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 vi.mock('./CardModal', () => ({
   CardModal: (p: { session: { id: string }; initialView?: string; onDelete?: () => void; onSetColor?: (c: string) => void }) => (
     <div className="card-modal-mock" data-node={p.session.id} data-view={p.initialView ?? ''}>

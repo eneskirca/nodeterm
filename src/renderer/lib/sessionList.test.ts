@@ -19,6 +19,14 @@ import {
   type SessionGroup
 } from './sessionList'
 import type { AgentNodeStatus } from '../state/agentStatus'
+import type { AgentStatusLookup } from '../session/agent-status-lookup'
+
+// The builders ask a per-PROJECT lookup (a node id can be in two projects that read different
+// stores, bug D). Most cases here have one store, so a map that ignores the project stands in.
+const lookupFromMap =
+  (byId: Record<string, AgentNodeStatus>): AgentStatusLookup =>
+  (_projectId, nodeId) =>
+    byId[nodeId]
 
 const node = (id: string, over: Partial<ProjectInput['nodes'][number]> = {}) => ({
   id,
@@ -137,13 +145,13 @@ describe('projectHeadClickAction', () => {
 
 describe('buildSessionList', () => {
   it('keeps store order (mirrors the tab bar) regardless of which project is active', () => {
-    const groups = buildSessionList(projects(), null, 'p2', {}, '')
+    const groups = buildSessionList(projects(), null, 'p2', lookupFromMap({}), '')
     expect(groups.map((g) => g.projectId)).toEqual(['p1', 'p2'])
     expect(groups.find((g) => g.projectId === 'p2')!.isActive).toBe(true)
   })
 
   it('keeps only terminal/agent nodes and flags agents', () => {
-    const groups = buildSessionList(projects(), null, 'p1', {}, '')
+    const groups = buildSessionList(projects(), null, 'p1', lookupFromMap({}), '')
     const p2 = groups.find((g) => g.projectId === 'p2')!
     expect(p2.ungrouped.map((s) => s.id)).toEqual(['t2']) // sticky + editor dropped
     const p1 = groups.find((g) => g.projectId === 'p1')!
@@ -155,7 +163,7 @@ describe('buildSessionList', () => {
     const status: Record<string, AgentNodeStatus> = {
       a1: { unread: true, state: 'working', agentId: 'claude', session: 'fix bug', sessionId: 'sess-1' }
     }
-    const groups = buildSessionList(projects(), null, 'p1', status, '')
+    const groups = buildSessionList(projects(), null, 'p1', lookupFromMap(status), '')
     const a1 = groups[0].ungrouped.find((s) => s.id === 'a1')!
     expect(a1.statusKind).toBe('working')
     expect(a1.unread).toBe(true)
@@ -166,7 +174,7 @@ describe('buildSessionList', () => {
 
   it('uses live nodes for the active project instead of serialized ones', () => {
     const live = [node('t1', { title: 'renamed live' })]
-    const groups = buildSessionList(projects(), live, 'p1', {}, '')
+    const groups = buildSessionList(projects(), live, 'p1', lookupFromMap({}), '')
     const p1 = groups.find((g) => g.projectId === 'p1')!
     expect(p1.ungrouped.map((s) => s.title)).toEqual(['renamed live'])
   })
@@ -186,7 +194,7 @@ describe('buildSessionList', () => {
         ]
       }
     ]
-    const [p1] = buildSessionList(proj, null, 'p1', {}, '')
+    const [p1] = buildSessionList(proj, null, 'p1', lookupFromMap({}), '')
     expect(p1.groups).toHaveLength(1)
     expect(p1.groups[0]).toMatchObject({ id: 'g1', title: 'Frontend', color: '#abc' })
     expect(p1.groups[0].sessions.map((s) => s.id)).toEqual(['t1', 't2'])
@@ -207,21 +215,21 @@ describe('buildSessionList', () => {
         ]
       }
     ]
-    const unfiltered = buildSessionList(proj, null, 'p1', {}, '')
+    const unfiltered = buildSessionList(proj, null, 'p1', lookupFromMap({}), '')
     expect(unfiltered[0].groups.map((b) => b.id)).toEqual(['g1', 'g2']) // empty g1 kept
 
-    const filtered = buildSessionList(proj, null, 'p1', {}, 'spec')
+    const filtered = buildSessionList(proj, null, 'p1', lookupFromMap({}), 'spec')
     expect(filtered[0].groups.map((b) => b.id)).toEqual(['g2']) // empty g1 dropped
     expect(filtered[0].groups[0].sessions.map((s) => s.id)).toEqual(['t1'])
   })
 
   it('filters by title and session name, hiding empty projects only when filtering', () => {
     const status: Record<string, AgentNodeStatus> = { a1: { unread: false, session: 'special' } }
-    const filtered = buildSessionList(projects(), null, 'p1', status, 'spec')
+    const filtered = buildSessionList(projects(), null, 'p1', lookupFromMap(status), 'spec')
     expect(filtered.map((g) => g.projectId)).toEqual(['p1'])
     expect(filtered[0].ungrouped.map((s) => s.id)).toEqual(['a1'])
 
-    const unfiltered = buildSessionList(projects(), null, 'p1', {}, '')
+    const unfiltered = buildSessionList(projects(), null, 'p1', lookupFromMap({}), '')
     expect(unfiltered.length).toBe(2) // both projects kept when no filter
   })
 
@@ -244,7 +252,7 @@ describe('buildSessionList', () => {
       proj,
       null,
       'p1',
-      { target: { unread: false, state: 'waiting' } },
+      lookupFromMap({ target: { unread: false, state: 'waiting' } }),
       ''
     )
     const outer = all.groups[0]
@@ -255,7 +263,7 @@ describe('buildSessionList', () => {
     expect(projectSignalCounts(all)).toEqual({ attention: 1, unread: 0, working: 0 })
 
     // Filtering keeps the ancestors of a match — otherwise the hit is unreachable in the tree.
-    const [filtered] = buildSessionList(proj, null, 'p1', {}, 'needle')
+    const [filtered] = buildSessionList(proj, null, 'p1', lookupFromMap({}), 'needle')
     expect(filtered.groups[0].id).toBe('outer')
     expect(filtered.groups[0].children[0].children[0].sessions.map((row) => row.id)).toEqual([
       'target'
@@ -275,7 +283,7 @@ describe('buildSessionList', () => {
         ]
       }
     ]
-    const [group] = buildSessionList(proj, null, 'p1', {}, '')
+    const [group] = buildSessionList(proj, null, 'p1', lookupFromMap({}), '')
     expect(new Set(group.groups.map((bucket) => bucket.id))).toEqual(
       new Set(['dangling', 'a', 'b'])
     )
@@ -297,14 +305,14 @@ describe('sidebar disclosure keys', () => {
   ]
 
   it('lists a key for the project and for every frame at any depth', () => {
-    const keys = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
+    const keys = liveCollapseKeys(buildSessionList(proj, null, 'p1', lookupFromMap({}), ''))
     expect(keys).toEqual(
       new Set(['project:p1', 'project:p1:group:outer', 'project:p1:group:inner'])
     )
   })
 
   it('drops keys whose project or frame is gone, and keeps the key being written', () => {
-    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
+    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', lookupFromMap({}), ''))
     const stored = {
       'project:p1': true,
       'project:p1:group:inner': true,
@@ -322,7 +330,7 @@ describe('sidebar disclosure keys', () => {
   })
 
   it('returns the same object when there is nothing to prune (no needless settings write)', () => {
-    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', {}, ''))
+    const live = liveCollapseKeys(buildSessionList(proj, null, 'p1', lookupFromMap({}), ''))
     const stored = { 'project:p1': true }
     expect(pruneCollapsedItems(stored, live)).toBe(stored)
   })
@@ -376,7 +384,7 @@ describe('projectSignalCounts', () => {
       d: { unread: true },
       e: { unread: true, state: 'working' }
     }
-    const [g] = buildSessionList(proj, null, 'p1', status, '')
+    const [g] = buildSessionList(proj, null, 'p1', lookupFromMap(status), '')
     // `e` is the load-bearing one: it is the single working session AND carries an unread mark,
     // so it must land in `working` and NOT in `unread`. `c` (done+unread) now counts as unread,
     // not attention — the user's call: unread already signals "there's something new here".
@@ -388,7 +396,7 @@ describe('projectSignalCounts', () => {
       [{ id: 'p1', name: 'P1', color: '#123', nodes: [node('x')] }],
       null,
       'p1',
-      {},
+      lookupFromMap({}),
       ''
     )
     expect(projectSignalCounts(g)).toEqual({ attention: 0, unread: 0, working: 0 })
@@ -427,7 +435,7 @@ describe('projectSignalCounts', () => {
       a1: { unread: true, state: 'blocked', agentId: 'claude', session: 'blocked task', sessionId: 'sess-a1' },
       a2: { unread: true, state: 'working', agentId: 'claude', session: 'working task', sessionId: 'sess-a2' }
     }
-    const [p1] = buildSessionList(proj, null, 'p1', status, '')
+    const [p1] = buildSessionList(proj, null, 'p1', lookupFromMap(status), '')
     expect(p1.groups[0].sessions.map((s) => s.id)).toEqual(['a1', 'a2']) // sanity: sessions really live under group.groups
     expect(projectSignalCounts(p1)).toEqual({ attention: 1, unread: 0, working: 1 })
   })
@@ -457,12 +465,12 @@ describe('groupSignalCounts', () => {
   }
 
   it('counts the frame whole subtree, nested frames included', () => {
-    const [g] = buildSessionList(proj, null, 'p1', status, '')
+    const [g] = buildSessionList(proj, null, 'p1', lookupFromMap(status), '')
     expect(groupSignalCounts(g.groups[0])).toEqual({ attention: 1, unread: 0, working: 1 })
   })
 
   it('counts only its own subtree, not the rest of the project', () => {
-    const [g] = buildSessionList(proj, null, 'p1', status, '')
+    const [g] = buildSessionList(proj, null, 'p1', lookupFromMap(status), '')
     // The inner frame sees only c1; the ungrouped t1 belongs to no frame and is the difference
     // between the frame totals and the project total.
     expect(groupSignalCounts(g.groups[0].children[0])).toEqual({
@@ -484,12 +492,12 @@ describe('groupSignalCounts', () => {
     ]
     // The absence of a working badge is what tells the user the task is waiting for them, so a
     // quiet frame must report zeros rather than anything the header could render.
-    const [g] = buildSessionList(quiet, null, 'p1', {}, '')
+    const [g] = buildSessionList(quiet, null, 'p1', lookupFromMap({}), '')
     expect(groupSignalCounts(g.groups[0])).toEqual({ attention: 0, unread: 0, working: 0 })
   })
 
   it('counts the rows the sidebar is showing, so an active filter narrows it', () => {
-    const [g] = buildSessionList(proj, null, 'p1', status, 'c1')
+    const [g] = buildSessionList(proj, null, 'p1', lookupFromMap(status), 'c1')
     // a1 is filtered out of the tree, so the badge must not claim an attention the user cannot
     // see or click — the same rule the project badge already follows.
     expect(groupSignalCounts(g.groups[0])).toEqual({ attention: 0, unread: 0, working: 1 })
@@ -522,7 +530,7 @@ describe('buildStatusList', () => {
   ]
 
   it('groups by status in the fixed order attention → unread → working → idle → unknown', () => {
-    const sections = buildStatusList(proj, null, 'p1', status, '')
+    const sections = buildStatusList(proj, null, 'p1', lookupFromMap(status), '')
     expect(sections.map((s) => s.kind)).toEqual([
       'attention',
       'unread',
@@ -533,7 +541,7 @@ describe('buildStatusList', () => {
   })
 
   it('flattens across projects and tags each row with its project', () => {
-    const sections = buildStatusList(proj, null, 'p1', status, '')
+    const sections = buildStatusList(proj, null, 'p1', lookupFromMap(status), '')
     const attention = sections.find((s) => s.kind === 'attention')!
     expect(attention.rows.map((r) => r.id).sort()).toEqual(['a1', 'a2'])
     expect(sections.find((s) => s.kind === 'idle')!.rows.map((r) => r.id)).toEqual(['d1'])
@@ -547,7 +555,7 @@ describe('buildStatusList', () => {
   })
 
   it('sorts rows within a section by descending state-change time', () => {
-    const sections = buildStatusList(proj, null, 'p1', status, '')
+    const sections = buildStatusList(proj, null, 'p1', lookupFromMap(status), '')
     // a2 (300) before a1 (100); d1 (read + done) sits in Idle, not between them.
     expect(sections.find((s) => s.kind === 'attention')!.rows.map((r) => r.id)).toEqual([
       'a2',
@@ -557,21 +565,21 @@ describe('buildStatusList', () => {
   })
 
   it('keeps only terminal nodes (drops stickies/editors)', () => {
-    const sections = buildStatusList(proj, null, 'p1', status, '')
+    const sections = buildStatusList(proj, null, 'p1', lookupFromMap(status), '')
     const ids = sections.flatMap((s) => s.rows.map((r) => r.id))
     expect(ids).not.toContain('s1')
   })
 
   it('uses live nodes for the active project', () => {
     const live = [node('a1', { title: 'renamed live', agentId: 'claude' })]
-    const sections = buildStatusList(proj, live, 'p1', status, '')
+    const sections = buildStatusList(proj, live, 'p1', lookupFromMap(status), '')
     const a1 = sections.flatMap((s) => s.rows).find((r) => r.id === 'a1')!
     expect(a1.title).toBe('renamed live')
   })
 
   it('keeps empty sections while filtering rows by title/session', () => {
     // 'runner' only matches w1 (working)
-    const filtered = buildStatusList(proj, null, 'p1', status, 'runner')
+    const filtered = buildStatusList(proj, null, 'p1', lookupFromMap(status), 'runner')
     expect(filtered.map((s) => s.kind)).toEqual([
       'attention',
       'unread',
@@ -589,7 +597,7 @@ describe('buildStatusList', () => {
       { id: 'p1', name: 'Alpha', color: '#111', nodes: [node('a1'), node('d1')] }
     ]
     const two: Record<string, AgentNodeStatus> = { a1: { unread: false, state: 'waiting' }, d1: { unread: false, state: 'done' } }
-    const sections = buildStatusList(onlyTwo, null, 'p1', two, '')
+    const sections = buildStatusList(onlyTwo, null, 'p1', lookupFromMap(two), '')
     expect(sections.map((s) => s.kind)).toEqual([
       'attention',
       'unread',
@@ -610,7 +618,7 @@ describe('buildStatusList', () => {
       i1: { unread: true }, // no state + unread → Unread
       w1: { unread: true, state: 'working' } // actively working → Running (working wins over unread)
     }
-    const sections = buildStatusList(proj, null, 'p1', glowing, '')
+    const sections = buildStatusList(proj, null, 'p1', lookupFromMap(glowing), '')
     const unread = sections.find((s) => s.kind === 'unread')!
     expect(unread.label).toBe('Unread')
     expect(unread.rows.map((r) => r.id).sort()).toEqual(['d1', 'i1'])
@@ -623,7 +631,7 @@ describe('buildStatusList', () => {
   })
 
   it('falls through to Unknown when no live state is known', () => {
-    const sections = buildStatusList(proj, null, 'p1', status, '')
+    const sections = buildStatusList(proj, null, 'p1', lookupFromMap(status), '')
     const unknown = sections.find((s) => s.kind === 'unknown')!
     expect(unknown.label).toBe('Unknown')
     expect(unknown.rows.map((r) => r.id)).toEqual(['i1'])
@@ -640,7 +648,7 @@ describe('buildStatusList', () => {
       { id: 'p2', name: 'ImmyBot', color: '#222', nodes: [node('b1', { title: 'other' })] }
     ]
     // activeProjectId is now p2, but liveActiveNodes still carries p1's a1 (stale window).
-    const sections = buildStatusList(proj2, p1Nodes, 'p2', { a1: { unread: false } }, '')
+    const sections = buildStatusList(proj2, p1Nodes, 'p2', lookupFromMap({ a1: { unread: false } }), '')
     const allRows = sections.flatMap((s) => s.rows)
     // a1 appears exactly once…
     expect(allRows.filter((r) => r.id === 'a1')).toHaveLength(1)
@@ -673,44 +681,77 @@ describe('sidebar filter matches the PROJECT itself (issue #543)', () => {
   ]
 
   it('keeps a session-less project that the needle NAMES, and drops the others', () => {
-    const filtered = buildSessionList(proj(), null, 'p2', {}, 'dot-github')
+    const filtered = buildSessionList(proj(), null, 'p2', lookupFromMap({}), 'dot-github')
     expect(filtered.map((g) => g.projectId)).toEqual(['p1'])
     // Shown whole: an empty frame stays, exactly as it does unfiltered.
     expect(filtered[0].groups.map((b) => b.id)).toEqual(['g1'])
   })
 
   it('matches the project cwd too — the identity the row tooltip already shows', () => {
-    const filtered = buildSessionList(proj(), null, 'p1', {}, '/repos/website')
+    const filtered = buildSessionList(proj(), null, 'p1', lookupFromMap({}), '/repos/website')
     expect(filtered.map((g) => g.projectId)).toEqual(['p2'])
   })
 
   it('a project matched by name comes back with ALL of its sessions, not just matching ones', () => {
-    const filtered = buildSessionList(proj(), null, 'p1', {}, 'website')
+    const filtered = buildSessionList(proj(), null, 'p1', lookupFromMap({}), 'website')
     expect(filtered.map((g) => g.projectId)).toEqual(['p2'])
     expect(filtered[0].ungrouped.map((s) => s.id)).toEqual(['t1'])
     expect(filtered[0].groups[0].sessions.map((s) => s.id)).toEqual(['t2'])
   })
 
   it('a session-level needle still narrows inside projects it does not name', () => {
-    const filtered = buildSessionList(proj(), null, 'p1', {}, 'deploy')
+    const filtered = buildSessionList(proj(), null, 'p1', lookupFromMap({}), 'deploy')
     expect(filtered.map((g) => g.projectId)).toEqual(['p2'])
     expect(filtered[0].ungrouped).toEqual([])
     expect(filtered[0].groups[0].sessions.map((s) => s.id)).toEqual(['t2'])
   })
 
   it('status mode keeps every row of a project the needle names (same rule, per row)', () => {
-    const sections = buildStatusList(proj(), null, 'p1', {}, 'website')
+    const sections = buildStatusList(proj(), null, 'p1', lookupFromMap({}), 'website')
     const ids = sections.flatMap((s) => s.rows.map((r) => r.id))
     expect(ids.sort()).toEqual(['t1', 't2'])
   })
 
   it('status mode still narrows by row for projects the needle does not name', () => {
-    const sections = buildStatusList(proj(), null, 'p1', {}, 'deploy')
+    const sections = buildStatusList(proj(), null, 'p1', lookupFromMap({}), 'deploy')
     expect(sections.flatMap((s) => s.rows.map((r) => r.id))).toEqual(['t2'])
   })
 
   it('an unfiltered list is untouched by the project rule', () => {
-    const unfiltered = buildSessionList(proj(), null, 'p1', {}, '')
+    const unfiltered = buildSessionList(proj(), null, 'p1', lookupFromMap({}), '')
     expect(unfiltered.map((g) => g.projectId)).toEqual(['p1', 'p2'])
+  })
+})
+
+describe('a node id shared by two projects (bug D)', () => {
+  // The field shape: a handed-off SSH project (closed in the field; a local session, so the default
+  // store) and the team tab now serving the same canvas (a relay session with its own store) hold
+  // the SAME node id. Each row must read its own project's answer, never the other project's.
+  const SSH = 'project-ssh-handed-off'
+  const TEAM = 'project-team-tab'
+  const NODE = 'term-shared-node'
+  const ssh: ProjectInput = { id: SSH, name: 'ssh', color: '#111', nodes: [node(NODE, { agentId: 'claude' })] }
+  const team: ProjectInput = { id: TEAM, name: 'team', color: '#222', nodes: [node(NODE, { agentId: 'claude' })] }
+  const lookup: AgentStatusLookup = (projectId, nodeId) => {
+    if (nodeId !== NODE) return undefined
+    if (projectId === SSH) return { unread: false, state: 'done' }
+    if (projectId === TEAM) return { unread: false, state: 'working' }
+    return undefined
+  }
+  const rowFor = (projectId: string, nodeId: string): SessionRowVM => {
+    const group = buildSessionList([ssh, team], null, TEAM, lookup, '').find((g) => g.projectId === projectId)
+    const row = group?.ungrouped.find((r) => r.id === nodeId)
+    expect(row, `${projectId}/${nodeId}`).toBeDefined()
+    return row!
+  }
+
+  it('a shared node id resolves per project', () => {
+    expect(rowFor(TEAM, NODE).statusKind).toBe('working')
+    expect(rowFor(SSH, NODE).statusKind).not.toBe('working')
+    expect(rowFor(SSH, NODE).statusKind).toBe('done')
+    // Status mode asks the lookup with the row's own project too (the sidebar passes only the open
+    // projects, so the closed SSH project is not in it).
+    const working = buildStatusList([team], null, TEAM, lookup, '').find((s) => s.kind === 'working')!
+    expect(working.rows.map((r) => [r.projectId, r.id])).toEqual([[TEAM, NODE]])
   })
 })

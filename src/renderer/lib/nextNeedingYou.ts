@@ -2,11 +2,13 @@
 // another project, instead of opening the sidebar, finding the project and the row, and clicking.
 //
 // Pure, so the ordering and the cycle are unit-tested here (vitest runs in the node environment,
-// no jsdom). Canvas calls this ON DEMAND, once per keypress or palette open, reading the stores
-// with `getState()` — it must NEVER subscribe to the status store's `byId` for this: every working/waiting flip
-// would re-render the whole canvas (see `StatusAwareMiniMap`'s header in Canvas.tsx).
+// no jsdom). Canvas calls this ON DEMAND, once per keypress or palette open, with a per-project
+// lookup that reads the stores' current state (`lookupFromStores`) — it must NEVER subscribe to a
+// status store's `byId` for this: every working/waiting flip would re-render the whole canvas (see
+// `StatusAwareMiniMap`'s header in Canvas.tsx). Per project, because a team tab's agents live in
+// its relay session's store, and a node id can be in two projects (bug D).
 
-import type { AgentNodeStatus } from '../state/agentStatus'
+import type { AgentStatusLookup } from '../session/agent-status-lookup'
 import { buildStatusList, type ProjectInput, type SessionNodeInput } from './sessionList'
 import { nodeTravel, type TravelProject } from './presenceTravel'
 
@@ -28,12 +30,12 @@ export function needsYouQueue(
   projects: readonly NeedsYouProject[],
   liveActiveNodes: SessionNodeInput[] | null,
   activeProjectId: string,
-  statusById: Record<string, AgentNodeStatus>
+  statusFor: AgentStatusLookup
 ): string[] {
   const open = projects.filter((p) => !p.closed)
   const pidx = new Map(open.map((p, i) => [p.id, i]))
   const attention =
-    buildStatusList(open, liveActiveNodes, activeProjectId, statusById, '').find(
+    buildStatusList(open, liveActiveNodes, activeProjectId, statusFor, '').find(
       (s) => s.kind === 'attention'
     )?.rows ?? []
   return attention
@@ -63,10 +65,10 @@ export function waitingBeforeRestart(
   projects: readonly NeedsYouProject[],
   liveActiveNodes: SessionNodeInput[] | null,
   activeProjectId: string,
-  statusById: Record<string, AgentNodeStatus>
+  statusFor: AgentStatusLookup
 ): number {
   const open = projects.filter((p) => !p.closed)
-  return buildStatusList(open, liveActiveNodes, activeProjectId, statusById, '')
+  return buildStatusList(open, liveActiveNodes, activeProjectId, statusFor, '')
     .flatMap((s) => s.rows)
     .filter(
       (r) =>

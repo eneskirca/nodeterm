@@ -27,7 +27,7 @@ import { ClosedHistorySection } from './ClosedHistorySection'
 import { IconBellFilled, IconCircleCheck, IconClose, IconPin } from './icons'
 import { useProjects } from '../state/projects'
 import { useSettings } from '../state/settings'
-import { useAgentStatus } from '../state/agentStatus'
+import { useAgentStatusLookup } from '../session/agent-status-lookup'
 import { useSessionNaming } from '../state/sessionNaming'
 import { ProjectBranch } from './ProjectBranch'
 import { useDragAutoScroll } from '../lib/dragAutoScroll'
@@ -146,7 +146,10 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   // Closed projects are hidden from the tab bar; hide them from the sidebar too.
   const projects = useMemo(() => allProjects.filter((p) => !p.closed), [allProjects])
   const activeProjectId = useProjects((s) => s.activeProjectId)
-  const statusById = useAgentStatus((s) => s.byId)
+  // Each row's status is read through ITS project's session store (a team tab's agents live in its
+  // relay session's store, and share node ids with the handed-off SSH project it serves).
+  const projectIds = useMemo(() => projects.map((p) => p.id), [projects])
+  const statusFor = useAgentStatusLookup(projectIds)
   const namingById = useSessionNaming((s) => s.byId)
 
   const [filter, setFilter] = useState('')
@@ -186,17 +189,17 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
   // case), and the O(projects × nodes) rebuild re-ran on every agent hook event otherwise.
   const groups = useMemo(
     () =>
-      open ? buildSessionList(projects, liveActiveNodes, activeProjectId, statusById, filter) : [],
-    [open, projects, liveActiveNodes, activeProjectId, statusById, filter]
+      open ? buildSessionList(projects, liveActiveNodes, activeProjectId, statusFor, filter) : [],
+    [open, projects, liveActiveNodes, activeProjectId, statusFor, filter]
   )
   // Status-grouped sections (only computed in status mode — flattens all projects' sessions by
   // live agent status so attention floats to the top). Same inputs as `groups`.
   const statusSections = useMemo(
     () =>
       open && grouping === 'status'
-        ? buildStatusList(projects, liveActiveNodes, activeProjectId, statusById, filter)
+        ? buildStatusList(projects, liveActiveNodes, activeProjectId, statusFor, filter)
         : [],
-    [open, grouping, projects, liveActiveNodes, activeProjectId, statusById, filter]
+    [open, grouping, projects, liveActiveNodes, activeProjectId, statusFor, filter]
   )
   /**
    * The list came back with nothing in it — in EITHER grouping mode. "Nothing here" and "nothing

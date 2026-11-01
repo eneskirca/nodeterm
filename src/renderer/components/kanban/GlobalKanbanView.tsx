@@ -3,7 +3,6 @@ import type { BridgeLink, CanvasNodeState, ProjectKanban } from '@shared/types'
 import { AGENT_CONFIG, BUILTIN_AGENT_IDS, type AgentId } from '@shared/agents/config'
 import { useProjects } from '../../state/projects'
 import { useSettings } from '../../state/settings'
-import { useAgentStatus } from '../../state/agentStatus'
 import { useBoardWallpaperStyle } from '../../state/wallpaper'
 import { AerialWallpaper } from '../AerialWallpaper'
 import {
@@ -19,7 +18,7 @@ import { createAgentNode, createBrowserNode, createStickyNode, createTerminalNod
 import { markCanvasCovered } from '../../lib/canvasCovered'
 import { showCanvas, useViewMode } from '../../state/viewMode'
 import { KanbanScopeSwitch } from './KanbanScopeSwitch'
-import { sessionForProject } from '../../session/session'
+import { agentStatusForProject, sessionForProject, useSessionRegistryVersion } from '../../session/session'
 import { ProjectSessionScope } from '../../session/owning-project'
 import { isHostedReadOnly } from '../../state/hostedTeams'
 import { activePermissionMode } from '../../state/permissionMode'
@@ -156,6 +155,16 @@ const Swimlane = memo(function Swimlane({
   const travel = useCallback((nodeId: string) => onOpenNode(nodeId, projectId), [onOpenNode, projectId])
   // Which machine this lane's nodes run on: only a local lane shows this machine's LIVE chips (R57).
   const liveLinkSource = projectSessionSource(projectId)
+  // The agent-status store of the session this LANE's project belongs to — a lane is not the
+  // active project, and a team lane's cards read its relay session's store (they share node ids
+  // with the handed-off SSH project, whose entries are the default store's).
+  const registryVersion = useSessionRegistryVersion()
+  const statusStore = useMemo(
+    () => agentStatusForProject(projectId).store,
+    // `registryVersion`: a reconnect swaps the project's session (and its store) under the same id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectId, registryVersion]
+  )
   const sessionIds = useMemo(() => sessions.map(s => s.id), [sessions])
 
   const paletteLabels = useMemo(() => boardLabels(board), [board])
@@ -265,6 +274,7 @@ const Swimlane = memo(function Swimlane({
           ports={cardPorts}
           onOpenPort={openPort}
           onRunQueued={runQueued}
+          statusStore={statusStore}
         />
       ))
     }]
@@ -431,11 +441,14 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     setModal(nodeId ? { projectId, nodeId, view } : null)
   }, [])
   const modalNodeId = modal?.nodeId ?? null
-  // Same rule as the per-project board: opening a card marks its completion read.
+  const modalProjectId = modal?.projectId ?? null
+  // Same rule as the per-project board: opening a card marks its completion read — on the store of
+  // the card's OWN lane project, so a team lane's read stays on this desktop and never clears the
+  // handed-off SSH project's entry under the same node id.
   useEffect(() => {
     onModalNodeChange?.(modalNodeId)
-    if (modalNodeId) useAgentStatus.getState().clearUnread(modalNodeId)
-  }, [modalNodeId, onModalNodeChange])
+    if (modalNodeId) agentStatusForProject(modalProjectId).store.getState().clearUnread(modalNodeId)
+  }, [modalNodeId, modalProjectId, onModalNodeChange])
   // Closing the overview with a card open must not leave the node "watched" forever.
   const onModalNodeChangeRef = useRef(onModalNodeChange)
   onModalNodeChangeRef.current = onModalNodeChange
