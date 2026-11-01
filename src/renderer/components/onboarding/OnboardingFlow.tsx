@@ -259,6 +259,10 @@ export function OnboardingFlow({ onClose }: { onClose: () => void }) {
       ['node.newTerminal', 'New terminal'],
       ['canvas.fitAll', 'See the whole canvas'],
       ['node.maximize', 'Maximize / restore a node'],
+      // Beside maximize on purpose — they are the two "more room for this terminal" keys and
+      // differ in what remains: maximize keeps the node on the canvas, focus mode lifts ONE
+      // terminal over everything (canvas, sidebar, dock — issue #78); the label carries the split.
+      ['view.focusMode', 'Focus one terminal — canvas and chrome out of the way'],
       ['view.kanbanToggle', 'Canvas ⇄ kanban']
     ] as const satisfies ReadonlyArray<readonly [CommandId, string]>
   )
