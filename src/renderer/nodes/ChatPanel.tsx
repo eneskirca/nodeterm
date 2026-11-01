@@ -1,6 +1,6 @@
 import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
 import { claudeScreenBlocksInput, readClaudeScreen } from '@shared/agents/claude-screen'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
@@ -56,7 +56,7 @@ import { ChatComposer } from './ChatComposer'
 import { ChatTurnActions } from './ChatTurnActions'
 import { useCodeBlockCopy } from './CodeBlockCopy'
 import { useCodeHighlight } from './CodeHighlight'
-import { assistantTurnEnds } from '../lib/chatThread'
+import { assistantTurnEnds, chatAbsoluteTime, chatClockTime, dayDividers } from '../lib/chatThread'
 import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
 import { ChatToolGroup } from './ChatToolGroup'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
@@ -988,6 +988,8 @@ export function ChatPanel({
     const t = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(t)
   }, [])
+  // A divider at the first message of each local day; the same `now`, so Today rolls to Yesterday.
+  const days = useMemo(() => dayDividers(messages, now), [messages, now])
 
   // One part of a message, as the thread draws it. Also used for the members of a folded tool block,
   // which are drawn inside the block instead of at their own place (lib/chatToolGroups.ts).
@@ -1115,42 +1117,64 @@ export function ChatPanel({
           {messages.map((m, i) => {
             // A message whose every part is drawn inside an earlier message's tool block has nothing of
             // its own to draw, unless it ends a turn: then it draws that turn's action row and nothing
-            // else. (Only assistant parts fold, so a queued message — the user's — never does.)
+            // else — bar a day divider (below). (Only assistant parts fold, so a queued message — the
+            // user's — never does.)
             const folded = m.parts.length > 0 && m.parts.every((_, j) => toolGroups.absorbed.has(partPosition(i, j)))
             const turnEnd = turnEnds.get(i)
-            if (folded && !turnEnd) return null
             // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
             // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
             // bubble) fall back to their position.
             const key = m.key !== undefined ? `k${m.key}` : `i${i}`
+            // The day divider is a sibling BEFORE the wrapper, a folded one's too. A message drawn
+            // whole inside an earlier tool block still draws its divider alone: its day would
+            // otherwise lose its label, since the divider goes only on a day's FIRST stamped message.
+            const day = days.get(i)
+            const divider = day !== undefined && (
+              <div className="term-chat__day" role="separator" aria-label={day}>
+                {day}
+              </div>
+            )
+            if (folded && !turnEnd) return divider ? <Fragment key={key}>{divider}</Fragment> : null
             const actions = turnEnd && (
               <ChatTurnActions copyText={turnEnd.copyText} at={turnEnd.at} now={now} latest={i === latestTurnEnd} />
             )
             if (folded) {
               return (
-                <div key={key} className={`term-chat__msg term-chat__msg--${m.role} term-chat__msg--folded`}>
-                  {actions}
-                </div>
+                <Fragment key={key}>
+                  {divider}
+                  <div className={`term-chat__msg term-chat__msg--${m.role} term-chat__msg--folded`}>{actions}</div>
+                </Fragment>
               )
             }
             const queued = queuedRef.current.has(m)
             return (
-              <div
-                key={key}
-                className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
-                  queued ? ' term-chat__msg--queued' : ''
-                }`}
-              >
-                {m.parts.map((p, j) => {
-                  const at = partPosition(i, j)
-                  const group = toolGroups.groupAt.get(at)
-                  if (group) return <ChatToolGroup key={group.key} messages={messages} group={group} renderPart={renderPart} />
-                  if (toolGroups.absorbed.has(at)) return null
-                  return renderPart(p, i, j)
-                })}
-                {queued && <div className="term-chat__queued-label">Queued</div>}
-                {actions}
-              </div>
+              <Fragment key={key}>
+                {divider}
+                <div
+                  className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
+                    queued ? ' term-chat__msg--queued' : ''
+                  }`}
+                >
+                  {m.parts.map((p, j) => {
+                    const at = partPosition(i, j)
+                    const group = toolGroups.groupAt.get(at)
+                    if (group) return <ChatToolGroup key={group.key} messages={messages} group={group} renderPart={renderPart} />
+                    if (toolGroups.absorbed.has(at)) return null
+                    return renderPart(p, i, j)
+                  })}
+                  {m.role === 'user' && m.at !== undefined && (
+                    <time
+                      className="term-chat__time term-chat__time--user"
+                      dateTime={new Date(m.at).toISOString()}
+                      title={chatAbsoluteTime(m.at)}
+                    >
+                      {chatClockTime(m.at)}
+                    </time>
+                  )}
+                  {queued && <div className="term-chat__queued-label">Queued</div>}
+                  {actions}
+                </div>
+              </Fragment>
             )
           })}
           {screenBlock && (

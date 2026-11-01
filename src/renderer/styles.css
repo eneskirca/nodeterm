@@ -3557,6 +3557,23 @@ body,
   padding: 0 4px;
   white-space: nowrap;
 }
+/* The clock time under a user message (its bubble's last line), quiet like the action row's. */
+.term-chat__time--user {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+/* A day divider (lib/chatThread.ts `dayDividers`): a quiet centered caption before the first
+   message of each local calendar day. */
+.term-chat__day {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.35);
+}
 .term-chat__text > :first-child {
   margin-top: 0;
 }

@@ -3618,7 +3618,8 @@ export interface ChatMessage {
   /**
    * When the transcript line was written (epoch ms, from claude's ISO `timestamp`). Set on BOTH
    * read paths; absent when the line states none (grok, older records). The ⌘M thread shows it as a
-   * relative time under an assistant message.
+   * relative time under an assistant turn and a clock time under a user message, and starts a day
+   * divider at each local day's first stamped message.
    */
   at?: number
 }

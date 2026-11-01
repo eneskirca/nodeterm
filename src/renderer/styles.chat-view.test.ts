@@ -82,6 +82,11 @@ describe('⌘M thread: claude.ai look', () => {
     expect(folded).toMatch(/padding:\s*0;/)
     expect(folded).toMatch(/min-height:\s*0;/)
   })
+
+  it('a day divider is a centered caption, and the clock time under a user bubble is small', () => {
+    expect(ruleBody('.term-chat__day')).toMatch(/text-align:\s*center;/)
+    expect(ruleBody('.term-chat__time--user')).toMatch(/font-size:\s*11px;/)
+  })
 })
 
 describe('the shared .term-chat__input (plan "Revise…", question "Other") keeps a visible field', () => {

@@ -28,6 +28,7 @@ const { session, reads } = vi.hoisted(() => {
 vi.mock('../session/session', () => ({ useSession: () => session }))
 
 import { ChatPanel } from './ChatPanel'
+import { chatClockTime } from '../lib/chatThread'
 
 const NODE = 'n-thread'
 const MIN = 60_000
@@ -169,5 +170,53 @@ describe('⌘M thread look', () => {
     ])
     expect(host.querySelector('.term-chat__tool-group')).toBeNull()
     expect(host.querySelectorAll('.term-chat__tool')).toHaveLength(2)
+  })
+
+  it('shows the clock time under a user bubble and a day divider at each day start', async () => {
+    // `thread` is stamped off the wall clock, so for ten minutes after midnight its first stamps fall
+    // on yesterday; re-anchored at today's noon its stamps are all today whenever this runs.
+    const noon = new Date(now).setHours(12, 0, 0, 0)
+    await mount(thread.map((m) => ({ ...m, at: m.at! - now + noon })))
+    const time = host.querySelector('.term-chat__msg--user time.term-chat__time--user')
+    expect(time?.textContent).toBe(chatClockTime(noon - 10 * MIN))
+    expect(time?.classList.contains('term-chat__time')).toBe(true)
+    expect(time?.getAttribute('dateTime')).toBe(new Date(noon - 10 * MIN).toISOString())
+    expect(time?.getAttribute('title')).toBeTruthy()
+    const days = [...host.querySelectorAll('.term-chat__day')]
+    expect(days.map((d) => d.textContent)).toEqual(['Today'])
+    expect(days[0].getAttribute('role')).toBe('separator')
+    expect(days[0].nextElementSibling?.classList.contains('term-chat__msg--user')).toBe(true)
+  })
+
+  it('no clock time under a user bubble the transcript did not stamp', async () => {
+    await mount([{ role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 }])
+    expect(host.querySelector('.term-chat__msg--user')).not.toBeNull()
+    expect(host.querySelector('.term-chat__time--user')).toBeNull()
+    expect(host.querySelector('.term-chat__day')).toBeNull()
+  })
+
+  it('a day that starts on a folded turn end still gets its divider, before the folded row', async () => {
+    const midnight = new Date(now).setHours(0, 0, 0, 0)
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0, at: midnight - 120 * MIN },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10, at: midnight - 60 * MIN },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'b' }], key: 20, at: midnight + MIN }
+    ])
+    const days = [...host.querySelectorAll('.term-chat__day')]
+    expect(days.map((d) => d.textContent)).toEqual(['Yesterday', 'Today'])
+    expect(days[1].nextElementSibling?.classList.contains('term-chat__msg--folded')).toBe(true)
+  })
+
+  it('a day that starts inside a folded tool run keeps its divider (drawn where the run ends)', async () => {
+    const midnight = new Date(now).setHours(0, 0, 0, 0)
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0, at: midnight - 120 * MIN },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10, at: midnight - 60 * MIN },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'b' }], key: 20, at: midnight + MIN },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'Done.' }], key: 30, at: midnight + 2 * MIN }
+    ])
+    const days = [...host.querySelectorAll('.term-chat__day')]
+    expect(days.map((d) => d.textContent)).toEqual(['Yesterday', 'Today'])
+    expect(days[1].nextElementSibling?.textContent).toContain('Done.')
   })
 })
