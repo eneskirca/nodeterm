@@ -108,7 +108,17 @@ describe('groupToolCalls', () => {
     const layout = groupToolCalls(messages, { foldTail: false })
     expect(runs(messages)).toEqual([['1:0', '2:0'], ['4:0', '5:0']]) // default folds both
     expect([...layout.groupAt.keys()]).toEqual(['1:0']) // tail run left alone
+    expect(layout.absorbed.has('2:0')).toBe(true) // the earlier run still folds
     expect(layout.absorbed.has('5:0')).toBe(false)
+  })
+
+  it('foldTail:false still folds every run when the thread ends in something else', () => {
+    const messages = [user('go'), call('Bash'), call('Read'), say('mid'), call('Bash'), call('Edit'), say('done')]
+
+    const layout = groupToolCalls(messages, { foldTail: false })
+
+    expect([...layout.groupAt.keys()]).toEqual(['1:0', '4:0'])
+    expect([...layout.absorbed]).toEqual(['2:0', '5:0'])
   })
 
   it('memberKey uses the transcript line key, so a prepended page does not re-key a member', () => {

@@ -969,10 +969,11 @@ export function ChatPanel({
   // (a per-row timer would be a timer per turn for a label that changes once a minute).
   const turnEnds = useMemo(() => assistantTurnEnds(messages), [messages])
   // Runs of consecutive tool calls, folded into one closed block each (lib/chatToolGroups.ts) —
-  // except, while the agent works, the run at the end of the thread: that is the live turn, and its
-  // calls stay open chips until something else ends the run.
-  const foldTail = refusal !== 'working'
-  const toolGroups = useMemo(() => groupToolCalls(messages, { foldTail }), [messages, foldTail])
+  // except, while the turn is live, the run at the end of the thread: its calls stay open chips until
+  // something else ends the run. Live = working, or waiting on a prompt (`dialog`: a permission
+  // request or question lands MID-turn, and folding on it would close the run on every prompt).
+  const liveTurn = refusal === 'working' || refusal === 'dialog'
+  const toolGroups = useMemo(() => groupToolCalls(messages, { foldTail: !liveTurn }), [messages, liveTurn])
   // The last key IS the latest turn end: `assistantTurnEnds` inserts in thread order.
   const latestTurnEnd = useMemo(() => {
     let last = -1

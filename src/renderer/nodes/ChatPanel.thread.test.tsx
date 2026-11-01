@@ -157,4 +157,17 @@ describe('⌘M thread look', () => {
     expect(host.querySelector('.term-chat__tool-group')).toBeNull()
     expect(host.querySelectorAll('.term-chat__tool')).toHaveLength(2)
   })
+
+  it('while the agent waits on a prompt mid-turn, the trailing run of tool calls is not folded', async () => {
+    // `waiting` (a PermissionRequest) refuses with `dialog`: the turn is still live, so its calls stay
+    // chips rather than folding closed on every prompt. The afterEach restores `done`.
+    useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'waiting' } as (typeof s.byId)[string] } }))
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Read', arg: 'b' }], key: 20 }
+    ])
+    expect(host.querySelector('.term-chat__tool-group')).toBeNull()
+    expect(host.querySelectorAll('.term-chat__tool')).toHaveLength(2)
+  })
 })

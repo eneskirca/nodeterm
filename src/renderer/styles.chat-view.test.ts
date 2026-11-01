@@ -78,7 +78,9 @@ describe('⌘M thread: claude.ai look', () => {
   })
 
   it('a folded message collapses to its action row', () => {
-    expect(ruleBody('.term-chat__msg--folded')).toMatch(/padding:\s*0;/)
+    const folded = ruleBody('.term-chat__msg--folded')
+    expect(folded).toMatch(/padding:\s*0;/)
+    expect(folded).toMatch(/min-height:\s*0;/)
   })
 })
 
