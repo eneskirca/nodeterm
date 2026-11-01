@@ -70,7 +70,7 @@ describe('desktop main', () => {
     // A station's new session withdraws its report BEFORE the renderer hears the event.
     const withdraw = main.indexOf('stationOutcomes.onAgentEvent(enriched)')
     expect(withdraw).toBeGreaterThan(-1)
-    expect(withdraw).toBeLessThan(main.indexOf('sendToMain(IPC.agentStatus, enriched)'))
+    expect(withdraw).toBeLessThan(main.indexOf('corePlatform.broadcast(IPC.agentStatus, enriched)'))
     expect(main).toContain('flushAllDurableFactsSync()')
     // The restore waits for the workspace index, or a restore-time expiry reaches no sender. The boot
     // read is shared with the live links' init (which must not judge a node gone before it either).

@@ -255,6 +255,35 @@ describe('electronPlatform + relay peers', () => {
     expect(JSON.parse(quiet.text[0]!).channel).toBe('watch:meta')
   })
 
+  it('the main window hears a broadcast exactly once, however many peers are registered', () => {
+    // The desktop host's agent events (agent:status, agent:subagent-activity, context:update) ride
+    // broadcast so a joined team tab hears them; the host's own window must not hear them twice.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const p = electronPlatform()
+    h.clientIds = [1]
+    const dead: UiSink = {
+      sendText: () => {
+        throw new Error('EPIPE')
+      },
+      sendBinary: () => {},
+      bufferedAmount: () => 0
+    }
+    const a = peerSink()
+    const b = peerSink()
+    const quiet = peerSink()
+    registerPeerSink(PEER, a.sink)
+    registerPeerSink(PEER + 1, dead)
+    registerPeerSink(PEER + 2, quiet.sink, { quiet: true, selfPaced: true })
+    registerPeerSink(PEER + 3, b.sink)
+
+    p.broadcast('agent:status', { nodeId: 'n1', kind: 'state', state: 'working' })
+    expect(h.sent).toEqual([{ channel: 'agent:status', args: [{ nodeId: 'n1', kind: 'state', state: 'working' }] }])
+    expect(a.text).toHaveLength(1)
+    expect(b.text).toHaveLength(1)
+    expect(quiet.text).toEqual([])
+    warn.mockRestore()
+  })
+
   it('is BIT-IDENTICAL to the webContents-only path with no peer registered (merge gate)', () => {
     const p = electronPlatform()
     h.clientIds = [5]

@@ -2961,7 +2961,7 @@ app.whenReady().then(async () => {
   // which need the raw transcript_path the NormalizedAgentEvent intentionally drops.
   const subagentTail = createSubagentTail(({ toolUseId, chunk }) => {
     subagentReplay.touch(toolUseId) // a streaming subagent is alive: keep it in the reload replay
-    if (!win.isDestroyed()) win.webContents.send(IPC.agentSubagentActivity, { toolUseId, chunk })
+    corePlatform.broadcast(IPC.agentSubagentActivity, { toolUseId, chunk })
   })
   // Claude's two subagent signal paths merged into one card per child (native SubagentStart/Stop
   // win once a session sends them — core/claude-subagent-lifecycle.ts). Every normalized event
@@ -2991,7 +2991,7 @@ app.whenReady().then(async () => {
     for (const [nid, sid] of nodeContextSession) if (sid === sessionId) nodeId = nid
     if (!nodeId) return
     const ev = recordQuestionResult(nodeId, sessionId, toolUseId)
-    if (ev) sendToMain(IPC.agentStatus, ev)
+    if (ev) corePlatform.broadcast(IPC.agentStatus, ev)
   }
   /**
    * The transcript recorded an interrupt marker (Esc / Ctrl+C). Claude sends no hook for an
@@ -3024,7 +3024,7 @@ app.whenReady().then(async () => {
     // Through the lifecycle like every other event: in a session that sends native hooks the card
     // is keyed by the child's agent_id, and this tool-keyed end is re-keyed onto it (idempotent).
     for (const out of claudeSubagents.apply(taskDoneEvent)) {
-      sendToMain(IPC.agentStatus, out)
+      corePlatform.broadcast(IPC.agentStatus, out)
       recordAgentEvent(out)
     }
     subagentTail.finish(n.toolUseId)
@@ -3035,14 +3035,15 @@ app.whenReady().then(async () => {
   const cursorSubagents = createCursorSubagentTracker({
     tail: subagentTail,
     emit: (ev) => {
-      sendToMain(IPC.agentStatus, ev)
+      corePlatform.broadcast(IPC.agentStatus, ev)
       recordAgentEvent(ev)
     }
   })
   // Every context tail pushes through here, so an agent's meter reaches the renderer, the Notch HUD
-  // and the phone's context ring identically whichever CLI produced the numbers.
+  // and the phone's context ring identically whichever CLI produced the numbers. `broadcast` is the
+  // main window (sendToMain) plus every non-quiet relay peer, so a joined team tab's meter fills too.
   const pushContextUpdate = (payload: unknown): void => {
-    if (!win.isDestroyed()) win.webContents.send(IPC.contextUpdate, payload)
+    corePlatform.broadcast(IPC.contextUpdate, payload)
     // Feed the macOS Notch HUD the model name (keyed by sessionId; no-op off/non-darwin).
     notchHudOnContextUpdate(payload as Parameters<typeof notchHudOnContextUpdate>[0])
     // Feed the mirror's per-node context ring (mobile-usage-inbox). The context tail keys by
@@ -3130,7 +3131,7 @@ app.whenReady().then(async () => {
     onTrack: (nodeId, sessionId) => { nodeContextSession.set(nodeId, sessionId) },
     onClear: (nodeId, sessionId) => {
       notchHudOnContextUpdate({ nodeId, sessionId, cleared: true })
-      if (!win.isDestroyed()) win.webContents.send(IPC.contextUpdate, { nodeId, sessionId, cleared: true,
+      corePlatform.broadcast(IPC.contextUpdate, { nodeId, sessionId, cleared: true,
         usedTokens: 0, windowTokens: 0, usedPercent: 0, model: null, updatedAt: Date.now() })
     }
   })
@@ -3480,7 +3481,10 @@ app.whenReady().then(async () => {
       // A station that starts a DIFFERENT session drops the report its old one made — before the
       // renderer hears the event, so no `--after-success` can fire on it in between.
       stationOutcomes.onAgentEvent(enriched)
-      sendToMain(IPC.agentStatus, enriched)
+      // The main window and every non-quiet relay peer: a joined team tab keeps the host's agent
+      // status in its own session store (a scoped guest hears only its project's nodes —
+      // filterScopedEvent).
+      corePlatform.broadcast(IPC.agentStatus, enriched)
       // Feed the macOS Notch HUD its prompt (ev.task on newTurn) + subagent grouping (no-op off/non-darwin).
       notchHudOnAgentEvent(enriched)
       // Agent messaging taps the SAME stream: the sender's newTurn resets its fan-out budget, and
