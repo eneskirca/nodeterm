@@ -7183,6 +7183,11 @@ body,
   border-top: 3px solid var(--accent);
 }
 
+/* It takes focus itself (so keys stop reaching the terminal under the scrim); no ring for that. */
+.confirm.announce-popup:focus {
+  outline: none;
+}
+
 .confirm.announce-popup--success {
   border-top-color: var(--success);
 }

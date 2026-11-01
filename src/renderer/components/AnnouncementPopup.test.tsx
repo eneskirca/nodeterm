@@ -6,14 +6,18 @@ import type { PopupAnnouncement } from '@shared/types'
 import { AnnouncementPopup } from './AnnouncementPopup'
 import { popDialog, pushDialog, resetDialogStack } from './dialog-stack'
 import { useEntitlement } from '../state/entitlement'
-import { KEY_QUIET_MS, loadSeenPopups } from '../lib/announcementPopup'
+import { useSettings } from '../state/settings'
+import { useUpgradeGate } from '../state/upgradeGate'
+import { KEY_QUIET_MS, PENDING_RECHECK_MS, loadSeenPopups } from '../lib/announcementPopup'
 
-// The real store subscribes to the license bridge when it is created; the popup reads the bit and
+// The real store subscribes to the license bridge when it is created; the popup reads the bits and
 // calls the checkout.
 vi.mock('../state/entitlement', async () => {
   const { create } = await import('zustand')
-  return { useEntitlement: create(() => ({ isPremium: false, upgrade: async () => {} })) }
+  return { useEntitlement: create(() => ({ isPremium: false, known: true, upgrade: async () => {} })) }
 })
+
+const SIX_HOURS = 6 * 60 * 60 * 1000
 
 const pop = (id: string, extra: Partial<PopupAnnouncement> = {}): PopupAnnouncement => ({
   id,
@@ -33,10 +37,14 @@ function setFeed(...reads: PopupAnnouncement[][]): void {
   ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = { announcements: { popups } }
 }
 
-async function mount(): Promise<void> {
+async function mount(blocked = false): Promise<void> {
   const el = document.createElement('div')
   root = createRoot(el)
-  await act(async () => root!.render(<AnnouncementPopup />))
+  await act(async () => root!.render(<AnnouncementPopup blocked={blocked} />))
+}
+
+async function rerender(blocked: boolean): Promise<void> {
+  await act(async () => root!.render(<AnnouncementPopup blocked={blocked} />))
 }
 
 async function unmount(): Promise<void> {
@@ -44,19 +52,22 @@ async function unmount(): Promise<void> {
   root = null
 }
 
-const dialog = () => document.body.querySelector('.announce-popup')
+const dialog = () => document.body.querySelector<HTMLElement>('.announce-popup')
 const button = (label: string) =>
   [...document.body.querySelectorAll('button')].find((b) => b.textContent === label) as HTMLButtonElement | undefined
 
 beforeEach(() => {
   vi.useFakeTimers()
   resetDialogStack()
+  useSettings.setState({ hydrated: true })
 })
 
 afterEach(async () => {
   await unmount()
   vi.useRealTimers()
-  useEntitlement.setState({ isPremium: false, upgrade: async () => {} })
+  useEntitlement.setState({ isPremium: false, known: true, upgrade: async () => {} })
+  useSettings.setState({ hydrated: false })
+  useUpgradeGate.setState({ open: false })
   localStorage.clear()
   vi.restoreAllMocks()
 })
@@ -76,7 +87,6 @@ it('shows the newest popup once, and records it the moment it is shown', async (
 })
 
 it('closing one does not bring up the next until the next read of the feed', async () => {
-  const SIX_HOURS = 6 * 60 * 60 * 1000
   setFeed([pop('a'), pop('b')])
   await mount()
   expect(dialog()?.textContent).toContain('Title a')
@@ -93,7 +103,7 @@ it('closing one does not bring up the next until the next read of the feed', asy
   expect(dialog()?.textContent).toContain('Title b')
 })
 
-it('waits for another modal to close before taking the screen', async () => {
+it('waits for another modal on the dialog stack to close', async () => {
   pushDialog('someone-else')
   setFeed([pop('a')])
   await mount()
@@ -106,16 +116,85 @@ it('waits for another modal to close before taking the screen', async () => {
   expect(dialog()?.textContent).toContain('Title a')
 })
 
-it('waits for the keyboard to go quiet', async () => {
-  setFeed([])
+// The setup tour, Settings, the palette… are not on the stack; Canvas says so through `blocked`.
+it('waits while Canvas reports a surface of its own open', async () => {
+  setFeed([pop('a')])
+  await mount(true)
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(dialog()).toBeNull()
+  await rerender(false)
+  expect(dialog()?.textContent).toContain('Title a')
+})
+
+it('waits while the upgrade dialog is open', async () => {
+  useUpgradeGate.setState({ open: true })
+  setFeed([pop('a')])
   await mount()
-  // The user is typing when the popup arrives (a plan change re-reads the feed).
-  popups.mockResolvedValue([pop('a')])
-  await act(async () => {
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'x' }))
-    useEntitlement.setState({ isPremium: true })
-  })
-  await act(async () => useEntitlement.setState({ isPremium: false }))
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(dialog()).toBeNull()
+  await act(async () => useUpgradeGate.setState({ open: false }))
+  expect(dialog()?.textContent).toContain('Title a')
+})
+
+// First launch decides the setup tour from settings; a popup that beat it would sit on the tour.
+it('waits for settings to load', async () => {
+  useSettings.setState({ hydrated: false })
+  setFeed([pop('a')])
+  await mount()
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(dialog()).toBeNull()
+  await act(async () => useSettings.setState({ hydrated: true }))
+  expect(dialog()?.textContent).toContain('Title a')
+})
+
+// `isPremium` is `false` until the license is read, so a pick before then would show an upgrade
+// popup to a Pro user — and record it.
+it('does not read the feed until the license is known', async () => {
+  useEntitlement.setState({ known: false })
+  setFeed([pop('upsell', { action: 'upgrade' })])
+  await mount()
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(popups).not.toHaveBeenCalled()
+  await act(async () => useEntitlement.setState({ known: true, isPremium: true }))
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(popups).toHaveBeenCalled()
+  expect(dialog()).toBeNull()
+  expect(loadSeenPopups().has('upsell')).toBe(false)
+})
+
+it('drops a waiting popup the moment the plan changes, before the re-read answers', async () => {
+  setFeed([pop('upsell', { action: 'upgrade' })])
+  let answer: (items: PopupAnnouncement[]) => void = () => {}
+  await mount(true)
+  // The purchase lands while it waits, and the re-read for Pro is slow (a plan change misses
+  // main's cache: a network read of up to 8 s). In that gap the old pick must already be gone.
+  popups.mockReturnValueOnce(new Promise<PopupAnnouncement[]>((r) => (answer = r)))
+  await act(async () => useEntitlement.setState({ isPremium: true }))
+  await rerender(false)
+  await act(async () => vi.advanceTimersByTime(10_000))
+  // Not even for a frame: shown, it would be recorded (and closed by the Pro rule) — gone for good.
+  expect(dialog()).toBeNull()
+  expect(loadSeenPopups().has('upsell')).toBe(false)
+  await act(async () => answer([pop('upsell', { action: 'upgrade' })]))
+  expect(dialog()).toBeNull()
+  expect(loadSeenPopups().has('upsell')).toBe(false)
+})
+
+it('drops a waiting popup the admin deactivated meanwhile', async () => {
+  setFeed([pop('a')], [])
+  await mount(true)
+  await act(async () => vi.advanceTimersByTime(PENDING_RECHECK_MS))
+  await rerender(false)
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(dialog()).toBeNull()
+  expect(loadSeenPopups().has('a')).toBe(false)
+})
+
+it('waits for the keyboard to go quiet', async () => {
+  setFeed([pop('a')])
+  await mount(true)
+  await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'x' })))
+  await rerender(false)
   expect(dialog()).toBeNull()
   await act(async () => vi.advanceTimersByTime(KEY_QUIET_MS - 1000))
   expect(dialog()).toBeNull()
@@ -123,20 +202,35 @@ it('waits for the keyboard to go quiet', async () => {
   expect(dialog()?.textContent).toContain('Title a')
 })
 
-it('closes on Escape and takes no focus from the user', async () => {
+it('takes focus into itself, not onto a button, and gives it back on close', async () => {
   const input = document.createElement('input')
   document.body.appendChild(input)
   input.focus()
+  setFeed([pop('a', { url: 'https://x.dev' })])
+  await mount()
+  expect(document.activeElement).toBe(dialog())
+  // Enter presses nothing.
+  await act(async () => dialog()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  expect(dialog()).not.toBeNull()
+  await act(async () => dialog()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+  expect(dialog()).toBeNull()
+  expect(document.activeElement).toBe(input)
+  input.remove()
+})
+
+// xterm stops propagation of the keys it handles, Escape included: a bubble-phase listener never
+// hears it, and the agent in the pane gets an ESC that interrupts its turn.
+it('takes Escape before a terminal that still has focus can', async () => {
+  const term = document.createElement('textarea')
+  const seen = vi.fn((e: KeyboardEvent) => e.stopPropagation())
+  term.addEventListener('keydown', seen)
+  document.body.appendChild(term)
   setFeed([pop('a')])
   await mount()
-  expect(dialog()).not.toBeNull()
-  expect(document.activeElement).toBe(input)
-  // Enter answers nothing.
-  await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })))
-  expect(dialog()).not.toBeNull()
-  await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+  await act(async () => term.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
   expect(dialog()).toBeNull()
-  input.remove()
+  expect(seen).not.toHaveBeenCalled()
+  term.remove()
 })
 
 it('opens its link and closes', async () => {

@@ -12,6 +12,10 @@ export const SEEN_POPUPS_KEY = 'nodeterm.seenPopups'
 /** No keystroke for this long before a popup may take the screen (see `popupMayShow`). */
 export const KEY_QUIET_MS = 4000
 
+/** While a popup waits its turn, the feed is read again this often, so one the admin has
+ *  deactivated in the meantime is dropped instead of shown hours later. */
+export const PENDING_RECHECK_MS = 5 * 60 * 1000
+
 export function loadSeenPopups(): Set<string> {
   try {
     const raw = localStorage.getItem(SEEN_POPUPS_KEY)
@@ -47,11 +51,13 @@ export function pickPopup(
 
 /**
  * May a popup take the screen now? Not over another modal (it would bury the question the user is
- * answering), and not under typing hands: a modal that appears mid-keystroke catches the next
- * Enter or Space, and the user never reads what they just dismissed.
+ * answering) — one on the dialog stack (`openDialogs`) or one of the surfaces that are not
+ * (`blocked`: the setup tour, Settings, the command palette, …) — and not under typing hands: a
+ * modal that appears mid-keystroke catches the next keys, and the user never reads what they just
+ * dismissed.
  */
-export function popupMayShow(now: number, lastKeyAt: number, openDialogs: number): boolean {
-  return openDialogs === 0 && now - lastKeyAt >= KEY_QUIET_MS
+export function popupMayShow(now: number, lastKeyAt: number, openDialogs: number, blocked: boolean): boolean {
+  return !blocked && openDialogs === 0 && now - lastKeyAt >= KEY_QUIET_MS
 }
 
 export type PopupCta = { kind: 'url'; label: string; url: string } | { kind: 'upgrade'; label: string }

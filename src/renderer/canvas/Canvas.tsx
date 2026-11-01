@@ -20736,7 +20736,25 @@ export function Canvas() {
       )}
 
       <UpgradeDialog />
-      <AnnouncementPopup />
+      {/* The surfaces below are not on the dialog stack, so the popup is told about them here: it
+          must not land on the setup tour, Settings, the palette, a dictation in progress, …. The
+          kanban card modal registers on the stack itself; `cardModalOpen` is belt and braces. */}
+      <AnnouncementPopup
+        blocked={
+          onboardingOpen ||
+          mobileLaunchOpen ||
+          settingsOpen ||
+          paletteOpen ||
+          shortcutsOpen ||
+          scOpen ||
+          logPanelOpen ||
+          welcomeOpen ||
+          consentOpen ||
+          cloneDialogOpen ||
+          dictationOpen ||
+          cardModalOpen
+        }
+      />
       {/* The free-tier limit moment (docs/project-limit.md). Close is the ordinary non-destructive close — never
           `endSessions`: the limit only ever blocks a NEW open, it never ends anything. */}
       <ProjectLimitDialog onCloseProject={(id) => performCloseProject(id)} />

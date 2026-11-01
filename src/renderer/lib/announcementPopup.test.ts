@@ -34,10 +34,11 @@ describe('pickPopup', () => {
 
 describe('popupMayShow', () => {
   it('waits for a quiet keyboard and for no other modal', () => {
-    expect(popupMayShow(10_000, 0, 0)).toBe(true)
-    expect(popupMayShow(10_000, 10_000 - KEY_QUIET_MS, 0)).toBe(true)
-    expect(popupMayShow(10_000, 10_000 - KEY_QUIET_MS + 1, 0)).toBe(false)
-    expect(popupMayShow(10_000, 0, 1)).toBe(false)
+    expect(popupMayShow(10_000, 0, 0, false)).toBe(true)
+    expect(popupMayShow(10_000, 10_000 - KEY_QUIET_MS, 0, false)).toBe(true)
+    expect(popupMayShow(10_000, 10_000 - KEY_QUIET_MS + 1, 0, false)).toBe(false)
+    expect(popupMayShow(10_000, 0, 1, false)).toBe(false)
+    expect(popupMayShow(10_000, 0, 0, true)).toBe(false)
   })
 })
 
