@@ -42,10 +42,11 @@ describe('sessionEnded — an announced exit is its own fact, not an idle state'
     expect(useAgentStatus.getState().byId[id]?.sessionEnded).toBeUndefined()
   })
 
-  it('Canvas records it on SessionEnd and withdraws it on SessionStart', () => {
+  it('the agent-event reducer records it on SessionEnd and withdraws it on SessionStart', () => {
     // A store flag with no writer is the bug in a new place: the levers would type-check and stay
     // protected forever. Pinned at source level, like the setState argument list above.
-    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/canvas/Canvas.tsx'), 'utf8')
+    // (The listener's store writes moved out of Canvas into state/applyAgentEvent.ts.)
+    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/state/applyAgentEvent.ts'), 'utf8')
     const end = src.slice(src.indexOf("if (e.sessionPhase === 'end') {"))
     expect(end.slice(0, 600)).toMatch(/cs\.setSessionEnded\(e\.nodeId, true\)/)
     const start = src.slice(src.indexOf("if (e.sessionPhase === 'start') {"), src.indexOf("if (e.sessionPhase === 'end') {"))
@@ -300,10 +301,11 @@ describe('the verified evidence for a transition', () => {
     expect(useAgentStatus.getState().byId[id].stateVerified).toBe(false)
   })
 
-  it('Canvas hands the event\'s flag to the store — the drop this whole change exists to fix', () => {
+  it('the agent-event reducer hands the event\'s flag to the store — the drop this whole change exists to fix', () => {
     // A store field with no writer is the same bug in a new place, and this one is a plain
     // argument list: nothing else in the suite would notice if the last argument disappeared.
-    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/canvas/Canvas.tsx'), 'utf8')
+    // (The listener's store writes moved out of Canvas into state/applyAgentEvent.ts.)
+    const src = readFileSync(resolve(__dirname, '../../..', 'src/renderer/state/applyAgentEvent.ts'), 'utf8')
     expect(src).toMatch(
       /cs\.setState\(\s*e\.nodeId,\s*e\.state,\s*e\.agentId,\s*e\.newTurn,\s*e\.pendingId,\s*e\.verified,\s*e\.errored,\s*e\.held,\s*recordsTurnInterrupt\(e\)\s*\)/
     )
