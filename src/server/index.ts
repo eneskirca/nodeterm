@@ -1,4 +1,5 @@
 import { subagentReplay } from '../core/subagent-replay'
+import { registerAgentStatusSnapshotIpc } from '../core/agent-status-snapshot'
 import fs from 'fs'
 import { readAgentSessionName } from '../core/agent-session-name'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
@@ -656,6 +657,8 @@ export async function startServer(
   // inbox event(s) + re-sends an 'end' live-update so the paired phone dismisses its lingering DONE
   // Live Activity. Fire-and-forget; no-op with no unresolved done.
   platform.handle(IPC.agentSubagentSnapshot, () => subagentReplay.snapshot())
+  // The host's per-node agent states off the mirror, for a relay tab that joins late (parity with desktop).
+  registerAgentStatusSnapshotIpc(platform)
   platform.handle(IPC.agentAckDone, (nodeId: string) => {
     ackDone(nodeId)
   })

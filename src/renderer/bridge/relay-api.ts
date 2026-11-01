@@ -9,9 +9,16 @@
 //
 // ── The API split (binding, from docs/remote-sessions.md line 70–76) ──────────────────────────────
 // • CORE-BOUND namespaces (`pty`, `workspace`, `fs`, `git`, `files`, `context`, `canvas`, `presence`,
-//   the `onAgentStatus`/`onSubagentActivity` streams, `claude.cliCaps`, `userDataDir`) route over the
-//   relay RpcClient → they hit the REMOTE core. This is what makes the tab actually remote: its
-//   terminals, repos, files, canvas and presence all live on the host's machine.
+//   the agent members from `buildAgentApi` except `seedAgentIdentity` (below), `claude.cliCaps`,
+//   `userDataDir`) route over the relay RpcClient → they hit the REMOTE core. This is what makes the
+//   tab actually remote: its terminals, repos, files, canvas and presence all live on the host's
+//   machine.
+//   Routing an agent stream here subscribes nothing: Canvas's agent listeners run on the LOCAL api
+//   only. The relay session subscribes `onAgentStatus` itself, for its lifetime, into its own store,
+//   and then asks `agentStatusSnapshot` once (`session/relay-agent-status.ts`, wired in
+//   `relay-tab.ts`). `onSubagentActivity` and `onUnreadClear` are deliberately NOT subscribed on a
+//   relay tab: it renders no subagent cards, and its unread marks are this desktop's own, so a read
+//   recorded on the host (a phone read-ack) clears nothing here, as a read here acks nothing there.
 // • APP-GLOBAL namespaces (`updates`, `license`, `clipboard`, `shell`, `dialog`, `media`,
 //   `settings`, `pairing`, `announcements`, `usage`, `ssh*`, `remote*`, `relay*`, notifications, menu events)
 //   stay LOCAL (`window.nodeTerminal.*`). Your update banner shows YOUR version, a file picker
@@ -113,7 +120,9 @@ export function buildRelayApi(
     context: files.context,
     githubIssues: github.githubIssues,
     githubControl: local.githubControl,
-    ...buildAgentApi(client), // onAgentStatus / onSubagentActivity — the host's agent hooks
+    // The host's agent hooks. Only `onAgentStatus` (+ `agentStatusSnapshot`) is used on a relay tab,
+    // by session/relay-agent-status.ts; `onSubagentActivity` / `onUnreadClear` stay unsubscribed.
+    ...buildAgentApi(client),
     ...buildCanvasApi(client), // canvas sync against the host's reflector
     ...buildPresenceApi(client), // the host's presence hub
     // `cliCaps` is REAL over the relay so the --permission-mode auto version gate probes the HOST's

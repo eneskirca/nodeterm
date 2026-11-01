@@ -616,6 +616,22 @@ describe('narrowResponseForRole', () => {
     const r = { anything: 1 }
     expect(narrowResponseForRole(IPC.fsRead, r, ctx('viewer'))).toBe(r)
   })
+  // The agent-status snapshot names every node the host's mirror holds, keyed by node, with its
+  // session id and account: a non-editor gets the shared nodes' entries only, as with `agent:status`.
+  const NODE = 'n1'
+  const viewerCtx = ctx('viewer')
+  it('narrowResponseForRole trims agent:status-snapshot to shared nodes', () => {
+    const out = narrowResponseForRole(IPC.agentStatusSnapshot, [{ nodeId: NODE }, { nodeId: 'other' }], viewerCtx)
+    expect(out).toEqual([{ nodeId: NODE }])
+    expect(narrowResponseForRole(IPC.agentStatusSnapshot, [{ nodeId: 'n2', state: 'working' }], ctx('commenter'))).toEqual([])
+    expect(narrowResponseForRole(IPC.agentStatusSnapshot, 'garbage', viewerCtx)).toEqual([])
+    const all = [{ nodeId: NODE }, { nodeId: 'other' }]
+    expect(narrowResponseForRole(IPC.agentStatusSnapshot, all, ctx('editor'))).toBe(all)
+  })
+  it('a viewer and a commenter may call agent:status-snapshot', () => {
+    expect(decideAccess('req', IPC.agentStatusSnapshot, [], ctx('viewer'))).toEqual({ allow: true })
+    expect(decideAccess('req', IPC.agentStatusSnapshot, [], ctx('commenter'))).toEqual({ allow: true })
+  })
 })
 
 // C1 / R43. `git show <ref>:<p>` resolves a bare <p> against the REPOSITORY'S TOP LEVEL, not the cwd:

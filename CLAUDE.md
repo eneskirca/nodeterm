@@ -2852,7 +2852,11 @@ shared 4-state model, and a **transient** zustand store `state/agentStatus.ts`
 **not** persisted — only `unread`/`session`/`sessionId`/`agentId`/`loop`/`hibernated` go to
 localStorage under `nodeterm.agentStatus`, migrated once from the legacy `nodeterm.claudeStatus`
 key. `agentId` is durable because a hand-launched `claude` in a plain terminal is known nowhere
-else, and its context links must keep classifying across restarts).
+else, and its context links must keep classifying across restarts). That is the DEFAULT instance,
+the local core's. A relay / team tab's session gets its own **keyless** store (`agentStatusForApi`):
+it persists nothing, never acks a read (no `ackDone` callback), and is fed by `applyAgentEvent`
+(`state/applyAgentEvent.ts`), the same reducer Canvas's listener uses — see "A relay session owns
+its agent status" under Hosted team relay.
 
 - **Agent registry + capabilities** — `src/shared/agents/config.ts` holds `AGENT_CONFIG`
   (claude/codex/gemini/copilot/opencode/grok: id, label, spawn command, color, `promptInjectionMode`, …) keyed
@@ -3414,8 +3418,12 @@ else, and its context links must keep classifying across restarts).
   (`normalizeClaude`/`normalizeCodex`/`normalizeGemini`/`normalizeCopilot`/`normalizeOpencode`/`normalizeGrok`/`normalizeAntigravity`) that map each agent's native hook
   events to a `NormalizedAgentEvent` over the shared `AgentState` (`working | waiting | blocked
   | done`) plus subagent/recurring/session kinds. Canvas's listener consumes
-  `NormalizedAgentEvent` from `agent:status`, drives the `agentStatus` store, fires throttled
-  (5s/node) background notifications, and records the session id. Header shows a pulsing
+  `NormalizedAgentEvent` from `agent:status` and hands it to `applyAgentEvent`, the pure reducer
+  that does every store write (state, session id, account, loop, subagent cards) and reports which
+  alert the event raised; the listener keeps what is a fact about THIS window — the unread mark and
+  its ack, the sound, the throttled (5s/node) background notifications, the handoff fold. A relay
+  session feeds the same reducer into its own keyless store (`wireRelayAgentStatus`), with no ack,
+  sound, notification or subagent cards. Header shows a pulsing
   **RUNNING** (working) / **NEEDS YOU** (waiting/blocked) badge.
 - **DROPPED — the CLI died and nobody told us** (`renderer/terminal/agent-liveness.ts`, issue #616).
   Every ORDERLY exit announces itself: Eco's `/exit` sets `hibernated`, "Pause session" sets
@@ -4426,7 +4434,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   the dialog check `sendChatPrompt` makes is seconds old by then, and an Enter into a dialog that
   opened meanwhile would ANSWER it — the text stays in the composer and the caller hears
   `pasted-not-submitted`. The panel ignores a second Enter while a send is in flight (the draft is
-  cleared only once it lands).
+  cleared only once it lands). **"The text arrived" is read from the COMPOSER, never counted
+  across the screen** (`TypedSurface.draftOf` → `readClaudeDraft`, on a styled capture so the dim
+  placeholder is not draft text): the draft must end with the message's tail and differ from the
+  draft before typing. Typing also clears the placeholder and shortens the status line ("· ← for
+  agents" goes away), so a one-letter answer like `a` appeared once more in the box and once less
+  elsewhere; the screen-wide count never rose and every such send ended `pasted-not-submitted` with
+  the answer sitting in the box. The screen-wide count stays only as the fallback for a poll with
+  no readable input box (a draft too tall for the box reader).
   **The agent's OWN dialogs are read off the screen** (`shared/agents/claude-screen.ts`, claude
   only — `SCREEN_DIALOG_READABLE`). The folder-trust prompt, `/model` and one-time setup questions
   fire NO hook, so the state gate above reads `done` while one owns the keyboard, and a paste into
@@ -8375,6 +8390,23 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
     what a column layout discards); mobile N/A - *nodeterm mobile* attaches to tmux sessions over
     the transport protocol and has no canvas, so surfacing a layout means extending that protocol
     (follow-up in the iOS repo).
+- **Directional focus (⌘←/→/↑/↓, `node.focus*`)** — the multiplexer gesture (Ghostty `goto_split`,
+  tmux `select-pane -L`) on a canvas with no split tree: `lib/directionalFocus.ts` ranks candidates
+  by geometry (same-row/column overlap first, then diagonal with a sideways penalty; no wrap). The
+  ONE decision — where to land AND how — is the pure `planDirectionalMove`, and the "how" has two
+  answers that must not be merged: on the canvas the move **travels** (`focusNodeById`: frame +
+  keyboard + read-ack), origin = the node the keyboard is in, else the selection, else the first
+  press ADOPTS the node nearest the view center. In **focus mode** (⌘⇧F, issue #78) the move
+  **swaps the focused node** (`useFocusNode.focus(next)`) — the flow pane is `display:none` there,
+  so a travel would frame a node on a 0-sized pane (the origin-jump bug) while the user kept
+  staring at the old terminal; before this, moving between two focused terminals was ⌘⇧F, ⌘→, ⌘⇧F.
+  Three details carry it: the origin is the FOCUSED id (the reparent detaches the node root from
+  its `.react-flow__node` wrapper, so the keyboard origin reads null there); candidates are
+  TERMINALS only (the one kind focus mode can show — `focusTargetId`); and the keyboard is handed
+  over explicitly (`useTerminalFocus.request`), because the reparent gives focus back to whichever
+  xterm had it, i.e. the OLD node. Selection follows the swap so leaving focus mode lands on the
+  node the user was in. An edge with nowhere to go is a CLAIMED no-op in both modes — declining
+  would hand ⌘→ to the terminal, which is not "nothing".
 - **Command palette** (`CommandPalette.tsx`): ⌘/Ctrl+K; `Canvas.buildCommands` (create,
   switch project, jump to node by title/tag, open file…).
 - **Explorer** (`ExplorerPanel.tsx`, 🗂 / ⌘⇧E): lazy file tree of the active project `cwd`
@@ -10410,6 +10442,42 @@ invariants:
   project keeps the agent status of node ids another project still holds (`nodeIdsHeldElsewhere`).
   Deliberately NOT moved to it: `routeControlSource` (a control request comes from a LOCAL agent, so
   preferring an open relay tab would route it to another machine).
+- **A relay session owns its agent status** (bug D: a team tab never showed RUNNING / NEEDS YOU /
+  unread, because the joiner's only `agent:status` subscriber was Canvas's listener on the LOCAL
+  api, which writes the DEFAULT store). `wireRelayAgentStatus` (`session/relay-agent-status.ts`,
+  held as a session teardown in `openRelayTab` right after `createSession`, before any further
+  await, so the RpcClient's early buffer flushes into it) subscribes the session's OWN api's `onAgentStatus` for the session's
+  lifetime and feeds `applyAgentEvent` into that session's keyless store
+  (`getSessionStores(id).agentStatus`). Routing is by api, never by a project lookup: two relay
+  sessions may serve one project id. **A reader of a team tab's node must not ask the default
+  store** (the known ones that still do are the doc's follow-ups): after Share with team the
+  handed-off SSH project (local session, default store) and its team tab (relay session) hold the
+  SAME node ids, so a reader that asked the default store, or the active project's, shows one
+  project's status on the other's node, and a restart that read it would quit a host session the
+  badge shows as RUNNING. Readers resolve per project
+  (`agentStatusForProject`; `useAgentStatusLookup` / `useAgentStatusSig` re-subscribe inside the
+  session-registry listener, so a reconnect that leaves the signature unchanged still moves them to
+  the new store) or per node (`useSessionStores()`, render-safe for a session disposed a moment
+  ago). **No ack**: a read on a team tab clears unread on this desktop only (`agentStatusForApi`
+  builds the store with no `ackDone` callback), because an `agent:ack-done` would dismiss the
+  OWNER's phone Live Activity for a session they never looked at; the tab subscribes neither
+  `agent:unread-clear` nor `agent:subagent-activity`, and plays no sound and raises no notification.
+  **Snapshot ordering**: subscribe FIRST, then ask `agent:status-snapshot` (served by both shells
+  through `registerAgentStatusSnapshotIpc`, the newest 2000 mirror entries, narrowed for VIEW roles
+  and scoped guests by `narrowResponseForRole` via `sharedNode`), and apply it only to nodes no live
+  event touched in between (`liveSeen`; subagent events do not count, or the subscribe-time subagent
+  replay would hold the busiest nodes blank). A restored or identity-only mirror entry travels with
+  no `state`. A stateful one carries `ageMs` (an age, so no host clock crosses the wire) and sets
+  ONLY `stateAt = now - ageMs`, never `lastEventAt` / `lastSeen`: the joiner saw no transition, and
+  a fabricated one would claim it did. The teardown empties the store, so a dropped tab reads
+  Unknown. The status-driven readers that act on THIS machine are off for a relay node
+  (`relayStatusGates`: Approve/Deny, title sync, transcript search, the ⌘M chat view; the card
+  modal's `ModalTerminal` gates its transcript search the same way); only `'local'` runs them, and
+  `'relay'`, `'server'` and an unknown source fail closed. A desktop Team
+  Access host's agent emits go through `corePlatform.broadcast` (its window plus every non-quiet
+  peer); `agent:unread-clear` stays main-window only. Mobile: N/A (the phone speaks the legacy
+  dialect and reads the mirror file). Follow-ups, including the Canvas-level readers still on the
+  default store: docs/hosted-team-relay.md, "Agent status on a joined tab".
 - **Admin errors are stable codes, and a `--json` refusal goes to STDOUT.** `E_BAD_KEY`,
   `E_BAD_CWD`, `E_HOSTING_OFF`, `E_ADOPT_FAILED`, `E_BAD_REQUEST`, `E_UNSUPPORTED`
   (`core/relay/admin-error.ts`); a remote caller branches on the code, never the sentence, and

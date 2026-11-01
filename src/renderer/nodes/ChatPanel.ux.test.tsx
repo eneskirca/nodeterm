@@ -185,17 +185,53 @@ describe('ChatPanel rendering', () => {
     expect(card.querySelector('.term-chat__tool-result')).toBeNull()
   })
 
-  it('renders a thinking part as a collapsed "Thinking" disclosure, not as answer text', async () => {
+  it('renders a thinking summary inline and dimmed, apart from the answer text', async () => {
     await render()
+
     await resolveAt(0, [{ role: 'assistant', parts: [{ kind: 'thinking', text: 'pondering' }, { kind: 'text', text: 'answer' }] }])
-    const d = host.querySelector('details.term-chat__thinking') as HTMLDetailsElement
-    expect(d).not.toBeNull()
-    expect(d.open).toBe(false)
-    expect(d.querySelector('summary')?.textContent).toBe('Thinking')
-    expect(d.textContent).toContain('pondering')
-    // The answer stays ordinary text, outside the disclosure.
+
+    const thinking = host.querySelector('.term-chat__thinking')
+    expect(thinking?.textContent).toContain('pondering')
+    expect(host.querySelector('details.term-chat__thinking')).toBeNull()
+    // The answer stays ordinary text, outside the thinking block.
     const answers = [...host.querySelectorAll('.term-chat__msg > .term-chat__text')].map((e) => e.textContent?.trim())
     expect(answers).toEqual(['answer'])
+  })
+
+  it('folds a run of tool calls into one closed block that holds every call', async () => {
+    await render()
+    const call = (name: string, arg: string): ChatMessage => ({ role: 'assistant', parts: [{ kind: 'tool', name, arg }] })
+
+    await resolveAt(0, [
+      { role: 'user', parts: [{ kind: 'text', text: 'go' }] },
+      call('Bash', 'ls'),
+      call('Read', 'a.ts'),
+      call('Bash', 'pwd'),
+      { role: 'assistant', parts: [{ kind: 'thinking', text: 'now the fix' }] },
+      call('Edit', 'a.ts'),
+      { role: 'assistant', parts: [{ kind: 'text', text: 'done' }] }
+    ])
+
+    const groups = host.querySelectorAll('details.term-chat__tool-group')
+    expect(groups).toHaveLength(1)
+    const group = groups[0] as HTMLDetailsElement
+    expect(group.open).toBe(false)
+    expect(group.querySelector('summary')?.textContent).toBe('3 tool callsBash ×2, Read')
+    const inside = [...group.querySelectorAll('.term-chat__tool-arg')].map((e) => e.textContent)
+    expect(inside).toEqual(['ls', 'a.ts', 'pwd'])
+    // The lone Edit after the thinking line stays a plain chip, outside any block.
+    const loose = [...host.querySelectorAll('details.term-chat__tool')].filter((e) => !e.closest('.term-chat__tool-group'))
+    expect(loose.map((e) => e.querySelector('.term-chat__tool-name')?.textContent)).toEqual(['Edit'])
+    // The folded calls' own messages draw nothing of their own.
+    expect(host.querySelectorAll('.term-chat__msg')).toHaveLength(5)
+  })
+
+  it('asks for thinking summaries on the tail read', async () => {
+    await render()
+
+    const page = (readTranscript.mock.calls[0] as unknown[] | undefined)?.[5] as { thinking?: boolean } | undefined
+
+    expect(page?.thinking).toBe(true)
   })
 
   it('names the node agent in the composer, not Claude', async () => {

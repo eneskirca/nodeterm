@@ -1,15 +1,16 @@
 // Canvas's agent-status listener, for Claude's native subagent hooks (core/claude-subagent-lifecycle.ts).
 // Pinned over the source for the reason agent-status-rescue.test.ts gives: the listener lives inside
-// one of Canvas.tsx's effects and no harness can dispatch an event at it.
+// one of Canvas.tsx's effects and no harness can dispatch an event at it. Its store writes now live
+// in state/applyAgentEvent.ts, so that is the source read here.
 import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 
-const src = fs.readFileSync(path.resolve(__dirname, 'Canvas.tsx'), 'utf8').replace(/\r\n/g, '\n')
+const src = fs.readFileSync(path.resolve(__dirname, '../state/applyAgentEvent.ts'), 'utf8').replace(/\r\n/g, '\n')
 
 function between(from: string, to: string): string {
   const a = src.indexOf(from)
-  expect(a, `Canvas must still contain ${from}`).toBeGreaterThan(-1)
+  expect(a, `the agent-event reducer must still contain ${from}`).toBeGreaterThan(-1)
   const b = src.indexOf(to, a)
   expect(b).toBeGreaterThan(a)
   return src.slice(a, b)

@@ -410,6 +410,14 @@ describe('scoped guest — what it receives', () => {
     // A hosted team's shared set: a viewer of a hosted team receives it, a Team Access guest never.
     expect(filterScopedEvent(ev(IPC.relayHostedSharedChanged, { projectIds: ['alpha', 'beta'] }), s, owners)).toBe(false)
   })
+  it("a scoped guest's snapshot holds only its project's nodes", () => {
+    const hooks = scopedGuestHooks('alpha', deps())
+    const session = null as never
+    const mine = 'a1'
+    const theirs = 'b1'
+    expect(allowed(IPC.agentStatusSnapshot)).toBe(true)
+    expect(hooks.narrowResponse!(session, IPC.agentStatusSnapshot, [{ nodeId: mine }, { nodeId: theirs }])).toEqual([{ nodeId: mine }])
+  })
   it('delivers terminal bytes only for the shared project\'s sessions', () => {
     const hooks = scopedGuestHooks('alpha', deps())
     const got: string[] = []

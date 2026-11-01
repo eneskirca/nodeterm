@@ -16,7 +16,12 @@ describe('global kanban swimlane collapse wiring', () => {
 
 describe('global kanban card read state', () => {
   it('clears the unread dot when a card opens, like the per-project board', () => {
-    expect(GLOBAL_KANBAN_SRC).toContain("import { useAgentStatus } from '../../state/agentStatus'")
-    expect(GLOBAL_KANBAN_SRC).toContain('if (modalNodeId) useAgentStatus.getState().clearUnread(modalNodeId)')
+    // On the store of the card's own lane project (bug D): a team lane reads its relay session's.
+    expect(GLOBAL_KANBAN_SRC).toContain(
+      "import { agentStatusForProject, sessionForProject, useSessionRegistryVersion } from '../../session/session'"
+    )
+    expect(GLOBAL_KANBAN_SRC).toContain(
+      'if (modalNodeId) agentStatusForProject(modalProjectId).store.getState().clearUnread(modalNodeId)'
+    )
   })
 })

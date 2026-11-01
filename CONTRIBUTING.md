@@ -12,6 +12,10 @@ ordinary work.
 
 ## Getting set up
 
+You need Node.js 20+ (22 for the Server Edition) on Linux or **macOS 12 Monterey or newer** —
+the macOS floor is Electron's and esbuild's, and the README's *Build from source* section says
+what fails on an older Mac.
+
 ```bash
 npm install        # also patches + rebuilds node-pty against Electron's ABI (postinstall)
 npm run dev        # dev mode with renderer HMR
@@ -696,6 +700,12 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
     `held-elsewhere` as a refusal that is NOT a lost connection (no reconnect, no drop report).
   Do not "fix" this by re-stamping `sshRemoteTmux` onto those nodes: the host would then refuse its
   own sessions. CLAUDE.md, "Projects (tabs)".
+
+- **Read agent status through the node's session — `useSessionStores()` / `agentStatusForProject` —
+  never `useAgentStatus` directly, in any surface that can show a team tab's node.** A team tab
+  keeps its host's status in its own session store and shares node ids with the SSH project it was
+  handed off from, so the default store answers for the wrong project. CLAUDE.md, "A relay session
+  owns its agent status".
 
 - **Phone keys and store links are platform-neutral.** New paired keys are stamped
   `nodeterm-mobile-<id>`, but revoke must keep matching the legacy `nodeterm-ios-<id>` stamp every

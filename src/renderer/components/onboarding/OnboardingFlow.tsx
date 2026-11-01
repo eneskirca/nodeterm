@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { DEFAULT_SETTINGS, type SpeechModelInfo } from '@shared/types'
-import { AGENT_CONFIG, BUILTIN_AGENT_IDS, type BuiltinAgentId } from '@shared/agents/config'
+import { AGENT_CONFIG, BUILTIN_AGENT_IDS, CHAT_CAPABLE, type BuiltinAgentId } from '@shared/agents/config'
 import { isHoldChord, matchesShortcut, shortcutKeyParts } from '@shared/shortcut'
 import { hasSpeechModel, SPEECH_MODEL_NONE } from '@shared/speech'
 import { keyLabel } from '@shared/platform-utils'
@@ -21,6 +21,7 @@ import {
   OnbCheck,
   OnbGhostCanvas,
   SceneAgents,
+  SceneChatView,
   SceneDictation,
   SceneKanban,
   SceneKeepAwake,
@@ -53,6 +54,7 @@ const STEPS = [
   'agents',
   'dictation',
   'kanban',
+  'chatview',
   'notify',
   'keepawake',
   ...(isMac ? (['notch'] as const) : []),
@@ -63,8 +65,8 @@ type StepId = (typeof STEPS)[number]
 const STEP_COUNT = STEPS.length
 
 /**
- * First-run setup tour: welcome → agents → dictation → kanban → notifications → keep-awake →
- * (notch) → shortcuts → phone. Each step pairs an animated scene with ONE decision, and every
+ * First-run setup tour: welcome → agents → dictation → kanban → chat view → notifications →
+ * keep-awake → (notch) → shortcuts → phone. Each step pairs an animated scene with ONE decision, and every
  * choice writes settings immediately (there is no final "save" — closing mid-way keeps what was
  * chosen so far). Replaces both the auto-opened ShortcutsPanel and the standalone
  * notification-consent dialog on first launch — which is why it owes the user its own
@@ -167,6 +169,36 @@ export function OnboardingFlow({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [step])
 
+  // ---- chat-view try-it: the ⌘M chord is DIFFERENT from the kanban one — on desktop main steals
+  // it in `before-input-event` (else macOS minimizes) and forwards `app:toggle-markdown`, so the
+  // page never sees a keydown; the subscription is how it arrives. The keydown listener is for
+  // the Server Edition, where the browser owns the key and the chord reaches the page (Ctrl+M on
+  // Linux/Windows; the bridge's subscription is a no-op there). Either lights the checkmark.
+  // Nothing under the tour reacts: TerminalNode's own ⌘M subscriber is gated on hover, and the
+  // tour overlay covers every node. ----
+  const [chatTried, setChatTried] = useState(false)
+  const [chatPulse, setChatPulse] = useState(0)
+  useEffect(() => {
+    if (STEPS[step] !== 'chatview') return
+    const hit = () => {
+      setChatTried(true)
+      setChatPulse((n) => n + 1)
+    }
+    const unsub = window.nodeTerminal.onMarkdownToggle(hit)
+    const onKey = (e: KeyboardEvent) => {
+      if (effectiveBindings('node.toggleMarkdown').some((s) => matchesShortcut(e, s, isMac))) {
+        e.preventDefault()
+        e.stopPropagation()
+        hit()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      unsub()
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [step])
+
   // Esc skips the tour (settings chosen so far are already saved).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -208,6 +240,14 @@ export function OnboardingFlow({ onClose }: { onClose: () => void }) {
   // are live. `''` / `[]` mean the command is unbound — each site below says what it does then.
   const newAgentChip = chipFor('node.newAgent')
   const kanbanKeys = commandKeys('view.kanbanToggle')
+  const chatKeys = commandKeys('node.toggleMarkdown')
+  // The chat view is a CAPABILITY (`CHAT_CAPABLE`), not a hardcoded agent: the scene and the copy
+  // name whichever agents carry it (Claude Code today), and the scene is drawn with the FIRST
+  // one's identity rather than the default agent — a Codex default would otherwise show a chat
+  // face on a node that has none.
+  const chatAgentId: BuiltinAgentId = CHAT_CAPABLE[0]
+  const chatAgent = AGENT_CONFIG[chatAgentId]
+  const chatAgentsLabel = CHAT_CAPABLE.map((id) => AGENT_CONFIG[id].label).join(', ')
   const paletteKeys = commandKeys('app.commandPalette')
   const panelKeys = commandKeys('app.shortcutsPanel')
   // The handful worth learning on day one, each with its EFFECTIVE chord. A command the user
@@ -280,6 +320,15 @@ export function OnboardingFlow({ onClose }: { onClose: () => void }) {
             {stepId === 'agents' && <SceneAgents agentId={agentId} label={agent.label} color={agent.color} />}
             {stepId === 'dictation' && <SceneDictation keys={dictKeys.map((k) => keyLabel(k, isMac))} hold={dictHold} />}
             {stepId === 'kanban' && <SceneKanban pulseKey={kanbanPulse} />}
+            {stepId === 'chatview' && (
+              <SceneChatView
+                agentId={chatAgentId}
+                label={chatAgent.label}
+                color={chatAgent.color}
+                keys={chatKeys}
+                pulseKey={chatPulse}
+              />
+            )}
             {stepId === 'notify' && <SceneNotify />}
             {stepId === 'keepawake' && (
               <SceneKeepAwake agentId={agentId} label={agent.label} color={agent.color} />
@@ -430,6 +479,56 @@ export function OnboardingFlow({ onClose }: { onClose: () => void }) {
                       Kanban
                     </button>
                   </div>
+                </div>
+              </>
+            )}
+
+            {stepId === 'chatview' && (
+              <>
+                <h2>Read an agent like a chat</h2>
+                <p>
+                  Hover a <strong>{chatAgentsLabel}</strong> node and{' '}
+                  {chatKeys.length > 0 ? (
+                    <>
+                      press{' '}
+                      {chatKeys.map((k, i) => (
+                        <kbd key={i} className="kbd">
+                          {k}
+                        </kbd>
+                      ))}
+                    </>
+                  ) : (
+                    <>pick <strong>Markdown view</strong> from its right-click menu</>
+                  )}
+                  : the terminal flips into a chat view of the <em>same</em> session — your
+                  prompts and its replies as a thread, with a composer at the bottom that types
+                  straight into the running agent. Approve a plan or answer a question from
+                  there, too.
+                </p>
+                {/* Same contract as the kanban try-it: no chord to press when the user unbound
+                    it, so the prompt is dropped (kept while `chatTried` so an unbind mid-tour
+                    doesn't retract an earned checkmark). */}
+                {(chatKeys.length > 0 || chatTried) && (
+                  <div className={`onb-tryit ${chatTried ? 'is-done' : ''}`}>
+                    {chatTried ? (
+                      <>
+                        <OnbCheck /> That's the toggle — press it again to get the terminal back.
+                      </>
+                    ) : (
+                      <>
+                        Try it now — press{' '}
+                        {chatKeys.map((k, i) => (
+                          <kbd key={i} className="kbd">
+                            {k}
+                          </kbd>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                )}
+                <div className="onb-fineprint">
+                  Same key, same view switch, on a plain terminal: it renders the output as
+                  markdown instead. Press it again to return.
                 </div>
               </>
             )}

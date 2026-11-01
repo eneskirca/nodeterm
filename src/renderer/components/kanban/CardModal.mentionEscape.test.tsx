@@ -14,9 +14,17 @@ import type { KanbanSession } from './KanbanView'
 
 const picker = vi.hoisted(() => ({ open: true }))
 
-vi.mock('../../session/session', () => ({
-  useSession: () => ({ api: { pty: {}, shell: {} } })
-}))
+vi.mock('../../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../../state/agentStatus')
+  return {
+    useSession: () => ({ api: { pty: {}, shell: {} } }),
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 vi.mock('./BoardLogPanel', () => ({
   BoardLogPanel: () => (
     <textarea className="board-log__composer" aria-expanded={picker.open ? true : undefined} />

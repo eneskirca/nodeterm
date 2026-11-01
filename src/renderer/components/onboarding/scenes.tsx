@@ -228,6 +228,96 @@ export function SceneKanban({ pulseKey }: { pulseKey?: number }) {
   )
 }
 
+/** ⌘M on an agent node: the SAME node flips between its terminal face (prompt + output) and
+ *  the chat view (the session's prompts and replies as a thread, composer at the bottom), on a
+ *  timer — and on the user's real keystroke (`pulseKey`), exactly like the kanban scene. The
+ *  node is the agents scene's `.onb-node` (held on screen via static inline overrides, as the
+ *  keep-awake scene does) and the chat face mirrors the real `.term-chat__msg--user/--assistant`
+ *  bubble look, so the tour never drifts from what ⌘M actually shows. */
+export function SceneChatView({
+  agentId,
+  label,
+  color,
+  keys,
+  pulseKey
+}: {
+  agentId: AgentId
+  label: string
+  color: string
+  keys: string[]
+  pulseKey?: number
+}) {
+  const [chat, setChat] = useState(false)
+  const reduced = useRef(
+    typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+  useEffect(() => {
+    if (reduced.current) {
+      setChat(true) // static: show the chat face — the thing this step introduces
+      return
+    }
+    const t = setInterval(() => setChat((c) => !c), 2800)
+    return () => clearInterval(t)
+  }, [])
+  // the user pressing the real chord flips the scene too — the animation answers their keystroke
+  const lastPulse = useRef(pulseKey)
+  useEffect(() => {
+    if (pulseKey !== undefined && pulseKey !== lastPulse.current) {
+      lastPulse.current = pulseKey
+      setChat((c) => !c)
+    }
+  }, [pulseKey])
+
+  return (
+    <div className="onb-scene-canvas onb-scene--chat" aria-hidden="true">
+      {keys.length > 0 && (
+        <div className={`onb-kbd-row onb-cview__keys ${chat ? 'is-chat' : ''}`}>
+          {keys.map((k, i) => (
+            <kbd key={i} className="onb-kbd onb-cview__key">
+              {k}
+            </kbd>
+          ))}
+        </div>
+      )}
+      <div
+        className={`onb-node onb-cview ${chat ? 'is-chat' : ''}`}
+        style={{ position: 'relative', left: 'auto', top: 'auto', opacity: 1, animation: 'none', width: 236, borderTopColor: color }}
+      >
+        <div className="onb-node__head">
+          <span className="onb-node__color" style={{ background: color }} />
+          <AgentIcon agentId={agentId} size={13} />
+          <span className="onb-node__title">{label}</span>
+          <span className="onb-cview__mode">{chat ? 'chat' : 'terminal'}</span>
+        </div>
+        <div className="onb-cview__body">
+          {/* terminal face: a prompt line + output skeleton */}
+          <div className="onb-cview__face onb-cview__term">
+            <div className="onb-cview__prompt">
+              <span className="onb-term-prompt">❯</span>
+              <span>fix the failing test</span>
+            </div>
+            <div className="onb-line onb-line--w70" />
+            <div className="onb-line onb-line--w50" />
+            <div className="onb-line onb-line--w60" />
+            <div className="onb-line onb-line--w50" />
+          </div>
+          {/* chat face: the same session as a thread, composer underneath */}
+          <div className="onb-cview__face onb-cview__chat">
+            <div className="onb-cview__msg onb-cview__msg--user">fix the failing test</div>
+            <div className="onb-cview__msg onb-cview__msg--assistant">
+              <span className="onb-line onb-line--w70" />
+              <span className="onb-line onb-line--w50" />
+            </div>
+            <div className="onb-cview__compose">
+              <span className="onb-caret" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** A mock OS notification sliding in — what enabling notifications buys you. */
 /**
  * The macOS notch capsule: a laptop lid whose notch grows sideways into a black capsule with a

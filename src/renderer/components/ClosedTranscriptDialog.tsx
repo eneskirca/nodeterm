@@ -4,6 +4,7 @@ import { useDialogStack } from './dialog-stack'
 import type { ClosedSessionEntry } from '@shared/types'
 import { closedTranscriptTarget } from '../lib/closedHistory'
 import { ChatPanelFallback } from '../nodes/ChatPanelFallback'
+import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 
 // Same code split as the ⌘M panel on a terminal node: the transcript reader and the markdown
 // renderer are not on the path to painting a canvas, and this dialog opens on a click.
@@ -48,7 +49,17 @@ export function ClosedTranscriptDialog({ entry, onClose }: ClosedTranscriptDialo
           if (e.key === 'Escape' && isTop()) {
             e.preventDefault()
             onClose()
+            return
           }
+          // The box holds the keyboard, not the panel inside it, so the panel's own Page Up /
+          // Page Down handler never sees these keys here. A key the panel already used is
+          // defaultPrevented.
+          if (e.defaultPrevented || !(e.target instanceof Element)) return
+          const direction = chatPageDirection(e, e.target)
+          const thread = boxRef.current?.querySelector<HTMLElement>('.term-chat__msgs')
+          if (direction === null || !thread) return
+          e.preventDefault()
+          pageChatThread(thread, direction)
         }}
       >
         {target.ok ? (

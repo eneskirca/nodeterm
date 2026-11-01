@@ -155,7 +155,7 @@ describe('ChatPanel progressive loading', () => {
 
   it('reads only a small tail window first', async () => {
     await render()
-    expect(pending[0].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES })
+    expect(pending[0].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, thinking: true })
   })
 
   it('pages back on scroll-up, prepends, and keeps the viewport on the same content', async () => {
@@ -167,7 +167,7 @@ describe('ChatPanel progressive loading', () => {
 
     await scrollTo(50)
     expect(pending).toHaveLength(2)
-    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
     expect(host.querySelector('.term-chat__older')?.textContent).toContain('Loading earlier messages…')
     // The app's one spinner, inside the row that is the status region.
     expect(host.querySelector('.term-chat__older[role="status"] .nt-spinner')).not.toBeNull()
@@ -205,7 +205,7 @@ describe('ChatPanel progressive loading', () => {
     expect(pending).toHaveLength(2)
     await act(async () => row.querySelector('button')!.click())
     expect(pending).toHaveLength(3)
-    expect(pending[2].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+    expect(pending[2].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
     await settle(2, { messages: [say(0, 'older')], olderCursor: null })
     expect(bubbles()).toEqual(['older', 'tail'])
   })
@@ -231,7 +231,7 @@ describe('ChatPanel progressive loading', () => {
       useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'done' } as never } }))
     })
     expect(pending).toHaveLength(3)
-    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES })
+    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, thinking: true })
     await settle(2, { messages: [say(1000, 'm1000'), say(2000, 'm2000')], olderCursor: 1000 })
     expect(bubbles()).toEqual(['m0', 'm1000', 'm2000'])
   })
@@ -256,7 +256,7 @@ describe('ChatPanel progressive loading', () => {
     await render()
     await settle(0, { messages: [say(1000, 'short')], olderCursor: 1000 })
     expect(pending).toHaveLength(2)
-    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
   })
 
   it('a HIDDEN panel (collapsed node, display:none: every metric 0) never pages in the background', async () => {
@@ -303,7 +303,7 @@ describe('ChatPanel progressive loading', () => {
     expect(bubbles()).toEqual(['tail'])
     await scrollTo(0)
     expect(pending).toHaveLength(4)
-    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
   })
 
   it('switching session while an older page is in flight drops that page and starts clean', async () => {
@@ -332,7 +332,7 @@ describe('ChatPanel progressive loading', () => {
     expect(pending).toHaveLength(3)
     await settle(2, { messages: [say(1000, 'tail')], olderCursor: 1000 })
     expect(pending).toHaveLength(4)
-    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
   })
   // A tail window can hold no message at all and still have history behind it (its records were
   // all metadata, or — before core grew such windows — one line bigger than the page). That is
@@ -343,7 +343,7 @@ describe('ChatPanel progressive loading', () => {
     expect(host.textContent).not.toContain('No conversation yet.')
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Loading conversation…')
     expect(pending).toHaveLength(2) // it paged back on its own
-    expect(pending[1].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+    expect(pending[1].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
     await settle(1, { messages: [say(0, 'older')], olderCursor: null })
     expect(bubbles()).toEqual(['older'])
     expect(host.textContent).not.toContain('Loading conversation…')
@@ -357,7 +357,7 @@ describe('ChatPanel progressive loading', () => {
     expect(host.textContent).toContain("Couldn't load earlier messages.")
     await act(async () => host.querySelector<HTMLButtonElement>('.term-chat__older .term-chat__retry')!.click())
     expect(pending).toHaveLength(3)
-    expect(pending[2].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES })
+    expect(pending[2].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
   })
 
   it('switching session to one whose read REJECTS clears the previous session\'s thread', async () => {
@@ -367,5 +367,108 @@ describe('ChatPanel progressive loading', () => {
     await act(async () => pending[1].reject(new Error('boom')))
     expect(bubbles()).toEqual([])
     expect(host.textContent).toContain("Couldn't read the transcript.")
+  })
+})
+
+describe('ChatPanel Page Up / Page Down', () => {
+  const press = async (target: Element, key: string): Promise<KeyboardEvent> => {
+    const e = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+    await act(async () => {
+      target.dispatchEvent(e)
+    })
+    return e
+  }
+  const composer = (): HTMLTextAreaElement =>
+    host.querySelector('.term-chat__composer-input') as HTMLTextAreaElement
+
+  it('pages the thread from the composer', async () => {
+    await render()
+    await settle(0, { messages: [say(0, 'a'), say(10, 'b'), say(20, 'c')] })
+    const bottom = msgs().scrollTop
+
+    const up = await press(composer(), 'PageUp')
+
+    expect(up.defaultPrevented).toBe(true)
+    expect(msgs().scrollTop).toBe(bottom - 350)
+
+    await press(composer(), 'PageDown')
+
+    expect(msgs().scrollTop).toBe(bottom)
+  })
+
+  it('leaves Shift+Page Up to the composer (selection), without scrolling the thread', async () => {
+    await render()
+    await settle(0, { messages: [say(0, 'a'), say(10, 'b'), say(20, 'c')] })
+    const bottom = msgs().scrollTop
+    const e = new KeyboardEvent('keydown', { key: 'PageUp', shiftKey: true, bubbles: true, cancelable: true })
+
+    await act(async () => {
+      composer().dispatchEvent(e)
+    })
+
+    expect(e.defaultPrevented).toBe(false)
+    expect(msgs().scrollTop).toBe(bottom)
+  })
+})
+
+describe('ChatPanel scroll-to-latest button', () => {
+  const button = (): HTMLButtonElement | null => host.querySelector<HTMLButtonElement>('.term-chat__to-latest')
+  const three = [say(0, 'a'), say(10, 'b'), say(20, 'c')]
+
+  it('is hidden while the view follows the newest message', async () => {
+    await render()
+
+    await settle(0, { messages: three })
+
+    expect(button()).toBeNull()
+  })
+
+  it('appears once the user scrolls up, and brings the view back to the bottom', async () => {
+    await render()
+    await settle(0, { messages: three })
+    const bottom = msgs().scrollTop
+
+    await scrollTo(100)
+
+    expect(button()?.textContent).toBe('↓')
+    expect(button()?.getAttribute('aria-label')).toBe('Scroll to the latest message')
+
+    await act(async () => button()!.click())
+
+    expect(msgs().scrollTop).toBe(bottom)
+    expect(button()).toBeNull()
+  })
+
+  it('stays while the user reads history and a new message lands below', async () => {
+    await render()
+    await settle(0, { messages: three })
+    await scrollTo(100)
+    await act(async () => host.querySelector<HTMLButtonElement>('.term-chat__refresh')!.click())
+
+    await settle(1, { messages: [...three, say(30, 'd')] })
+
+    expect(msgs().scrollTop).toBe(100)
+    expect(button()?.textContent).toBe('1 new message ↓')
+  })
+
+  it('does not appear for a thread shorter than the panel', async () => {
+    geo.perMsg = 100
+    await render()
+    await settle(0, { messages: three })
+
+    await scrollTo(0)
+
+    expect(button()).toBeNull()
+  })
+
+  it('keeps the keyboard where it was when pressed', async () => {
+    await render()
+    await settle(0, { messages: three })
+    await scrollTo(100)
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+
+    button()!.dispatchEvent(down)
+
+    expect(down.defaultPrevented).toBe(true)
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readClaudeComposer } from './claude-screen'
+import { readClaudeComposer, readClaudeDraft } from './claude-screen'
 import capture from './__fixtures__/claude/composer-capture.json'
 
 // Real captures (Claude Code 2.1.301, `capture-pane -p -e`) — see the fixture's `_note`. Issue #1144.
@@ -55,5 +55,35 @@ describe('readClaudeComposer (#1144)', () => {
     expect(readClaudeComposer(dialog)).toBe('no-prompt')
     expect(readClaudeComposer('')).toBe('unknown')
     expect(readClaudeComposer('\n\n')).toBe('unknown')
+  })
+})
+
+describe('readClaudeDraft', () => {
+  it('reads an empty composer as an empty draft: the dim placeholder is not the user’s text', () => {
+    expect(readClaudeDraft(S.empty)).toBe('')
+  })
+
+  it('reads a typed draft without the prompt character or whitespace', () => {
+    expect(readClaudeDraft(S.draft)).toBe('hebikgetest')
+  })
+
+  it('reads every line of a multi-line draft', () => {
+    expect(readClaudeDraft(S.multiline)).toBe('hebikgetestlinetwo')
+  })
+
+  it('keeps shell mode’s typed `!` and drops the dim placeholder after it', () => {
+    expect(readClaudeDraft(S.shellmode)).toBe('!')
+  })
+
+  it('reads a one-letter answer', () => {
+    expect(readClaudeDraft(S.draft.replace('heb ik getest', 'a'))).toBe('a')
+  })
+
+  it('is null when there is no live input box, and for an empty capture', () => {
+    const noBox = S.empty.split('\n').filter((l) => !l.includes('─')).join('\n')
+    expect(readClaudeDraft(noBox)).toBeNull()
+    const dialog = S.empty.replace(/\n[^\n]*manual mode on[^\n]*/, '\n Enter to confirm · Esc to cancel')
+    expect(readClaudeDraft(dialog)).toBeNull()
+    expect(readClaudeDraft('')).toBeNull()
   })
 })

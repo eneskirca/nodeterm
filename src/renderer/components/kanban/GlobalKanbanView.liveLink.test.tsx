@@ -16,11 +16,19 @@ import { useViewMode } from '../../state/viewMode'
 import { useWatchLinks } from '../../state/watchLinks'
 import type { MenuItem } from '../ContextMenu'
 
-vi.mock('../../session/session', () => ({
-  useSession: () => ({ id: 'local', source: 'local', api: {} }),
-  sessionForProject: (projectId: string) =>
-    projectId === 'relay' ? { id: 'relay-session', source: 'relay', api: {} } : { id: 'local', source: 'local', api: {} }
-}))
+vi.mock('../../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../../state/agentStatus')
+  return {
+    useSession: () => ({ id: 'local', source: 'local', api: {} }),
+    sessionForProject: (projectId: string) =>
+      projectId === 'relay' ? { id: 'relay-session', source: 'relay', api: {} } : { id: 'local', source: 'local', api: {} },
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 vi.mock('../ContextMeter', () => ({ ContextMeter: () => null }))
 vi.mock('./CardModal', () => ({ CardModal: () => null }))
 

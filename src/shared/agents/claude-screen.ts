@@ -132,10 +132,17 @@ export function claudeScreenBlocksInput(s: ClaudeScreen): boolean {
 export type ClaudeComposer = 'empty' | 'draft' | 'no-prompt' | 'unknown'
 
 /** Does any visible, non-blank character of this styled line (from `from`, a plain-text column)
- *  sit outside SGR dim? Walks the SGR state; non-SGR escapes are skipped. */
+ *  sit outside SGR dim? */
 function hasUndimmedText(styled: string, from: number): boolean {
+  return undimmedText(styled, from).trim() !== ''
+}
+
+/** The characters of this styled line (from `from`, a plain-text column) drawn outside SGR dim, in
+ *  order. Walks the SGR state; non-SGR escapes are skipped. */
+function undimmedText(styled: string, from: number): string {
   let dim = false
   let col = 0
+  let out = ''
   let i = 0
   while (i < styled.length) {
     if (styled[i] === '\x1b') {
@@ -151,11 +158,11 @@ function hasUndimmedText(styled: string, from: number): boolean {
       continue
     }
     const ch = String.fromCodePoint(styled.codePointAt(i)!)
-    if (col >= from && ch.trim() !== '' && !dim) return true
+    if (col >= from && !dim) out += ch
     col += ch.length
     i += ch.length
   }
-  return false
+  return out
 }
 
 /** The dim flag after one SGR sequence's parameters. Extended colours (`38;5;n`, `38;2;r;g;b`, and
@@ -185,4 +192,35 @@ export function readClaudeComposer(styledScreen: string): ClaudeComposer {
   if (!prompt.startsWith('❯')) return 'draft'
   for (let i = promptAt + 1; i < box[1]; i++) if (lines[i].trim() !== '') return 'draft'
   return hasUndimmedText(styled[promptAt], 1) ? 'draft' : 'empty'
+}
+
+/**
+ * What the user's draft in Claude Code's composer says, read from a STYLED capture, with all
+ * whitespace removed: the undimmed text of every line in the live input box, minus the `❯` prompt
+ * character. Shell mode's `!` is kept, since it was typed. The dim placeholder is not part of it, so
+ * an empty composer reads `''`. null when there is no live input box to read (a dialog, no box, a
+ * draft too tall for the box reader, an empty capture).
+ *
+ * Exists so the typed chat send can see that ITS text reached the composer. Counting the text across
+ * the whole screen fails for a short answer: typing also clears the placeholder and shortens the
+ * status line ("· ? for shortcuts · ← for agents" goes away), so the letter `a` typed in answer to a
+ * multiple-choice question appeared once more in the box and once less elsewhere. The count never
+ * rose, and the Enter was withheld with the text sitting in the box.
+ *
+ * Without SGR (a capture that lost it), the placeholder reads as draft text. Callers compare against
+ * the draft read before typing, so that only costs a match when the placeholder ends the same way.
+ */
+export function readClaudeDraft(styledScreen: string): string | null {
+  const styled = styledScreen.split(/\r?\n/)
+  const lines = styled.map((l) => l.replace(ANSI, '').trimEnd())
+  if (lines.every((l) => l === '')) return null
+  if (readClaudeScreen(styledScreen).kind !== 'prompt') return null
+  const box = inputBox(lines)
+  if (!box) return null
+  let draft = ''
+  for (let i = box[0] + 1; i < box[1]; i++) {
+    const from = i === box[0] + 1 && lines[i].startsWith('❯') ? 1 : 0
+    draft += undimmedText(styled[i], from)
+  }
+  return draft.replace(/\s/g, '')
 }

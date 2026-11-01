@@ -37,7 +37,6 @@ import { useProjects } from '../../state/projects'
 import type { TeamStation } from '../../lib/teamProgress'
 import { sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
 import type { IssueRef } from '@shared/github-issue-ref'
-import { useAgentStatus } from '../../state/agentStatus'
 import { useSessionNaming } from '../../state/sessionNaming'
 import { useCardPanel } from '../../state/cardPanel'
 import {
@@ -48,7 +47,7 @@ import {
   CARD_MODAL_MIN_W,
   CARD_MODAL_MIN_H
 } from '../../state/cardModalSize'
-import { useSession } from '../../session/session'
+import { useSession, useSessionStores } from '../../session/session'
 // The same wake trigger the canvas node's SLEEPING/PAUSED chip and mount/visibility auto-wakes
 // use — NOT a bespoke resume path, so a click here gets the same WakeInputBuffer protection and
 // retries. Importing one function out of the canvas node module is safe: TerminalNode.tsx already
@@ -180,21 +179,25 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   // Sticky body: rendered markdown until clicked, the plain textarea while editing (mirrors
   // StickyNode's toggle, so the canvas and the card can't disagree about how a note reads).
   const [editingNote, setEditingNote] = useState(false)
-  const agentSessionId = useAgentStatus((st) => st.byId[session.id]?.sessionId)
-  const observedAgentId = useAgentStatus((st) => st.byId[session.id]?.agentId)
-  const paused = useAgentStatus((st) => !!st.byId[session.id]?.paused)
-  const dropped = useAgentStatus((st) => !!st.byId[session.id]?.dropped)
-  const hibernated = useAgentStatus((st) => !!st.byId[session.id]?.hibernated)
-  const wakeBlocked = useAgentStatus((st) => st.byId[session.id]?.wakeBlocked)
+  // The agent status of the session this card's PROJECT runs under (the board mounts the modal
+  // through `ProjectSessionScope`): a team tab's card reads its relay session's store, never the
+  // default one, which holds the handed-off SSH project's entry under the same node id.
+  const agentStatusStore = useSessionStores().agentStatus.store
+  const agentSessionId = agentStatusStore((st) => st.byId[session.id]?.sessionId)
+  const observedAgentId = agentStatusStore((st) => st.byId[session.id]?.agentId)
+  const paused = agentStatusStore((st) => !!st.byId[session.id]?.paused)
+  const dropped = agentStatusStore((st) => !!st.byId[session.id]?.dropped)
+  const hibernated = agentStatusStore((st) => !!st.byId[session.id]?.hibernated)
+  const wakeBlocked = agentStatusStore((st) => st.byId[session.id]?.wakeBlocked)
   // Same chip as the card and the canvas node header — the modal is where a user checks WHICH
   // session this is, so the account belongs in its header chips, not only two views away.
-  const observedAccount = useAgentStatus((st) => st.byId[session.id]?.account)
+  const observedAccount = agentStatusStore((st) => st.byId[session.id]?.account)
   // The session name, where it is not already the title (lib/cardRedundancy — the rule the card
   // and the canvas node header use). The card carries it on its detail line; the modal, which
   // hides the node, carries it here so the session's name is never two views away.
-  const sessionName = useAgentStatus((st) => st.byId[session.id]?.session)
+  const sessionName = agentStatusStore((st) => st.byId[session.id]?.session)
   const portsRemote = useProjects((s) => !!(portsProjectId && s.getProject(portsProjectId)?.ssh))
-  const accountChip = useAccountChip(session.spawn.accountId, observedAccount)
+  const accountChip = useAccountChip(session.spawn.accountId, observedAccount, agentStatusStore)
   const [naming, setNaming] = useState(false)
   // The board funnel's progress for this node (`onAiName`), shared with the card menu's row.
   const funnelNaming = useSessionNaming((st) => !!st.byId[session.id])
@@ -527,7 +530,7 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
             <span className="kanban-modal__column" title={columnTitle ?? 'Ungrouped'}>{columnTitle ?? 'Ungrouped'}</span>
           </div>
           {isTerminal && onOpenIssue && <IssueRefChip issueRef={session.issueRef} onOpen={onOpenIssue} />}
-          {isTerminal && team && team.length > 0 && onTravel && <TeamProgressChip stations={team} onTravel={onTravel} />}
+          {isTerminal && team && team.length > 0 && onTravel && <TeamProgressChip stations={team} onTravel={onTravel} statusStore={agentStatusStore} />}
           {isTerminal && session.pendingLaunch && (
             <QueuedLaunchChip nodeId={session.id} pending={session.pendingLaunch} firstOpen={session.launchFirstOpen} onRun={onRunQueued} />
           )}

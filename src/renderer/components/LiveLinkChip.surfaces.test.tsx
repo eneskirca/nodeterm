@@ -19,10 +19,18 @@ import { SessionRow } from './SessionRow'
 import type { KanbanSession } from './kanban/KanbanView'
 import type { SessionRowVM } from '../lib/sessionList'
 
-vi.mock('../session/session', () => ({
-  useSession: () => ({ api: { pty: {}, shell: { openExternal: vi.fn(async () => {}) } } }),
-  sessionForProject: () => ({ source: 'local', api: {} })
-}))
+vi.mock('../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../state/agentStatus')
+  return {
+    useSession: () => ({ api: { pty: {}, shell: { openExternal: vi.fn(async () => {}) } } }),
+    sessionForProject: () => ({ source: 'local', api: {} }),
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 vi.mock('./kanban/BoardLogPanel', () => ({ BoardLogPanel: () => null }))
 vi.mock('./ContextMeter', () => ({ ContextMeter: () => null }))
 vi.mock('./kanban/ModalTerminal', () => ({ ModalTerminal: () => <div className="kanban-modal__term" /> }))

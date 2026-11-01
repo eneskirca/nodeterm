@@ -12,14 +12,23 @@ import type { Terminal } from '@xterm/xterm'
  * flashes as "the text got wider".
  *
  * The fix quantizes at the SOURCE both renderers read: `CharSizeService`'s measure strategy is
- * wrapped so every measurement lands on the device-pixel grid (`floor(width × dpr) / dpr`).
+ * wrapped so every measurement lands on the device-pixel grid (`ceil(width × dpr) / dpr`).
  * The WebGL floor then loses nothing (it floors an already-integer product) and the DOM renderer
  * lays out on the identical cell — and `fit`/`proposeDimensions` read the same service, so the
  * column math stays consistent with what either renderer draws. Height is left alone: both
  * renderers already ceil it through the same formula.
  *
+ * Rounded UP, never down. The first version floored, and on a DPR 1 display that is a whole pixel:
+ * MEASURED on a 5120x1440 DPR 1 monitor, Menlo 13 measures 7.8125px and floored to 7.0, so the DOM
+ * renderer pinned every glyph with `letter-spacing: -0.8125px` (text ~10% too tight) and the last
+ * column's glyph ran past the edge of the screen element and was cut off ("opnieuw" ending in half a
+ * "w"). A cell at least as wide as its glyph cannot overhang. The 1e-3 device-pixel slack keeps a
+ * measurement that is already on the grid (7.000000000001) from gaining a whole pixel.
+ *
  * Costs and edges, called out because they are deliberate:
- *  - A cell can narrow by at most 1/dpr px (≤0.5px on retina) versus the unquantized DOM cell.
+ *  - A cell can widen by less than 1/dpr px (<0.5px on retina) versus the unquantized DOM cell, so
+ *    text spreads a little and a terminal fits a few fewer columns at the same width (about 10% for
+ *    Menlo 13 at DPR 1). The column count is what tmux is told, so nothing is clipped.
  *  - The dpr is read at MEASURE time (live, via the core's browser service with a window
  *    fallback). Moving the window to a display with a different dpr re-quantizes on the next
  *    measure (font/size changes, refresh); until one runs, the widths sit on the old grid —
@@ -49,6 +58,9 @@ interface CoreLike {
   _coreBrowserService?: { dpr?: number }
 }
 
+/** Device pixels a measurement may sit above the grid and still count as on it (float noise). */
+const GRID_SLACK_DEVICE_PX = 1e-3
+
 export function quantizeCharSize(
   term: Terminal,
   win: { devicePixelRatio?: number } | undefined = typeof window === 'undefined' ? undefined : window
@@ -66,9 +78,8 @@ export function quantizeCharSize(
       const result = original()
       const dpr = core?._coreBrowserService?.dpr || win?.devicePixelRatio || 1
       if (!result || !Number.isFinite(result.width) || !Number.isFinite(dpr) || dpr <= 0) return result
-      const quantized = Math.floor(result.width * dpr) / dpr
-      // A sub-device-pixel font would quantize to 0 and invalidate the whole char size — keep
-      // the raw measurement there (the renderers disagree again, but they draw).
+      const quantized = Math.ceil(result.width * dpr - GRID_SLACK_DEVICE_PX) / dpr
+      // A zero measurement (element not rendered yet) stays zero — xterm treats it as "unknown".
       if (quantized <= 0) return result
       return { width: quantized, height: result.height }
     }

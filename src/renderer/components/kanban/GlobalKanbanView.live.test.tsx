@@ -21,17 +21,25 @@ import { addColumn, defaultKanban } from '../../lib/kanban'
 
 const localApi = { tag: 'local-api' }
 const hostedApi = { tag: 'hosted-api' }
-vi.mock('../../session/session', () => ({
-  useSession: () => ({ id: 'local', source: 'local', api: localApi }),
-  sessionForProject: (projectId: string) =>
-    projectId === 'hosted'
-      ? { id: 'hosted-session', source: 'relay', api: hostedApi }
-      : projectId === 'relay'
-        ? { id: 'relay-session', source: 'relay', api: hostedApi }
-        : { id: 'local', source: 'local', api: localApi },
-  // The card modal's `ProjectSessionScope` provides the lane's session; `useSession` is mocked above.
-  SessionProvider: ({ children }: { children: unknown }) => children
-}))
+vi.mock('../../session/session', async () => {
+  // The agent-status reads now resolve a store per project / per session (bug D, covered in
+  // session/agent-status-lookup.test.tsx). Here every one answers the default store, as before.
+  const { defaultAgentStatus } = await import('../../state/agentStatus')
+  return {
+    useSession: () => ({ id: 'local', source: 'local', api: localApi }),
+    sessionForProject: (projectId: string) =>
+      projectId === 'hosted'
+        ? { id: 'hosted-session', source: 'relay', api: hostedApi }
+        : projectId === 'relay'
+          ? { id: 'relay-session', source: 'relay', api: hostedApi }
+          : { id: 'local', source: 'local', api: localApi },
+    // The card modal's `ProjectSessionScope` provides the lane's session; `useSession` is mocked above.
+    SessionProvider: ({ children }: { children: unknown }) => children,
+    agentStatusForProject: () => defaultAgentStatus,
+    useSessionRegistryVersion: () => 0,
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+  }
+})
 vi.mock('../../state/hostedTeams', () => ({
   isHostedReadOnly: (sessionId: string) => sessionId === 'hosted-session'
 }))

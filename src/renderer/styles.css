@@ -2875,6 +2875,18 @@ body,
   -webkit-font-smoothing: auto;
 }
 
+/* xterm's DOM renderer sets an INLINE `width` (the grid) and `overflow: hidden` on every row. A
+   glyph's ink runs a fraction past its advance (Menlo's `m`, `w`), so the last column of a full row
+   lost its right edge — measured at DPR 1, canvas zoom 1.38: a 616px row held a 617px span and the
+   `m` of "t/m" was cut. Only the HORIZONTAL clip is lifted: the vertical one keeps underlines and
+   descenders out of the next row (`clip`, unlike `hidden`, does not turn the other axis's `visible`
+   into `auto`). The overhang lands in the host's right padding; `.term-node` still clips, so nothing
+   paints outside the node. !important because an inline style beats any selector. */
+.xterm-rows > div {
+  overflow-x: visible !important;
+  overflow-y: clip !important;
+}
+
 /* Shared glyph renderer (experimental, `glyphgrid`): a glyph-attached terminal becomes a
    transparent WINDOW onto the one GPU canvas, which sits between the React Flow background and the
    nodes (z-index 0 against the renderer's 4 — it cannot simply be raised above them, or a
@@ -3364,6 +3376,26 @@ body,
   color: var(--muted);
   border-bottom: 1px solid rgba(var(--tint-rgb), 0.06);
 }
+/* Holds the scroller and the floating "scroll to latest" button, which must not scroll with it. */
+.term-chat__thread {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The Live chat drawer's "N new messages ↓" pill (.live-chat__more): same position and shape. */
+.term-chat__thread .confirm__btn.term-chat__to-latest {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
 .term-chat__msgs {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -3627,6 +3659,64 @@ body,
   font-family: ui-monospace, monospace;
   font-size: 11px;
   opacity: 0.85;
+}
+/* A run of consecutive tool calls folded into one block (nodes/ChatToolGroup.tsx), closed by
+   default. Closed, it is one chip-sized line: a chevron, the count, the tools used. Open, the same
+   chips follow, indented under a hairline so they read as belonging to the line above. */
+.term-chat__tool-group {
+  margin: 4px 0;
+  font-size: 12px;
+}
+.term-chat__tool-group > summary {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 4px 8px;
+  cursor: pointer;
+  list-style: none;
+  background: rgba(var(--tint-rgb), 0.04);
+  border: 1px solid rgba(var(--tint-rgb), 0.08);
+  border-radius: 8px;
+}
+.term-chat__tool-group > summary::-webkit-details-marker {
+  display: none;
+}
+/* The chevron is drawn, not a glyph: '▸' at this size renders as a dot. */
+.term-chat__tool-group > summary::before {
+  content: '';
+  flex: 0 0 auto;
+  align-self: center;
+  width: 5px;
+  height: 5px;
+  margin: 0 2px 0 1px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.12s ease;
+}
+.term-chat__tool-group[open] > summary::before {
+  transform: rotate(45deg);
+}
+/* Same sizing rule as the chip's name/argument pair: the count never wraps, the names take the rest
+   and ellipsize. */
+.term-chat__tool-group-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--accent);
+}
+.term-chat__tool-group-names {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.term-chat__tool-group-body {
+  margin: 4px 0 0 10px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(var(--tint-rgb), 0.12);
 }
 /* The agent's OWN dialog is on the pane's screen (ChatPanel's `screenBlock`): the sentence saying
    where to answer it, then the dialog's lines as the terminal shows them. Shaped like a tool card
@@ -4049,20 +4139,11 @@ body,
 .term-chat__refresh:hover {
   background: rgba(var(--tint-rgb), 0.1);
 }
-/* Reasoning, collapsed by default and dimmed so it never reads as the answer. */
+/* Claude's thinking summary between tool calls: inline like the TUI, dimmed so it never reads as
+   the answer. */
 .term-chat__thinking {
   margin: 4px 0;
-  font-size: 12px;
-  color: rgba(var(--tint-rgb), 0.6);
-}
-.term-chat__thinking summary {
-  cursor: pointer;
-  font-style: italic;
-}
-.term-chat__thinking .term-chat__text {
-  margin-top: 4px;
-  padding-left: 8px;
-  border-left: 2px solid rgba(var(--tint-rgb), 0.15);
+  color: var(--muted);
 }
 
 /* Transparent overlay that lets you pan across a terminal until you dwell/click. */
@@ -15745,6 +15826,106 @@ button.pull-checks__name {
   flex: 0 0 46px;
 }
 
+/* -- chat-view scene (⌘M on an agent node; the JS interval / the real keystroke flips .is-chat) --
+   The node is the agents scene's .onb-node held static; the two faces crossfade inside a fixed
+   body so the node never changes size, and the chat bubbles mirror .term-chat__msg--user /
+   --assistant (accent bubble right, tinted bubble left) so the tour draws what ⌘M shows. */
+.onb-scene--chat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+}
+.onb-cview__keys .onb-kbd {
+  animation: none;
+  transition: transform 0.12s ease, border-bottom-width 0.12s ease;
+}
+/* the chord "goes down" on every flip — the keys are what did it */
+.onb-cview__keys.is-chat .onb-kbd {
+  transform: translateY(2px);
+  border-bottom-width: 1px;
+}
+.onb-cview__mode {
+  margin-left: auto;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.onb-cview__body {
+  position: relative;
+  height: 112px;
+}
+.onb-cview__face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px 10px;
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+.onb-cview__term {
+  opacity: 1;
+  transform: translateY(0);
+}
+.onb-cview__chat {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.onb-cview.is-chat .onb-cview__term {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.onb-cview.is-chat .onb-cview__chat {
+  opacity: 1;
+  transform: translateY(0);
+}
+.onb-cview__prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: Menlo, Monaco, monospace;
+  font-size: 10px;
+  color: rgba(235, 235, 245, 0.85);
+  margin-bottom: 2px;
+}
+.onb-cview__msg {
+  max-width: 82%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.onb-cview__msg--user {
+  align-self: flex-end;
+  background: var(--accent, #0a84ff);
+  color: #fff;
+}
+.onb-cview__msg--assistant {
+  align-self: flex-start;
+  width: 72%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: rgba(var(--tint-rgb), 0.06);
+}
+.onb-cview__compose {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  background: rgba(var(--tint-rgb), 0.06);
+  border: 1px solid rgba(var(--tint-rgb), 0.12);
+  border-radius: 6px;
+}
+.onb-cview__compose .onb-caret {
+  height: 11px;
+}
+
 /* -- notify scene -- */
 /* --- Step: the notch capsule (SceneNotch) ------------------------------------------------
    A laptop lid seen from the front: the black top bar carries the notch, the capsule grows out
@@ -16111,6 +16292,10 @@ button.pull-checks__name {
     max-width: 100%;
   }
   .onb-mini {
+    transition: none;
+  }
+  .onb-cview__face,
+  .onb-cview__keys .onb-kbd {
     transition: none;
   }
   .onb-phone,

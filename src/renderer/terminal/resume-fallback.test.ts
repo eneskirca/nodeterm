@@ -100,7 +100,9 @@ describe('how the fallback is wired (source pins)', () => {
     // The live id from hooks and the id minted at node creation are separate fallbacks for the
     // same slot (`priorId = st?.sessionId || data.agentSessionId`) — clearing one leaves the other
     // to fail identically on the next mount.
-    expect(src).toContain('useAgentStatus.getState().setSessionId(id, undefined)')
+    // On the node's own session store (the default one for a local node — see TerminalNode's
+    // `agentStatusStore`).
+    expect(src).toContain('agentStatusStore.getState().setSessionId(id, undefined)')
     expect(src).toContain("updateNodeData(id, { agentSessionId: undefined })")
   })
 

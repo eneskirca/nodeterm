@@ -10,7 +10,7 @@ import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
 import { toolBody } from './chat-tool-body'
 import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
-import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX } from '../shared/chat-command'
+import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../shared/chat-command'
 import {
   AGENT_MESSAGE_TOOL,
   BACKGROUND_TASK_TOOL,
@@ -184,8 +184,7 @@ export function classifyLocalCommand(content: string): LocalCommandRecord | null
   return null
 }
 
-/** The name an output record's tool part gets when there is no command to attach it to. */
-export const COMMAND_OUTPUT_TOOL = 'command output'
+export { COMMAND_OUTPUT_TOOL }
 
 // ── System-injected user records ─────────────────────────────────────────────────────────────────
 // Claude Code writes several things that are NOT the user's words as `type:"user"` records. Measured
@@ -361,6 +360,14 @@ function systemPart(r: SystemRecord): Extract<ChatPart, { kind: 'tool' }> {
  *  a TITLE (recent conversations, the transcript index), where a code fence has no place. */
 export interface ChatParseOptions {
   expandPastes?: boolean
+  /**
+   * Emit a `thinking` part for each thinking block that carries readable text — the summaries
+   * claude's TUI prints between tool calls. Most thinking blocks carry only an encrypted
+   * `signature` and an empty `thinking` (measured: 137 of 913 on one machine had text); those, and
+   * every `redacted_thinking`, yield nothing either way. Off by default: the shared golden fixtures
+   * (`thinking.pages.json`) and the phone's `chat.page` keep dropping them.
+   */
+  thinking?: boolean
 }
 const userTextOf = (text: string, opts: ChatParseOptions | undefined): string =>
   opts?.expandPastes === false ? text : expandPastedContent(text)
@@ -561,12 +568,18 @@ function parseChatRecords(
       for (const c of content as Array<{
         type?: string
         text?: string
+        thinking?: unknown
         name?: string
         id?: string
         input?: unknown
       }>) {
         if (!c || typeof c !== 'object') continue
         if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: c.text })
+        else if (c.type === 'thinking') {
+          if (opts?.thinking && typeof c.thinking === 'string' && c.thinking.trim()) {
+            parts.push({ kind: 'thinking', text: c.thinking })
+          }
+        }
         else if (c.type === 'tool_use') {
           const part: Extract<ChatPart, { kind: 'tool' }> = {
             kind: 'tool',
@@ -656,6 +669,13 @@ export function parseChatMessages(rawLines: string[], opts?: ChatParseOptions): 
     false,
     opts
   ).messages
+}
+
+/** Claude's record parser with parse options bound — `parseChatWindow`'s third argument. */
+export function claudeChatRecordParser(
+  opts: ChatParseOptions
+): (records: Iterable<{ raw: string; offset: number }>, paged: true) => ChatRecordsOut {
+  return (records, paged) => parseChatRecords(records, paged, opts)
 }
 
 /** A paged chat read's answer, minus `found` (the caller knows whether anything resolved). */

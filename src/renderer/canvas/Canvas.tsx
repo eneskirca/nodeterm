@@ -22,7 +22,6 @@ import { useContextLinkSync } from './useContextLinkSync'
 import { useMirrorIdentitySeed } from './useMirrorIdentitySeed'
 import { useShallow } from 'zustand/react/shallow'
 import { playSfx, primeSfx } from '@renderer/lib/sfx'
-import { fanoutStillWorking } from '@renderer/lib/completionAlert'
 import { publishCanvasZoom } from '@renderer/lib/canvasZoomVar'
 import {
   addEdge,
@@ -264,8 +263,7 @@ import { installLockedMiddleGuard, installModifierPan } from '../lib/modifierPan
 import {
   FLOW_NODE_CLASS,
   isFocusTarget,
-  nextNodeInDirection,
-  nodeNearestPoint,
+  planDirectionalMove,
   type FocusDirection
 } from '../lib/directionalFocus'
 import { UpdateCard } from '../components/UpdateCard'
@@ -528,7 +526,8 @@ import {
   writeSeenExplorerPinHint
 } from '../lib/explorerPinHint'
 import { addRelayTab, sameSshEndpoint, setKanbanPublishHook, setStoredCanvasPublishHook, useProjects } from '../state/projects'
-import { useAgentStatus, recordsTurnInterrupt } from '../state/agentStatus'
+import { useAgentStatus } from '../state/agentStatus'
+import { applyAgentEvent } from '../state/applyAgentEvent'
 import { countUnreadInProjects, liveNodeIds, orphanStatusIds, unreadIdSet, unreadIdsSig } from '../lib/unreadBadge'
 import { usePendingPause, startPendingPauseWatcher } from '../state/pendingPause'
 import {
@@ -685,11 +684,13 @@ import {
   sessionForProject,
   boundSessionForProject,
   presenceForProject,
+  agentStatusForProject,
   setActiveSession,
   disposeSession,
   holdSessionTeardown,
   projectIdsBoundToSession,
 } from '../session/session'
+import { lookupFromStores } from '../session/agent-status-lookup'
 import {
   openRelayTab,
   handleRelayDrop,
@@ -2951,6 +2952,11 @@ export function Canvas() {
   // active id, so the outgoing project's nodes never remount under the incoming project's session.
   const flowOwnerProjectId = useFlowStoreOwner(allNodes, renderedProjectId)
   const nodeSession = sessionForProject(flowOwnerProjectId ?? '')
+  // The same owner for imperative callbacks: a focus marks the node active / read in the agent-status
+  // store of the session the node renders under (`agentStatusForProject(owner)`), never the active
+  // project's — a handed-off SSH project and the team tab serving it share node ids.
+  const flowOwnerProjectIdRef = useRef(flowOwnerProjectId)
+  flowOwnerProjectIdRef.current = flowOwnerProjectId
   // Work that frames a just-loaded project waits for that same ownership (see flowLanding.ts).
   const flowLanding = useFlowLanding(flowOwnerProjectId)
 
@@ -3558,8 +3564,11 @@ export function Canvas() {
               // the target terminal so the user can type without a second click.
               useTerminalFocus.getState().request(pending)
             }
-            useAgentStatus.getState().setActive(pending, true)
-            useAgentStatus.getState().clearUnread(pending)
+            // `project.id` IS the flow-store owner here: flowLanding runs this only once React
+            // Flow's store holds that project, so the node renders under its session.
+            const statusStore = agentStatusForProject(project.id).store
+            statusStore.getState().setActive(pending, true)
+            statusStore.getState().clearUnread(pending)
           }
         }
       })
@@ -10594,29 +10603,41 @@ export function Canvas() {
   const moveNodeFocus = useCallback(
     (dir: FocusDirection): boolean => {
       const nodes = nodesRef.current
-      const from =
-        document.activeElement?.closest(`.${FLOW_NODE_CLASS}`)?.getAttribute('data-id') ??
-        nodes.find((n) => n.selected && isFocusTarget(n))?.id ??
-        null
-      // Nothing focused, nothing selected: the first press ADOPTS the node nearest the view center
-      // instead of moving from it. Walking from an origin the user never chose lands somewhere
-      // arbitrary; adopting is the "you are here" a multiplexer's first move gives you for free.
-      if (!from) {
-        const center = viewCenter()
-        const seed = center ? nodeNearestPoint(nodes, center) : null
-        if (!seed) return false
-        focusNodeRef.current(seed)
-        return true
-      }
-      const next = nextNodeInDirection(nodes, from, dir)
-      if (next) focusNodeRef.current(next)
+      // Which node to land on, and HOW, is the pure `planDirectionalMove`: on the canvas the move
+      // travels (from the keyboard's node, else the selection, else — first press — the node
+      // nearest the view center is ADOPTED rather than moved from); in focus mode it SWAPS the
+      // focused node for its neighbour, because the flow pane is display:none there and a travel
+      // would frame a node on a hidden, 0-sized pane (the origin-jump bug) while the user stays
+      // staring at the old terminal. Before this, moving between two focused terminals took
+      // ⌘⇧F, ⌘→, ⌘⇧F.
+      const move = planDirectionalMove(nodes, dir, {
+        focusedId: useFocusNode.getState().focusedId,
+        keyboardId: document.activeElement?.closest(`.${FLOW_NODE_CLASS}`)?.getAttribute('data-id') ?? null,
+        selectedId: nodes.find((n) => n.selected && isFocusTarget(n))?.id ?? null,
+        viewCenter: viewCenter() ?? null
+      })
       // Claimed even at the edge of the canvas, where there is nothing to move to. Declining
       // would offer ⌘→ back to the focused terminal instead, and whatever it does there it is
       // not "nothing" — a navigation key with nowhere to go should do nothing, not something
-      // else.
+      // else. The one unclaimed case is a canvas with no node to seed from.
+      if (!move) return !!useFocusNode.getState().focusedId || nodes.some(isFocusTarget)
+      if (move.kind === 'travel') {
+        focusNodeRef.current(move.id)
+        return true
+      }
+      // Swap inside focus mode: the store change reparents the new node into the focus surface
+      // (TerminalNode's layout effect) and sends the old one home. The keyboard does NOT follow on
+      // its own — the reparent hands focus back to whichever xterm had it, i.e. the old node —
+      // so it is requested explicitly, the way every "go to node" path does. Selection follows
+      // too, so leaving focus mode later lands the camera on the node the user was in.
+      useFocusNode.getState().focus(move.id)
+      setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === move.id })))
+      useTerminalFocus.getState().request(move.id)
+      useAgentStatus.getState().setActive(move.id, true)
+      useAgentStatus.getState().clearUnread(move.id)
       return true
     },
-    [viewCenter]
+    [viewCenter, setNodes]
   )
 
   /**
@@ -10746,8 +10767,9 @@ export function Canvas() {
   /**
    * "Go to next agent needing you" (`node.nextNeedingYou`, ⌘K): one chord to a waiting agent in
    * another project. The queue is built ON DEMAND from `getState()` reads — Canvas never
-   * subscribes to the status store's `byId` (every working/waiting flip would re-render the whole
-   * canvas; see StatusAwareMiniMap). The cycle
+   * subscribes to a status store's `byId` (every working/waiting flip would re-render the whole
+   * canvas; see StatusAwareMiniMap). Each project's rows are read from ITS session's store
+   * (`lookupFromStores`), so a team tab's waiting agent is in the queue too. The cycle
    * cursor is memory only: a restart starts again at the oldest wait, which is the right answer.
    * Travel is `travelToNodeRef` (declared above this point; the callback itself is defined much
    * further down) so a closed-project hop keeps travelToNode's hosted-team reopen guard.
@@ -10769,7 +10791,7 @@ export function Canvas() {
               color: n.data.color ?? '#888'
             }))
         : null
-    return [projects, live, active, useAgentStatus.getState().byId] as const
+    return [projects, live, active, lookupFromStores(projects.map((p) => p.id))] as const
   }, [nodesRef, nodesProjectIdRef])
   const needsYouQueueNow = useCallback((): string[] => needsYouQueue(...needsYouInputs()), [needsYouInputs])
   const goToNextNeedingYou = useCallback((): void => {
@@ -11980,8 +12002,9 @@ export function Canvas() {
         // broken there. On the board, "go to" means OPEN THE CARD.
         if (isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)) {
           useViewMode.getState().requestCard(nodeId)
-          useAgentStatus.getState().setActive(nodeId, true)
-          useAgentStatus.getState().clearUnread(nodeId)
+          const statusStore = agentStatusForProject(flowOwnerProjectIdRef.current).store
+          statusStore.getState().setActive(nodeId, true)
+          statusStore.getState().clearUnread(nodeId)
           return
         }
         setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nodeId })))
@@ -11990,10 +12013,12 @@ export function Canvas() {
         // frames it but does not focus xterm on its own (the pan/hover guard owns that), which is
         // why a sidebar click used to need a second click/hover before typing worked.
         useTerminalFocus.getState().request(nodeId)
-        // Mark this node as watched and its completion as read. Read state is independent of the
-        // live `done` workflow state, so it remains under Waiting for your response.
-        useAgentStatus.getState().setActive(nodeId, true)
-        useAgentStatus.getState().clearUnread(nodeId)
+        // Mark this node as watched and its completion as read, in the store of the session it
+        // renders under (the flow-store owner's). Read state is independent of the live `done`
+        // workflow state, so it remains under Waiting for your response.
+        const statusStore = agentStatusForProject(flowOwnerProjectIdRef.current).store
+        statusStore.getState().setActive(nodeId, true)
+        statusStore.getState().clearUnread(nodeId)
         return
       }
       // `nodeOwner`, not the first project holding the id: a closed, handed-off SSH project shares
@@ -17285,18 +17310,6 @@ export function Canvas() {
     }
     return api.onAgentStatus((e: NormalizedAgentEvent) => {
       const cs = useAgentStatus.getState()
-      if (e.sessionId) cs.setSessionId(e.nodeId, e.sessionId)
-      // Which Claude account the posting session is ACTUALLY on — a hook-derived LABEL, captured
-      // off any event that carries one, exactly like `sessionId` above: a plain terminal running
-      // `CLAUDE_CONFIG_DIR=~/.claude-2 claude` announces its identity nowhere else.
-      //
-      // The `remote` flag is stamped HERE and nowhere else. The classifier in core is deliberately
-      // host-agnostic — two of its rules exist precisely to name a REMOTE dir — and core holds only
-      // the hook payload, which never says which machine posted it. This listener is the first
-      // layer that can ask, because it can reach the node and the project that owns it, and a dir
-      // that names another machine's filesystem must not reach any LOCAL affordance (see
-      // `observationIsRemote` and the consumers in lib/accountChip.ts).
-      if (e.account) cs.setAccount(e.nodeId, { ...e.account, remote: observationIsRemote(originOf(e.nodeId)) })
       const agentLabel = agentConfig(e.agentId)?.label ?? 'Agent'
       // "<folder> — Claude finished" + last assistant message as the body.
       const alert = (
@@ -17348,154 +17361,27 @@ export function Canvas() {
           nodeId: e.nodeId
         })
       }
-      const an = useAgentNodes.getState()
-      switch (e.kind) {
-        case 'state': {
-          // An `idle` done (the CLI went quiet at its prompt — see normalize) is a RESCUE for a
-          // node stuck on `working` after an Esc that ran no turn-end hook. It may ONLY move a
-          // working node: blocked/waiting is also "idle at the prompt", and clearing it there
-          // would drop a live approval off the badge. Same rule as the mirror's reduceEntry.
-          const stuckRescueSkip = e.idle === true && cs.byId[e.nodeId]?.state !== 'working'
-          // `pendingId` (deterministic approvals) rides a `blocked` event; the store keeps it only
-          // while blocked so the header's Approve/Deny buttons appear + vanish with the state.
-          // `e.verified` is the identity evidence for this very transition (hook-server labels it);
-          // it was in scope here and dropped on the floor before the store had a field for it.
-          if (e.state && !stuckRescueSkip)
-            cs.setState(
-              e.nodeId,
-              e.state,
-              e.agentId,
-              e.newTurn,
-              e.pendingId,
-              e.verified,
-              e.errored,
-              e.held,
-              recordsTurnInterrupt(e)
-            )
-          // Claude's Stop names the BACKGROUND tasks still running (async subagents, nested ones,
-          // background shells). A background subagent that ends its turn while its own work runs
-          // fires SubagentStop — its card goes done — and is resumed later, so the card alone would
-          // let Eco or the bulk restart type /exit over live work. The existing background-task
-          // stamp is the guard both already read; a turn start clears it, the next Stop re-decides.
-          if (e.state === 'done' && !stuckRescueSkip && e.backgroundTaskIds?.length) cs.markBackgroundTask(e.nodeId)
-          // A genuine new turn drops the previous fan-out — but only the cards that FINISHED
-          // (issue #547). Claude launches subagents async, so "waiting for N background agents to
-          // finish" is exactly the state in which the next prompt gets typed, and clearing a
-          // working card there loses it permanently (nothing rehydrates `byId`) while the agent
-          // keeps running — and blinds Eco's live-subagent guard into hibernating its parent.
-          if (e.newTurn) an.clearFinishedForParent(e.nodeId)
-          recordSubmittedPrompt(e)
-          if (e.newTurn && e.task) {
-            // Prompt-prefix fallback for /loop|/schedule|/cron when the natural-language
-            // phrasing doesn't trigger the tool-based (recurring) detection.
-            const m = e.task.match(/^\s*\/(loop|schedule|cron)\b/)
-            if (m) cs.setLoop(e.nodeId, true, m[1] as 'loop' | 'schedule' | 'cron', { task: e.task })
-          }
-          if (e.state === 'done' && !e.interrupted && !stuckRescueSkip) {
-            // Interrupted turns (Esc/Ctrl-C) alert nobody: the user did it themselves, and
-            // the turn didn't complete, so it isn't a loop iteration either.
-            // An IGNORED rescue is silent for the same reason it moves no badge: it claims a turn
-            // ended for a node this surface never saw running, so the "finished" is unfounded —
-            // and it arrives from a second source of truth (the main-process mirror drives the SSH
-            // reconnect resync, this store drives the alert), which can legitimately disagree after
-            // a renderer reload. Gating the badge but not the sound/notification would half-enforce
-            // the flag and leave the expensive error — a false completion — fully reachable.
-            cs.bumpLoop(e.nodeId, e.lastMessage) // count loop iterations + summary (no-op if not looping)
-            // Issue #708: a turn that ended only because a BACKGROUND SUBAGENT reported back is
-            // not the fan-out finishing — the parent is about to be woken again by the next one.
-            // Read fresh (not the `an` snapshot taken at listener entry): `clearFinishedForParent`
-            // may have run just above. It only drops DONE cards, so the verdict is the same either
-            // way, and depending on that is exactly the kind of coupling that rots.
-            const fanoutBusy = fanoutStillWorking(
-              Object.values(useAgentNodes.getState().byId),
-              e.nodeId
-            )
-            alert('finished', `${agentLabel} finished its turn.`, 'done', { quiet: fanoutBusy })
-          }
-          if (e.state === 'blocked')
-            alert('needs input', `${agentLabel} needs permission to continue.`, 'needsYou')
-          else if (e.state === 'waiting')
-            alert('needs input', `${agentLabel} is waiting for your response.`, 'needsYou')
-          break
-        }
-        case 'subagent-start':
-          if (e.toolUseId) {
-            an.start(
-              e.toolUseId,
-              {
-                parentNodeId: e.nodeId,
-                type: e.subagentType,
-                label: e.taskLabel,
-                startedAt: e.subagentStartedAt,
-                lastActivityAt: e.subagentLastActivityAt
-              },
-              // A Claude native card replacing the card its tool call drew (claude-subagent-lifecycle).
-              e.supersedes
-            )
-          }
-          break
-        case 'subagent-end':
-          if (e.toolUseId)
-            an.finish(e.toolUseId, {
-              durationMs: e.durationMs,
-              tokens: e.tokens,
-              toolUses: e.toolUses,
-              result: e.result
-            })
-          break
-        case 'background-task':
-          // A background shell task runs INSIDE the CLI process, so the `/exit` Eco hibernation
-          // and the bulk restart type would kill it silently. Stamp the node so both skip it.
-          // The write mints a new entry object, so whole-map subscribers (minimap, the node) do
-          // re-render — once per background launch, which is rarer than any state event.
-          cs.markBackgroundTask(e.nodeId)
-          break
-        case 'recurring':
-          if (e.recurringEnd) {
-            // The recurring job itself was removed (CronDelete) — take the card down.
-            cs.setLoop(e.nodeId, false)
-            an.clearLoop(e.nodeId)
-          } else if (e.recurringKind) {
-            cs.setLoop(e.nodeId, true, e.recurringKind, { schedule: e.schedule, task: e.task })
-          }
-          break
-        case 'session':
-          if (e.sessionTitle) cs.setSession(e.nodeId, e.sessionTitle)
-          if (e.sessionPhase === 'start') {
-            cs.setState(e.nodeId, undefined, e.agentId)
-            // A SessionStart is proof a CLI just LAUNCHED in that pane, so a hibernated flag on
-            // this node is now false — our own `/exit` produces a SessionEnd, never a
-            // SessionStart. This is the residual `setState`'s live-state self-heal cannot reach:
-            // a user who relaunches the agent by hand and then takes no turn would keep a SLEEPING
-            // chip on a running CLI (and the sweep, which skips hibernated nodes, would leave that
-            // session exempt from Eco for good). Deliberately NOT the same as clearing on `done`,
-            // which would let a late Stop POST undo a hibernation we just performed. The setter
-            // bails when the flag is already unset, so this is free for every other session start.
-            cs.setHibernated(e.nodeId, false)
-            // Same self-heal, same reason, for the deep "pause & end session" case: that depth
-            // recycles the tmux session instead of leaving `hibernated` set, so this SessionStart
-            // (the cold-restore's own resume, or a hand-launched relaunch) is the only live proof
-            // that node was watching for.
-            cs.setPaused(e.nodeId, false)
-            // A new CLI is in the pane: whatever exited before it no longer describes this node.
-            cs.setSessionEnded(e.nodeId, false)
-          }
-          if (e.sessionPhase === 'end') {
-            cs.setState(e.nodeId, undefined, e.agentId)
-            // Recorded as its OWN fact, after the state: `state: undefined` alone is what an idle
-            // agent looks like, and the memory levers would keep protecting a pane that now holds
-            // only a shell (see `agentProcessInPane`).
-            cs.setSessionEnded(e.nodeId, true)
-            // In-session /loop dies with its session; cron (and scheduled cloud routines)
-            // keep running after it — their cards stay until CronDelete / manual dismiss.
-            const kind = cs.byId[e.nodeId]?.loop?.kind
-            if (kind === 'loop') {
-              cs.setLoop(e.nodeId, false)
-              an.clearLoop(e.nodeId)
-            }
-            an.clearForParent(e.nodeId)
-          }
-          break
+      // Every store write the event implies (session id, account, state, subagent cards, loop,
+      // session lifecycle) is the reducer's, against the DEFAULT stores this listener has always
+      // written; what it hands back is the alert, and what that alert DOES is this window's own
+      // business (above). The account's `remote` flag is stamped here because this listener is the
+      // first layer that can reach the node and the project that owns it (see `observationIsRemote`).
+      // Asked only when the event carries an account: the reducer reads the flag for nothing else,
+      // and the node/project lookup behind it would otherwise run on every hook event.
+      // The node prompt bar's store is this window's own (machine-local localStorage), not one of
+      // the reducer's stores, so it is fed here beside the reducer rather than inside it.
+      recordSubmittedPrompt(e)
+      const r = applyAgentEvent(useAgentStatus, useAgentNodes, e, {
+        observationRemote: e.account ? observationIsRemote(originOf(e.nodeId)) : false
+      })
+      if (r.alert?.kind === 'finished') {
+        alert('finished', `${agentLabel} finished its turn.`, 'done', { quiet: r.alert.quiet })
+      } else if (r.alert?.kind === 'needs-input') {
+        const fallback =
+          e.state === 'blocked'
+            ? `${agentLabel} needs permission to continue.`
+            : `${agentLabel} is waiting for your response.`
+        alert('needs input', fallback, 'needsYou')
       }
     })
   }, [])

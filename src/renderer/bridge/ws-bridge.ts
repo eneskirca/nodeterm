@@ -1,5 +1,6 @@
 import type { ChatCatalog } from '@shared/chat-catalog'
 import type { NormalizedAgentEvent } from '../../shared/agents/normalize'
+import type { AgentStatusSnapshotEntry } from '../../shared/agent-status-snapshot'
 import { subscribeAgentReplay } from '../../shared/agent-replay-subscription'
 import type { DesktopWallpaper, WallpaperStill } from '../../shared/wallpaper'
 import type { AlertSoundSaveResult } from '../../shared/alert-sound'
@@ -841,6 +842,7 @@ export function buildAgentApi(
 ): Pick<
   NodeTerminalApi,
   | 'onAgentStatus'
+  | 'agentStatusSnapshot'
   | 'onSubagentActivity'
   | 'onUnreadClear'
   | 'answerPermission'
@@ -857,6 +859,9 @@ export function buildAgentApi(
       (cb) => client.subscribe(IPC.agentStatus, cb as Listener),
       () => client.request(IPC.agentSubagentSnapshot) as Promise<NormalizedAgentEvent[]>, listener
     ),
+    // REAL request: the core's mirror answers it, so a browser tab (and, through relay-api's spread,
+    // a relay tab, whose host narrows it for a non-editor) starts from the states the host holds.
+    agentStatusSnapshot: () => client.request(IPC.agentStatusSnapshot) as Promise<AgentStatusSnapshotEntry[]>,
     // REAL forward: the Server Edition writes its own agent-status mirror, and the phone reads it
     // over its SSH browse path — a browser canvas hibernating a node must reach that file too.
     reportHibernated: (nodeId, on) => {

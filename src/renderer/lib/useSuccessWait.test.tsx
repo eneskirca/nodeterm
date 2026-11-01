@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { useAgentStatus } from '../state/agentStatus'
+import { createAgentStatusSession, useAgentStatus, type AgentStatusSession } from '../state/agentStatus'
 import { useStationOutcomes } from '../state/stationOutcomes'
 import { useSuccessWait } from './useSuccessWait'
 
@@ -66,4 +66,33 @@ it('follows a report as it arrives, and treats a hostile hold as expired without
   expect(label()).toBe('⚠ BLOCKED')
   act(() => root.render(<Badge hold={{ deps: 'build' }} />))
   expect(label()).toBe('⚠ EXPIRED')
+})
+
+it("reads the stations' states from the store it is given, not the default one", () => {
+  // A team tab's node waits on its HOST's stations: its session store says `build` is still
+  // working, while the default (local) store holds `done` under the same id for a handed-off SSH
+  // project. The wait must judge the node's own store.
+  const relay = createAgentStatusSession() // keyless, like a relay session's
+  relay.store.getState().setState('build', 'working', 'claude')
+  useStationOutcomes.getState().setRecords([{ nodeId: 'build', outcome: 'succeeded', at: 2 }])
+  const hold = { deps: ['build'], deadlineAt: 1_000_000 + 60_000 }
+  const titleOf = (id: string) => (id === 'build' ? 'Builder' : undefined)
+  function Status({ store, testId }: { store?: AgentStatusSession['store']; testId: string }) {
+    const { tooltip } = useSuccessWait(hold, titleOf, store)
+    return <span data-testid={testId}>{tooltip?.status ?? 'none'}</span>
+  }
+  act(() =>
+    root.render(
+      <>
+        <Status store={relay.store} testId="session" />
+        <Status testId="default" />
+      </>
+    )
+  )
+  const read = (testId: string): string => host.querySelector(`[data-testid="${testId}"]`)?.textContent ?? ''
+  expect(read('session')).toBe('waiting') // reported success, but its turn has not ended THERE
+  expect(read('default')).toBe('met') // the default store's `done` (beforeEach), as before
+  // And it follows the given store live.
+  act(() => relay.store.getState().setState('build', 'done', 'claude'))
+  expect(read('session')).toBe('met')
 })
