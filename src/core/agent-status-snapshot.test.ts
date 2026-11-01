@@ -1,6 +1,6 @@
 // `agent:status-snapshot` — what a relay tab that joins late reads to start from the host's states
 // (bug D). Built from the agent-status mirror, registered by both shells.
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AGENT_STATUS_SNAPSHOT_MAX } from '../shared/agent-status-snapshot'
 import { IPC } from '../shared/ipc'
 import type { CorePlatform } from './platform'
@@ -15,18 +15,24 @@ const ENTRIES: Array<[string, MirrorEntry]> = [
   ['restored', { state: 'done', agentId: 'claude', sessionId: 's-restored', updatedAt: 100, restored: true, stateVerified: false }]
 ]
 
+/** This host's clock for the pure builds below. */
+const NOW = 1000
+
 const entry = (nodeId: string) => {
-  const e = buildAgentStatusSnapshot(ENTRIES).find((x) => x.nodeId === nodeId)
+  const e = buildAgentStatusSnapshot(ENTRIES, NOW).find((x) => x.nodeId === nodeId)
   if (!e) throw new Error(`no snapshot entry for ${nodeId}`)
   return e
 }
 
-afterEach(() => _resetForTest())
+afterEach(() => {
+  vi.useRealTimers()
+  _resetForTest()
+})
 
 describe('buildAgentStatusSnapshot', () => {
   it('maps mirror entries to snapshot entries', () => {
-    // Only the five fields a joiner's store takes travel: no proof, no clock, no inbox ticket.
-    expect(entry('live')).toEqual({ nodeId: 'live', state: 'working', agentId: 'claude', sessionId: 's-live', account })
+    // Only the fields a joiner's store takes travel: no proof, no host clock, no inbox ticket.
+    expect(entry('live')).toEqual({ nodeId: 'live', state: 'working', agentId: 'claude', sessionId: 's-live', account, ageMs: 700 })
   })
 
   it('omits state for identity-only and restored entries', () => {
@@ -36,6 +42,25 @@ describe('buildAgentStatusSnapshot', () => {
     expect(entry('expired').agentId).toBe('codex')
     expect(entry('restored').sessionId).toBe('s-restored')
     expect('state' in entry('restored')).toBe(false)
+    // No state, so no age of one.
+    expect(entry('expired').ageMs).toBeUndefined()
+    expect(entry('restored').ageMs).toBeUndefined()
+  })
+
+  it("an entry's ageMs is the host-side age of its updatedAt, never below 0", () => {
+    const out = buildAgentStatusSnapshot(
+      [
+        ['old', { state: 'working', updatedAt: 400 }],
+        ['now', { state: 'done', updatedAt: 1000 }],
+        // Stamped after `now` (this host's clock stepped back since): an age, never a negative one.
+        ['ahead', { state: 'blocked', updatedAt: 1500 }]
+      ],
+      NOW
+    )
+    const age = (id: string) => out.find((e) => e.nodeId === id)?.ageMs
+    expect(age('old')).toBe(600)
+    expect(age('now')).toBe(0)
+    expect(age('ahead')).toBe(0)
   })
 
   it('keeps the newest AGENT_STATUS_SNAPSHOT_MAX entries by updatedAt', () => {
@@ -53,14 +78,17 @@ describe('buildAgentStatusSnapshot', () => {
   })
 
   it('registers agent:status-snapshot on the platform', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-01T10:00:00Z'))
     const handlers = new Map<string, (...args: unknown[]) => unknown>()
     const platform = { handle: (ch: string, fn: (...args: unknown[]) => unknown) => void handlers.set(ch, fn) } as unknown as CorePlatform
     registerAgentStatusSnapshotIpc(platform)
     expect([...handlers.keys()]).toEqual([IPC.agentStatusSnapshot])
     // The default read is the REAL mirror, as each shell's hook events left it.
     recordAgentEvent({ nodeId: 'term-a', agentId: 'claude', kind: 'state', state: 'working', sessionId: 's1', newTurn: true })
+    vi.setSystemTime(Date.now() + 1234)
     expect(await handlers.get(IPC.agentStatusSnapshot)!()).toEqual([
-      { nodeId: 'term-a', state: 'working', agentId: 'claude', sessionId: 's1' }
+      { nodeId: 'term-a', state: 'working', agentId: 'claude', sessionId: 's1', ageMs: 1234 }
     ])
     // An injected read replaces it.
     registerAgentStatusSnapshotIpc(platform, () => [{ nodeId: 'x' }])

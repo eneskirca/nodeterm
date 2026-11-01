@@ -19,6 +19,13 @@ export interface AgentStatusSnapshotEntry {
   agentId?: AgentId
   sessionId?: string
   account?: ObservedClaudeAccount
+  /**
+   * How long ago, in ms, the host last asserted `state` (host `Date.now() - updatedAt`, never below
+   * 0). Present only with a `state`. An AGE rather than a timestamp, so no host clock value crosses
+   * the wire and the two machines' clock skew never enters: the joiner subtracts it from its own
+   * clock to get the freshness clock (`stateAt`) its stale-working sweep reads.
+   */
+  ageMs?: number
 }
 
 /** At most this many entries, the newest by the mirror's `updatedAt`. */

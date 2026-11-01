@@ -392,9 +392,11 @@ describe('hosted team tab: agent status reaches the relay session', () => {
     expect(a?.agentId).toBe('claude')
     expect(a?.sessionId).toBe('s1')
     expect(a?.unread).toBe(false)
-    // The joiner saw no transition: no clock is claimed for one.
+    // The freshness clock comes from the host's age of the entry; the joiner saw no transition, so
+    // no transition clock is claimed.
+    expect(typeof a?.stateAt).toBe('number')
     expect(a?.lastEventAt).toBeUndefined()
-    expect(a?.stateAt).toBeUndefined()
+    expect(a?.lastSeen).toBeUndefined()
     // A viewer's snapshot holds the shared nodes only.
     expect(relayStore(late.tab).getState().byId[PRIVATE_NODE]).toBeUndefined()
   })

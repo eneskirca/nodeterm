@@ -252,20 +252,46 @@ describe('wireRelayAgentStatus — the snapshot a late joiner starts from', () =
   const doneFor = (nodeId: string): NormalizedAgentEvent => ev({ nodeId, state: 'done', lastMessage: 'ok' })
 
   it('asks for the snapshot after subscribing, and applies it', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-01T10:00:00Z'))
     const { api, order, resolve } = fakeApi()
     const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false })
     expect(order).toEqual(['subscribe', 'snapshot'])
-    resolve([{ nodeId: 'a', state: 'working', agentId: 'claude', sessionId: 's' }])
+    resolve([{ nodeId: 'a', state: 'working', agentId: 'claude', sessionId: 's', ageMs: 5000 }])
     await flush()
     const byId = byIdOf()
     expect(byId.a.state).toBe('working')
     expect(byId.a.agentId).toBe('claude')
     expect(byId.a.sessionId).toBe('s')
-    // No clock: the joiner saw no transition, and a stamped one would claim it did.
+    // The freshness clock is the host's age on this machine's clock; the transition clocks stay
+    // unset: the joiner saw no transition, and a stamped one would claim it did.
+    expect(byId.a.stateAt).toBe(Date.now() - 5000)
     expect(byId.a.lastEventAt).toBeUndefined()
-    expect(byId.a.stateAt).toBeUndefined()
     expect(byId.a.lastSeen).toBeUndefined()
     expect(byId.a.unread).toBe(false)
+    stop()
+  })
+
+  it('a snapshot working survives the stale-working sweep', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-01T10:00:00Z'))
+    const { api, resolve } = fakeApi()
+    const stop = wireRelayAgentStatus(api, status, { hasFocus: () => false, sweepMs: 1000 })
+    resolve([
+      { nodeId: 'a', state: 'working', ageMs: 2000 },
+      // The host has held this one quiet for longer than the window: the same decay a live event
+      // that old would get.
+      { nodeId: 'b', state: 'working', ageMs: STALE_WORKING_MS + 1 },
+      // An age below zero is no age: the clock is never put ahead of this machine's.
+      { nodeId: 'c', state: 'working', ageMs: -60_000 }
+    ])
+    await flush()
+    const t0 = Date.now()
+    expect(byIdOf().c.stateAt).toBe(t0)
+    vi.advanceTimersByTime(1000)
+    expect(byIdOf().a.state).toBe('working')
+    expect(byIdOf().c.state).toBe('working')
+    expect(byIdOf().b.state).toBeUndefined()
     stop()
   })
 
@@ -301,6 +327,7 @@ describe('wireRelayAgentStatus — the snapshot a late joiner starts from', () =
     const a = byIdOf().a
     expect(a.state).toBeUndefined()
     expect('state' in a).toBe(false)
+    expect(a.stateAt).toBeUndefined() // no state, so no freshness clock for one
     expect(a.sessionId).toBe('s-old')
     expect(a.agentId).toBe('claude')
     // The host's account label is another machine's, exactly as a live relay event records it.

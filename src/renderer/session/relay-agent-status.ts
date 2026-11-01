@@ -38,19 +38,31 @@ export interface RelayAgentStatusDeps {
 }
 
 /**
- * Write the entries no live event has touched; never stamps a clock. Returns how many it wrote.
+ * Write the entries no live event has touched; never stamps a TRANSITION clock. Returns how many it
+ * wrote. `now` is this machine's clock.
  *
  * One `setState` for the whole snapshot. Each entry merges only the fields it carries (`state`,
  * `agentId`, `sessionId`, `account`) onto whatever the node already has, so an identity-only entry
- * (no `state`) leaves the state alone and `unread` is kept (default `false`). `lastEventAt`,
- * `stateAt` and `lastSeen` are NEVER set: the joiner saw no transition, a fabricated clock would
- * claim one, and the sidebar sorts a missing clock last. The account is recorded as another
- * machine's (`remote: true`), exactly as the live relay events record it.
+ * (no `state`) leaves the state alone and `unread` is kept (default `false`). The account is
+ * recorded as another machine's (`remote: true`), exactly as the live relay events record it.
+ *
+ * The clocks, which are not alike:
+ *  • `stateAt` (freshness: when the state was last ASSERTED, which the stale-working sweep reads) is
+ *    set for an entry that carries a `state`, to `now - ageMs`. The age is the host's measurement of
+ *    its own mirror entry, so no host clock value is involved, and a negative or missing age counts
+ *    as 0, never as a time ahead of this one. Without it the sweep reads a missing `stateAt` as 0
+ *    and decays a served `working` on its first tick, although the host still holds it live (its
+ *    mirror expires stale states itself).
+ *  • `lastEventAt` (the transition clock, the sidebar's sort key and the Eco idle clock) and
+ *    `lastSeen` (the persisted last-hook record) are NEVER set: the joiner saw no transition, and a
+ *    fabricated one would claim it did. The sidebar sorts a missing clock last.
+ * An entry without a `state` sets no `stateAt`: it describes no state to be fresh about.
  */
 export function applyAgentStatusSnapshot(
   status: Pick<StoreApi<AgentStatusStore>, 'getState' | 'setState'>,
   entries: readonly AgentStatusSnapshotEntry[],
-  liveSeen: ReadonlySet<string>
+  liveSeen: ReadonlySet<string>,
+  now: number = Date.now()
 ): number {
   if (!Array.isArray(entries)) return 0
   const prev = status.getState().byId
@@ -62,7 +74,11 @@ export function applyAgentStatusSnapshot(
     if (typeof nodeId !== 'string' || !nodeId || liveSeen.has(nodeId)) continue
     const existing = writes.get(nodeId) ?? (Object.hasOwn(prev, nodeId) ? prev[nodeId] : undefined)
     const merged: AgentNodeStatus = { ...existing, unread: existing?.unread ?? false }
-    if (entry.state !== undefined) merged.state = entry.state
+    if (entry.state !== undefined) {
+      merged.state = entry.state
+      const age = entry.ageMs
+      merged.stateAt = now - (typeof age === 'number' && Number.isFinite(age) && age > 0 ? age : 0)
+    }
     if (entry.agentId !== undefined) merged.agentId = entry.agentId
     if (entry.sessionId !== undefined) merged.sessionId = entry.sessionId
     if (entry.account !== undefined) merged.account = { ...entry.account, remote: true }
