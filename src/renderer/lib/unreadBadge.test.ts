@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ORPHAN_STATUS_GRACE_MS,
   countUnreadInProjects,
+  liveNodeIds,
   orphanStatusIds,
   unreadIdSet,
   unreadIdsSig
@@ -31,6 +32,18 @@ describe('countUnreadInProjects (the Dock / taskbar / tray count)', () => {
 
   it('is 0 with no projects loaded', () => {
     expect(countUnreadInProjects([], new Set(['a']))).toBe(0)
+  })
+})
+
+describe('liveNodeIds (the completeness guard every boot sweep shares)', () => {
+  it('collects every node of every project, closed ones included', () => {
+    const live = liveNodeIds([{ nodes: [{ id: 'a' }] }, { nodes: [{ id: 'b' }, { id: 'c' }] }])
+    expect([...live!].sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('answers null — judge nothing — for no projects or an unreadable one', () => {
+    expect(liveNodeIds([])).toBeNull()
+    expect(liveNodeIds([{ nodes: [{ id: 'a' }] }, { unavailable: true, nodes: [] }])).toBeNull()
   })
 })
 

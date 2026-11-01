@@ -528,7 +528,7 @@ import {
 import { addRelayTab, sameSshEndpoint, setKanbanPublishHook, setStoredCanvasPublishHook, useProjects } from '../state/projects'
 import { useAgentStatus } from '../state/agentStatus'
 import { applyAgentEvent } from '../state/applyAgentEvent'
-import { countUnreadInProjects, orphanStatusIds, unreadIdSet, unreadIdsSig } from '../lib/unreadBadge'
+import { countUnreadInProjects, liveNodeIds, orphanStatusIds, unreadIdSet, unreadIdsSig } from '../lib/unreadBadge'
 import { usePendingPause, startPendingPauseWatcher } from '../state/pendingPause'
 import {
   planBulkPause,
@@ -549,6 +549,7 @@ import { hostChatSend, hostChatSession, hostChatStatus } from '../lib/hostChatQu
 import { chatPaneRefusal } from '../lib/chatPaneGate'
 import { runQueuedNotice } from '../lib/boardRunQueued'
 import { useLaunchDelivery } from '../state/launchDelivery'
+import { recordSubmittedPrompt, useNodePrompts } from '../state/nodePrompts'
 import { useBrowserLease, drivingNodeIds } from '../state/browserLease'
 import { useTerminalFocus } from '../state/terminalFocus'
 import { useCodexIdentity, codexFallbackText } from '../state/codexIdentity'
@@ -3319,6 +3320,11 @@ export function Canvas() {
       // resume id.
       const status = useAgentStatus.getState()
       status.removeMany(orphanStatusIds(status.byId, useProjects.getState().projects, Date.now()))
+      // Same sweep for the node prompt bar's table: a node deleted on another machine (or by a
+      // path that never reached `drop`) must not keep its prompts in localStorage forever. No grace
+      // window — a prompt list carries no resume id, so a wrong drop costs only history — but the
+      // same refusal to judge an incomplete load (`liveNodeIds` → null = prune nothing).
+      useNodePrompts.getState().prune(liveNodeIds(useProjects.getState().projects))
       setWorkspaceLoaded(true)
       // Upgrade the on-disk format (e.g. v1 -> v2 migration) right away. Reported like every
       // other save: a `void` here used to make the very first write of the session the one write
@@ -7430,6 +7436,7 @@ export function Canvas() {
         // back), so deletion must do both.
         useAgentStatus.getState().remove(n.id)
         useAgentNodes.getState().clearForParent(n.id)
+        useNodePrompts.getState().drop(n.id)
         useAgentNodes.getState().clearLoop(n.id)
         // Permanent deletion ends the node's keep-alive entry too — this funnel removes nodes by
         // setNodes, so handleNodesChange's remove branch never sees them.
@@ -16660,6 +16667,7 @@ export function Canvas() {
         const stored = nodes.find((n) => n.id === id)
         if (stored?.issueRef) logIssueRunEnded(projectId, stored)
         useAgentStatus.getState().remove(id)
+        useNodePrompts.getState().drop(id)
         // Unmount no longer clears the fan-out (issue #402), so a permanent removal must — the
         // node unmounted at the project switch with its cards kept in the store.
         useAgentNodes.getState().clearForParent(id)
@@ -16760,6 +16768,7 @@ export function Canvas() {
           // store still holds for the id (kept across unmounts since issue #402).
           useAgentStatus.getState().remove(nodeId)
           useAgentNodes.getState().clearForParent(nodeId)
+          useNodePrompts.getState().drop(nodeId)
           setConfirm(null)
         }
       })
@@ -17359,6 +17368,9 @@ export function Canvas() {
       // first layer that can reach the node and the project that owns it (see `observationIsRemote`).
       // Asked only when the event carries an account: the reducer reads the flag for nothing else,
       // and the node/project lookup behind it would otherwise run on every hook event.
+      // The node prompt bar's store is this window's own (machine-local localStorage), not one of
+      // the reducer's stores, so it is fed here beside the reducer rather than inside it.
+      recordSubmittedPrompt(e)
       const r = applyAgentEvent(useAgentStatus, useAgentNodes, e, {
         observationRemote: e.account ? observationIsRemote(originOf(e.nodeId)) : false
       })
@@ -18913,7 +18925,10 @@ export function Canvas() {
         // outlives the project entry (it is a file in the project's folder), so the run does not
         // stay open in the issue's history forever.
         if (n.issueRef) logIssueRunEnded(id, n)
-        if (!heldElsewhere.has(n.id)) useAgentStatus.getState().remove(n.id)
+        if (!heldElsewhere.has(n.id)) {
+          useAgentStatus.getState().remove(n.id)
+          useNodePrompts.getState().drop(n.id)
+        }
         useAgentNodes.getState().clearForParent(n.id)
       })
       // SSH project: the per-node `transport.destroy` above only ends the REMOTE session for
