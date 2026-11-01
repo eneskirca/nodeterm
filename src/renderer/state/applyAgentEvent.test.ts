@@ -197,4 +197,33 @@ describe('applyAgentEvent', () => {
     applyAgentEvent(status, useAgentNodes, ev({ nodeId: 'term-node-b', state: 'working', newTurn: true, account }), LOCAL)
     expect(entry('term-node-b').account?.remote).toBe(false)
   })
+
+  it('reads opts.observationRemote only for an event that carries an account', () => {
+    // Canvas computes the flag lazily (`e.account ? observationIsRemote(…) : false`), which is only
+    // correct while the reducer reads it for nothing else. A getter counts the reads.
+    let reads = 0
+    const opts = {
+      get observationRemote() {
+        reads++
+        return false
+      }
+    }
+    for (const e of [
+      ev({ state: 'working', newTurn: true, sessionId: 's1', task: '/loop 5m check' }),
+      ev({ state: 'blocked', pendingId: 'p-1' }),
+      ev({ state: 'done', lastMessage: 'ok', backgroundTaskIds: ['b1'] }),
+      ev({ kind: 'background-task' }),
+      ev({ kind: 'recurring', recurringKind: 'cron', schedule: '0 * * * *', task: 'x' }),
+      ev({ kind: 'subagent-start', toolUseId: 't-1', taskLabel: 'look' }),
+      ev({ kind: 'subagent-end', toolUseId: 't-1' }),
+      ev({ kind: 'session', sessionPhase: 'start', sessionTitle: 'named' }),
+      ev({ kind: 'session', sessionPhase: 'end' })
+    ]) {
+      applyAgentEvent(status, useAgentNodes, e, opts)
+    }
+    expect(reads).toBe(0)
+    const account = { configDir: '/home/u/.claude', accountId: null, known: false }
+    applyAgentEvent(status, useAgentNodes, ev({ state: 'working', account }), opts)
+    expect(reads).toBe(1)
+  })
 })

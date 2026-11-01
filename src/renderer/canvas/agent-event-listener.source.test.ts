@@ -39,6 +39,13 @@ describe('Canvas agent-status listener — reducer split', () => {
     expect(body).toContain('suppressDoneAfterHandoff') // local-only side effects stay here
   })
 
+  it('asks whether an observation is remote only for an event that carries an account', () => {
+    // The reducer reads `observationRemote` for `setAccount` and nothing else
+    // (applyAgentEvent.test.ts pins that), so the node/project lookup behind it runs only then.
+    const body = listenerBody(read('canvas/Canvas.tsx'))
+    expect(body).toContain('observationRemote: e.account ? observationIsRemote(originOf(e.nodeId)) : false')
+  })
+
   it('alert still marks unread only when not watching, then acks, sounds and notifies locally', () => {
     const alertFn = alertBody(listenerBody(read('canvas/Canvas.tsx')))
     expect(alertFn).toMatch(/!watching[\s\S]*markUnread/)

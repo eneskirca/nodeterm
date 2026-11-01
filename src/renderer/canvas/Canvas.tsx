@@ -17346,8 +17346,10 @@ export function Canvas() {
       // written; what it hands back is the alert, and what that alert DOES is this window's own
       // business (above). The account's `remote` flag is stamped here because this listener is the
       // first layer that can reach the node and the project that owns it (see `observationIsRemote`).
+      // Asked only when the event carries an account: the reducer reads the flag for nothing else,
+      // and the node/project lookup behind it would otherwise run on every hook event.
       const r = applyAgentEvent(useAgentStatus, useAgentNodes, e, {
-        observationRemote: observationIsRemote(originOf(e.nodeId))
+        observationRemote: e.account ? observationIsRemote(originOf(e.nodeId)) : false
       })
       if (r.alert?.kind === 'finished') {
         alert('finished', `${agentLabel} finished its turn.`, 'done', { quiet: r.alert.quiet })

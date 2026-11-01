@@ -542,10 +542,16 @@ export interface AgentStatusSession {
  * instance hydrates from and saves to; `undefined` = in-memory only (load returns nothing,
  * save is a no-op — the instance never touches localStorage). See the module docblock for
  * why only the default instance has a key today.
+ *
+ * The two callbacks are this store's only reports OUT, and both are injected so that only the
+ * store that describes this machine's own core has them: `ackDone` (a read of a finished session,
+ * see `clearUnread`) and `reportHibernated` (the SLEEPING flag, see `setHibernated`). Absent = the
+ * fact stays in this store. A relay tab's store gets neither (`agentStatusForApi`).
  */
 export function createAgentStatusSession(
   persistKey?: string,
-  ackDone?: (nodeId: string) => void
+  ackDone?: (nodeId: string) => void,
+  reportHibernated?: (nodeId: string, on: boolean) => void
 ): AgentStatusSession {
   if (persistKey === KEY) migrateLegacyKey()
 
@@ -1003,10 +1009,14 @@ export function createAgentStatusSession(
         const prev = s.byId[id] ?? EMPTY
         if (!!prev.hibernated === on) return s
         // The renderer owns this flag; the core only mirrors it (agent-status mirror → SLEEPING on
-        // the phone). Reported on the same edge the store changes, guarded because tests (and any
-        // non-preload context) run this store without a bridge.
+        // the phone). Reported on the same edge the store changes, through the injected callback:
+        // only the default store has one, because only its node ids are this desktop's own. A relay
+        // tab's pause reported here put the HOST's node id into THIS desktop's mirror, where a
+        // hibernated entry never expires and survives a restart, and nothing ever reported it
+        // false. Guarded because tests (and any non-preload context) run this store without a
+        // bridge.
         try {
-          window.nodeTerminal?.reportHibernated?.(id, on)
+          reportHibernated?.(id, on)
         } catch {
           /* the mirror is a side-channel; a failed report must never break the store */
         }
@@ -1272,8 +1282,11 @@ export function agentStatusForApi(api: NodeTerminalApi): AgentStatusSession {
   // Keyless — remote status is never persisted (4a) — and with NO done-read ack: reading a remote
   // session's finish clears unread on this desktop only (product decision 1). Nothing is sent back
   // to that core (no `ackDone`, no `agent:ack-done`), so the host's own read state — its notch,
-  // its paired phone's Live Activity — stays as it was.
-  const session = createAgentStatusSession(undefined, undefined)
+  // its paired phone's Live Activity — stays as it was. And with NO hibernated report: a pause
+  // made on a team tab is this desktop's own view of the host's node. It is not the host's fact
+  // (v1 never tells the host), and it is not this desktop's either — its mirror (and the phone
+  // that reads it) describes this machine's nodes, and the host's node id has no place there.
+  const session = createAgentStatusSession(undefined, undefined, undefined)
   if (api) instanceByApi.set(api, session)
   return session
 }
@@ -1289,9 +1302,18 @@ export function agentStatusForApi(api: NodeTerminalApi): AgentStatusSession {
  */
 // The default (local core) acks the finished-session read to `window.nodeTerminal.ackDone` — guarded
 // for node-environment tests where no preload exists (the callback is invoked later, at clear time).
-const defaultAgentStatus = createAgentStatusSession(KEY, (id) => {
-  if (typeof window !== 'undefined') window.nodeTerminal?.ackDone?.(id)
-})
+const defaultAgentStatus = createAgentStatusSession(
+  KEY,
+  (id) => {
+    if (typeof window !== 'undefined') window.nodeTerminal?.ackDone?.(id)
+  },
+  // The SLEEPING flag, to this desktop's own mirror. Read at report time, like the ack: `window`
+  // has no bridge in node-environment tests, and the store's own try/catch keeps a throwing one
+  // from breaking the write.
+  (id, on) => {
+    if (typeof window !== 'undefined') window.nodeTerminal?.reportHibernated?.(id, on)
+  }
+)
 export { defaultAgentStatus }
 if (typeof window !== 'undefined' && window.nodeTerminal) {
   instanceByApi.set(window.nodeTerminal as NodeTerminalApi, defaultAgentStatus)
