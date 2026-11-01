@@ -659,7 +659,9 @@ holds for a hosted team's tabs and for a Team Access relay tab alike: both open 
   Approve/Deny (they answer this machine's permission server, which holds no ticket for the host's
   session), the session-title sync (it would rewrite the host's canvas from every tab that shows the
   node), the find bar's transcript search and the ⌘M chat view (both read this machine's
-  transcripts). ⌘M keeps the Markdown output view.
+  transcripts). ⌘M keeps the Markdown output view. The kanban card modal gates its find bar's
+  transcript search the same way (`ModalTerminal`); its ⌘M chat view reads through the tab's relay
+  api, which refuses transcript reads (`E_UNSUPPORTED`), and the view says so.
 - **A dropped or closed tab reads Unknown.** The teardown ends the subscription and empties the
   store; a frame that arrives afterwards writes nothing.
 - **Mobile:** N/A. The phone speaks the legacy relay dialect and reads the host's agent-status
@@ -685,6 +687,11 @@ holds for a hosted team's tabs and for a Team Access relay tab alike: both open 
   switch eligibility (`lib/nodeActionItems.tsx`), bulk pause, the Eco plan, `stationNoticeWiring`,
   `loopCard`, the app badge count (Dock / taskbar), the sidebar row's account-chip "multiple
   identities" check, and the focused-node skip of "next needing you".
+- The project tab's pause badge ("⏸ N", `usePauseCounts` in `state/pauseCounts.ts`) counts from
+  this desktop's store by bare node id: a team tab shows the handed-off SSH project's paused nodes as
+  its own, and a shallow pause made on the team tab never shows there.
+- The node menu's Transfer submenu takes the session id from this desktop's store
+  (`lib/nodeActionItems.tsx`), not the team tab's.
 - The status-grouped sidebar lists a node id once (`buildStatusList` dedups by bare id), so a
   shared id shows one row when both the handed-off SSH project and the team tab are open.
 - A shallow pause made on a team tab lives in the tab's in-memory store and does not survive a

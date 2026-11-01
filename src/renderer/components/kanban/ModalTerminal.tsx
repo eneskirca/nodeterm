@@ -21,6 +21,7 @@ import { focusXtermUnlessCovered, useMdModeFocus } from '../../terminal/useMdMod
 import { FindBar } from '../FindBar'
 import { useProjects } from '../../state/projects'
 import { isRemoteProjectId, useSession, useSessionStores } from '../../session/session'
+import { relayStatusGates } from '../../terminal/relay-status-gates'
 import { REMOTE_PROJECT_SPAWN_REFUSAL, spawnBelongsElsewhere, useOwningProjectId } from '../../session/owning-project'
 import { isHostedReadOnly } from '../../state/hostedTeams'
 import { useSettings } from '../../state/settings'
@@ -159,6 +160,9 @@ export function ModalTerminal({
 }: ModalTerminalProps) {
   const session = useSession()
   const { api } = session
+  // MIRROR TerminalNode: which status-driven readers this viewer may run (relay-status-gates.ts) —
+  // all of them on the local session, none on a relay / team tab, whose status is its host's.
+  const gates = relayStatusGates(session.source)
   // The agent status of the session this card's project runs under (mounted through
   // `ProjectSessionScope`), never the default store: a team tab's node shares its id with the
   // handed-off SSH project, whose entry is the default store's.
@@ -265,8 +269,10 @@ export function ModalTerminal({
     accountId: effectiveAccountId(spawn.accountId, observedAccount, claudeAccounts),
     // MIRROR TerminalNode: the transcript index reads claude's JSONL through claude's resolver, so
     // it is gated on the claude-transcript fact, NOT on the context meter's `hasUsage` (which now
-    // spans codex and gemini too) — see lib/transcriptGates.ts.
-    searchTranscript: readsClaudeTranscript(spawn.agentId),
+    // spans codex and gemini too) — see lib/transcriptGates.ts. And on `gates.transcriptSearch`: it
+    // reads THIS machine's transcripts (`window.nodeTerminal.claude`), never a relay host's, and a
+    // team tab's card holds the HOST's session id.
+    searchTranscript: gates.transcriptSearch && readsClaudeTranscript(spawn.agentId),
     open: searchOpen,
     readBuffer
   })

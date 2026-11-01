@@ -10389,11 +10389,11 @@ invariants:
   lifetime and feeds `applyAgentEvent` into that session's keyless store
   (`getSessionStores(id).agentStatus`). Routing is by api, never by a project lookup: two relay
   sessions may serve one project id. **A reader of a team tab's node must not ask the default
-  store** (the ones that still do are the doc's follow-ups): after Share with team the handed-off
-  SSH project (local session, default store) and its team tab (relay session) hold the SAME node
-  ids, so a reader that asked the default store, or the active project's, shows one project's status
-  on the other's node, and a restart that read it would quit a host session the badge shows as
-  RUNNING. Readers resolve per project
+  store** (the known ones that still do are the doc's follow-ups): after Share with team the
+  handed-off SSH project (local session, default store) and its team tab (relay session) hold the
+  SAME node ids, so a reader that asked the default store, or the active project's, shows one
+  project's status on the other's node, and a restart that read it would quit a host session the
+  badge shows as RUNNING. Readers resolve per project
   (`agentStatusForProject`; `useAgentStatusLookup` / `useAgentStatusSig` re-subscribe inside the
   session-registry listener, so a reconnect that leaves the signature unchanged still moves them to
   the new store) or per node (`useSessionStores()`, render-safe for a session disposed a moment
@@ -10410,8 +10410,9 @@ invariants:
   ONLY `stateAt = now - ageMs`, never `lastEventAt` / `lastSeen`: the joiner saw no transition, and
   a fabricated one would claim it did. The teardown empties the store, so a dropped tab reads
   Unknown. The status-driven readers that act on THIS machine are off for a relay node
-  (`relayStatusGates`: Approve/Deny, title sync, transcript search, the ⌘M chat view); only
-  `'local'` runs them, and `'relay'`, `'server'` and an unknown source fail closed. A desktop Team
+  (`relayStatusGates`: Approve/Deny, title sync, transcript search, the ⌘M chat view; the card
+  modal's `ModalTerminal` gates its transcript search the same way); only `'local'` runs them, and
+  `'relay'`, `'server'` and an unknown source fail closed. A desktop Team
   Access host's agent emits go through `corePlatform.broadcast` (its window plus every non-quiet
   peer); `agent:unread-clear` stays main-window only. Mobile: N/A (the phone speaks the legacy
   dialect and reads the mirror file). Follow-ups, including the Canvas-level readers still on the
