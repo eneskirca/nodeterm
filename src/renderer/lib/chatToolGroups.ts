@@ -8,7 +8,7 @@
 import type { ChatMessage, ChatPart } from '@shared/types'
 import { isSystemRecordMessage } from '@shared/chat-system-records'
 import { isLocalCommandTool } from '@shared/chat-command'
-import { latestTodoIndex, staleTodo } from './chatFocus'
+import { latestTodoIndex, staleTodo } from './chatTodo'
 
 /** Fewer calls than this stay as plain chips: a block holding one chip only adds a click. */
 export const TOOL_GROUP_MIN = 2
@@ -64,7 +64,7 @@ export interface GroupToolCallsOptions {
 /**
  * A tool call the agent made, shown as a chip. Not one:
  * - a plan / question / latest todo-list card (`body`): that IS the content, never folded away —
- *   but a SUPERSEDED todo list (lib/chatFocus.ts) is drawn as its chip, so it folds like one;
+ *   but a SUPERSEDED todo list (lib/chatTodo.ts) is drawn as its chip, so it folds like one;
  * - the user's own `/command`, `!` line or command output: the person did that, not the agent;
  * - a system record (a background task finishing, another agent's message): it is not the agent's
  *   work either, and the thread already treats it as a turn boundary.
