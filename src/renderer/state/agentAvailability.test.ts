@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  controlAgentRefusal,
   firstEnabledAgent,
   launchableDefaultAgent,
   removeCustomAgent,
@@ -127,5 +128,41 @@ describe('launchableDefaultAgent', () => {
     expect(
       launchableDefaultAgent({ disabledAgents: [], defaultAgent: 'custom:gone', customAgents: [] })
     ).toBe('claude')
+  })
+})
+
+describe('controlAgentRefusal', () => {
+  it('allows enabled builtin and custom agents', () => {
+    const s = { disabledAgents: [], customAgents: [custom('work')] }
+    expect(controlAgentRefusal('open-agent', 'claude', s)).toBeNull()
+    expect(controlAgentRefusal('open-agent', 'opencode', s)).toBeNull()
+    expect(controlAgentRefusal('open-agent', 'custom:work', s)).toBeNull()
+  })
+
+  it('refuses a disabled builtin agent', () => {
+    const s = { disabledAgents: ['opencode', 'claude'], customAgents: [] }
+    expect(controlAgentRefusal('open-agent', 'opencode', s)).toBe(
+      'open-agent: agent "opencode" is disabled in Settings'
+    )
+    expect(controlAgentRefusal('open-claude', 'claude', s)).toBe(
+      'open-claude: agent "claude" is disabled in Settings'
+    )
+    expect(controlAgentRefusal('verify', 'claude', s)).toBe(
+      'verify: agent "claude" is disabled in Settings'
+    )
+  })
+
+  it('refuses a disabled custom agent', () => {
+    const s = { disabledAgents: ['custom:work'], customAgents: [custom('work')] }
+    expect(controlAgentRefusal('open-agent', 'custom:work', s)).toBe(
+      'open-agent: agent "custom:work" is disabled in Settings'
+    )
+  })
+
+  it('refuses an unknown agent id before checking disabledAgents', () => {
+    const s = { disabledAgents: ['typo-agent'], customAgents: [custom('work')] }
+    expect(controlAgentRefusal('open-agent', 'typo-agent', s)).toBe(
+      'open-agent: unknown agent "typo-agent" — pass a builtin id or a custom agent id from Settings'
+    )
   })
 })

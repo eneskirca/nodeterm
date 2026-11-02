@@ -64,9 +64,28 @@ describe('the open prompt is resolved ONCE, before any path reads the store', ()
     expect(decided).toBeLessThan(src.indexOf('routeControlSource(projects, activeId, sourceNodeId)'))
   })
 
-  it('never spills for a dry run — a dry run writes no file', () => {
+  it('never spills for a dry run or a disabled/unknown agent — a refused open writes no file', () => {
     const decided = src.indexOf('const openPrompt:')
-    expect(src.slice(decided, decided + 1500)).toMatch(/!dryRun/)
+    const window = src.slice(decided, decided + 1500)
+    expect(window).toMatch(/!dryRun/)
+    expect(window).toContain('!controlAgentRefusal(')
+  })
+
+  it('checks controlAgentRefusal across live open, verify, and passes disabledAgents into spawn-team', () => {
+    const live = liveAgentCase()
+    const check = live.indexOf('controlAgentRefusal(verb, agentId,')
+    expect(check).toBeGreaterThan(-1)
+    expect(check).toBeLessThan(live.indexOf('if (dryRun) {'))
+    expect(check).toBeLessThan(live.indexOf('createAgentNode('))
+
+    const verify = slice("case 'verify':", "case 'spawn-team':")
+    const vCheck = verify.indexOf("controlAgentRefusal('verify', reviewAgent,")
+    expect(vCheck).toBeGreaterThan(-1)
+    expect(vCheck).toBeLessThan(verify.indexOf('spillLongPrompt('))
+    expect(vCheck).toBeLessThan(verify.indexOf('createAgentNode('))
+
+    const team = slice("case 'spawn-team':", "case 'open-worktree':")
+    expect(team).toMatch(/parseTeamSpec\(\s*args\.team \?\? '',\s*teamKnownAgents,\s*new Set<string>\(teamSettings\.disabledAgents\)\s*\)/)
   })
 
   it('asks the SAME authorization belt as `#N` which project that is — a refused caller spills nothing', () => {

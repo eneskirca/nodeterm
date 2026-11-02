@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { parseTeamSpec, TEAM_MAX_ROLES } from './teamSpec'
 
-const KNOWN = new Set(['claude', 'codex', 'gemini', 'custom:mine'])
+const KNOWN = new Set(['claude', 'codex', 'gemini', 'opencode', 'custom:mine'])
 
-const err = (raw: string): string => {
-  const r = parseTeamSpec(raw, KNOWN)
+const err = (raw: string, disabled: ReadonlySet<string> = new Set()): string => {
+  const r = parseTeamSpec(raw, KNOWN, disabled)
   if (r.ok) throw new Error('expected a refusal')
   return r.error
 }
@@ -77,6 +77,18 @@ describe('parseTeamSpec — every mistake is a NAMED refusal (issue #532)', () =
     const e = err('[{"prompt":"x","agent":"claudee"}]')
     expect(e).toContain('unknown agent "claudee"')
     expect(e).toContain('codex')
+  })
+  it('a disabled builtin agent id is refused by role name', () => {
+    const e = err('[{"title":"Worker","prompt":"x","agent":"opencode"}]', new Set(['opencode']))
+    expect(e).toBe('role "Worker": agent "opencode" is disabled in Settings')
+  })
+  it('a disabled custom agent id is refused by role name', () => {
+    const e = err('[{"prompt":"x","agent":"custom:mine"}]', new Set(['custom:mine']))
+    expect(e).toBe('role #1: agent "custom:mine" is disabled in Settings')
+  })
+  it('a role omitting agent is refused when claude is disabled', () => {
+    const e = err('[{"title":"DefaultRole","prompt":"x"}]', new Set(['claude']))
+    expect(e).toBe('role "DefaultRole": agent "claude" is disabled in Settings')
   })
   it('a non-object role is refused by position', () => {
     expect(err('["just a string"]')).toContain('#1')

@@ -34,7 +34,11 @@ function roleName(r: { title?: unknown }, i: number): string {
  * of opening a node whose launch command is a typo — the exact "validated by running it" cost
  * issue #532 names. Error messages are bare (no `spawn-team:` prefix — the caller adds it).
  */
-export function parseTeamSpec(raw: string, knownAgentIds: ReadonlySet<string>): TeamSpecResult {
+export function parseTeamSpec(
+  raw: string,
+  knownAgentIds: ReadonlySet<string>,
+  disabledAgentIds: ReadonlySet<string> = new Set()
+): TeamSpecResult {
   const trimmed = (raw ?? '').trim()
   if (!trimmed) {
     return { ok: false, error: `--team is empty — pass a JSON array of ${SHAPE} role objects` }
@@ -95,6 +99,12 @@ export function parseTeamSpec(raw: string, knownAgentIds: ReadonlySet<string>): 
       return {
         ok: false,
         error: `role ${name}: unknown agent "${agent}" — known agents: ${[...knownAgentIds].join(', ')}`
+      }
+    }
+    if (disabledAgentIds.has(agent)) {
+      return {
+        ok: false,
+        error: `role ${name}: agent "${agent}" is disabled in Settings`
       }
     }
     roles.push({
