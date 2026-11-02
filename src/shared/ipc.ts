@@ -358,6 +358,13 @@ export const IPC = {
   appUserDataDir: 'app:user-data-dir',
   appUpdatePolicy: 'app:update-policy',
   // Prepare-for-update (Windows, issue #829). Raw ipcMain handlers, main-window senders only.
+  projectSecretsStatus: 'project-secrets:status',
+  projectSecretsAuthorize: 'project-secrets:authorize',
+  projectSecretsClear: 'project-secrets:clear',
+  projectSecretsCrossGate: 'project-secrets:cross-project-gate',
+  projectSecretsCrossDecide: 'project-secrets:cross-project-decide',
+  /** main → renderer: a project's held state changed (payload: projectId). */
+  projectSecretsChanged: 'project-secrets:changed',
   appUpdatePrepInspect: 'app:update-prep-inspect',
   appUpdatePrepShutdown: 'app:update-prep-shutdown',
   appUpdatePrepQuit: 'app:update-prep-quit',

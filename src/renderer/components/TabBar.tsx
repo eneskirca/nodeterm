@@ -31,6 +31,8 @@ import { CONFIRM_WAIVABLE_VERBS, WAIVABLE_VERB_ACTIONS, otherWaiverHint } from '
 import { projectWaiverRow, setControlConfirmWaivedForProject } from '../state/controlConfirmGate'
 import { useControlConfirm } from '../state/controlConfirm'
 import { isBrowserRuntime } from '../bridge/runtime'
+import { ProjectSecretsDialog } from './ProjectSecretsDialog'
+import { secretsMenuOffered } from '../lib/projectSecrets'
 
 interface TabBarProps {
   onSwitch: (id: string) => void
@@ -173,6 +175,8 @@ export function TabBar({
   // on every node serialization.
   const pauseCounts = usePauseCounts(projects)
   const [menuId, setMenuId] = useState<string | null>(null)
+  /** The project whose Secrets dialog is open (docs/project-secrets.md). */
+  const [secretsFor, setSecretsFor] = useState<{ id: string; name: string } | null>(null)
   // `flipBase` is the ANCHOR's top edge: when the menu would overflow the bottom of the window,
   // it opens upward from the caret button instead (see useMenuFlip below).
   const [menuPos, setMenuPos] = useState<{ top: number; left: number; flipBase: number } | null>(
@@ -819,6 +823,19 @@ export function TabBar({
             >
               Project settings…
             </button>
+            {/* Desktop, local folder projects only: an SSH host would need the value sent to it, a
+                relay tab's project is the host's, and a browser tab must never run a command. */}
+            {secretsMenuOffered(menuProject, isBrowserRuntime()) && (
+              <button
+                title="Fetch the secrets this project declares for its agent nodes (kept in memory only)"
+                onClick={() => {
+                  setSecretsFor({ id: menuProject.id, name: menuProject.name })
+                  closeMenu()
+                }}
+              >
+                Secrets…
+              </button>
+            )}
             {/* The id a `nodeterm://open?project=<id>` link names (another app's config maps its
                 repositories to these ids). A relay tab's id belongs to the host, which a link here
                 cannot open. */}
@@ -880,6 +897,13 @@ export function TabBar({
           </div>,
           document.body
         )}
+      {secretsFor && (
+        <ProjectSecretsDialog
+          projectId={secretsFor.id}
+          projectName={secretsFor.name}
+          onClose={() => setSecretsFor(null)}
+        />
+      )}
     </>
   )
 }

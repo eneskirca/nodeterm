@@ -169,6 +169,21 @@ export function buildStubApi(): Omit<
       onPassphraseRequest: noopUnsub,
       onPassphraseDismiss: noopUnsub
     },
+    // Desktop only (docs/project-secrets.md): a browser tab must never run a command on the server
+    // or receive a value, and a relay tab's projects are the host's (relay-api.ts takes this stub).
+    // Every answer says "unsupported", so the Secrets menu entry is hidden; `proceed` never grants.
+    projectSecrets: {
+      status: async () => ({ unavailable: 'unsupported' as const, secrets: [] }),
+      authorize: async () => ({
+        kind: 'refused' as const,
+        reason: 'unsupported' as const,
+        view: { unavailable: 'unsupported' as const, secrets: [] }
+      }),
+      clear: async () => ({ unavailable: 'unsupported' as const, secrets: [] }),
+      crossProjectGate: async () => ({ kind: 'proceed' as const }),
+      decideCrossProject: async () => undefined,
+      onChanged: noopUnsub
+    },
     // Desktop only: the Server Edition has no SSH projects, and a relay tab must never drive the
     // host's ssh (relay-api.ts takes this stub rather than the local preload's member).
     shareTeam: {

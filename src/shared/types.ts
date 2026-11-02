@@ -246,6 +246,13 @@ export interface PtyCreateOptions {
    * shrink everyone's terminal). It is still a subscriber and is told the authoritative size.
    */
   sizeVote?: false
+  /**
+   * This node was opened in its project by an agent of ANOTHER project (a cross-project canvas
+   * control open; node data `openedByOtherProject`). Its project's secrets then follow the
+   * machine-local `projectSecretsCrossProject` policy (@shared/project-secrets). The flag can only
+   * WITHHOLD values: absent is "a node of the project", which is also what a forged absence gets.
+   */
+  secretsCrossProject?: boolean
 }
 
 /** A tmux pane's cursor, as tmux reports it: 0-based column/row within the pane, plus whether the
@@ -548,6 +555,13 @@ export interface CanvasNodeState {
    * and instead push the user's name back to the agent via `/rename`. Persisted.
    */
   titleAuto?: boolean
+  /**
+   * An agent of ANOTHER project opened this node (a `--project` canvas-control open). Its
+   * project's secrets then follow the `projectSecretsCrossProject` policy (@shared/project-secrets).
+   * Only a literal `true` survives the serializers, and the flag can only WITHHOLD values: a file
+   * that drops it gets "a node of the project", which is the default for every node anyway.
+   */
+  openedByOtherProject?: true
   color: string
   group: string | null
   /** Labels for organizing/filtering terminals. */
@@ -2346,6 +2360,14 @@ export interface Settings {
    * (@shared/settings-verb forbids it): it is a grant over every project at once.
    */
   agentMessagingDefault: boolean
+  /**
+   * What a node gets when an agent of ANOTHER project opens it in a project that holds fetched
+   * secrets (@shared/project-secrets): 'deny' (default) — no secrets; 'allow' — like any agent node
+   * of the project; 'ask' — its terminal waits for the person's decision in that node. Machine-local;
+   * read through `normalizeCrossProjectSecretsPolicy`; never settable from the canvas CLI (the
+   * `secret` term is in SETTINGS_VERB_FORBIDDEN_PATTERN).
+   */
+  projectSecretsCrossProject: import('./project-secrets').CrossProjectSecretsPolicy
   /** How long a session must be idle + offscreen before "Eco" hibernates it (minutes). */
   agentHibernationIdleMinutes: number
   /** When Eco hibernates a session, also mark it PAUSED (see `AgentNodeStatus.paused`) so it does
@@ -2623,6 +2645,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // survived an app restart (core/agents/pane-ownership.ts), so "on by default" would be false
   // after every restart and every update. Flipping this is a separate, deliberate change.
   agentMessagingDefault: false,
+  projectSecretsCrossProject: 'deny',
   agentHibernationIdleMinutes: 30,
   agentHibernationPersistAcrossRestart: false,
   // Opt-out (default on). Existing users pick this up on hydrate ONLY if their settings.json has
@@ -4652,6 +4675,9 @@ export interface NodeTerminalApi {
   workspace: WorkspaceApi
   projectSettings: ProjectSettingsApi
   projectSetup: ProjectSetupApi
+  /** Project secrets: names and states only; values never reach the renderer. Desktop only (the
+   *  Server Edition and relay tabs answer `unavailable: 'unsupported'`). */
+  projectSecrets: import('./project-secrets').ProjectSecretsApi
   worktree: WorktreeApi
   dialog: DialogApi
   settings: SettingsApi

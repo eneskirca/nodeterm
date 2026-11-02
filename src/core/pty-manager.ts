@@ -251,6 +251,7 @@ import {
 import { NativeWindowsPane } from './native-windows-pane'
 import { terminatePaneOwner } from '../session-host/terminate-owner'
 import type { ProjectSpawnOverrides, ProjectSpawnOverridesReader } from './project-spawn-overrides'
+import type { ProjectSecretsService } from './project-secrets'
 import { buildRelayLaunch, relayLaunchAgentKnown, relayLaunchDialect, relayLaunchPreflight, type RelayLaunchContext, type RelayLaunchRequest } from './relay-launch'
 import { RELAY_KEY_GAP_MS, rawKeyBytes, tmuxKeyArgs, type RelayKey } from './relay-keys'
 
@@ -1314,6 +1315,8 @@ export class PtyManager {
    * exactly as it did before it existed.
    */
   private readProjectSpawnOverrides: ProjectSpawnOverridesReader | null = null
+  /** See `setProjectSecrets`. */
+  private projectSecrets: Pick<ProjectSecretsService, 'spawnEnv' | 'redact'> | null = null
   /** In-flight project-settings reads, per project, joined by concurrent spawns. See
    *  `projectSpawnOverrides`. Entries are removed when the read settles — this is not a cache. */
   private overridesInFlight = new Map<string, Promise<ProjectSpawnOverrides | null>>()
@@ -1970,6 +1973,15 @@ export class PtyManager {
    */
   setProjectSpawnOverrides(read: ProjectSpawnOverridesReader | null): void {
     this.readProjectSpawnOverrides = read
+  }
+
+  /**
+   * Wire the project-secrets holder (core/project-secrets.ts). DESKTOP ONLY: the Server Edition
+   * never calls this, so no spawn there can receive a value and no snapshot is redacted (it holds
+   * none). Unset ⇒ the feature is absent and every spawn is byte-identical to before it existed.
+   */
+  setProjectSecrets(secrets: Pick<ProjectSecretsService, 'spawnEnv' | 'redact'> | null): void {
+    this.projectSecrets = secrets
   }
 
   /**
@@ -4629,6 +4641,45 @@ export class PtyManager {
       for (const [k, v] of Object.entries(projectEnv)) env[k] = v
     }
 
+    // PROJECT SECRETS (core/project-secrets.ts, docs/project-secrets.md): values the person fetched
+    // in the app, held in main-process memory. Who receives them is decided in ONE place,
+    // `spawnEnv`: an agent node of the declaring project, spawned locally for this machine's own app
+    // (the main window, or a headless start it asked for — never a relay peer, phone or hosted
+    // teammate, whose creates arrive with a peer id or none), for the exact declaration authorized.
+    // The reserved-key filter runs again here, the same one the project env takes. Values reach the
+    // tmux session through this client's env + `update-environment` (below), NEVER a `-e` argv
+    // (CWE-214: a long-lived client's argv is readable by other processes).
+    const secretEnv = this.projectSecrets
+      ? Object.fromEntries(
+          Object.entries(
+            this.projectSecrets.spawnEnv({
+              projectId: options.ownerProjectId,
+              declarations: overrides?.secrets,
+              agentId: options.agentId,
+              nodeId: options.persistKey,
+              ownerClient:
+                clientId !== null &&
+                !sinks &&
+                !options.joinOnly &&
+                !isWatcherCreate(options) &&
+                (clientId === HEADLESS_CLIENT || platform().isOwnerClient?.(clientId) === true),
+              remote: !!options.sshRemote,
+              crossProject: options.secretsCrossProject === true
+            })
+          ).filter(([k]) => !isReservedSpawnEnvKey(k))
+        )
+      : {}
+    for (const [k, v] of Object.entries(secretEnv)) {
+      // Windows environment names are case-insensitive: drop an inherited `api_token` so the block
+      // does not carry two spellings of one variable with different values.
+      if (this.runtimePlatform === 'win32') {
+        for (const existing of Object.keys(env)) {
+          if (existing !== k && existing.toUpperCase() === k.toUpperCase()) delete env[existing]
+        }
+      }
+      env[k] = v
+    }
+
     // Custom-agent env: merged LAST so it wins over hook + account + PATH/LANG env (required for
     // the proxy use case — the user's ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL must beat whatever
     // the account path set). ${env:VAR} is expanded against the live process env. Only the LOCAL
@@ -4945,7 +4996,10 @@ export class PtyManager {
       this.ensureUpdateEnvKeys([
         ...ACCOUNT_SCOPE_UPDATE_ENV,
         ...Object.keys(customEnvMerged),
-        ...Object.keys(projectEnv ?? {})
+        ...Object.keys(projectEnv ?? {}),
+        // Secret NAMES (never values): a later client that lacks them strips them from the new
+        // sessions it creates, so one project's secret never seeds another node's session.
+        ...(overrides?.secrets ?? []).map((d) => d.env)
       ])
       const attachFlags = tmuxAttachFlags(!!sinks || !!options.joinOnly)
       args = [
@@ -6396,7 +6450,11 @@ export class PtyManager {
    * whether the disk now holds this text: true when written OR skipped as unchanged, false when the
    * write failed — so the tick can re-mark the session dirty and retry.
    */
-  private async writeScrollbackIfChanged(persistKey: string, text: string): Promise<boolean> {
+  private async writeScrollbackIfChanged(persistKey: string, rawText: string): Promise<boolean> {
+    // Project secrets: a value an agent printed must not reach disk through Nodeterm. Every held
+    // value is replaced BEFORE the digest and the write — this method is the one path into the
+    // scrollback store. A value printed while it is not held, or split by a wrap, is not caught.
+    const text = this.projectSecrets ? this.projectSecrets.redact(rawText) : rawText
     const digest = createHash('sha1').update(text).digest('hex')
     if (this.lastSnapshotDigest.get(persistKey) === digest) return true
     // Only a write that LANDED may be remembered: recording the digest of a failed one (ENOSPC, a

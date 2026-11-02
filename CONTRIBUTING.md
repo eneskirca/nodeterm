@@ -1481,6 +1481,26 @@ the primary fence. As a belt
 behind it, an SSH-project node's request carries `requireRemote`, which `desktopHeadlessRequest`
 keeps, so core's `spawnNew` refuses rather than spawning it locally. Keep both fences.
 
+## Project secrets
+
+A project may declare secrets in `.nodeterm/settings.json` (`agents.secrets`: a variable name plus
+an argv command); the person fetches them in the desktop app and the values go to that project's
+agent nodes (user doc: `docs/project-secrets.md`). Rules a change must keep:
+
+- **A value is never written anywhere**: not to a settings, state, log, temp or session-host file,
+  not to an encrypted store, not to the renderer. `src/core/project-secrets.ts` is the only holder
+  (`Buffer`s, zeroed on clear); the renderer and every bridge see names and states only.
+- **Only the person starts a fetch**: the Secrets dialog's button is the one renderer call site,
+  main raises its own native confirmation, the channels are host-only and main-window-only, and no
+  canvas-control verb, hook or relay method reaches the holder. `project-secrets.guard.test.ts`
+  pins this.
+- **Who receives a value is decided in one place, `ProjectSecretsService.spawnEnv`**: an agent node
+  of the declaring project, spawned locally for this app's own client, for the exact declaration
+  authorized. Never put a value on an argv (tmux `-e` included): it rides the client env and tmux
+  `update-environment`, as the gateway key does.
+- **Anything Nodeterm writes from terminal output goes through `writeScrollbackIfChanged`**, which
+  redacts held values. A new path that persists pane output owes the same redaction.
+
 ## Performance
 
 Measure before you optimize, and put the before/after in the commit. The CLAUDE.md section

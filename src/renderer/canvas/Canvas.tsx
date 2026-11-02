@@ -401,6 +401,7 @@ import {
   answerBrowserResolve,
   type BrowserResolveProject
 } from '../lib/controlRouting'
+import { crossProjectAskReplyClause } from '../lib/projectSecrets'
 import {
   coldGroupCwd,
   coldGroupChildCount,
@@ -13947,6 +13948,16 @@ export function Canvas() {
             ? undefined
             : resolveNewNodeAccount(undefined, target, useSettings.getState().settings.claudeAccounts)
           const tgMode = tgIsTerminal ? undefined : projectPermissionMode(target, tgAgentId)
+          // Policy 'ask' (docs/project-secrets.md): an agent node opened here waits for the person's
+          // answer in the node before its terminal starts, so the caller is told to ask them, and
+          // `--run-now` does not start it headless. A brand-new node has no decision yet, so the
+          // gate is asked without an id. Awaited BEFORE `tgActive` is read (the #443 class).
+          const tgSecretsAsk =
+            !tgIsTerminal &&
+            (await window.nodeTerminal.projectSecrets
+              .crossProjectGate(target.id, '')
+              .then((g) => g.kind === 'ask', () => false))
+          const tgSecretsClause = tgSecretsAsk ? crossProjectAskReplyClause(target.name) : ''
           // Read AFTER the `--prompt-file` await above: a tab switch in that window decides whether
           // the node belongs on the live canvas or in the store (the #443 class).
           const tgActive = target.id === useProjects.getState().activeProjectId
@@ -13985,6 +13996,9 @@ export function Canvas() {
             const h = (node.height as number) ?? 440
             if (i === 0) tgBase = nextFreePosition(tgPlacedNodes, { width: w, height: h })
             node.position = { x: tgBase.x + i * (w + 60) - w / 2, y: tgBase.y - h / 2 }
+            // Opened by an agent of ANOTHER project: the target's secrets follow the machine-local
+            // cross-project policy for this node (docs/project-secrets.md). The flag only withholds.
+            node.data = { ...node.data, openedByOtherProject: true }
             tgMade.push(node)
           }
           const tgIds = tgMade.map((n) => n.id)
@@ -14003,7 +14017,8 @@ export function Canvas() {
               ok: true,
               message: `opened ${tgCount} ${tgWhat} session(s) in "${target.name}" (${tgIds.join(', ')})` +
                 (tgQueuedIds.length ? ' — queued; awaiting launch delivery' : '') +
-                prReplyText,
+                prReplyText +
+                tgSecretsClause,
               // Being on screen is not proof of launch delivery.
               result: { ids: tgIds, id: tgIds[0], projectId: target.id, queued: tgQueuedIds.length > 0, queuedIds: tgQueuedIds, ...prResult }
             })
@@ -14027,7 +14042,7 @@ export function Canvas() {
             // ONE sentence for "queued into a project you are not looking at", shared with the
             // own-project cold open below (lib/coldOpen) so an orchestrator never meets two
             // phrasings for one outcome.
-            message: coldOpenMessage(tgCount, tgWhat, target.name, tgIds) + prReplyText,
+            message: coldOpenMessage(tgCount, tgWhat, target.name, tgIds) + prReplyText + tgSecretsClause,
             // Every node on this branch is armed by `armForColdOpen`, so the whole batch is
             // QUEUED. Said in the reply as a field, not only in the sentence, so an orchestrator
             // does not have to report a session as started when it is not (#569 item 1).
@@ -14043,7 +14058,8 @@ export function Canvas() {
           // #925 `--run-now`: start the held launches now, headless. The nodes were upserted
           // above in this same tick, so the claim reads them from the store copy. A batch with
           // nothing held (a bare `open-terminal`) has nothing to start: the plain reply stands.
-          const tgHeld = runNowRequested(args)
+          // Not under policy 'ask': the person decides in the node, so it starts when it is shown.
+          const tgHeld = runNowRequested(args) && !tgSecretsAsk
             ? tgIds
                 .map((id) => useProjects.getState().getProject(target.id)?.nodes.find((n) => n.id === id))
                 .filter((n): n is CanvasNodeState => !!n?.pendingLaunch)

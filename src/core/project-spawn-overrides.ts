@@ -4,6 +4,7 @@ import {
   type ProjectSettingsSnapshot,
   type ResolvedProjectSetting
 } from '../shared/project-settings'
+import type { ProjectSecretDecl } from '../shared/project-secrets'
 import type { ProjectConsumerFamily } from './project-setup-service'
 import type { ProjectSetupTargetInfo } from './project-setup-runner-local'
 import type { ProjectTrustStore } from './project-trust-store'
@@ -25,6 +26,13 @@ export interface ProjectSpawnOverrides {
   env?: Record<string, string>
   /** Still validated at the spawn (`safeSessionProgram`) — see `PtyManager.spawnSession`. */
   shell?: string
+  /**
+   * The project's declared secrets (@shared/project-secrets) — DECLARATIONS, never values. Not
+   * trust-gated here: a declaration does nothing by itself. A value is injected only when the
+   * person authorized THIS exact declaration in the app (`ProjectSecretsService.spawnEnv` compares
+   * it), and that authorization shows the commands — a stronger gate than a remembered hash.
+   */
+  secrets?: ProjectSecretDecl[]
 }
 
 export type ProjectSpawnOverridesReader = (
@@ -85,7 +93,8 @@ export function makeProjectSpawnOverrides(
     const resolved = resolveProjectSettings(snap.local, snap.shared ?? undefined)
     const envSetting = resolved.agents.env
     const shellSetting = resolved.terminal.shell
-    if (!envSetting && !shellSetting) return null
+    const secretsSetting = resolved.agents.secrets
+    if (!envSetting && !shellSetting && !secretsSetting) return null
 
     const sharedDoc: ProjectSettingsDoc = snap.shared ?? {}
     const key = projectTrustKeyFor(deps.targetInfo(projectId))
@@ -109,6 +118,7 @@ export function makeProjectSpawnOverrides(
     if (shellSetting && (!isShared(shellSetting) || (await admit('shell')))) {
       out.shell = shellSetting.value
     }
-    return out.env || out.shell ? out : null
+    if (secretsSetting) out.secrets = secretsSetting.value.map((d) => ({ env: d.env, command: [...d.command] }))
+    return out.env || out.shell || out.secrets ? out : null
   }
 }

@@ -256,6 +256,8 @@ import { createBoardPauseSlot } from '../terminal/board-render-pause'
 import { ContextMeter } from '../components/ContextMeter'
 import { isZoomModifierHeld } from '../lib/zoomModifier'
 import { HoverGuard } from './HoverGuard'
+import { SecretsGatePrompt } from '../components/SecretsGatePrompt'
+import { answerCrossProjectSecrets, askCrossProjectSecrets } from '../state/secretsGate'
 import {
   dwellBlursForeignTerminal,
   focusDrivesGuard,
@@ -3681,6 +3683,29 @@ export function TerminalNode({
         return
       }
       setCo(termKey, { offline: false })
+      // PROJECT SECRETS, policy 'ask' (docs/project-secrets.md): an agent node an agent of ANOTHER
+      // project opened waits here, before its terminal starts, for the person's answer in this node.
+      // Asked only when no session exists yet (a warm reattach's process already has its env), and
+      // only on this machine's own canvas. Main decides from the answer; "proceed" never grants.
+      if (data.openedByOtherProject === true && data.agentId && !sshRemoteTmux && session.source === 'local') {
+        const secretsProjectId = owningProjectRef.current ?? useProjects.getState().activeProjectId
+        const live = await api.pty.sessionAge(id).then((age) => age !== null, () => false)
+        if (disposed) return
+        const gate = live
+          ? { kind: 'proceed' as const }
+          : await window.nodeTerminal.projectSecrets
+              .crossProjectGate(secretsProjectId, id)
+              .catch(() => ({ kind: 'proceed' as const }))
+        if (disposed) return
+        if (gate.kind === 'ask') {
+          const projectName = useProjects.getState().getProject(secretsProjectId)?.name ?? 'this project'
+          cleanups.push(() => answerCrossProjectSecrets(id, false))
+          const grant = await askCrossProjectSecrets(id, projectName, gate.names)
+          if (disposed) return
+          await window.nodeTerminal.projectSecrets.decideCrossProject(secretsProjectId, id, grant).catch(() => undefined)
+          if (disposed) return
+        }
+      }
       sentCols = term.cols
       sentRows = term.rows
       // A remote spawn can now WAIT, and a terminal that waits in silence reads as broken — the
@@ -3727,7 +3752,10 @@ export function TerminalNode({
           requireRemote: sshRemoteTmux,
           // The one local terminal an SSH project's canvas may hold (issue #1186): core refuses
           // every other local spawn owned by an SSH project. In-memory mark, never node data.
-          ...(isLocalOnSshCanvas(id) ? { localOnSshCanvas: true } : {})
+          ...(isLocalOnSshCanvas(id) ? { localOnSshCanvas: true } : {}),
+          // Opened by another project's agent: its project's secrets follow the cross-project
+          // policy main applies (the flag only withholds; docs/project-secrets.md).
+          ...(data.openedByOtherProject === true ? { secretsCrossProject: true } : {})
         })
         .then(
         async ({
@@ -7017,6 +7045,7 @@ export function TerminalNode({
         {armed && !mdMode && (
           <HoverGuard onPress={onGuardPress} onClick={onGuardClick} onDragEnd={onBodyEnter} />
         )}
+        <SecretsGatePrompt nodeId={id} />{/* project secrets, policy 'ask' */}
         {mdMode &&
           (useChat ? (
             <Suspense fallback={<ChatPanelFallback />}>
