@@ -266,9 +266,10 @@ export interface GitHubPullCheck {
 }
 
 export type GitHubPullChecksResult =
-  | { status: 'ok'; headRefOid: string; checks: GitHubPullCheck[]; truncated: boolean }
+  /** `review` = the PR's review decision (absent = none required, or not known). */
+  | { status: 'ok'; headRefOid: string; checks: GitHubPullCheck[]; truncated: boolean; review?: PullReviewDecision }
   /** GitHub reports no rollup for the head commit: there are no checks to show. */
-  | { status: 'no-checks' }
+  | { status: 'no-checks'; review?: PullReviewDecision }
   /** The token may not read checks. Nothing is shown. */
   | { status: 'hidden' }
   /** The read raced a push: the checks belong to another commit. */

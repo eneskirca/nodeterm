@@ -46,7 +46,7 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     commentOnPull: ReturnType<typeof vi.fn>; reviewPull: ReturnType<typeof vi.fn>
     mergePull: ReturnType<typeof vi.fn>; repoMergeMethods: ReturnType<typeof vi.fn>
     repoCollaborators: ReturnType<typeof vi.fn>; requestPullReviewer: ReturnType<typeof vi.fn>
-    commentOnPullLine: ReturnType<typeof vi.fn>
+    commentOnPullLine: ReturnType<typeof vi.fn>; updatePullBranch: ReturnType<typeof vi.fn>
   } {
   return {
     pullDetail: vi.fn(async () => result),
@@ -63,7 +63,8 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
       users: ['octocat', 'ana', 'bo'].map((login, id) => ({ id, login, avatarUrl: 'https://avatars.githubusercontent.com/u/1' }))
     })),
     requestPullReviewer: vi.fn(async () => ({ ok: true as const })),
-    commentOnPullLine: vi.fn(async () => ({ ok: true as const }))
+    commentOnPullLine: vi.fn(async () => ({ ok: true as const })),
+    updatePullBranch: vi.fn(async () => ({ ok: true as const }))
   }
 }
 
@@ -73,14 +74,15 @@ afterEach(() => { act(() => root.unmount()); host.remove() })
 
 async function render(
   api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'overview', onTab = vi.fn(), onOpenExternal = vi.fn(),
-  onWritten = vi.fn(), selectedFile?: string, onSelectFile = vi.fn()
+  onWritten = vi.fn(), selectedFile?: string, onSelectFile = vi.fn(), onOpenTerminal = vi.fn()
 ): Promise<HTMLDivElement> {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
     root.render(<PullNodeView api={api} projectId="p" pull={{ repository, pullNumber: 7, tab, selectedFile }}
-      refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} onWritten={onWritten} onSelectFile={onSelectFile} />)
+      refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} onWritten={onWritten} onSelectFile={onSelectFile}
+      onOpenTerminal={onOpenTerminal} />)
   })
   // The markdown renderer is a lazy chunk; let it land.
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
@@ -417,6 +419,54 @@ describe('PullNodeView merge', () => {
     await openMerge(api)
     expect(button(host, 'Confirm merge')).toBeUndefined()
     expect(dialog()?.textContent).toContain('allows no merge method')
+  })
+})
+
+describe('PullNodeView merge blockers', () => {
+  it('says why a protected branch blocks the merge: the review decision and the head\'s checks', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 }, {
+      status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [{ name: 'test', state: 'failed' }], review: 'required'
+    })
+    const view = await render(api)
+    expect(view.querySelector('.pull-merge__reason')?.textContent)
+      .toBe('Branch protection needs an approving review. Checks are failing.')
+    expect(button(view, 'Update branch')).toBeUndefined()
+  })
+
+  it('a branch behind its base offers Update branch, tied to the head the Overview showed, then reloads', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'behind' }, observedAt: 1 })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    expect(view.querySelector('.pull-merge__reason')?.textContent).toContain('behind main')
+    expect(api.updatePullBranch).not.toHaveBeenCalled()
+    await act(async () => { button(view, 'Update branch').click() })
+    expect(api.updatePullBranch).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, headSha: 'c'.repeat(40) })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+    expect(view.querySelector('.pull-merge')?.textContent).toContain('GitHub is updating the branch')
+  })
+
+  it('names a refused update and does not reload', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'behind' }, observedAt: 1 })
+    api.updatePullBranch.mockResolvedValue({ ok: false, reason: 'forbidden' })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    await act(async () => { button(view, 'Update branch').click() })
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('may not write')
+    expect(onWritten).not.toHaveBeenCalled()
+  })
+
+  it('a conflict offers a terminal on the branch; a branch name that needs quoting gets no button', async () => {
+    const onOpenTerminal = vi.fn()
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict' }, observedAt: 1 }),
+      'o/r', 'overview', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onOpenTerminal)
+    expect(button(view, 'Update branch')).toBeUndefined()
+    await act(async () => { button(view, 'Open terminal on this branch').click() })
+    expect(onOpenTerminal).toHaveBeenCalledWith('git fetch origin && git switch feat/pull')
+    act(() => root.unmount())
+    host.remove()
+    const odd = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict', head: { ref: 'x;rm -rf ~', sha: 'c'.repeat(40) } }, observedAt: 1 }))
+    expect(button(odd, 'Open terminal on this branch')).toBeUndefined()
+    expect(odd.querySelector('.pull-merge__reason')?.textContent).toContain('conflicts with main')
   })
 })
 
@@ -770,7 +820,8 @@ describe('PullNodeView agent proposal', () => {
   it.each([
     [{ lifecycle: 'draft' as const }, 'draft pull request cannot be merged'],
     [{ lifecycle: 'merged' as const }, 'already merged'],
-    [{ merge: 'conflict' as const }, 'conflict with main'],
+    [{ merge: 'conflict' as const }, 'conflicts with main'],
+    [{ merge: 'behind' as const }, 'behind main'],
     [{ merge: 'blocked' as const }, 'Branch protection blocked']
   ])('disables a merge proposal the node would not merge (%o)', async (change, why) => {
     const { api } = await renderProposal({ action: 'merge' }, fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 }))

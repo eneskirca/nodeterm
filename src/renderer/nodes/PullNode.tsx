@@ -111,6 +111,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           onSelectFile={(selectedFile) => { if (pull) updateNodeData(id, { pull: { ...pull, selectedFile } }) }}
           onOpenExternal={(url) => void api.shell.openExternal(url)}
           onWritten={() => setRefreshTick((tick) => tick + 1)}
+          onOpenTerminal={(cmd) => window.dispatchEvent(new CustomEvent('nodeterm:open-terminal', { detail: { cmd } }))}
           proposal={proposal}
           onDismiss={() => usePullAgent.getState().dismiss(id)}
           highlight={highlight}

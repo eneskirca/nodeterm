@@ -171,6 +171,17 @@ describe('parsePullChecksResponse', () => {
     expect(parsePullChecksResponse({ ...checks(HEAD, null), errors: [{ type: 'FORBIDDEN', path: ['repository'] }] }))
       .toEqual({ status: 'hidden' })
   })
+
+  it('carries the review decision, for the node\'s merge sentence; an unknown value claims nothing', () => {
+    const withReview = (reviewDecision: unknown, rollup: unknown) => {
+      const body = checks(HEAD, rollup)
+      return { data: { repository: { pullRequest: { ...body.data.repository.pullRequest, reviewDecision } } } }
+    }
+    expect(parsePullChecksResponse(withReview('REVIEW_REQUIRED', null))).toEqual({ status: 'no-checks', review: 'required' })
+    expect(parsePullChecksResponse(withReview('CHANGES_REQUESTED', { state: 'SUCCESS', contexts: { totalCount: 0, nodes: [] } })))
+      .toEqual({ status: 'ok', headRefOid: HEAD, truncated: false, checks: [], review: 'changes-requested' })
+    expect(parsePullChecksResponse(withReview('SOMETHING_NEW', null))).toEqual({ status: 'no-checks' })
+  })
 })
 
 describe('GitHubIssuesClient GraphQL', () => {

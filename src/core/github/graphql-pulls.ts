@@ -74,7 +74,7 @@ export const PULL_CHECKS_QUERY = `query($owner:String!,$name:String!,$number:Int
   rateLimit{ cost remaining limit resetAt }
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      headRefOid
+      headRefOid reviewDecision
       commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state
         contexts(first:${MAX_CHECKS}){ totalCount nodes{
           __typename
@@ -317,7 +317,10 @@ export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
   const commit = object(object(list(pull.commits, 1)[0])?.commit)
   if (!commit || !oid(commit.oid)) throw new GraphQLShapeError()
   if (commit.oid !== pull.headRefOid) return { status: 'moved' }
-  if (commit.statusCheckRollup === null) return { status: 'no-checks' }
+  // Lenient, as in reviewFacts: it only words the node's merge sentence.
+  const decision = typeof pull.reviewDecision === 'string' ? REVIEW_DECISIONS[pull.reviewDecision] : undefined
+  const review = decision ? { review: decision } : {}
+  if (commit.statusCheckRollup === null) return { status: 'no-checks', ...review }
   const rollup = object(commit.statusCheckRollup)
   const contexts = object(rollup?.contexts)
   if (!contexts || !nonNegative(contexts.totalCount)) throw new GraphQLShapeError()
@@ -343,6 +346,7 @@ export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
     status: 'ok',
     headRefOid: pull.headRefOid,
     checks: sortChecks(checks),
-    truncated: contexts.totalCount > checks.length
+    truncated: contexts.totalCount > checks.length,
+    ...review
   }
 }
