@@ -130,6 +130,18 @@ describe('deliverFromControl', () => {
     expect(deps.rec.sent).toEqual([])
   })
 
+  it('lets a reply, and only a reply, reach the node that opened the caller (#1357)', async () => {
+    // b1 opened a1; a1 opened nothing.
+    const owns = vi.fn((source: string, target: string) => source === 'b1' && target === 'a1')
+    const sent = await deliverFromControl(req(), fakeDeps({ callerOwnsTarget: owns }))
+    expect(sent.outcome).toEqual({ kind: 'notPermitted', reason: 'caller-not-owner' })
+
+    const deps = fakeDeps({ callerOwnsTarget: owns })
+    const replied = await deliverFromControl(req({ verb: 'reply' }), deps)
+    expect(replied.outcome.kind).toBe('delivered')
+    expect(deps.rec.sent).toHaveLength(1)
+  })
+
   it('refuses a cross-project target and a self-send, resolved off the store', async () => {
     const deps = fakeDeps()
     const cross = await deliverFromControl(req({ targetNodeId: 'c2' }), deps)

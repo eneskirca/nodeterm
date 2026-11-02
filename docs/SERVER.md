@@ -631,7 +631,7 @@ Consequences worth knowing:
   browser driving here at all. See `src/server/control-unsupported.ts`.
   The agent-messaging verbs (`send`/`reply`/`notify`) are verified-only. When Server control is
   enabled they additionally require process-local proof that the caller spawned the target in this
-  run; with control disabled they receive `control-unsupported-on-this-edition`.
+  run (a `reply` may also go to the node that spawned the caller); with control disabled they receive `control-unsupported-on-this-edition`.
 - The **`ptyDestroy` tail-teardown** — *resolved in Phase 3c.* Phase 3b left this skipped
   (agent tails self-cleared only on `SessionEnd`, so a node closed *without* one left an
   idle file-tail); the server now untracks agent tails on node close, at desktop parity.
@@ -674,7 +674,8 @@ opens is the host, not the canvas. Enable it on a host where you would be conten
 agents a shell.
 
 Ownership is intentionally narrower than the desktop confirmation UI: an agent may mutate, message,
-or close only a node it opened during the current Server process run. Link, group, rename, color,
+or close only a node it opened during the current Server process run (one exception: a `reply` to
+the node that opened it). Link, group, rename, color,
 sticky updates, dependency targets, message delivery, and close validate their complete target set
 before any write or PTY kill; an unowned member refuses the whole operation. Queued messages repeat
 the creator check at flush time in addition to the existing verified and per-project switch gates.

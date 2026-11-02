@@ -732,13 +732,16 @@ export async function runDelivery(
   // A shell with a creator ledger (the Server Edition) authorizes control by which AGENT spawned
   // the target. A person's board comment is no agent's, and that shell serves no board-comment
   // delivery at all — refused by edition rather than squeezed through a ledger it was not built for.
-  // A station notice asks the ledger the other way round (see `stationNotice` above).
+  // A station notice asks the ledger the other way round (see `stationNotice` above). So may a
+  // `reply` (#1357): a station answering the agent that opened it reaches no node the opener does
+  // not already control.
   if (!notPermitted && deps.callerOwnsTarget) {
     if (board) notPermitted = 'unsupported-edition'
     else if (
       !(stationNotice
         ? deps.callerOwnsTarget(req.targetNodeId, ident.sourceNodeId)
-        : deps.callerOwnsTarget(ident.sourceNodeId, req.targetNodeId))
+        : deps.callerOwnsTarget(ident.sourceNodeId, req.targetNodeId) ||
+          (req.verb === 'reply' && deps.callerOwnsTarget(req.targetNodeId, ident.sourceNodeId)))
     )
       notPermitted = 'caller-not-owner'
   }
