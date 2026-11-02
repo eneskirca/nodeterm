@@ -359,6 +359,7 @@ import { transcriptPathOf } from '../core/context-link-core'
 import { initCanvasControl, canvasControlShimPath } from './canvas-control'
 import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control-verbs'
 import { browserFlagRefusal, issueFlagRefusal } from '../core/canvas-control-core'
+import { openPrArgsRefusal } from '../shared/open-pr-verb'
 import { afterPrFlagRefusal } from '../shared/pr-wait'
 import { arrangeArgsRefusal } from '../shared/arrange-verb'
 import { geometryArgsRefusal } from '../shared/geometry-verbs'
@@ -4654,6 +4655,9 @@ app.whenReady().then(async () => {
     // framed node out to the top level, and a bad `--width` would be the renderer's to explain.
     const geometryRefusal = geometryArgsRefusal(verb, args)
     if (geometryRefusal) return { ok: false, error: geometryRefusal, message: geometryRefusal }
+    // `open-pr`: only `--pr`, never a repository (@shared/open-pr-verb). Same placement, same reason.
+    const openPrRefusal = verb === 'open-pr' ? openPrArgsRefusal(args) : null
+    if (openPrRefusal) return { ok: false, error: openPrRefusal, message: openPrRefusal }
     // A station's report about ITSELF: recorded in main's store, board-logged on its own card, and
     // never forwarded — there is no canvas work in it, and the renderer hears the store's push.
     if (verb === 'report-outcome') {

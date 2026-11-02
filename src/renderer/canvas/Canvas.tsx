@@ -15304,7 +15304,7 @@ export function Canvas() {
             // link, or the existing node for that PR linked (and, on screen, framed). Open-only. The
             // repository is the host's answer for this project; the agent cannot name one.
             const prProjectId = ctlProject?.id ?? ''
-            const prRepo = openPrArgsRefusal(args) || ctlProject?.remote
+            const prRepo = (openPrArgsRefusal(args) || ctlProject?.remote)
               ? undefined
               : await api.githubControl.status(prProjectId).then((v) => v.project, () => undefined)
             // The await above is the one window a tab switch can land in; never write the node
@@ -15328,12 +15328,15 @@ export function Canvas() {
               : addAndConnect(createPullNode(nodeCount(), prPlan.ref.repository, prPlan.ref.pullNumber, placeBelow()))
             // ponytail: classifyLink only links two agents (or a sticky + terminal), so the pull end
             // is declared readable for THIS call; the link map treats a pull node as read-only.
-            bridgeTo(sourceNodeId, [prId], (id) =>
+            const prLink = bridgeTo(sourceNodeId, [prId], (id) =>
               id === prId ? { kind: 'pull', contextCapable: true } : ctlLinkEndpointOf(id))
+            // Never say "linked" when no link exists: an agent that cannot read context gets no edge.
+            const prSkip = prLink.skipped.find((s) => s.why !== 'already linked')
             if (prPlan.kind === 'reuse' && !offCanvas) travelToNodeRef.current(prId)
             reply({
               ok: true,
-              message: `${prPlan.kind === 'create' ? 'opened' : 'linked existing'} pull request node ${prId}`,
+              message: `${prPlan.kind === 'create' ? 'opened' : 'linked existing'} pull request node ${prId}` +
+                (prSkip ? ` (not context-linked: ${prSkip.why})` : ''),
               result: { id: prId, created: prPlan.kind === 'create' }
             })
             return

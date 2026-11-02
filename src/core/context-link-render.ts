@@ -511,9 +511,9 @@ export function renderList(doc: LinkDoc): string {
 /** A pull request node: its reference plus the latest Overview. The description is not shown: PR
  *  text is written by other people, and the agent can read it with `gh pr view` when it needs it. */
 export function renderPull(node: LinkDocEntry, verb: ContextLinkVerb, read: PullRead | null): string {
-  if (verb === 'terminal') return `"${node.title}" is a pull request — it has no terminal.`
+  if (verb === 'terminal') return `"${node.title}" is a pull request; it has no terminal.`
   const ref = `${node.pull!.repository}#${node.pull!.pullNumber}`
-  const head = `=== ${node.title} — pull request ${ref} ===`
+  const head = `=== ${node.title}: pull request ${ref} ===`
   if (!read) return `${head}\nThis session cannot read pull requests.`
   const { detail: r, checks } = read
   if (r.status !== 'ok') return `${head}\nCould not read ${ref}: ${r.status} (${r.reason}).`
