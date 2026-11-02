@@ -23,15 +23,28 @@ export const TOOL_BODY_TRUNCATED = '\n\n… (truncated)'
 
 const FENCE = /^\s*```/
 
-/** Caps a long text at `TOOL_BODY_CAP`, then appends `TOOL_BODY_TRUNCATED` (a tool body, and each
- *  side of an Edit/Write diff in the chat parse). */
-export function capBody(s: string): string {
-  if (s.length <= TOOL_BODY_CAP) return s
+/** The first `TOOL_BODY_CAP` code units of `s`, never leaving half a surrogate pair (an emoji)
+ *  dangling at the cut. */
+function cutAtCap(s: string): string {
   let end = TOOL_BODY_CAP
-  // Do not leave half a surrogate pair (an emoji) dangling at the cut.
   const last = s.charCodeAt(end - 1)
   if (last >= 0xd800 && last <= 0xdbff) end -= 1
-  let kept = s.slice(0, end)
+  return s.slice(0, end)
+}
+
+/** Caps a long text at `TOOL_BODY_CAP`, then appends `TOOL_BODY_TRUNCATED` — and nothing else: for
+ *  text that is NOT rendered as markdown, each side of an Edit/Write diff in the chat parse. A diff
+ *  side is file content, so `capBody`'s fence repair would add a line the file never had (a balanced
+ *  markdown file cut inside a code block showed `+```` before the marker). */
+export function capText(s: string): string {
+  return s.length <= TOOL_BODY_CAP ? s : cutAtCap(s) + TOOL_BODY_TRUNCATED
+}
+
+/** Caps a long markdown tool body at `TOOL_BODY_CAP`, then appends `TOOL_BODY_TRUNCATED` — closing
+ *  a code fence the cut left open first. For a text that is not markdown, `capText`. */
+export function capBody(s: string): string {
+  if (s.length <= TOOL_BODY_CAP) return s
+  let kept = cutAtCap(s)
   // A cut inside an open ``` block would render the marker as code (and swallow nothing after it
   // only by luck): an odd number of fence lines means one is open — close it first.
   const fences = kept.split('\n').filter((l) => FENCE.test(l)).length

@@ -8,7 +8,7 @@ import type { TranscriptLine, ChatMessage, ChatPart, ChatCarriedToolResult, Chat
 import { transcriptRootFor } from './claude-accounts-core'
 import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
-import { capBody, toolBody } from './chat-tool-body'
+import { capText, toolBody } from './chat-tool-body'
 import { isRecord } from '../shared/is-record'
 import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
 import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../shared/chat-command'
@@ -404,7 +404,8 @@ function imagePart(source: unknown): Extract<ChatPart, { kind: 'image' }> | null
  * The change an `Edit` / `Write` call asked for (`ChatParseOptions.rich`), from its INPUT — measured
  * (CLI 2.1.314) as `Edit → {file_path, old_string, new_string, replace_all?}` and
  * `Write → {file_path, content}`. Undefined for any other tool or shape: the plain chip, as before.
- * An empty `new_string` is a deletion and still a diff. Each text is capped like a tool body.
+ * An empty `new_string` is a deletion and still a diff. Each text is capped at the tool-body length
+ * (`capText`) with no markdown repair: it is file content, and is shown as it was written.
  */
 function toolDiff(name: string, input: unknown): ChatToolDiff | undefined {
   if (!isRecord(input)) return undefined
@@ -413,10 +414,10 @@ function toolDiff(name: string, input: unknown): ChatToolDiff | undefined {
   if (name === 'Edit') {
     const { old_string: oldText, new_string: newText } = input
     if (typeof oldText !== 'string' || typeof newText !== 'string') return undefined
-    return { filePath, oldText: capBody(oldText), newText: capBody(newText) }
+    return { filePath, oldText: capText(oldText), newText: capText(newText) }
   }
   if (name === 'Write') {
-    return typeof input.content === 'string' ? { filePath, oldText: '', newText: capBody(input.content) } : undefined
+    return typeof input.content === 'string' ? { filePath, oldText: '', newText: capText(input.content) } : undefined
   }
   return undefined
 }

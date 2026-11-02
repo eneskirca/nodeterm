@@ -6,7 +6,7 @@ export type DiffLine = { kind: 'ctx' | 'add' | 'del'; text: string }
 
 /**
  * The largest old × new line product diffed properly. The table is O(n·m) in time and memory, and
- * each side can be a 64K-character text (`capBody`), so past this an edit is shown as every old line
+ * each side can be a 64K-character text (`capText`), so past this an edit is shown as every old line
  * removed, then every new line added — still the whole change, just without the pairing.
  */
 export const LINE_DIFF_MAX_CELLS = 250_000

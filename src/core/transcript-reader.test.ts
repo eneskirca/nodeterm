@@ -581,6 +581,19 @@ describe('Edit / Write diffs (opt-in `rich`)', () => {
     ])
   })
 
+  it('rich: a capped side is the file as written — no fence repair for a cut inside a code block', () => {
+    // A balanced markdown Write whose cut lands inside its ```ts block. A tool BODY closes the fence
+    // there (it is rendered as markdown); a diff side is file content, so a line the file never had
+    // would show as `+```` in the diff.
+    const content = '# Doc\n```ts\n' + 'x'.repeat(TOOL_BODY_CAP) + '\n```\n'
+    const [part] = toolPart(call('w1', 'Write', { file_path: '/d.md', content }), { rich: true })
+    expect(part.kind === 'tool' ? part.diff : undefined).toEqual({
+      filePath: '/d.md',
+      oldText: '',
+      newText: content.slice(0, TOOL_BODY_CAP) + TOOL_BODY_TRUNCATED
+    })
+  })
+
   it('without rich an Edit is the same chip as before', () => {
     const raw =
       call('e1', 'Edit', { file_path: '/a.ts', old_string: 'a', new_string: 'b' }) +

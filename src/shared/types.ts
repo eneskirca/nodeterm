@@ -3646,8 +3646,8 @@ export type ChatPart =
  * The change an `Edit` / `Write` tool call asked for (`ChatPart` tool `diff`). Edit's
  * `{file_path, old_string, new_string}` maps to `{filePath, oldText, newText}`; Write's
  * `{file_path, content}` to `{filePath, oldText: '', newText: content}`. An empty `newText` on an
- * Edit is a deletion. Each text is capped like a tool body (`capBody`, core/chat-tool-body.ts: 64K
- * characters, then `TOOL_BODY_TRUNCATED`).
+ * Edit is a deletion. Each text is capped at a tool body's length (`capText`, core/chat-tool-body.ts:
+ * 64K characters, then `TOOL_BODY_TRUNCATED`, with no markdown fence repair — it is file content).
  */
 export interface ChatToolDiff {
   filePath: string

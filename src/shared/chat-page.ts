@@ -27,8 +27,10 @@ export interface ChatTranscriptPageRequest {
    *  `chat.page`, and the Swift ports locked to the shared fixtures — gets the same parts as before.
    *  Only claude's reader honours it. */
   thinking?: boolean
-  /** Also emit the parts only the desktop ⌘M panel draws: an `image` part for each image the user
-   *  attached to a prompt. Opt-in for the same reason as `thinking` (the phone and the Swift ports
+  /** Also emit the parts only the desktop ⌘M panel draws (`ChatParseOptions.rich`): an `image` part
+   *  for each image the user attached to a prompt, a `diff` on each `Edit` / `Write` call, a
+   *  `Compaction` chip in place of a context compaction's summary record, and a checklist `body` on
+   *  each `TodoWrite` call. Opt-in for the same reason as `thinking` (the phone and the Swift ports
    *  locked to the shared fixtures never set it). Only claude's reader honours it. */
   rich?: boolean
 }

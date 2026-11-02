@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TOOL_BODY_CAP, TOOL_BODY_TRUNCATED, toolBody } from './chat-tool-body'
+import { TOOL_BODY_CAP, TOOL_BODY_TRUNCATED, capText, toolBody } from './chat-tool-body'
 
 // Input shapes measured on this server's transcripts (2026-09-26):
 //   ExitPlanMode    → {"plan": "<full markdown plan>"}
@@ -37,6 +37,25 @@ describe('toolBody — ExitPlanMode', () => {
   it('leaves a plan exactly at the cap untouched', () => {
     const plan = 'y'.repeat(TOOL_BODY_CAP)
     expect(toolBody('ExitPlanMode', { plan })).toBe(plan)
+  })
+})
+
+// A side of an Edit/Write diff is file content, not markdown: the cap keeps it as the file had it.
+describe('capText', () => {
+  it('leaves a text at the cap untouched', () => {
+    const s = 'z'.repeat(TOOL_BODY_CAP)
+    expect(capText(s)).toBe(s)
+  })
+
+  it('cuts an over-cap text and appends the marker — no fence a file never had', () => {
+    // A balanced markdown file whose cut lands inside a code block: `capBody` would close the fence.
+    const s = '# Doc\n```ts\n' + 'x'.repeat(TOOL_BODY_CAP) + '\n```\n'
+    expect(capText(s)).toBe(s.slice(0, TOOL_BODY_CAP) + TOOL_BODY_TRUNCATED)
+  })
+
+  it('never splits a surrogate pair at the cap', () => {
+    const s = 'a'.repeat(TOOL_BODY_CAP - 1) + '😀' + 'tail'
+    expect(capText(s)).toBe('a'.repeat(TOOL_BODY_CAP - 1) + TOOL_BODY_TRUNCATED)
   })
 })
 

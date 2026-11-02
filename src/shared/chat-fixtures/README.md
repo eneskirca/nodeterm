@@ -103,8 +103,11 @@ nothing above changes. What it adds:
 - A `diff: {filePath, oldText, newText}` on an `Edit` tool part (`{file_path, old_string,
   new_string}`) or a `Write` one (`{file_path, content}`, `oldText: ""`), read from the call's input
   when `file_path` is a non-empty string and the texts are strings (an empty `new_string` is a
-  deletion and still a diff). Each text is capped like a tool `body` (65536 UTF-16 units, then
-  `TOOL_BODY_TRUNCATED`). Any other shape yields no `diff`; `arg` and `result` are unchanged.
+  deletion and still a diff). Each text over 65536 UTF-16 units is cut there (one unit earlier when
+  the cut would split a surrogate pair) and `TOOL_BODY_TRUNCATED` appended — and, unlike a tool
+  `body`, no closing fence line is added for a code block the cut left open: the text is file
+  content, not markdown (`capText`). Any other shape yields no `diff`; `arg` and `result` are
+  unchanged.
 - A `{type:"system", subtype:"compact_boundary", compactMetadata}` record becomes ONE assistant
   message with ONE tool part `{name:"Compaction", arg, result?}`: `arg` is `compactMetadata.trigger`
   (`""` when not a string; its first 200 UTF-16 units, `CHAT_TOOL_ARG_MAX`), and `result` is
