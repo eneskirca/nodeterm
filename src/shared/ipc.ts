@@ -698,6 +698,7 @@ export const IPC = {
   gitMerge: 'git:merge',
   gitRebase: 'git:rebase',
   gitMainDrift: 'git:main-drift',
+  gitPullWorktreeAdd: 'git:pull-worktree-add',
   gitUpdateFromMain: 'git:update-from-main',
   gitDeleteBranch: 'git:delete-branch',
   gitRenameBranch: 'git:rename-branch',

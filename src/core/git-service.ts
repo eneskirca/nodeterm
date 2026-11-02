@@ -15,6 +15,7 @@ import { directExecutableInvocation } from './exec-path'
 import { ghPath } from './gh-path'
 import { gitEnv } from './git-env'
 import { worktreeTargetRefusal } from './worktree-target'
+import { pullFetchPlan, type PullFetchRequest } from '../shared/pull-work'
 import {
   isValidCloneUrl,
   expandCloneUrl,
@@ -373,6 +374,11 @@ export class GitService {
     platform().handle(IPC.gitWorktreeAdd, (repoPath: string, wtPath: string, branch: string, baseRef: string, isNew: boolean) =>
       this.worktreeAdd(repoPath, wtPath, branch, baseRef, isNew)
     )
+    platform().handle(IPC.gitPullWorktreeAdd, (repoPath: unknown, wtPath: unknown, req: unknown) =>
+      typeof repoPath === 'string' && typeof wtPath === 'string'
+        ? this.pullWorktreeAdd(repoPath, wtPath, req as PullFetchRequest)
+        : { ok: false, message: 'Missing repo or worktree path.' }
+    )
     platform().handle(IPC.gitWorktreeMerge, (repoPath: string, branch: string, baseRef: string, push?: boolean) =>
       this.worktreeMerge(repoPath, branch, baseRef, push)
     )
@@ -415,6 +421,27 @@ export class GitService {
     const refusal = worktreeTargetRefusal(wtPath, repoPath)
     if (refusal) return Promise.resolve({ ok: false, message: refusal })
     return worktreeOps.worktreeAdd(git, repoPath, wtPath, branch, baseRef, isNew)
+  }
+  /**
+   * "Work on this PR": fetch the PR's head (`pullFetchPlan`, argv only) and open a FRESH worktree on
+   * the new local branch. An existing branch of that name is refused, never moved; a fork fetch whose
+   * worktree then fails is undone by deleting the branch it just made.
+   */
+  async pullWorktreeAdd(repoPath: string, wtPath: string, req: PullFetchRequest): Promise<worktreeOps.WorktreeOpResult> {
+    const plan = pullFetchPlan(req)
+    if (!plan) return { ok: false, message: 'Invalid pull request checkout.' }
+    if (isRemoteRepo(repoPath)) return REMOTE_WORKTREE_REFUSAL()
+    if (!repoPath || !wtPath || wtPath.startsWith('-')) return { ok: false, message: 'Invalid worktree path.' }
+    const refusal = worktreeTargetRefusal(wtPath, repoPath)
+    if (refusal) return { ok: false, message: refusal }
+    if ((await git(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${req.branch}`])).ok) {
+      return { ok: false, message: `The branch ${req.branch} already exists. Nothing was created.` }
+    }
+    const fetched = await git(repoPath, plan.fetch)
+    if (!fetched.ok) return { ok: false, message: `Could not fetch the pull request: ${fail(fetched).message}` }
+    const added = await worktreeOps.worktreeAdd(git, repoPath, wtPath, req.branch, plan.startPoint, plan.isNew)
+    if (!added.ok && !plan.isNew) await git(repoPath, ['branch', '-D', req.branch])
+    return added
   }
   worktreeMerge(
     repoPath: string,

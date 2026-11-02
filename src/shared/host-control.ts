@@ -105,6 +105,9 @@ export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   // merge/rebase in the host's checkout. A relay tab shows no badge.
   IPC.gitMainDrift,
   IPC.gitUpdateFromMain,
+  // "Work on this PR" (ticket 16): a fetch with the host's credentials and a new worktree in the
+  // host's repository. A relay tab offers no button.
+  IPC.gitPullWorktreeAdd,
   // Prepare-for-update ends EVERY session on this machine's session host and quits the app. Only
   // the host's own user may do that. Raw ipcMain handlers (no peer reaches them); listed here too
   // so moving them onto the platform table later cannot quietly open them.

@@ -711,6 +711,8 @@ export function buildFilesApi(
     repoRoot: (cwd) => client.request(IPC.gitRepoRoot, cwd) as Promise<string | null>,
     worktreeList: (repoPath) =>
       client.request(IPC.gitWorktreeList, repoPath) as ReturnType<GitApi['worktreeList']>,
+    pullWorktreeAdd: (repoPath, wtPath, req) =>
+      client.request(IPC.gitPullWorktreeAdd, repoPath, wtPath, req) as ReturnType<GitApi['pullWorktreeAdd']>,
     worktreeAdd: (repoPath, wtPath, branch, baseRef, isNew) =>
       client.request(
         IPC.gitWorktreeAdd,

@@ -532,6 +532,8 @@ export const SCOPED_REFUSED: ReadonlySet<string> = new Set<string>([
   // The behind-main fetch and update: HOST_ONLY for every relay peer.
   IPC.gitMainDrift,
   IPC.gitUpdateFromMain,
+  // "Work on this PR": HOST_ONLY for every relay peer.
+  IPC.gitPullWorktreeAdd,
   // Project settings / setup / trust: relay-api.ts keeps these LOCAL; the setup ones are host-only.
   IPC.projectSettingsRead,
   IPC.projectSettingsWriteShared,
