@@ -76,7 +76,7 @@ const WRITE_TEXT: Record<PullWriteReason, string> = {
   network: 'GitHub could not be reached. Check the connection, then try again.'
 }
 
-const AUTO_REFUSED_TEXT = 'GitHub would not turn on auto-merge. The repository may not allow it (Settings, General, Allow auto-merge), the pull request may be ready to merge now, or it changed since you loaded it. Refresh, then try again.'
+const AUTO_MOVED_TEXT = 'GitHub did not turn on auto-merge: the pull request changed since you loaded it, or it can merge now. It has been reloaded: check it, then try again.'
 
 const UPDATE_MOVED_TEXT = 'The pull request changed since you loaded it, so the branch was not updated. It has been reloaded: check it, then update again.'
 
@@ -668,22 +668,22 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
   const [methods, setMethods] = useState<GitHubRepoMergeMethodsResult | 'loading' | null>(null)
   const [method, setMethod] = useState<PullMergeMethod | null>(null)
   const [busy, setBusy] = useState(false)
-  const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
+  // The confirmation's refused write: a merge, or (`auto`) turning on auto-merge.
+  const [refusal, setRefusal] = useState<{ reason: PullWriteReason; auto: boolean } | null>(null)
   const block = mergeBlock(d, checks)
   // The head an update was started from: GitHub updates in the background (202), so until the
   // node reads a new head the button stays off and the node says it is under way.
   const [updatedFrom, setUpdatedFrom] = useState<string | null>(null)
   const updating = updatedFrom === d.head.sha && block?.kind === 'behind'
   const update = useWrite(() => { setUpdatedFrom(d.head.sha); onWritten() })
-  const [autoRefusal, setAutoRefusal] = useState<PullWriteReason | null>(null)
   const cancelAuto = useWrite(onWritten)
-  // Auto-merge waits for what blocks a merge now; a PR that can merge, or never can, gets none.
-  const offersAuto = !d.autoMerge && (block?.kind === 'blocked' || block?.kind === 'behind')
+  // Auto-merge waits for the reviews and checks branch protection asks for. It does not update a
+  // branch, so a PR behind its base (or one that can merge now, or never can) gets none.
+  const offersAuto = !d.autoMerge && block?.kind === 'blocked'
 
   const show = (mode: 'merge' | 'auto') => {
     setOpen(mode)
     setRefusal(null)
-    setAutoRefusal(null)
     // ponytail: the allowed methods are read once per node (the Overview stays mounted); only a
     // failed read is read again, on the next open.
     if (methods === 'loading' || methods?.status === 'ok') return
@@ -703,11 +703,12 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
       .catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
     setBusy(false)
     setOpen(null)
-    if (!outcome.ok) (open === 'auto' ? setAutoRefusal : setRefusal)(outcome.reason)
+    if (!outcome.ok) setRefusal({ reason: outcome.reason, auto: open === 'auto' })
     if (outcome.ok || outcome.reason === 'head-moved') onWritten()
   }
 
   const ready = methods !== null && methods !== 'loading' && methods.status === 'ok' ? methods.methods : null
+  const confirmable = !!ready?.length && (open !== 'auto' || (methods as { autoMerge?: true }).autoMerge === true)
   return (
     <div className="pull-merge">
       <button className="pull-compose__button" disabled={!!block || busy} onClick={() => show('merge')}>Merge…</button>
@@ -716,20 +717,17 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
       )}
       {block && <p className="pull-merge__reason">{block.text}</p>}
       {d.autoMerge && (d.lifecycle === 'open' || d.lifecycle === 'draft') && (
-        <p className="pull-node__state" role="status">
-          Auto-merge is on ({METHOD_TEXT[d.autoMerge.method]}). GitHub merges it when the required reviews and checks pass.{' '}
+        <>
+          <p className="pull-node__state" role="status">
+            Auto-merge is on ({METHOD_TEXT[d.autoMerge.method]}). GitHub merges it when the required reviews and checks pass.
+          </p>
           <button className="pull-compose__button" disabled={cancelAuto.busy}
             onClick={() => void cancelAuto.run(() => api.disablePullAutoMerge({
               projectId, repository: pull.repository, pullNumber: pull.pullNumber
             }))}>Cancel auto-merge</button>
-        </p>
+        </>
       )}
       {cancelAuto.refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[cancelAuto.refusal]}</p>}
-      {autoRefusal && (
-        <p className="pull-compose__error" role="alert">
-          {autoRefusal === 'validation' ? AUTO_REFUSED_TEXT : WRITE_TEXT[autoRefusal]}
-        </p>
-      )}
       {block?.kind === 'behind' && (
         <button className="pull-compose__button" disabled={update.busy || updating}
           onClick={() => void update.run(async () => {
@@ -752,7 +750,11 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
           {update.refusal === 'head-moved' ? UPDATE_MOVED_TEXT : WRITE_TEXT[update.refusal]}
         </p>
       )}
-      {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
+      {refusal && (
+        <p className="pull-compose__error" role="alert">
+          {refusal.auto && refusal.reason === 'head-moved' ? AUTO_MOVED_TEXT : WRITE_TEXT[refusal.reason]}
+        </p>
+      )}
       {open && (
         <div className="pull-merge__backdrop">
           <div className="pull-merge__dialog" role="dialog" aria-modal="true"
@@ -767,6 +769,10 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
                 ? <p className="pull-node__state" role="status">{REFUSAL_TEXT[methods.reason](pull.repository)}</p>
                 : methods.status === 'failed'
                   ? <p className="pull-node__state" role="status">{FAILURE_TEXT[methods.reason]}</p>
+                  : open === 'auto' && !methods.autoMerge
+                    ? <p className="pull-node__state" role="status">
+                        This repository does not allow auto-merge. Turn on Allow auto-merge in its GitHub settings (General), or merge on GitHub.
+                      </p>
                   : methods.methods.length === 0
                     ? <p className="pull-node__state" role="status">
                         This repository allows no merge method for your GitHub token. Merge on GitHub instead.
@@ -784,7 +790,7 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
                       </fieldset>
                     )}
             <div className="pull-compose__actions">
-              {ready && ready.length > 0 && (
+              {confirmable && (
                 <button className="pull-compose__button pull-merge__confirm" disabled={busy || !method}
                   onClick={() => void confirm()}>{open === 'auto' ? 'Enable auto-merge' : 'Confirm merge'}</button>
               )}

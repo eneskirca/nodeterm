@@ -182,7 +182,8 @@ export type PullMergeMethod = 'merge' | 'squash' | 'rebase'
 
 /** The repository's allowed merge methods (`repoMergeMethods`), refused and failed as a pull read. */
 export type GitHubRepoMergeMethodsResult =
-  | { status: 'ok'; methods: PullMergeMethod[] }
+  /** `autoMerge` = the repository allows "Merge when ready" (GitHub's auto-merge). */
+  | { status: 'ok'; methods: PullMergeMethod[]; autoMerge?: true }
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
 

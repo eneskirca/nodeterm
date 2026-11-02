@@ -58,7 +58,7 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     commentOnPull: vi.fn(async () => ({ ok: true as const })),
     reviewPull: vi.fn(async () => ({ ok: true as const })),
     mergePull: vi.fn(async () => ({ ok: true as const })),
-    repoMergeMethods: vi.fn(async () => ({ status: 'ok' as const, methods: ['squash' as const, 'rebase' as const] })),
+    repoMergeMethods: vi.fn(async () => ({ status: 'ok' as const, methods: ['squash' as const, 'rebase' as const], autoMerge: true as const })),
     repoCollaborators: vi.fn(async () => ({
       status: 'ok' as const,
       users: ['octocat', 'ana', 'bo'].map((login, id) => ({ id, login, avatarUrl: 'https://avatars.githubusercontent.com/u/1' }))
@@ -516,7 +516,9 @@ describe('PullNodeView auto-merge', () => {
   })
 
   it.each([
-    ['ready', {}], ['draft', { lifecycle: 'draft' }], ['conflicting', { merge: 'conflict' }], ['merged', { lifecycle: 'merged', merge: undefined }]
+    ['ready', {}], ['draft', { lifecycle: 'draft' }], ['conflicting', { merge: 'conflict' }], ['merged', { lifecycle: 'merged', merge: undefined }],
+    // Auto-merge does not update a branch: behind under strict protection, it would wait for Update branch.
+    ['behind', { merge: 'behind' }]
   ] as const)('a %s PR offers no Merge when ready', async (_name, change) => {
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 }))
     expect(button(view, 'Merge when ready…')).toBeUndefined()
@@ -533,13 +535,24 @@ describe('PullNodeView auto-merge', () => {
     expect(onWritten).toHaveBeenCalledTimes(1)
   })
 
-  it('names a refused auto-merge in its own words', async () => {
+  it('a repository that does not allow auto-merge says so and offers no Enable', async () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
-    api.enablePullAutoMerge.mockResolvedValue({ ok: false, reason: 'validation' })
+    api.repoMergeMethods.mockResolvedValue({ status: 'ok', methods: ['squash'] })
     const view = await render(api)
     await act(async () => { button(view, 'Merge when ready…').click() })
+    expect(dialog()?.textContent).toContain('does not allow auto-merge')
+    expect(button(host, 'Enable auto-merge')).toBeUndefined()
+  })
+
+  it('a moved head (or a PR that can merge now) says so in its own words and reloads', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
+    api.enablePullAutoMerge.mockResolvedValue({ ok: false, reason: 'head-moved' })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    await act(async () => { button(view, 'Merge when ready…').click() })
     await act(async () => { button(host, 'Enable auto-merge').click() })
-    expect(view.querySelector('[role="alert"]')?.textContent).toContain('Allow auto-merge')
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('did not turn on auto-merge')
+    expect(onWritten).toHaveBeenCalledTimes(1)
   })
 })
 

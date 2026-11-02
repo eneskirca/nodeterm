@@ -676,16 +676,16 @@ describe('pull request merge', () => {
       token: 'secret',
       fetch: async (url) => {
         urls.push(String(url))
-        return response({ allow_merge_commit: false, allow_squash_merge: true, allow_rebase_merge: true })
+        return response({ allow_merge_commit: false, allow_squash_merge: true, allow_rebase_merge: true, allow_auto_merge: true })
       }
     })
-    expect(await client.repoMergeMethods('o/r')).toEqual(['squash', 'rebase'])
+    expect(await client.repoMergeMethods('o/r')).toEqual({ methods: ['squash', 'rebase'], autoMerge: true })
     expect(urls).toEqual(['https://api.github.com/repos/o/r'])
   })
 
   it('reads no method when the answer leaves the flags out (a token without write access)', async () => {
     const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => response({ full_name: 'o/r' }) })
-    expect(await client.repoMergeMethods('o/r')).toEqual([])
+    expect(await client.repoMergeMethods('o/r')).toEqual({ methods: [], autoMerge: false })
   })
 
   it('merges with the chosen method and the head commit the user saw', async () => {

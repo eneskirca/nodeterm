@@ -123,7 +123,7 @@ export interface GitHubIssuesClientLike {
   /** The merge base of two commits, the base side GitHub diffs a PR against. Optional, as above. */
   mergeBase?(repository: string, base: string, head: string): Promise<string>
   /** The repository's allowed merge methods, and a merge tied to the head `sha`. Optional, as above. */
-  repoMergeMethods?(repository: string): Promise<PullMergeMethod[]>
+  repoMergeMethods?(repository: string): Promise<{ methods: PullMergeMethod[]; autoMerge: boolean }>
   mergePull?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
   /** "Update branch": merge the base into the head, tied to the head `sha`. Optional, as above. */
   updatePullBranch?(repository: string, pullNumber: number, sha: string): Promise<void>
@@ -273,6 +273,19 @@ function pullWriteFailure(error: unknown): PullWriteReason {
   return 'network'
 }
 
+/** Update branch and auto-merge are tied to a head like a merge, but GitHub answers a head that is
+ *  no longer the one sent with 422 there (a merge gets 409). ponytail: any 422 reads as head-moved
+ *  (for auto-merge also "the PR can merge now"); either way the node reloads and the user looks again. */
+async function headMovedOn422<T>(write: Promise<T>): Promise<T> {
+  try {
+    return await write
+  } catch (error) {
+    const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+    if (code === 'request-failed' && status === 422) throw Object.assign(new Error('head-moved'), { code, status: 409 })
+    throw error
+  }
+}
+
 /** What every pull node read answers: fresh (or the last good answer, marked stale), a refusal
  *  made before any request, or a failure. `GitHubPullDetailResult` and the conversation's share it. */
 type PullOk = { status: 'ok'; observedAt: number; stale?: PullReadFailure; retryAt?: number }
@@ -392,7 +405,7 @@ export class GitHubIssueService {
   private readonly checkStarts = new Map<string, number[]>()
   /** Allowed merge methods per identity and repository, held for this core's run (GitHub's repo
    *  settings rarely change, and a merge GitHub refuses still says why). Successful reads only. */
-  private readonly mergeMethods = new Map<string, PullMergeMethod[]>()
+  private readonly mergeMethods = new Map<string, { methods: PullMergeMethod[]; autoMerge: boolean }>()
   private readonly collaborators = new Map<string, GitHubIssueUser[]>()
   /** Merge base per `base\0head` SHA pair. Commits are immutable, so an answer never ages. */
   private readonly mergeBases = new Map<string, string>()
@@ -1244,15 +1257,7 @@ export class GitHubIssueService {
     return this.pullWrite(request, async (client, repository, pullNumber) => {
       // ponytail: a client that cannot update reads as network; the real client always can.
       if (!client.updatePullBranch) throw new Error('unsupported')
-      try {
-        await client.updatePullBranch(repository, pullNumber, headSha)
-      } catch (error) {
-        // GitHub answers a head that is no longer `headSha` with 422 here (a merge gets 409).
-        // ponytail: any 422 reads as head-moved; the node reloads either way.
-        const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
-        if (code === 'request-failed' && status === 422) throw Object.assign(new Error('head-moved'), { code, status: 409 })
-        throw error
-      }
+      return headMovedOn422(client.updatePullBranch(repository, pullNumber, headSha))
     })
   }
 
@@ -1268,7 +1273,7 @@ export class GitHubIssueService {
     return this.pullWrite(request, async (client, repository, pullNumber) => {
       // ponytail: a client that cannot arm auto-merge reads as network; the real client always can.
       if (!client.enablePullAutoMerge) throw new Error('unsupported')
-      return client.enablePullAutoMerge(repository, pullNumber, { method, sha: headSha })
+      return headMovedOn422(client.enablePullAutoMerge(repository, pullNumber, { method, sha: headSha }))
     })
   }
 
@@ -1288,7 +1293,9 @@ export class GitHubIssueService {
    */
   async repoMergeMethods(request: { projectId: string; repository: string }): Promise<GitHubRepoMergeMethodsResult> {
     const result = await this.heldRepoRead(this.mergeMethods, request, (client) => client.repoMergeMethods?.bind(client))
-    return result.status === 'ok' ? { status: 'ok', methods: result.value } : result
+    return result.status === 'ok'
+      ? { status: 'ok', methods: result.value.methods, ...(result.value.autoMerge ? { autoMerge: true as const } : {}) }
+      : result
   }
 
   /** The repository's collaborators, for the node's "Request review". Held per repository like the

@@ -62,10 +62,11 @@ class Client implements GitHubIssuesClientLike {
   }
   methods: PullMergeMethod[] = ['squash']
   methodReads: string[] = []
-  async repoMergeMethods(repository: string): Promise<PullMergeMethod[]> {
+  autoMergeAllowed = false
+  async repoMergeMethods(repository: string): Promise<{ methods: PullMergeMethod[]; autoMerge: boolean }> {
     this.methodReads.push(repository)
     if (this.fail) throw this.fail
-    return this.methods
+    return { methods: this.methods, autoMerge: this.autoMergeAllowed }
   }
   async requestPullReviewer(repository: string, pullNumber: number, login: string): Promise<void> {
     this.writes.push(['reviewer', repository, pullNumber, login])
@@ -285,6 +286,13 @@ describe('GitHubIssueService merge', () => {
     expect(client.methodReads).toEqual(['o/r'])
   })
 
+  it('says when the repository allows auto-merge', async () => {
+    const { client, service } = harness()
+    client.autoMergeAllowed = true
+    expect(await service.repoMergeMethods({ projectId: 'p', repository: 'o/r' }))
+      .toEqual({ status: 'ok', methods: ['squash'], autoMerge: true })
+  })
+
   it('holds the allowed methods per repository: a second node of the same repository reads nothing', async () => {
     const { client, service } = harness()
     await service.repoMergeMethods({ projectId: 'p', repository: 'o/r' })
@@ -348,6 +356,15 @@ describe('GitHubIssueService auto-merge', () => {
     expect(await service.disablePullAutoMerge({ ...at, pullNumber: 0 })).toEqual({ ok: false, reason: 'validation' })
     expect(contexts()).toBe(0)
     expect(client.writes).toEqual([])
+  })
+
+  it('a 422 (the head moved, or the PR can merge now) is head-moved, so the node reloads fresh', async () => {
+    const { client, service } = harness()
+    await service.pullDetail(at)
+    client.fail = new GitHubClientError('request-failed', 422)
+    expect(await service.enablePullAutoMerge({ ...at, method: 'merge', headSha: sha })).toEqual({ ok: false, reason: 'head-moved' })
+    await service.pullDetail(at)
+    expect(client.detailReads).toBe(2)
   })
 
   it('refuses another repository with no request', async () => {

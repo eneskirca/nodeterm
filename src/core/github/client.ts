@@ -674,12 +674,15 @@ export class GitHubIssuesClient {
     return { id: Number(value.id) }
   }
 
-  /** The merge methods the repository allows (`GET /repos/{r}`). GitHub sends the `allow_*` flags
-   *  only to a token that may push; without them no method is offered. */
-  async repoMergeMethods(repository: string): Promise<PullMergeMethod[]> {
+  /** The merge methods the repository allows, and whether it allows auto-merge (`GET /repos/{r}`).
+   *  GitHub sends the `allow_*` flags only to a token that may push; without them nothing is offered. */
+  async repoMergeMethods(repository: string): Promise<{ methods: PullMergeMethod[]; autoMerge: boolean }> {
     const value = object(await this.json(await this.request(`/repos/${safeRepository(repository)}`, { method: 'GET' })))
     if (!value) throw new GitHubClientError('malformed-response')
-    return MERGE_METHODS.filter(([, flag]) => value[flag] === true).map(([method]) => method)
+    return {
+      methods: MERGE_METHODS.filter(([, flag]) => value[flag] === true).map(([method]) => method),
+      autoMerge: value.allow_auto_merge === true
+    }
   }
 
   /** The people with access to the repository (`GET /collaborators`), first page of 100. */
