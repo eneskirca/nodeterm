@@ -243,7 +243,8 @@ function repoPath(value: unknown): value is string {
 /** One changed file. `copied` keeps no previous path: it diffs against empty, like an add. */
 function pullFileFrom(value: unknown): PullFile | null {
   const item = object(value)
-  const status = item && typeof item.status === 'string' ? FILE_STATUSES[item.status] : undefined
+  const status = item && typeof item.status === 'string' && Object.hasOwn(FILE_STATUSES, item.status)
+    ? FILE_STATUSES[item.status] : undefined
   if (!item || !status || !repoPath(item.filename) ||
       !Number.isSafeInteger(item.additions) || (item.additions as number) < 0 ||
       !Number.isSafeInteger(item.deletions) || (item.deletions as number) < 0) return null

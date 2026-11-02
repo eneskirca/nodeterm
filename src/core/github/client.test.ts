@@ -663,6 +663,8 @@ describe('GitHubIssuesClient pull files', () => {
       .rejects.toMatchObject({ code: 'malformed-response' })
     await expect(client([{ filename: 'a', status: 'weird', additions: 0, deletions: 0 }]).listPullFiles('o/r', 7, 1))
       .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([{ filename: 'a', status: 'constructor', additions: 0, deletions: 0 }]).listPullFiles('o/r', 7, 1))
+      .rejects.toMatchObject({ code: 'malformed-response' })
     await expect(client([]).listPullFiles('o/r', 7, 0)).rejects.toMatchObject({ code: 'invalid-request' })
   })
 })
