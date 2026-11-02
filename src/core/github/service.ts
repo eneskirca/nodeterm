@@ -345,6 +345,9 @@ export class GitHubIssueService {
   private readonly pulls: GitHubPullStatusTracker
   private readonly checkReads = new Map<string, { at: number; result: Promise<GitHubPullChecksResult> }>()
   private readonly checkStarts = new Map<string, number[]>()
+  /** Allowed merge methods per identity and repository, held for this core's run (GitHub's repo
+   *  settings rarely change, and a merge GitHub refuses still says why). Successful reads only. */
+  private readonly mergeMethods = new Map<string, PullMergeMethod[]>()
   private readonly pullReads = new Map<string, {
     last?: PullOk
     floorUntil: number
@@ -1064,8 +1067,7 @@ export class GitHubIssueService {
 
   /**
    * The merge methods the project's repository allows, for the merge confirmation. Refused like a
-   * pull read (another repository is refused before a credential is resolved). Not held here: the
-   * node keeps the answer for its lifetime.
+   * pull read (another repository is refused before a credential is resolved). Held per repository.
    */
   async repoMergeMethods(request: { projectId: string; repository: string }): Promise<GitHubRepoMergeMethodsResult> {
     const repository = parseGitHubRepository(request?.repository)
@@ -1080,10 +1082,17 @@ export class GitHubIssueService {
       const refusal = pullRefusalOf(error)
       return refusal ? { status: 'refused', reason: refusal } : { status: 'failed', ...pullReadFailure(error) }
     }
+    // The project's repository may have changed between the two awaits, as in readPull.
+    if (captured.repository.toLowerCase() !== repository.toLowerCase()) return { status: 'refused', reason: 'repository-mismatch' }
+    const key = `${captured.userId}\0${captured.repository.toLowerCase()}`
+    const held = this.mergeMethods.get(key)
+    if (held) return { status: 'ok', methods: held }
     const { client } = captured
     if (!client.repoMergeMethods) return { status: 'failed', reason: 'unreachable' }
     try {
-      return { status: 'ok', methods: await this.readWithEpoch(captured, () => client.repoMergeMethods!(captured.repository)) }
+      const methods = await this.readWithEpoch(captured, () => client.repoMergeMethods!(captured.repository))
+      this.mergeMethods.set(key, methods)
+      return { status: 'ok', methods }
     } catch (error) {
       return { status: 'failed', ...pullReadFailure(error) }
     }

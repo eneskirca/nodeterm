@@ -197,6 +197,13 @@ describe('GitHubIssueService merge', () => {
     expect(client.methodReads).toEqual(['o/r'])
   })
 
+  it('holds the allowed methods per repository: a second node of the same repository reads nothing', async () => {
+    const { client, service } = harness()
+    await service.repoMergeMethods({ projectId: 'p', repository: 'o/r' })
+    expect(await service.repoMergeMethods({ projectId: 'p', repository: 'O/R' })).toEqual({ status: 'ok', methods: ['squash'] })
+    expect(client.methodReads).toEqual(['o/r'])
+  })
+
   it('names a refusal and a failure of the methods read like a pull read', async () => {
     const unapproved = harness({ code: 'not-approved' })
     expect(await unapproved.service.repoMergeMethods({ projectId: 'p', repository: 'o/r' }))
