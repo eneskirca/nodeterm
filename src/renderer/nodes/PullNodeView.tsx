@@ -36,7 +36,8 @@ import { mergeBlock, type PullChecksRead } from '../lib/pullMergeBlock'
 export type PullNodeApi = Pick<
   GitHubIssuesApi,
   'pullDetail' | 'pullChecks' | 'pullConversation' | 'pullFiles' | 'pullFileContents' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods' |
-  'repoCollaborators' | 'requestPullReviewer' | 'commentOnPullLine' | 'updatePullBranch'
+  'repoCollaborators' | 'requestPullReviewer' | 'commentOnPullLine' | 'updatePullBranch' | 'enablePullAutoMerge' |
+  'disablePullAutoMerge'
 >
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
@@ -74,6 +75,8 @@ const WRITE_TEXT: Record<PullWriteReason, string> = {
   validation: 'GitHub refused the request. Refresh the pull request, then try again.',
   network: 'GitHub could not be reached. Check the connection, then try again.'
 }
+
+const AUTO_REFUSED_TEXT = 'GitHub would not turn on auto-merge. The repository may not allow it (Settings, General, Allow auto-merge), the pull request may be ready to merge now, or it changed since you loaded it. Refresh, then try again.'
 
 const UPDATE_MOVED_TEXT = 'The pull request changed since you loaded it, so the branch was not updated. It has been reloaded: check it, then update again.'
 
@@ -660,7 +663,8 @@ function PullReviewers(props: ViewProps & { detail: GitHubPullDetail }): React.J
 function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullChecksRead }): React.JSX.Element {
   const { api, projectId, pull, detail: d, checks, onWritten, onOpenTerminal } = props
   const name = useId()
-  const [open, setOpen] = useState(false)
+  // Which confirmation is open: a merge now, or "Merge when ready" (GitHub's auto-merge).
+  const [open, setOpen] = useState<'merge' | 'auto' | null>(null)
   const [methods, setMethods] = useState<GitHubRepoMergeMethodsResult | 'loading' | null>(null)
   const [method, setMethod] = useState<PullMergeMethod | null>(null)
   const [busy, setBusy] = useState(false)
@@ -671,10 +675,15 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
   const [updatedFrom, setUpdatedFrom] = useState<string | null>(null)
   const updating = updatedFrom === d.head.sha && block?.kind === 'behind'
   const update = useWrite(() => { setUpdatedFrom(d.head.sha); onWritten() })
+  const [autoRefusal, setAutoRefusal] = useState<PullWriteReason | null>(null)
+  const cancelAuto = useWrite(onWritten)
+  // Auto-merge waits for what blocks a merge now; a PR that can merge, or never can, gets none.
+  const offersAuto = !d.autoMerge && (block?.kind === 'blocked' || block?.kind === 'behind')
 
-  const show = () => {
-    setOpen(true)
+  const show = (mode: 'merge' | 'auto') => {
+    setOpen(mode)
     setRefusal(null)
+    setAutoRefusal(null)
     // ponytail: the allowed methods are read once per node (the Overview stays mounted); only a
     // failed read is read again, on the next open.
     if (methods === 'loading' || methods?.status === 'ok') return
@@ -687,22 +696,40 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
       })
   }
   const confirm = async () => {
-    if (busy || !method) return
+    if (busy || !method || !open) return
     setBusy(true)
-    const outcome = await api.mergePull({
-      projectId, repository: pull.repository, pullNumber: pull.pullNumber, method, headSha: d.head.sha
-    }).catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
+    const request = { projectId, repository: pull.repository, pullNumber: pull.pullNumber, method, headSha: d.head.sha }
+    const outcome = await (open === 'auto' ? api.enablePullAutoMerge(request) : api.mergePull(request))
+      .catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
     setBusy(false)
-    setOpen(false)
-    if (!outcome.ok) setRefusal(outcome.reason)
+    setOpen(null)
+    if (!outcome.ok) (open === 'auto' ? setAutoRefusal : setRefusal)(outcome.reason)
     if (outcome.ok || outcome.reason === 'head-moved') onWritten()
   }
 
   const ready = methods !== null && methods !== 'loading' && methods.status === 'ok' ? methods.methods : null
   return (
     <div className="pull-merge">
-      <button className="pull-compose__button" disabled={!!block || busy} onClick={show}>Merge…</button>
+      <button className="pull-compose__button" disabled={!!block || busy} onClick={() => show('merge')}>Merge…</button>
+      {offersAuto && (
+        <button className="pull-compose__button" disabled={busy} onClick={() => show('auto')}>Merge when ready…</button>
+      )}
       {block && <p className="pull-merge__reason">{block.text}</p>}
+      {d.autoMerge && (d.lifecycle === 'open' || d.lifecycle === 'draft') && (
+        <p className="pull-node__state" role="status">
+          Auto-merge is on ({METHOD_TEXT[d.autoMerge.method]}). GitHub merges it when the required reviews and checks pass.{' '}
+          <button className="pull-compose__button" disabled={cancelAuto.busy}
+            onClick={() => void cancelAuto.run(() => api.disablePullAutoMerge({
+              projectId, repository: pull.repository, pullNumber: pull.pullNumber
+            }))}>Cancel auto-merge</button>
+        </p>
+      )}
+      {cancelAuto.refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[cancelAuto.refusal]}</p>}
+      {autoRefusal && (
+        <p className="pull-compose__error" role="alert">
+          {autoRefusal === 'validation' ? AUTO_REFUSED_TEXT : WRITE_TEXT[autoRefusal]}
+        </p>
+      )}
       {block?.kind === 'behind' && (
         <button className="pull-compose__button" disabled={update.busy || updating}
           onClick={() => void update.run(async () => {
@@ -728,9 +755,11 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
       {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
       {open && (
         <div className="pull-merge__backdrop">
-          <div className="pull-merge__dialog" role="dialog" aria-modal="true" aria-label="Merge pull request">
+          <div className="pull-merge__dialog" role="dialog" aria-modal="true"
+            aria-label={open === 'auto' ? 'Merge pull request when ready' : 'Merge pull request'}>
             <p className="pull-merge__what">
-              Merge <strong>#{d.number} {d.title}</strong> into <code>{d.base.ref}</code>?
+              Merge <strong>#{d.number} {d.title}</strong> into <code>{d.base.ref}</code>
+              {open === 'auto' ? ' when ready? GitHub merges it once the required reviews and checks pass.' : '?'}
             </p>
             {methods === null || methods === 'loading'
               ? <p className="pull-node__state">Loading the allowed merge methods…</p>
@@ -757,9 +786,9 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
             <div className="pull-compose__actions">
               {ready && ready.length > 0 && (
                 <button className="pull-compose__button pull-merge__confirm" disabled={busy || !method}
-                  onClick={() => void confirm()}>Confirm merge</button>
+                  onClick={() => void confirm()}>{open === 'auto' ? 'Enable auto-merge' : 'Confirm merge'}</button>
               )}
-              <button className="pull-compose__button" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+              <button className="pull-compose__button" disabled={busy} onClick={() => setOpen(null)}>Cancel</button>
             </div>
           </div>
         </div>

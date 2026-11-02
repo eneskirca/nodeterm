@@ -47,6 +47,7 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     mergePull: ReturnType<typeof vi.fn>; repoMergeMethods: ReturnType<typeof vi.fn>
     repoCollaborators: ReturnType<typeof vi.fn>; requestPullReviewer: ReturnType<typeof vi.fn>
     commentOnPullLine: ReturnType<typeof vi.fn>; updatePullBranch: ReturnType<typeof vi.fn>
+    enablePullAutoMerge: ReturnType<typeof vi.fn>; disablePullAutoMerge: ReturnType<typeof vi.fn>
   } {
   return {
     pullDetail: vi.fn(async () => result),
@@ -64,7 +65,9 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     })),
     requestPullReviewer: vi.fn(async () => ({ ok: true as const })),
     commentOnPullLine: vi.fn(async () => ({ ok: true as const })),
-    updatePullBranch: vi.fn(async () => ({ ok: true as const }))
+    updatePullBranch: vi.fn(async () => ({ ok: true as const })),
+    enablePullAutoMerge: vi.fn(async () => ({ ok: true as const })),
+    disablePullAutoMerge: vi.fn(async () => ({ ok: true as const }))
   }
 }
 
@@ -489,6 +492,54 @@ describe('PullNodeView merge blockers', () => {
     const odd = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict', head: { ref: 'x;rm -rf ~', sha: 'c'.repeat(40) } }, observedAt: 1 }))
     expect(button(odd, 'Open terminal on this branch')).toBeUndefined()
     expect(odd.querySelector('.pull-merge__reason')?.textContent).toContain('conflicts with main')
+  })
+})
+
+describe('PullNodeView auto-merge', () => {
+  const dialog = () => host.querySelector('[role="dialog"]')
+
+  it('a blocked PR offers Merge when ready: the confirmation arms auto-merge with the method and the head shown', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    await act(async () => { button(view, 'Merge when ready…').click() })
+    expect(dialog()?.textContent).toContain('when ready')
+    expect(api.enablePullAutoMerge).not.toHaveBeenCalled()
+    const rebase = dialog()!.querySelector('input[value="rebase"]') as HTMLInputElement
+    await act(async () => { rebase.click() })
+    await act(async () => { button(host, 'Enable auto-merge').click() })
+    expect(api.enablePullAutoMerge).toHaveBeenCalledWith({
+      projectId: 'p', repository: 'o/r', pullNumber: 7, method: 'rebase', headSha: 'c'.repeat(40)
+    })
+    expect(api.mergePull).not.toHaveBeenCalled()
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['ready', {}], ['draft', { lifecycle: 'draft' }], ['conflicting', { merge: 'conflict' }], ['merged', { lifecycle: 'merged', merge: undefined }]
+  ] as const)('a %s PR offers no Merge when ready', async (_name, change) => {
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 }))
+    expect(button(view, 'Merge when ready…')).toBeUndefined()
+  })
+
+  it('shows the armed state with its method, and Cancel turns it off', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked', autoMerge: { method: 'squash' } }, observedAt: 1 })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    expect(view.querySelector('.pull-merge')?.textContent).toContain('Auto-merge is on (Squash and merge)')
+    expect(button(view, 'Merge when ready…')).toBeUndefined()
+    await act(async () => { button(view, 'Cancel auto-merge').click() })
+    expect(api.disablePullAutoMerge).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7 })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('names a refused auto-merge in its own words', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
+    api.enablePullAutoMerge.mockResolvedValue({ ok: false, reason: 'validation' })
+    const view = await render(api)
+    await act(async () => { button(view, 'Merge when ready…').click() })
+    await act(async () => { button(host, 'Enable auto-merge').click() })
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('Allow auto-merge')
   })
 })
 
