@@ -116,6 +116,7 @@ import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
 import type { PullNodeRef } from '@shared/pull-node'
+import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -15296,6 +15297,45 @@ export function Canvas() {
             if (webSrc.filePath && args.file) await window.nodeTerminal.media.allow(webSrc.filePath)
             const id = addAndConnect(createWebNode(nodeCount(), webSrc, placeBelow()))
             reply({ ok: true, message: `showing web ${id}`, result: { id } })
+            return
+          }
+          case 'open-pr': {
+            // The PR the agent just made (@shared/open-pr-verb): a pull node beside it plus a context
+            // link, or the existing node for that PR linked (and, on screen, framed). Open-only. The
+            // repository is the host's answer for this project; the agent cannot name one.
+            const prProjectId = ctlProject?.id ?? ''
+            const prRepo = openPrArgsRefusal(args) || ctlProject?.remote
+              ? undefined
+              : await api.githubControl.status(prProjectId).then((v) => v.project, () => undefined)
+            // The await above is the one window a tab switch can land in; never write the node
+            // into whatever became active meanwhile.
+            if (!offCanvas && useProjects.getState().activeProjectId !== prProjectId) {
+              reply({ ok: false, error: 'open-pr: the project changed while resolving its repository; run it again' })
+              return
+            }
+            const prPlan = planOpenPr({
+              args,
+              repo: prRepo,
+              relayGuest: !!ctlProject?.remote,
+              pullNodes: ctlNodes().filter((n) => n.type === 'pull').map((n) => ({ id: n.id, pull: n.data.pull }))
+            })
+            if (prPlan.kind === 'refuse') {
+              reply({ ok: false, error: prPlan.error })
+              return
+            }
+            const prId = prPlan.kind === 'reuse'
+              ? prPlan.nodeId
+              : addAndConnect(createPullNode(nodeCount(), prPlan.ref.repository, prPlan.ref.pullNumber, placeBelow()))
+            // ponytail: classifyLink only links two agents (or a sticky + terminal), so the pull end
+            // is declared readable for THIS call; the link map treats a pull node as read-only.
+            bridgeTo(sourceNodeId, [prId], (id) =>
+              id === prId ? { kind: 'pull', contextCapable: true } : ctlLinkEndpointOf(id))
+            if (prPlan.kind === 'reuse' && !offCanvas) travelToNodeRef.current(prId)
+            reply({
+              ok: true,
+              message: `${prPlan.kind === 'create' ? 'opened' : 'linked existing'} pull request node ${prId}`,
+              result: { id: prId, created: prPlan.kind === 'create' }
+            })
             return
           }
           case 'open-browser': {
