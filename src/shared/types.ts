@@ -3130,6 +3130,15 @@ export interface ContextLinkInfo {
   sessionId?: string
   /** Managed Claude account of the linked node — scopes the claude locator fallback. */
   accountId?: string
+  /** Set when the linked node is a pull request node: which PR, in which project. A read renders
+   *  its latest Overview through the core's `pullDetail` (which refuses a non-approved repository). */
+  pull?: ContextLinkPull
+}
+
+export interface ContextLinkPull {
+  projectId: string
+  repository: string
+  pullNumber: number
 }
 
 /** Map of node id → the nodes it is context-linked to. Sent to main so it can write link files. */

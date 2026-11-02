@@ -75,7 +75,7 @@ import {
   resolveIntegrationConsentAtBoot
 } from '../core/agent-integrations'
 import { registerIntegrationIpc } from '../core/agent-integrations-ipc'
-import { contextLinkShimPath } from '../core/context-link'
+import { contextLinkShimPath, pullReadVia } from '../core/context-link'
 import {
   initAgentStatusMirror,
   flush as flushAgentStatusMirror,
@@ -797,7 +797,8 @@ export async function startServer(
   // src/server/context-link.ts.
   const contextLink = initServerContextLink({
     ptyManager,
-    canvases: () => workspaceStore.persistedCanvases()
+    canvases: () => workspaceStore.persistedCanvases(),
+    pull: pullReadVia(github.service)
   })
   // A governed project's outside edit goes to the canvas authority, which publishes the difference
   // as canvas ops and then the persisted project on `workspace:server-change` (its non-content
