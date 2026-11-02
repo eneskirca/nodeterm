@@ -663,6 +663,23 @@ export class GitHubIssuesClient {
     return { files: files as PullFile[], ...(next ? { nextPage: next } : {}) }
   }
 
+  /** The merge base of two commits (`GET /compare/{base}...{head}`, `merge_base_commit.sha`): the
+   *  commit GitHub diffs a pull request against. */
+  async mergeBase(repository: string, base: string, head: string): Promise<string> {
+    safeRepository(repository)
+    const commit = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+    if (typeof base !== 'string' || !commit.test(base) || typeof head !== 'string' || !commit.test(head)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    // ponytail: page 2 of 1 commit carries merge_base_commit but no file list (measured on cli/cli),
+    // so a big comparison stays far under the response cap.
+    const item = object(await this.json(await this.request(
+      `/repos/${repository}/compare/${base}...${head}?per_page=1&page=2`, { method: 'GET' })))
+    const sha = object(item?.merge_base_commit)?.sha
+    if (typeof sha !== 'string' || !commit.test(sha)) throw new GitHubClientError('malformed-response')
+    return sha
+  }
+
   /** One file at one commit (`GET /contents/{path}?ref=`). Over 1 MB, or not UTF-8 text, answers
    *  `unavailable` instead of content. */
   async getFileAt(repository: string, path: string, ref: string): Promise<PullFileRead> {

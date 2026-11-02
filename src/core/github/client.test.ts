@@ -702,3 +702,25 @@ describe('GitHubIssuesClient.getFileAt', () => {
     await expect(client.getFileAt('o/r', 'a.ts', 'main')).rejects.toMatchObject({ code: 'invalid-request' })
   })
 })
+
+describe('GitHubIssuesClient.mergeBase', () => {
+  it('reads merge_base_commit.sha from the compare API, on a page with no file list', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => { calls.push(String(url)); return response({ merge_base_commit: { sha: 'd'.repeat(40) }, commits: [] }) }
+    })
+    expect(await client.mergeBase('o/r', SHA_BASE, SHA_HEAD)).toBe('d'.repeat(40))
+    expect(calls).toEqual([`https://api.github.com/repos/o/r/compare/${SHA_BASE}...${SHA_HEAD}?per_page=1&page=2`])
+  })
+
+  it('refuses a ref that is not a commit, and a response without a merge base sha', async () => {
+    const none = new GitHubIssuesClient({ token: 'secret', fetch: async () => { throw new Error('no request') } })
+    await expect(none.mergeBase('o/r', 'main', SHA_HEAD)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(none.mergeBase('o/r', SHA_BASE, 'x')).rejects.toMatchObject({ code: 'invalid-request' })
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    await expect(client({}).mergeBase('o/r', SHA_BASE, SHA_HEAD)).rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client({ merge_base_commit: { sha: 'main' } }).mergeBase('o/r', SHA_BASE, SHA_HEAD))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+  })
+})
