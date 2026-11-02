@@ -19027,6 +19027,8 @@ body.focus-mode .dock:hover {
 .text-diff__highlight-gutter { border-left: 3px solid rgb(250, 204, 21); }
 /* Line comments (#11): a thread, a pending comment or the new-comment box under its diff line (a
    Monaco view zone; TextDiff sizes the zone to .text-diff__zone-body). Monaco's own font is reset. */
+/* Above Monaco's text layer, which otherwise takes every click in the zone's box. */
+.monaco-editor .view-zones .text-diff__zone { z-index: 10; cursor: default; }
 .text-diff__zone-body {
   padding: 6px 12px 8px;
   font: 13px/1.45 var(--md-font-family, system-ui, sans-serif);

@@ -129,10 +129,16 @@ export function TextDiff({ path, original, modified, className, highlight, zones
         editor.changeViewZones((change) => change.layoutZone(id))
       })
       if (body) sized.observe(body)
-      return { editor, id, sized }
+      // A zone spans the scrolled content, which a long line widens; held to the visible width, a
+      // focused box inside it never scrolls the code sideways.
+      const fit = () => { if (body) body.style.maxWidth = `${editor.getLayoutInfo().contentWidth}px` }
+      fit()
+      const layout = editor.onDidLayoutChange(fit)
+      return { editor, id, sized, layout }
     })
     return () => {
-      for (const { editor, id, sized } of placed) {
+      for (const { editor, id, sized, layout } of placed) {
+        layout.dispose()
         sized.disconnect()
         editor.changeViewZones((change) => change.removeZone(id))
       }
