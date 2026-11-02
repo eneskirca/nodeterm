@@ -23,7 +23,7 @@ import type {
   PullWriteReason,
   PullWriteResult
 } from '@shared/github-pull-detail'
-import type { GitHubPullChecksResult, PullLifecycle } from '@shared/github-pull-status'
+import type { PullLifecycle } from '@shared/github-pull-status'
 import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-node'
 import type { PullHighlight, PullProposal, ShownProposal } from '@shared/pull-agent-verbs'
 import { NoteMarkdown } from '../components/NoteMarkdown'
@@ -31,7 +31,7 @@ import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSumma
 import { mergeLabel } from '../components/kanban/PullStatusBadges'
 import { TextDiff, type DiffZone } from '../editor/TextDiff'
 import { pullLineThreads, type PullLineThread } from '../lib/pullLineThreads'
-import { mergeBlock } from '../lib/pullMergeBlock'
+import { mergeBlock, type PullChecksRead } from '../lib/pullMergeBlock'
 
 export type PullNodeApi = Pick<
   GitHubIssuesApi,
@@ -74,6 +74,8 @@ const WRITE_TEXT: Record<PullWriteReason, string> = {
   validation: 'GitHub refused the request. Refresh the pull request, then try again.',
   network: 'GitHub could not be reached. Check the connection, then try again.'
 }
+
+const UPDATE_MOVED_TEXT = 'The pull request changed since you loaded it, so the branch was not updated. It has been reloaded: check it, then update again.'
 
 const METHOD_TEXT: Record<PullMergeMethod, string> = {
   merge: 'Create a merge commit', squash: 'Squash and merge', rebase: 'Rebase and merge'
@@ -190,7 +192,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   const [seen, setSeen] = useState<GitHubPullDetail | undefined>()
   const seenHead = seen?.head.sha
   // The Overview's checks read: the merge sentence uses it, so the proposal bar says what the node says.
-  const [seenChecks, setSeenChecks] = useState<GitHubPullChecksResult | 'loading' | null>(null)
+  const [seenChecks, setSeenChecks] = useState<PullChecksRead>(null)
   const [ownPull, setOwnPull] = useState(false)
   // New line comments waiting for the next review submit. ponytail: kept in memory only; closing
   // the node drops them (nothing was sent).
@@ -234,7 +236,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
 
 function PullOverview(props: ViewProps & {
   onDetail: (detail: GitHubPullDetail) => void; onOwnPull: (own: boolean) => void
-  onChecks: (checks: GitHubPullChecksResult | 'loading' | null) => void
+  onChecks: (checks: PullChecksRead) => void
 }): React.JSX.Element {
   const { api, projectId, pull, onOpenExternal, onDetail, onOwnPull, onChecks } = props
   const result = usePullRead(api.pullDetail, props)
@@ -243,7 +245,7 @@ function PullOverview(props: ViewProps & {
   const ownPull = result !== 'loading' && result.status === 'ok' && result.ownPull === true
   useEffect(() => { onOwnPull(ownPull) }, [ownPull, onOwnPull])
   const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
-  const checks = usePullChecks(api, readsChecks ? projectId : undefined, pull.pullNumber, detail?.head.sha)
+  const checks = usePullChecks(api, readsChecks ? projectId : undefined, pull.pullNumber, detail?.head.sha, props.refreshTick)
   useEffect(() => { onChecks(checks) }, [checks, onChecks])
 
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
@@ -481,7 +483,7 @@ const OWN_PULL_TEXT = 'This is your own pull request, so you can comment but not
  * node's own buttons. A review and a merge are tied to the head the Overview showed, as there.
  */
 function PullProposalBar(props: ViewProps & {
-  proposal: PullProposal; seen: GitHubPullDetail | undefined; seenChecks: GitHubPullChecksResult | 'loading' | null
+  proposal: PullProposal; seen: GitHubPullDetail | undefined; seenChecks: PullChecksRead
   ownPull: boolean; onDismiss: () => void
 }): React.JSX.Element {
   const { api, projectId, pull, proposal, seen, seenChecks, ownPull, onDismiss, onWritten } = props
@@ -655,7 +657,7 @@ function PullReviewers(props: ViewProps & { detail: GitHubPullDetail }): React.J
  * merge is tied to the head the Overview shows, so GitHub refuses it (head-moved) if the PR moved;
  * the node then says so and reloads.
  */
-function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: GitHubPullChecksResult | 'loading' | null }): React.JSX.Element {
+function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullChecksRead }): React.JSX.Element {
   const { api, projectId, pull, detail: d, checks, onWritten, onOpenTerminal } = props
   const name = useId()
   const [open, setOpen] = useState(false)
@@ -664,8 +666,11 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: GitHub
   const [busy, setBusy] = useState(false)
   const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
   const block = mergeBlock(d, checks)
-  const [updating, setUpdating] = useState(false)
-  const update = useWrite(() => { setUpdating(true); onWritten() })
+  // The head an update was started from: GitHub updates in the background (202), so until the
+  // node reads a new head the button stays off and the node says it is under way.
+  const [updatedFrom, setUpdatedFrom] = useState<string | null>(null)
+  const updating = updatedFrom === d.head.sha
+  const update = useWrite(() => { setUpdatedFrom(d.head.sha); onWritten() })
 
   const show = () => {
     setOpen(true)
@@ -699,10 +704,14 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: GitHub
       <button className="pull-compose__button" disabled={!!block || busy} onClick={show}>Merge…</button>
       {block && <p className="pull-merge__reason">{block.text}</p>}
       {block?.kind === 'behind' && (
-        <button className="pull-compose__button" disabled={update.busy}
-          onClick={() => void update.run(() => api.updatePullBranch({
-            projectId, repository: pull.repository, pullNumber: pull.pullNumber, headSha: d.head.sha
-          }))}>Update branch</button>
+        <button className="pull-compose__button" disabled={update.busy || updating}
+          onClick={() => void update.run(async () => {
+            const outcome = await api.updatePullBranch({
+              projectId, repository: pull.repository, pullNumber: pull.pullNumber, headSha: d.head.sha
+            })
+            if (!outcome.ok && outcome.reason === 'head-moved') onWritten()
+            return outcome
+          })}>Update branch</button>
       )}
       {block?.kind === 'conflict' && onOpenTerminal && PLAIN_BRANCH.test(d.head.ref) && (
         // ponytail: switches the project's own checkout; a fork's branch is not on origin.
@@ -711,7 +720,11 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: GitHub
         </button>
       )}
       {updating && <p className="pull-node__state" role="status">GitHub is updating the branch. Refresh in a moment to see the new commit.</p>}
-      {update.refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[update.refusal]}</p>}
+      {update.refusal && (
+        <p className="pull-compose__error" role="alert">
+          {update.refusal === 'head-moved' ? UPDATE_MOVED_TEXT : WRITE_TEXT[update.refusal]}
+        </p>
+      )}
       {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
       {open && (
         <div className="pull-merge__backdrop">

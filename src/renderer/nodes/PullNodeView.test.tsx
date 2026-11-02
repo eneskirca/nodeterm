@@ -443,6 +443,28 @@ describe('PullNodeView merge blockers', () => {
     expect(api.updatePullBranch).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, headSha: 'c'.repeat(40) })
     expect(onWritten).toHaveBeenCalledTimes(1)
     expect(view.querySelector('.pull-merge')?.textContent).toContain('GitHub is updating the branch')
+    expect(button(view, 'Update branch').disabled).toBe(true)
+  })
+
+  it('a moved head says so and reloads', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'behind' }, observedAt: 1 })
+    api.updatePullBranch.mockResolvedValue({ ok: false, reason: 'head-moved' })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    await act(async () => { button(view, 'Update branch').click() })
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('the branch was not updated')
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads the checks again on Refresh, so a new review decision shows without a push', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
+    await render(api)
+    expect(api.pullChecks).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+        refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
+    })
+    expect(api.pullChecks).toHaveBeenCalledTimes(2)
   })
 
   it('names a refused update and does not reload', async () => {

@@ -312,6 +312,15 @@ describe('GitHubIssueService update branch', () => {
       .toEqual({ ok: false, reason: 'not-approved' })
     expect(client.writes).toEqual([])
   })
+
+  it('a 422 (the head moved) is head-moved, and the reload that follows reads fresh past the floor', async () => {
+    const { client, service } = harness()
+    await service.pullDetail(at)
+    client.fail = new GitHubClientError('request-failed', 422)
+    expect(await service.updatePullBranch({ ...at, headSha: sha })).toEqual({ ok: false, reason: 'head-moved' })
+    await service.pullDetail(at)
+    expect(client.detailReads).toBe(2)
+  })
 })
 
 describe('GitHubIssueService request reviewer', () => {

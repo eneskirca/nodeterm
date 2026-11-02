@@ -4,6 +4,8 @@ import type { GitHubPullChecksResult } from '@shared/github-pull-status'
 /** Why Merge is off. `conflict` offers a terminal on the branch, `behind` offers Update branch. */
 export type MergeBlockKind = 'draft' | 'closed' | 'merged' | 'conflict' | 'behind' | 'blocked'
 export interface MergeBlock { kind: MergeBlockKind; text: string }
+/** The Overview's checks read, as `usePullChecks` answers it. */
+export type PullChecksRead = GitHubPullChecksResult | 'loading' | null
 
 const BLOCKED_UNKNOWN = 'Branch protection blocked this merge. Get the required reviews and checks first.'
 
@@ -15,7 +17,7 @@ const BLOCKED_UNKNOWN = 'Branch protection blocked this merge. Get the required 
  */
 export function mergeBlock(
   d: Pick<GitHubPullDetail, 'lifecycle' | 'merge' | 'base' | 'head'>,
-  checks?: GitHubPullChecksResult | 'loading' | null
+  checks?: PullChecksRead
 ): MergeBlock | null {
   if (d.lifecycle === 'draft') {
     return { kind: 'draft', text: 'A draft pull request cannot be merged. Mark it ready for review on GitHub first.' }

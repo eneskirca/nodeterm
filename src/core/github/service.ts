@@ -1231,7 +1231,8 @@ export class GitHubIssueService {
   }
 
   /** "Update branch" from the node (a user click only): GitHub merges the base into the head, and
-   *  refuses (422) if the head is no longer `headSha`, the commit the Overview showed. */
+   *  refuses (422, reported as head-moved) if the head is no longer `headSha`, the commit the
+   *  Overview showed. */
   async updatePullBranch(
     request: { projectId: string; repository: string; pullNumber: number; headSha: string }
   ): Promise<PullWriteResult> {
@@ -1240,7 +1241,15 @@ export class GitHubIssueService {
     return this.pullWrite(request, async (client, repository, pullNumber) => {
       // ponytail: a client that cannot update reads as network; the real client always can.
       if (!client.updatePullBranch) throw new Error('unsupported')
-      return client.updatePullBranch(repository, pullNumber, headSha)
+      try {
+        await client.updatePullBranch(repository, pullNumber, headSha)
+      } catch (error) {
+        // GitHub answers a head that is no longer `headSha` with 422 here (a merge gets 409).
+        // ponytail: any 422 reads as head-moved; the node reloads either way.
+        const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+        if (code === 'request-failed' && status === 422) throw Object.assign(new Error('head-moved'), { code, status: 409 })
+        throw error
+      }
     })
   }
 

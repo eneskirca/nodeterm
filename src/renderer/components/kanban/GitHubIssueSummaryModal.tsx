@@ -253,7 +253,9 @@ export function usePullChecks(
   api: { pullChecks: (projectId: string, pullNumber: number) => Promise<GitHubPullChecksResult> },
   projectId: string | undefined,
   pullNumber: number,
-  headRefOid: string | undefined
+  headRefOid: string | undefined,
+  /** Read again when this moves (the pull node's Refresh: its review decision can change without a push). */
+  refreshKey?: number
 ): GitHubPullChecksResult | 'loading' | null {
   const [result, setResult] = useState<GitHubPullChecksResult | 'loading' | null>(null)
   useEffect(() => {
@@ -267,7 +269,7 @@ export function usePullChecks(
       .then((value) => { if (live) setResult(value) })
       .catch(() => { if (live) setResult({ status: 'unavailable' }) })
     return () => { live = false }
-  }, [api, projectId, pullNumber, headRefOid])
+  }, [api, projectId, pullNumber, headRefOid, refreshKey])
   return result
 }
 
