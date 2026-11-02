@@ -1,6 +1,7 @@
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
 import type {
   GitHubPullConversationResult,
+  GitHubIssueConversationResult,
   GitHubPullDetailResult,
   GitHubPullFileContentsResult,
   GitHubPullFilesResult,
@@ -332,6 +333,12 @@ export interface GitHubIssuesApi {
   }): Promise<PullWriteResult>
   /** Post one line comment (a new thread at `headSha`) or a reply. A user click only, never an agent verb. */
   commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
+  /** The issues node: one issue's comments, oldest first (same refusals and floor as `pullDetail`). */
+  issueConversation(projectId: string, repository: string, issueNumber: number): Promise<GitHubIssueConversationResult>
+  /** Comment on an issue from the issues node. A user click only; needs the approved repository. */
+  commentOnIssue(
+    request: { projectId: string; repository: string; issueNumber: number; body: string }
+  ): Promise<PullWriteResult>
   /** Cancel "Merge when ready". A user click only, never an agent verb. */
   disablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
   /** "Merge when ready": turn on GitHub auto-merge with the method, tied to the head the Overview showed. A user click only, never an agent verb. */

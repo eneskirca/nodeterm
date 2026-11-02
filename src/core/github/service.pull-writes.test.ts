@@ -7,6 +7,7 @@ import type { NormalisedProjectKanbanGitHub } from '../../shared/github-issues'
 import type {
   GitHubPullDetail, PullConversationPage, PullCreateDraft, PullLineCommentWrite, PullLineDraft, PullMergeMethod, PullReviewEvent
 } from '../../shared/github-pull-detail'
+import { MAX_PULL_COMMENT_BODY } from '../../shared/github-pull-detail'
 
 const config: NormalisedProjectKanbanGitHub = {
   repository: 'o/r', columnMappings: [], completionColumnId: undefined, revision: 'mapping-1'
@@ -441,5 +442,48 @@ describe('GitHubIssueService request reviewer', () => {
     expect(await service.pullForBranch({ projectId: 'p', repository: 'o/r', head: '-x' }))
       .toEqual({ status: 'refused', reason: 'not-configured' })
     expect(client.branchReads).toEqual(['o/r feat/x'])
+  })
+})
+
+describe('GitHubIssueService issue node', () => {
+  const issueAt = { projectId: 'p', repository: 'o/r', issueNumber: 12 }
+
+  it('comments on an issue through the issue-comment call and refreshes the list', async () => {
+    const { client, service, refresh } = harness()
+    expect(await service.commentOnIssue({ ...issueAt, body: 'On it' })).toEqual({ ok: true })
+    expect(client.writes).toEqual([['comment', 'o/r', 12, 'On it']])
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['an empty body', { body: ' \n' }],
+    ['a body over the limit', { body: 'x'.repeat(MAX_PULL_COMMENT_BODY + 1) }],
+    ['a body that is not text', { body: 7 }],
+    ['issue 0', { issueNumber: 0, body: 'x' }],
+    ['a fractional issue', { issueNumber: 1.5, body: 'x' }],
+    ['an issue number that is text', { issueNumber: '12', body: 'x' }],
+    ['a malformed repository', { repository: 'o/r/../x', body: 'x' }]
+  ])('refuses an issue comment with %s before anything is resolved', async (_, fields) => {
+    const { client, service, contexts } = harness()
+    expect(await service.commentOnIssue({ ...issueAt, ...fields } as never)).toEqual({ ok: false, reason: 'validation' })
+    expect(client.writes).toEqual([])
+    expect(contexts()).toBe(0)
+  })
+
+  it('refuses an issue comment on a repository that is not the project\'s', async () => {
+    const { client, service } = harness()
+    expect(await service.commentOnIssue({ ...issueAt, repository: 'other/r', body: 'x' }))
+      .toEqual({ ok: false, reason: 'not-approved' })
+    expect(client.writes).toEqual([])
+  })
+
+  it('reads an issue\'s comments (no reviews), and a landed comment drops the held read', async () => {
+    const { client, service } = harness()
+    expect(await service.issueConversation(issueAt)).toMatchObject({ status: 'ok', items: [], truncated: false })
+    await service.issueConversation(issueAt)
+    expect(client.reads).toBe(1)
+    await service.commentOnIssue({ ...issueAt, body: 'x' })
+    await service.issueConversation(issueAt)
+    expect(client.reads).toBe(2)
   })
 })

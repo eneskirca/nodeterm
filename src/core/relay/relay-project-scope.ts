@@ -50,6 +50,8 @@ const EXTRACTORS: Record<string, (args: unknown[]) => unknown> = {
   [IPC.githubIssuesPullChecks]: fromFirstArg,
   [IPC.githubIssuesPullDetail]: fromFirstArg,
   [IPC.githubIssuesPullConversation]: fromFirstArg,
+  [IPC.githubIssuesIssueConversation]: fromFirstArg,
+  [IPC.githubIssuesIssueComment]: fromFirstArgField,
   [IPC.githubIssuesPullFiles]: fromFirstArg,
   [IPC.githubIssuesPullFileContents]: fromFirstArg,
   [IPC.githubIssuesPullComment]: fromFirstArgField,

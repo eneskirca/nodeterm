@@ -592,6 +592,12 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullAutoMergeOff, request) as ReturnType<GitHubIssuesApi['disablePullAutoMerge']>,
     commentOnPullLine: (request) =>
       client.request(IPC.githubIssuesPullLineComment, request) as ReturnType<GitHubIssuesApi['commentOnPullLine']>,
+    issueConversation: (projectId, repository, issueNumber) =>
+      client.request(IPC.githubIssuesIssueConversation, projectId, repository, issueNumber) as ReturnType<
+        GitHubIssuesApi['issueConversation']
+      >,
+    commentOnIssue: (request) =>
+      client.request(IPC.githubIssuesIssueComment, request) as ReturnType<GitHubIssuesApi['commentOnIssue']>,
     claimPullAutoMove: (request) =>
       client.request(IPC.githubIssuesClaimPullAutoMove, request) as Promise<boolean>,
     notePullWaits: (request) =>

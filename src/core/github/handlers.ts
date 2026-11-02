@@ -10,6 +10,7 @@ import type {
 import type { GitHubPullBoard, GitHubPullChecksResult } from '../../shared/github-pull-status'
 import type {
   GitHubPullConversationResult,
+  GitHubIssueConversationResult,
   GitHubPullDetailResult,
   GitHubPullFileContentsResult,
   GitHubPullFilesResult,
@@ -58,6 +59,8 @@ export interface GitHubIssueHandlerService {
     comments?: PullLineDraft[]
   }): Promise<PullWriteResult>
   commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
+  issueConversation(request: { projectId: string; repository: string; issueNumber: number }): Promise<GitHubIssueConversationResult>
+  commentOnIssue(request: { projectId: string; repository: string; issueNumber: number; body: string }): Promise<PullWriteResult>
   disablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
   enablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string }): Promise<PullWriteResult>
   updatePullBranch(request: { projectId: string; repository: string; pullNumber: number; headSha: string }): Promise<PullWriteResult>
@@ -113,6 +116,9 @@ export function registerGitHubIssueHandlers(
     service.repoMergeMethods({ projectId, repository }))
   platform.handle(IPC.githubIssuesPullRequestReviewer, (request) => service.requestPullReviewer(request))
   platform.handle(IPC.githubIssuesPullLineComment, (request) => service.commentOnPullLine(request))
+  platform.handle(IPC.githubIssuesIssueConversation, (projectId: string, repository: string, issueNumber: number) =>
+    service.issueConversation({ projectId, repository, issueNumber }))
+  platform.handle(IPC.githubIssuesIssueComment, (request) => service.commentOnIssue(request))
   platform.handle(IPC.githubIssuesPullAutoMergeOff, (request) => service.disablePullAutoMerge(request))
   platform.handle(IPC.githubIssuesPullAutoMerge, (request) => service.enablePullAutoMerge(request))
   platform.handle(IPC.githubIssuesPullUpdateBranch, (request) => service.updatePullBranch(request))

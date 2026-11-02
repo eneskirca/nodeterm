@@ -31,6 +31,7 @@ import { GitHubPullStatusTracker } from './pull-status-tracker'
 import type { GitHubPullBoard, GitHubPullChecksResult, PullLifecycle } from '../../shared/github-pull-status'
 import type {
   GitHubPullConversationResult,
+  GitHubIssueConversationResult,
   GitHubPullDetail,
   GitHubPullDetailResult,
   GitHubPullFileContentsResult,
@@ -1197,6 +1198,38 @@ export class GitHubIssueService {
       client.createIssueComment(repository, pullNumber, request.body))
   }
 
+  /**
+   * One issue's comments, oldest first, for the issues node's detail. The PR conversation's read
+   * without reviews or line comments (an issue has neither): same refusals, floor and stale rules.
+   */
+  async issueConversation(
+    request: { projectId: string; repository: string; issueNumber: number }
+  ): Promise<GitHubIssueConversationResult> {
+    return this.pullRead('issue-conversation', { ...request, pullNumber: request?.issueNumber }, async (captured, repository, issueNumber) => {
+      const { client } = captured
+      if (!client.listPullComments) return null
+      const items: PullConversationItem[] = []
+      let page = 1
+      for (let read = 0; read < MAX_CONVERSATION_PAGES; read += 1) {
+        // `/issues/{n}/comments`: the same list for an issue as for a PR.
+        const result = await this.readWithEpoch(captured, () => client.listPullComments!(repository, issueNumber, page))
+        items.push(...result.items)
+        if (!result.nextPage) return { status: 'ok', items, truncated: false, observedAt: this.now() }
+        page = result.nextPage
+      }
+      return { status: 'ok', items, truncated: true, observedAt: this.now() }
+    })
+  }
+
+  /** Post a comment on an issue from the issues node. A user click only; never an agent verb. */
+  async commentOnIssue(
+    request: { projectId: string; repository: string; issueNumber: number; body: string }
+  ): Promise<PullWriteResult> {
+    if (!isPullCommentBody(request?.body)) return { ok: false, reason: 'validation' }
+    return this.pullWrite({ ...request, pullNumber: request.issueNumber }, (client, repository, issueNumber) =>
+      client.createIssueComment(repository, issueNumber, request.body))
+  }
+
   /** Post one line comment from the Files tab: a new thread tied to `headSha` (the head the node
    *  read), or a reply to `inReplyTo`. A user click only; never an agent verb. */
   async commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult> {
@@ -1455,7 +1488,7 @@ export class GitHubIssueService {
   }
 
   private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
-    for (const kind of ['detail', 'conversation', 'files']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
+    for (const kind of ['detail', 'conversation', 'files', 'issue-conversation']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
   }
 
   /**
@@ -1469,7 +1502,7 @@ export class GitHubIssueService {
   private async pullRead<O extends PullOk>(
     // `contents\0…` carries the file and SHAs, so a held entry is one file at one head;
     // `merge-base\0…` carries the base and head SHAs.
-    kind: 'detail' | 'conversation' | 'files' | `contents\0${string}` | `merge-base\0${string}`,
+    kind: 'detail' | 'conversation' | 'files' | 'issue-conversation' | `contents\0${string}` | `merge-base\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {

@@ -291,6 +291,9 @@ const api: NodeTerminalApi = {
     pullForBranch: (projectId, repository, head) => ipcRenderer.invoke(IPC.githubIssuesPullForBranch, projectId, repository, head),
     createPull: (request) => ipcRenderer.invoke(IPC.githubIssuesPullCreate, request),
     commentOnPullLine: (request) => ipcRenderer.invoke(IPC.githubIssuesPullLineComment, request),
+    issueConversation: (projectId, repository, issueNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesIssueConversation, projectId, repository, issueNumber),
+    commentOnIssue: (request) => ipcRenderer.invoke(IPC.githubIssuesIssueComment, request),
     disablePullAutoMerge: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAutoMergeOff, request),
     enablePullAutoMerge: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAutoMerge, request),
     updatePullBranch: (request) => ipcRenderer.invoke(IPC.githubIssuesPullUpdateBranch, request),

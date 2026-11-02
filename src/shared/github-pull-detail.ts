@@ -170,6 +170,12 @@ export type GitHubPullConversationResult =
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
 
+/** One issue's comments for the issues node (core `issueConversation`), oldest first. */
+export type GitHubIssueConversationResult =
+  | { status: 'ok'; items: PullConversationItem[]; truncated: boolean; observedAt: number; stale?: PullReadFailure; retryAt?: number }
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
+
 /** What a review from the node says. REQUEST_CHANGES and COMMENT need a message; APPROVE does not. */
 export type PullReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
 
