@@ -327,6 +327,8 @@ export interface GitHubIssuesApi {
   }): Promise<PullWriteResult>
   /** Post one line comment (a new thread at `headSha`) or a reply. A user click only, never an agent verb. */
   commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
+  /** "Update branch": merge the base into the head, tied to the head the Overview showed. A user click only, never an agent verb. */
+  updatePullBranch(request: { projectId: string; repository: string; pullNumber: number; headSha: string }): Promise<PullWriteResult>
   /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string

@@ -584,6 +584,8 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullForBranch, projectId, repository, head) as ReturnType<GitHubIssuesApi['pullForBranch']>,
     createPull: (request) =>
       client.request(IPC.githubIssuesPullCreate, request) as ReturnType<GitHubIssuesApi['createPull']>,
+    updatePullBranch: (request) =>
+      client.request(IPC.githubIssuesPullUpdateBranch, request) as ReturnType<GitHubIssuesApi['updatePullBranch']>,
     commentOnPullLine: (request) =>
       client.request(IPC.githubIssuesPullLineComment, request) as ReturnType<GitHubIssuesApi['commentOnPullLine']>,
     claimPullAutoMove: (request) =>

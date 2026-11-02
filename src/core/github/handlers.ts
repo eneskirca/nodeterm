@@ -58,6 +58,7 @@ export interface GitHubIssueHandlerService {
     comments?: PullLineDraft[]
   }): Promise<PullWriteResult>
   commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
+  updatePullBranch(request: { projectId: string; repository: string; pullNumber: number; headSha: string }): Promise<PullWriteResult>
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
   }): Promise<PullWriteResult>
@@ -110,6 +111,7 @@ export function registerGitHubIssueHandlers(
     service.repoMergeMethods({ projectId, repository }))
   platform.handle(IPC.githubIssuesPullRequestReviewer, (request) => service.requestPullReviewer(request))
   platform.handle(IPC.githubIssuesPullLineComment, (request) => service.commentOnPullLine(request))
+  platform.handle(IPC.githubIssuesPullUpdateBranch, (request) => service.updatePullBranch(request))
   platform.handle(IPC.githubIssuesRepoCollaborators, (projectId: string, repository: string) =>
     service.repoCollaborators({ projectId, repository }))
   platform.handle(IPC.githubIssuesPullForBranch, (projectId: string, repository: string, head: string) =>
