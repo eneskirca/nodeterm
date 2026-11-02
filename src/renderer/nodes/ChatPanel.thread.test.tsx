@@ -25,7 +25,7 @@ const { session, reads } = vi.hoisted(() => {
           return { messages: reads.messages, found: true, olderCursor: null, unmatchedResults: [] }
         }
       },
-      pty: { sendText: vi.fn(async () => true as const) }
+      pty: { sendText: vi.fn(async () => true as const), sendChatPrompt: vi.fn(async () => true as const) }
     }
   }
   return { session, reads }
@@ -183,6 +183,27 @@ describe('⌘M thread look', () => {
       { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10 },
       { role: 'assistant', parts: [{ kind: 'tool', name: 'Read', arg: 'b' }], key: 20 }
     ])
+    expect(host.querySelector('.term-chat__tool-group')).toBeNull()
+    expect(host.querySelectorAll('.term-chat__tool')).toHaveLength(2)
+  })
+
+  it('a prompt queued mid-turn does not fold the live run it lands after', async () => {
+    // The "Queued" bubble is drawn at the END of the thread; the run before it is still the live tail.
+    useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'working' } as (typeof s.byId)[string] } }))
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Read', arg: 'b' }], key: 20 }
+    ])
+    const ta = host.querySelector('textarea')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, 'and then this')
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    expect(host.querySelector('.term-chat__msg--queued')?.textContent).toContain('and then this')
     expect(host.querySelector('.term-chat__tool-group')).toBeNull()
     expect(host.querySelectorAll('.term-chat__tool')).toHaveLength(2)
   })

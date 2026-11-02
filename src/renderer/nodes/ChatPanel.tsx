@@ -981,8 +981,13 @@ export function ChatPanel({
   // except, while the turn is live, the run at the end of the thread: its calls stay open chips until
   // something else ends the run. Live = working, or waiting on a prompt (`dialog`: a permission
   // request or question lands MID-turn, and folding on it would close the run on every prompt).
+  // A prompt queued meanwhile is drawn at the very end, but is not the turn's output: the tail is
+  // measured before it (`isQueued`; the set gains a send before the thread does, so it is current).
   const liveTurn = refusal === 'working' || refusal === 'dialog'
-  const toolGroups = useMemo(() => groupToolCalls(messages, { foldTail: !liveTurn }), [messages, liveTurn])
+  const toolGroups = useMemo(
+    () => groupToolCalls(messages, { foldTail: !liveTurn, isQueued: (m) => queuedRef.current.has(m) }),
+    [messages, liveTurn]
+  )
   // The last key IS the latest turn end: `assistantTurnEnds` inserts in thread order.
   const latestTurnEnd = useMemo(() => {
     let last = -1

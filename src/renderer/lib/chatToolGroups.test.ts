@@ -149,6 +149,41 @@ describe('groupToolCalls', () => {
     expect([...layout.absorbed]).toEqual(['2:0', '5:0'])
   })
 
+  it('foldTail:false measures the tail before the queued prompts at the end of the thread', () => {
+    // A prompt sent into the CLI's queue mid-turn is drawn at the END of the thread until the
+    // transcript has it. It is not the turn's output: the live run before it is still the tail.
+    const queued = [user('next, please'), user('and this')]
+    const messages = [user('go'), call('Bash'), call('Read'), say('mid'), call('Bash'), call('Edit'), ...queued]
+    const isQueued = (m: ChatMessage): boolean => queued.includes(m)
+
+    const layout = groupToolCalls(messages, { foldTail: false, isQueued })
+
+    expect([...layout.groupAt.keys()]).toEqual(['1:0']) // the run before the queued bubbles stays chips
+    expect(layout.absorbed.has('5:0')).toBe(false)
+    // Without the predicate the user bubble ends the run, and each new call would land folded.
+    expect([...groupToolCalls(messages, { foldTail: false }).groupAt.keys()]).toEqual(['1:0', '4:0'])
+  })
+
+  it('a queued prompt does not keep an earlier run open once the thread has moved past it', () => {
+    // Only TRAILING queued bubbles are skipped: a run that a non-queued message ends folds as before.
+    const queued = user('queued')
+    const messages = [user('go'), call('Bash'), call('Read'), say('done'), queued]
+
+    const layout = groupToolCalls(messages, { foldTail: false, isQueued: (m) => m === queued })
+
+    expect([...layout.groupAt.keys()]).toEqual(['1:0'])
+    expect(layout.absorbed.has('2:0')).toBe(true)
+  })
+
+  it('a turn that is not live folds the run before the queued prompts too (foldTail default)', () => {
+    const queued = user('queued')
+    const messages = [user('go'), call('Bash'), call('Read'), queued]
+
+    const layout = groupToolCalls(messages, { isQueued: (m) => m === queued })
+
+    expect([...layout.groupAt.keys()]).toEqual(['1:0'])
+  })
+
   it('memberKey uses the transcript line key, so a prepended page does not re-key a member', () => {
     expect(memberKey([call('Bash', 120)], { message: 0, part: 0 })).toBe('k120:0')
     expect(memberKey([call('Bash')], { message: 0, part: 0 })).toBe('i0:0')

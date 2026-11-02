@@ -53,6 +53,12 @@ export interface GroupToolCallsOptions {
    * Default `true`.
    */
   foldTail?: boolean
+  /**
+   * The optimistic bubbles of prompts sent into the CLI's queue mid-turn (ChatPanel's "Queued"). They
+   * sit at the END of the thread until the transcript has them, so the run they follow is still the
+   * live tail: `foldTail` measures the end against the last message that is NOT queued. Absent = none.
+   */
+  isQueued?: (m: ChatMessage) => boolean
 }
 
 /**
@@ -76,12 +82,15 @@ function isFoldableTool(p: ChatPart, message: number, latestTodo: number): boole
  * its own line, so the thread holds one message per call. A run ends at anything else in the thread
  * — text, a thinking summary, a card, a user message, a system record — exactly where the TUI starts
  * a new line. Runs shorter than `TOOL_GROUP_MIN` stay as chips, and so does the trailing run when
- * `opts.foldTail` is `false`.
+ * `opts.foldTail` is `false` (trailing = before any queued prompts at the very end, `opts.isQueued`).
  */
 export function groupToolCalls(messages: readonly ChatMessage[], opts: GroupToolCallsOptions = {}): ToolGroupLayout {
   const groupAt = new Map<string, ToolGroup>()
   const absorbed = new Set<string>()
   const latestTodo = latestTodoIndex(messages)
+  // The thread's end for `foldTail`: queued prompts after the last real message are not part of it.
+  let end = messages.length
+  if (opts.isQueued) while (end > 0 && opts.isQueued(messages[end - 1])) end--
   let run: ToolGroupMember[] = []
   const flush = (): void => {
     if (run.length >= TOOL_GROUP_MIN) {
@@ -91,7 +100,7 @@ export function groupToolCalls(messages: readonly ChatMessage[], opts: GroupTool
     }
     run = []
   }
-  messages.forEach((m, i) => {
+  messages.slice(0, end).forEach((m, i) => {
     if (m.role !== 'assistant' || isSystemRecordMessage(m)) {
       flush()
       return
@@ -101,7 +110,8 @@ export function groupToolCalls(messages: readonly ChatMessage[], opts: GroupTool
       else flush()
     })
   })
-  // Whatever run is still open here reaches the end of the thread.
+  // Whatever run is still open here reaches the end of the thread (the queued prompts after `end`
+  // hold no tool call to fold — they are the user's).
   if (opts.foldTail !== false) flush()
   return { groupAt, absorbed }
 }
