@@ -33,6 +33,8 @@ describe('registerGitHubIssueHandlers', () => {
       pullConversation: async (...args: unknown[]) => {
         calls.push(['conversation', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
       },
+      commentOnPull: async (...args: unknown[]) => { calls.push(['comment', ...args]); return { ok: true as const } },
+      reviewPull: async (...args: unknown[]) => { calls.push(['review', ...args]); return { ok: true as const } },
       claimPullAutoMove: async (...args: unknown[]) => { calls.push(['claim', ...args]); return true },
       notePullWaits: async (...args: unknown[]) => { calls.push(['wait', ...args]); return 1 }
     }
@@ -47,6 +49,8 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullChecks]('p1', 12)
     await platform.handlers[IPC.githubIssuesPullDetail]('p1', 'o/r', 12)
     await platform.handlers[IPC.githubIssuesPullConversation]('p1', 'o/r', 12)
+    await platform.handlers[IPC.githubIssuesPullComment]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, body: 'b' })
+    await platform.handlers[IPC.githubIssuesPullReview]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' })
     await platform.handlers[IPC.githubIssuesClaimPullAutoMove]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     await platform.handlers[IPC.githubIssuesNotePullWaits]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     expect(calls).toEqual([
@@ -58,6 +62,8 @@ describe('registerGitHubIssueHandlers', () => {
       ['checks', { projectId: 'p1', pullNumber: 12 }],
       ['detail', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
       ['conversation', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
+      ['comment', { projectId: 'p1', repository: 'o/r', pullNumber: 12, body: 'b' }],
+      ['review', { projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' }],
       ['claim', { projectId: 'p1', cardId: 'n', pulls: [3] }],
       ['wait', { projectId: 'p1', cardId: 'n', pulls: [3] }]
     ])

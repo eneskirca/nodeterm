@@ -172,6 +172,12 @@ describe('scoped guest — canvas, board and GitHub', () => {
     expect(allowed(IPC.githubIssuesQuery, { projectId: 'beta' })).toBe(false)
     expect(allowed(IPC.githubIssuesQuery, { projectId: 'alpha' })).toBe(true)
   })
+  it('refuses pull request writes, even for the shared project', () => {
+    const write = { projectId: 'alpha', repository: 'o/r', pullNumber: 7, body: 'x' }
+    expect(allowed(IPC.githubIssuesPullComment, write)).toBe(false)
+    expect(allowed(IPC.githubIssuesPullReview, { ...write, event: 'APPROVE', headSha: 'c'.repeat(40) })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullConversation, 'alpha', 'o/r', 7)).toBe(true)
+  })
   it('refuses a canvas mutation into another project, or adopting another project\'s node id', () => {
     const node = (id: string) => ({ op: 'upsert', node: { id, kind: 'terminal', position: { x: 0, y: 0 } } })
     expect(allowed(IPC.canvasMut, 'beta', node('fresh'))).toBe(false)

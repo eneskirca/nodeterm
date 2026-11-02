@@ -8,7 +8,12 @@ import type {
   GitHubMutationResult
 } from '../../shared/github-issues'
 import type { GitHubPullBoard, GitHubPullChecksResult } from '../../shared/github-pull-status'
-import type { GitHubPullConversationResult, GitHubPullDetailResult } from '../../shared/github-pull-detail'
+import type {
+  GitHubPullConversationResult,
+  GitHubPullDetailResult,
+  PullReviewEvent,
+  PullWriteResult
+} from '../../shared/github-pull-detail'
 
 export interface GitHubIssueHandlerService {
   subscribe(uiId: number, request: { projectId: string }): Promise<GitHubIssuePage>
@@ -31,6 +36,12 @@ export interface GitHubIssueHandlerService {
   pullConversation(
     request: { projectId: string; repository: string; pullNumber: number }
   ): Promise<GitHubPullConversationResult>
+  commentOnPull(
+    request: { projectId: string; repository: string; pullNumber: number; body: string }
+  ): Promise<PullWriteResult>
+  reviewPull(request: {
+    projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
+  }): Promise<PullWriteResult>
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>
   notePullWaits(request: { projectId: string; cardId: string; pulls: number[] }): Promise<number>
 }
@@ -61,6 +72,8 @@ export function registerGitHubIssueHandlers(
     service.pullDetail({ projectId, repository, pullNumber }))
   platform.handle(IPC.githubIssuesPullConversation, (projectId: string, repository: string, pullNumber: number) =>
     service.pullConversation({ projectId, repository, pullNumber }))
+  platform.handle(IPC.githubIssuesPullComment, (request) => service.commentOnPull(request))
+  platform.handle(IPC.githubIssuesPullReview, (request) => service.reviewPull(request))
   platform.handle(IPC.githubIssuesClaimPullAutoMove,
     (request: { projectId: string; cardId: string; pulls: number[] }) => service.claimPullAutoMove(request))
   platform.handle(IPC.githubIssuesNotePullWaits,

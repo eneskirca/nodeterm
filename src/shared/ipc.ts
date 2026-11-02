@@ -574,6 +574,9 @@ export const IPC = {
   githubIssuesPullChecks: 'githubIssues:pull-checks',
   githubIssuesPullDetail: 'githubIssues:pull-detail',
   githubIssuesPullConversation: 'githubIssues:pull-conversation',
+  // Pull node WRITES: a user click only. Owner-only for relay peers; no canvas-control verb calls them.
+  githubIssuesPullComment: 'githubIssues:pull-comment',
+  githubIssuesPullReview: 'githubIssues:pull-review',
   githubIssuesClaimPullAutoMove: 'githubIssues:claim-pull-auto-move',
   githubIssuesNotePullWaits: 'githubIssues:note-pull-waits',
   githubIssuesChanged: (projectId: string) => `githubIssues:changed:${projectId}`,

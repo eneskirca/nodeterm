@@ -1,5 +1,10 @@
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
-import type { GitHubPullConversationResult, GitHubPullDetailResult } from './github-pull-detail'
+import type {
+  GitHubPullConversationResult,
+  GitHubPullDetailResult,
+  PullReviewEvent,
+  PullWriteResult
+} from './github-pull-detail'
 
 export interface ProjectKanbanGitHub {
   repository?: string
@@ -294,6 +299,14 @@ export interface GitHubIssuesApi {
   /** One PR's comments and reviews, oldest first, for the node's Conversation tab. Same refusals
    *  and refresh floor as `pullDetail`. */
   pullConversation(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullConversationResult>
+  /** Post a comment on the PR. A user click only; needs the approved repository, not the mapping. */
+  commentOnPull(
+    request: { projectId: string; repository: string; pullNumber: number; body: string }
+  ): Promise<PullWriteResult>
+  /** Submit a review tied to `headSha`. An empty body is refused for REQUEST_CHANGES and COMMENT. */
+  reviewPull(request: {
+    projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
+  }): Promise<PullWriteResult>
   /** The one-time permission to move a session card because its linked PRs merged. The first ask
    *  across every window wins; the host remembers it. */
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>

@@ -556,6 +556,10 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullConversation, projectId, repository, pullNumber) as ReturnType<
         GitHubIssuesApi['pullConversation']
       >,
+    commentOnPull: (request) =>
+      client.request(IPC.githubIssuesPullComment, request) as ReturnType<GitHubIssuesApi['commentOnPull']>,
+    reviewPull: (request) =>
+      client.request(IPC.githubIssuesPullReview, request) as ReturnType<GitHubIssuesApi['reviewPull']>,
     claimPullAutoMove: (request) =>
       client.request(IPC.githubIssuesClaimPullAutoMove, request) as Promise<boolean>,
     notePullWaits: (request) =>

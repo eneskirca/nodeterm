@@ -31,6 +31,15 @@ describe('access policy', () => {
     expect(decideAccess('req', IPC.fsWrite, ['/x', 'y'], ctx('editor'))).toEqual({ allow: true })
     expect(decideAccess('req', IPC.ptyCreate, [{ persistKey: 'n2' }], ctx('owner'))).toEqual({ allow: true })
   })
+  it('pull request writes run on the owner\'s GitHub token, so only an owner may send them', () => {
+    for (const m of [IPC.githubIssuesPullComment, IPC.githubIssuesPullReview]) {
+      const args = [{ projectId: 'P', repository: 'o/r', pullNumber: 7, body: 'x' }]
+      expect(decideAccess('req', m, args, ctx('owner'))).toEqual({ allow: true })
+      for (const role of ['editor', 'commenter', 'viewer'] as const) {
+        expect(decideAccess('req', m, args, ctx(role)).allow, `${m} ${role}`).toBe(false)
+      }
+    }
+  })
   it('a viewer may not write, destroy, send text or mutate the canvas', () => {
     for (const m of [IPC.fsWrite, IPC.ptyDestroy, IPC.ptySendText, IPC.gitCommit, IPC.settingsLoad]) {
       expect(decideAccess('req', m, [], ctx('viewer')).allow).toBe(false)

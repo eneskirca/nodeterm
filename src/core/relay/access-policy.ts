@@ -506,9 +506,22 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.presencePeer
 ])
 
+/**
+ * Channels only an OWNER may send: writes made with the host owner's own GitHub token (a comment or
+ * review posts as that person). Editors are refused too; Editor is shell access, not identity. The
+ * guard test counts these as decided. Ticket 05's merge joins this set.
+ */
+export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
+  IPC.githubIssuesPullComment,
+  IPC.githubIssuesPullReview
+])
+
 const ROLE_NAME: Readonly<Record<string, string>> = { owner: 'Owners', editor: 'Editors', commenter: 'Commenters', viewer: 'Viewers' }
 
 export function decideAccess(_kind: 'req' | 'cast', method: string, args: unknown[], ctx: AccessContext): AccessDecision {
+  if (typeof method === 'string' && OWNER_ONLY.has(method)) {
+    return ctx.role === 'owner' ? OK : no('Only owners can post to GitHub from here.')
+  }
   if (isEditor(ctx.role)) return OK
   // Own keys only: a method named `constructor` must not find Object.prototype's.
   const check =

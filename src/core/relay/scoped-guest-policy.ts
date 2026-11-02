@@ -553,6 +553,9 @@ export const SCOPED_REFUSED: ReadonlySet<string> = new Set<string>([
   IPC.logClear,
   IPC.logSubscribe,
   IPC.logUnsubscribe,
+  // Pull request writes act with the host owner's GitHub token: never a shared view's to send.
+  IPC.githubIssuesPullComment,
+  IPC.githubIssuesPullReview,
   // GitHub credential plane (host-only prefix) — relay-api.ts uses the LOCAL githubControl.
   IPC.githubControlStatus,
   IPC.githubControlApprove,
