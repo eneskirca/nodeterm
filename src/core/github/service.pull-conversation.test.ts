@@ -4,7 +4,9 @@ import { GitHubClientError } from './client'
 import { GitHubIssueService, type GitHubIssueServiceContext, type GitHubIssuesClientLike } from './service'
 import { GitHubRequestCoordinator } from './request-coordinator'
 import type { NormalisedProjectKanbanGitHub } from '../../shared/github-issues'
-import type { PullConversationItem, PullConversationPage } from '../../shared/github-pull-detail'
+import type {
+  PullConversationItem, PullConversationPage, PullLineComment, PullLineCommentsPage
+} from '../../shared/github-pull-detail'
 
 const config: NormalisedProjectKanbanGitHub = {
   repository: 'o/r', columnMappings: [], completionColumnId: undefined, revision: 'mapping-1'
@@ -37,6 +39,10 @@ class Client implements GitHubIssuesClientLike {
   async listPullReviews(_r: string, _n: number, page: number): Promise<PullConversationPage> {
     this.reads.push(`reviews ${page}`); return this.reviews(page)
   }
+  lines: (page: number) => Promise<PullLineCommentsPage> = async () => ({ comments: [] })
+  async listPullLineComments(_r: string, _n: number, page: number): Promise<PullLineCommentsPage> {
+    this.reads.push(`lines ${page}`); return this.lines(page)
+  }
 }
 
 function harness(contextError?: { code: string }) {
@@ -65,6 +71,18 @@ describe('GitHubIssueService.pullConversation', () => {
     expect(result).toMatchObject({ status: 'ok', truncated: false, observedAt: 1_000_000 })
     expect(result.status === 'ok' && result.items.map((item) => `${item.kind} ${item.id}`))
       .toEqual(['comment 1', 'review 2', 'comment 3'])
+  })
+
+  it('reads the line comments with it, following their pages', async () => {
+    const { client, service } = harness()
+    const line = (id: number): PullLineComment => ({
+      id, reviewId: 2, author: null, body: 'Why?', at: '2026-10-01T11:00:00Z', url: `https://github.com/o/r/pull/7#discussion_r${id}`,
+      path: 'a.ts', side: 'RIGHT', line: 4, outdated: false
+    })
+    client.lines = async (page) => page === 1 ? { comments: [line(10)], nextPage: 2 } : { comments: [line(11)] }
+    const result = await service.pullConversation(request)
+    expect(result.status === 'ok' && result.lineComments.map((item) => item.id)).toEqual([10, 11])
+    expect(client.reads).toContain('lines 2')
   })
 
   it('follows next pages and says truncated past the page cap', async () => {
@@ -106,6 +124,6 @@ describe('GitHubIssueService.pullConversation', () => {
     await service.pullConversation(request)
     advance(10_000)
     await service.pullConversation(request)
-    expect(client.reads).toEqual(['comments 1', 'reviews 1'])
+    expect(client.reads).toEqual(['comments 1', 'reviews 1', 'lines 1'])
   })
 })

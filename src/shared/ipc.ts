@@ -581,6 +581,7 @@ export const IPC = {
   githubIssuesPullReview: 'githubIssues:pull-review',
   githubIssuesPullMerge: 'githubIssues:pull-merge',
   githubIssuesPullRequestReviewer: 'githubIssues:pull-request-reviewer',
+  githubIssuesPullLineComment: 'githubIssues:pull-line-comment',
   // The merge confirmation's allowed methods: a read, classified like the pull reads above.
   githubIssuesRepoMergeMethods: 'githubIssues:repo-merge-methods',
   // "Request review"'s people list: a read, classified like the pull reads above.

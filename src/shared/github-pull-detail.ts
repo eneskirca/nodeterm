@@ -59,9 +59,78 @@ export interface PullConversationPage {
   nextPage?: number
 }
 
+/** Which side of a diff a line comment is on: LEFT = the base, RIGHT = the head. */
+export type PullDiffSide = 'LEFT' | 'RIGHT'
+
+/** One review comment on a diff line (`GET /pulls/{n}/comments`). `line` null = not on a current
+ *  line: `outdated` (its line left the diff) or a comment on the whole file. */
+export interface PullLineComment {
+  id: number
+  /** The review it was posted in. GitHub wraps even a single line comment in one. */
+  reviewId: number | null
+  /** The comment this one answers. Absent on the first comment of a thread. */
+  inReplyTo?: number
+  author: GitHubIssueUser | null
+  body: string
+  at: string
+  url: string
+  path: string
+  side: PullDiffSide
+  line: number | null
+  outdated: boolean
+}
+
+/** One page of `GET /pulls/{n}/comments`, as the client reads it. */
+export interface PullLineCommentsPage {
+  comments: PullLineComment[]
+  nextPage?: number
+}
+
+/** A new line comment, before it is sent: on its own, or in the review the user submits next. */
+export interface PullLineDraft {
+  path: string
+  line: number
+  side: PullDiffSide
+  body: string
+}
+
+/** GitHub's comment body limit is 65,536 characters; the node keeps under it, as for reviews. */
+export const MAX_PULL_COMMENT_BODY = 60_000
+/** Pending line comments one review may carry. */
+export const MAX_PULL_REVIEW_COMMENTS = 50
+
+/** A repository path as GitHub names it: no empty, `.` or `..` segment and no NUL. */
+export function isPullPath(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 4_096 && !value.includes('\u0000') &&
+    value.split('/').every((part) => part !== '' && part !== '.' && part !== '..')
+}
+
+/** A non-empty comment body under the limit. */
+export function isPullCommentBody(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_PULL_COMMENT_BODY
+}
+
+/** Checked at the main/core boundary and again in the client: path, line, side and body. */
+export function isPullLineDraft(value: unknown): value is PullLineDraft {
+  const draft = value as Partial<PullLineDraft> | null
+  return typeof draft === 'object' && draft !== null && isPullPath(draft.path) &&
+    Number.isSafeInteger(draft.line) && (draft.line as number) >= 1 && (draft.line as number) <= 1_000_000 &&
+    (draft.side === 'LEFT' || draft.side === 'RIGHT') && isPullCommentBody(draft.body)
+}
+
+/** A line comment the node sends on its own: a new thread at the head the user saw, or a reply. */
+export type PullLineCommentRequest =
+  | { projectId: string; repository: string; pullNumber: number; headSha: string; comment: PullLineDraft }
+  | { projectId: string; repository: string; pullNumber: number; inReplyTo: number; body: string }
+
 export type GitHubPullConversationResult =
-  /** `items` oldest first. `truncated` = more pages than the node reads; the rest is on GitHub. */
-  | { status: 'ok'; items: PullConversationItem[]; truncated: boolean; observedAt: number; stale?: PullReadFailure; retryAt?: number }
+  /** `items` oldest first. `truncated` = more pages than the node reads; the rest is on GitHub.
+   *  `lineComments` oldest first: the Files tab threads them, the Conversation tab lists them under
+   *  their review. */
+  | {
+    status: 'ok'; items: PullConversationItem[]; lineComments: PullLineComment[]; truncated: boolean; observedAt: number
+    stale?: PullReadFailure; retryAt?: number
+  }
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
 

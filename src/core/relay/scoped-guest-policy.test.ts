@@ -184,6 +184,7 @@ describe('scoped guest — canvas, board and GitHub', () => {
     expect(allowed(IPC.githubIssuesRepoMergeMethods, 'alpha', 'o/r')).toBe(true)
     expect(allowed(IPC.githubIssuesRepoMergeMethods, 'beta', 'o/r')).toBe(false)
     expect(allowed(IPC.githubIssuesPullRequestReviewer, { ...write, reviewer: 'ana' })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullLineComment, { ...write, inReplyTo: 9 })).toBe(false)
     expect(allowed(IPC.githubIssuesRepoCollaborators, 'alpha', 'o/r')).toBe(true)
     expect(allowed(IPC.githubIssuesRepoCollaborators, 'beta', 'o/r')).toBe(false)
   })

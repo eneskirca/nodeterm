@@ -580,6 +580,8 @@ export function buildGitHubApi(
       >,
     requestPullReviewer: (request) =>
       client.request(IPC.githubIssuesPullRequestReviewer, request) as ReturnType<GitHubIssuesApi['requestPullReviewer']>,
+    commentOnPullLine: (request) =>
+      client.request(IPC.githubIssuesPullLineComment, request) as ReturnType<GitHubIssuesApi['commentOnPullLine']>,
     claimPullAutoMove: (request) =>
       client.request(IPC.githubIssuesClaimPullAutoMove, request) as Promise<boolean>,
     notePullWaits: (request) =>

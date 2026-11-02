@@ -288,6 +288,7 @@ const api: NodeTerminalApi = {
     repoMergeMethods: (projectId, repository) => ipcRenderer.invoke(IPC.githubIssuesRepoMergeMethods, projectId, repository),
     repoCollaborators: (projectId, repository) => ipcRenderer.invoke(IPC.githubIssuesRepoCollaborators, projectId, repository),
     requestPullReviewer: (request) => ipcRenderer.invoke(IPC.githubIssuesPullRequestReviewer, request),
+    commentOnPullLine: (request) => ipcRenderer.invoke(IPC.githubIssuesPullLineComment, request),
     claimPullAutoMove: (request) => ipcRenderer.invoke(IPC.githubIssuesClaimPullAutoMove, request),
     notePullWaits: (request) => ipcRenderer.invoke(IPC.githubIssuesNotePullWaits, request),
     projectAvatar: (projectId) => ipcRenderer.invoke(IPC.githubProjectAvatar, projectId),

@@ -562,6 +562,7 @@ export const SCOPED_REFUSED: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullReview,
   IPC.githubIssuesPullMerge,
   IPC.githubIssuesPullRequestReviewer,
+  IPC.githubIssuesPullLineComment,
   // GitHub credential plane (host-only prefix) — relay-api.ts uses the LOCAL githubControl.
   IPC.githubControlStatus,
   IPC.githubControlApprove,

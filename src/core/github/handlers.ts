@@ -15,6 +15,8 @@ import type {
   GitHubPullFilesResult,
   GitHubRepoCollaboratorsResult,
   GitHubRepoMergeMethodsResult,
+  PullLineCommentRequest,
+  PullLineDraft,
   PullMergeMethod,
   PullReviewEvent,
   PullWriteResult
@@ -50,7 +52,9 @@ export interface GitHubIssueHandlerService {
   ): Promise<PullWriteResult>
   reviewPull(request: {
     projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
+    comments?: PullLineDraft[]
   }): Promise<PullWriteResult>
+  commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
   }): Promise<PullWriteResult>
@@ -100,6 +104,7 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesRepoMergeMethods, (projectId: string, repository: string) =>
     service.repoMergeMethods({ projectId, repository }))
   platform.handle(IPC.githubIssuesPullRequestReviewer, (request) => service.requestPullReviewer(request))
+  platform.handle(IPC.githubIssuesPullLineComment, (request) => service.commentOnPullLine(request))
   platform.handle(IPC.githubIssuesRepoCollaborators, (projectId: string, repository: string) =>
     service.repoCollaborators({ projectId, repository }))
   platform.handle(IPC.githubIssuesClaimPullAutoMove,

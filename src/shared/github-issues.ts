@@ -6,6 +6,8 @@ import type {
   GitHubPullFilesResult,
   GitHubRepoCollaboratorsResult,
   GitHubRepoMergeMethodsResult,
+  PullLineCommentRequest,
+  PullLineDraft,
   PullMergeMethod,
   PullReviewEvent,
   PullWriteResult
@@ -314,10 +316,14 @@ export interface GitHubIssuesApi {
   commentOnPull(
     request: { projectId: string; repository: string; pullNumber: number; body: string }
   ): Promise<PullWriteResult>
-  /** Submit a review tied to `headSha`. An empty body is refused for REQUEST_CHANGES and COMMENT. */
+  /** Submit a review tied to `headSha`, with the pending line comments. An empty body is refused for
+   *  REQUEST_CHANGES, and for COMMENT without line comments. */
   reviewPull(request: {
     projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
+    comments?: PullLineDraft[]
   }): Promise<PullWriteResult>
+  /** Post one line comment (a new thread at `headSha`) or a reply. A user click only, never an agent verb. */
+  commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
   /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string

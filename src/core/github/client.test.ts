@@ -519,8 +519,100 @@ describe('GitHubIssuesClient pull conversation pages', () => {
   })
 })
 
+describe('GitHubIssuesClient pull line comments', () => {
+  const raw = (over: Record<string, unknown> = {}) => ({
+    id: 21, pull_request_review_id: 5, in_reply_to_id: null, user, body: 'Why?', created_at: '2026-10-01T10:00:00Z',
+    html_url: 'https://github.com/o/r/pull/7#discussion_r21', path: 'src/a.ts', line: 4, original_line: 4,
+    side: 'RIGHT', position: 4, subject_type: 'line', ...over
+  })
+  it('maps side, line, thread and review, and marks a comment whose line left the diff as outdated', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        calls.push(String(url))
+        return response([
+          raw(),
+          raw({ id: 22, in_reply_to_id: 21, side: 'LEFT', line: 2 }),
+          raw({ id: 23, line: null, position: null, original_line: 9 }),
+          raw({ id: 24, line: null, position: null, subject_type: 'file', side: undefined })
+        ], { headers: { link: '<https://api.github.com/repos/o/r/pulls/7/comments?page=2>; rel="next"' } })
+      }
+    })
+    const page = await client.listPullLineComments('o/r', 7, 1)
+    expect(calls).toEqual(['https://api.github.com/repos/o/r/pulls/7/comments?per_page=100&page=1'])
+    expect(page.nextPage).toBe(2)
+    expect(page.comments[0]).toEqual({
+      id: 21, reviewId: 5, author, body: 'Why?', at: '2026-10-01T10:00:00Z', url: 'https://github.com/o/r/pull/7#discussion_r21',
+      path: 'src/a.ts', side: 'RIGHT', line: 4, outdated: false
+    })
+    expect(page.comments.slice(1).map(({ id, inReplyTo, side, line, outdated }) => ({ id, inReplyTo, side, line, outdated })))
+      .toEqual([
+        { id: 22, inReplyTo: 21, side: 'LEFT', line: 2, outdated: false },
+        { id: 23, inReplyTo: undefined, side: 'RIGHT', line: null, outdated: true },
+        { id: 24, inReplyTo: undefined, side: 'RIGHT', line: null, outdated: false }
+      ])
+  })
+
+  it('refuses a malformed comment: a climbing path, a bad line, a link off github.com', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    for (const over of [{ path: '../x' }, { line: 0 }, { line: 'four' }, { html_url: 'https://evil.example/x' }]) {
+      await expect(client([raw(over)]).listPullLineComments('o/r', 7, 1)).rejects.toMatchObject({ code: 'malformed-response' })
+    }
+  })
+
+  it('posts a new line comment at a commit, and a reply with only its body and thread', async () => {
+    const sha = 'c'.repeat(40)
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ id: 31 }) }
+    })
+    expect(await client.createPullLineComment('o/r', 7, {
+      commitId: sha, draft: { path: 'src/a.ts', line: 4, side: 'LEFT', body: 'Why?' }
+    })).toEqual({ id: 31 })
+    await client.createPullLineComment('o/r', 7, { inReplyTo: 21, body: 'Because.' })
+    expect(calls.map((call) => [call.url, call.init.method])).toEqual([
+      ['https://api.github.com/repos/o/r/pulls/7/comments', 'POST'],
+      ['https://api.github.com/repos/o/r/pulls/7/comments', 'POST']
+    ])
+    expect(calls.map((call) => JSON.parse(String(call.init.body)))).toEqual([
+      { body: 'Why?', commit_id: sha, path: 'src/a.ts', line: 4, side: 'LEFT' },
+      { body: 'Because.', in_reply_to: 21 }
+    ])
+  })
+
+  it('refuses a bad line comment before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({ id: 1 }) } })
+    const draft = { path: 'a.ts', line: 1, side: 'RIGHT' as const, body: 'x' }
+    for (const comment of [
+      { commitId: 'main', draft },
+      { commitId: 'c'.repeat(40), draft: { ...draft, path: '/etc/passwd' } },
+      { commitId: 'c'.repeat(40), draft: { ...draft, body: '' } },
+      { inReplyTo: -1, body: 'x' }
+    ]) {
+      await expect(client.createPullLineComment('o/r', 7, comment)).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    expect(sent).toBe(0)
+  })
+})
+
 describe('pull request writes', () => {
   const sha = 'c'.repeat(40)
+  it('sends pending line comments in the review', async () => {
+    const bodies: unknown[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return response({ id: 1 }) }
+    })
+    const comments = [{ path: 'src/a.ts', line: 2, side: 'RIGHT' as const, body: 'Rename.' }]
+    await client.reviewPull('o/r', 7, { event: 'COMMENT', body: '', commitId: sha, comments })
+    expect(bodies).toEqual([{ event: 'COMMENT', commit_id: sha, comments }])
+    await expect(client.reviewPull('o/r', 7, { event: 'COMMENT', body: '', commitId: sha, comments: [{ ...comments[0], side: 'UP' as 'LEFT' }] }))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+  })
+
   it('posts a review with its event, body and the head commit it was made against', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
     const client = new GitHubIssuesClient({

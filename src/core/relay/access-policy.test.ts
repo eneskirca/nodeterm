@@ -32,7 +32,8 @@ describe('access policy', () => {
     expect(decideAccess('req', IPC.ptyCreate, [{ persistKey: 'n2' }], ctx('owner'))).toEqual({ allow: true })
   })
   it('pull request writes run on the owner\'s GitHub token, so only an owner may send them', () => {
-    for (const m of [IPC.githubIssuesPullComment, IPC.githubIssuesPullReview, IPC.githubIssuesPullMerge, IPC.githubIssuesPullRequestReviewer]) {
+    for (const m of [IPC.githubIssuesPullComment, IPC.githubIssuesPullReview, IPC.githubIssuesPullMerge, IPC.githubIssuesPullRequestReviewer,
+      IPC.githubIssuesPullLineComment]) {
       const args = [{ projectId: 'P', repository: 'o/r', pullNumber: 7, body: 'x' }]
       expect(decideAccess('req', m, args, ctx('owner'))).toEqual({ allow: true })
       for (const role of ['editor', 'commenter', 'viewer'] as const) {

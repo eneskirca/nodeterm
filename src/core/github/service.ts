@@ -41,6 +41,10 @@ import type {
   PullFilesPage,
   PullConversationItem,
   PullConversationPage,
+  PullLineComment,
+  PullLineCommentRequest,
+  PullLineCommentsPage,
+  PullLineDraft,
   PullReadFailure,
   GitHubRepoMergeMethodsResult,
   GitHubRepoCollaboratorsResult,
@@ -50,7 +54,9 @@ import type {
   PullWriteReason,
   PullWriteResult
 } from '../../shared/github-pull-detail'
-import { GITHUB_LOGIN } from '../../shared/github-pull-detail'
+import {
+  GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullCommentBody, isPullLineDraft
+} from '../../shared/github-pull-detail'
 import { parseGitHubRepository } from './config'
 import type { GitHubHostError } from './host'
 
@@ -117,7 +123,14 @@ export interface GitHubIssuesClientLike {
   mergePull?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
   /** Submit one review on a PR (the node's Approve / Request changes). Optional, as above. */
   reviewPull?(
-    repository: string, pullNumber: number, review: { event: PullReviewEvent; body: string; commitId: string }
+    repository: string, pullNumber: number,
+    review: { event: PullReviewEvent; body: string; commitId: string; comments?: PullLineDraft[] }
+  ): Promise<{ id: number }>
+  /** The review comments on diff lines, one page, and one new line comment or reply. Optional, as above. */
+  listPullLineComments?(repository: string, pullNumber: number, page: number): Promise<PullLineCommentsPage>
+  createPullLineComment?(
+    repository: string, pullNumber: number,
+    comment: { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
   ): Promise<{ id: number }>
   /** The node's "Request review": the collaborators, and one reviewer request. Optional, as above. */
   listCollaborators?(repository: string): Promise<GitHubIssueUser[]>
@@ -1025,8 +1038,8 @@ export class GitHubIssueService {
     return this.pullRead('conversation', request, async (captured, repository, pullNumber) => {
       const { client } = captured
       if (!client.listPullComments || !client.listPullReviews) return null
-      const pages = async (list: (page: number) => Promise<PullConversationPage>) => {
-        const items: PullConversationItem[] = []
+      const pages = async <T>(list: (page: number) => Promise<{ items: T[]; nextPage?: number }>) => {
+        const items: T[] = []
         let page = 1
         for (let read = 0; read < MAX_CONVERSATION_PAGES; read += 1) {
           const result = await this.readWithEpoch(captured, () => list(page))
@@ -1036,12 +1049,21 @@ export class GitHubIssueService {
         }
         return { items, truncated: true }
       }
-      const [comments, reviews] = await Promise.all([
-        pages((page) => client.listPullComments!(repository, pullNumber, page)),
-        pages((page) => client.listPullReviews!(repository, pullNumber, page))
+      const listLines = client.listPullLineComments?.bind(client)
+      const [comments, reviews, lines] = await Promise.all([
+        pages<PullConversationItem>((page) => client.listPullComments!(repository, pullNumber, page)),
+        pages<PullConversationItem>((page) => client.listPullReviews!(repository, pullNumber, page)),
+        // ponytail: a client without line comments answers none; the real client always has them.
+        listLines
+          ? pages<PullLineComment>((page) => listLines(repository, pullNumber, page)
+            .then(({ comments: items, nextPage }) => ({ items, nextPage })))
+          : { items: [], truncated: false }
       ])
       const items = [...comments.items, ...reviews.items].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
-      return { status: 'ok', items, truncated: comments.truncated || reviews.truncated, observedAt: this.now() }
+      return {
+        status: 'ok', items, lineComments: lines.items, truncated: comments.truncated || reviews.truncated || lines.truncated,
+        observedAt: this.now()
+      }
     })
   }
 
@@ -1135,21 +1157,49 @@ export class GitHubIssueService {
       client.createIssueComment(repository, pullNumber, request.body))
   }
 
+  /** Post one line comment from the Files tab: a new thread tied to `headSha` (the head the node
+   *  read), or a reply to `inReplyTo`. A user click only; never an agent verb. */
+  async commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult> {
+    let comment: { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
+    if (request && 'inReplyTo' in request) {
+      if (!Number.isSafeInteger(request.inReplyTo) || request.inReplyTo < 1 || !isPullCommentBody(request.body)) {
+        return { ok: false, reason: 'validation' }
+      }
+      comment = { inReplyTo: request.inReplyTo, body: request.body }
+    } else {
+      if (typeof request?.headSha !== 'string' || !request.headSha || !isPullLineDraft(request.comment)) {
+        return { ok: false, reason: 'validation' }
+      }
+      const { path, line, side, body } = request.comment
+      comment = { commitId: request.headSha, draft: { path, line, side, body } }
+    }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot comment on a line reads as network; the real client always can.
+      if (!client.createPullLineComment) throw new Error('unsupported')
+      return client.createPullLineComment(repository, pullNumber, comment)
+    })
+  }
+
   /**
    * Submit a review from the node, tied to `headSha` (the head the node last read), so GitHub
-   * refuses it if that commit is no longer the PR's. REQUEST_CHANGES and COMMENT need a message.
+   * refuses it if that commit is no longer the PR's. REQUEST_CHANGES needs a message; COMMENT needs
+   * a message or a line comment. `comments` = the pending line comments, sent in the same review.
    */
   async reviewPull(request: {
     projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
+    comments?: PullLineDraft[]
   }): Promise<PullWriteResult> {
-    const { event, body, headSha } = request ?? {}
+    const { event, body, headSha, comments = [] } = request ?? {}
     if (typeof body !== 'string' || typeof headSha !== 'string' || !headSha ||
         (event !== 'APPROVE' && event !== 'REQUEST_CHANGES' && event !== 'COMMENT') ||
-        (event !== 'APPROVE' && !body.trim())) return { ok: false, reason: 'validation' }
+        !Array.isArray(comments) || comments.length > MAX_PULL_REVIEW_COMMENTS || !comments.every(isPullLineDraft) ||
+        (event === 'REQUEST_CHANGES' && !body.trim()) ||
+        (event === 'COMMENT' && !body.trim() && !comments.length)) return { ok: false, reason: 'validation' }
+    const drafts = comments.map(({ path, line, side, body: text }) => ({ path, line, side, body: text }))
     return this.pullWrite(request, async (client, repository, pullNumber) => {
       // ponytail: a client that cannot review reads as network; the real client always can.
       if (!client.reviewPull) throw new Error('unsupported')
-      return client.reviewPull(repository, pullNumber, { event, body, commitId: headSha })
+      return client.reviewPull(repository, pullNumber, { event, body, commitId: headSha, ...(drafts.length ? { comments: drafts } : {}) })
     })
   }
 

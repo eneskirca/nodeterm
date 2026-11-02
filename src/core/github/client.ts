@@ -21,11 +21,14 @@ import type {
   PullFileRead,
   PullFilesPage,
   PullFileStatus,
+  PullLineComment,
+  PullLineCommentsPage,
+  PullLineDraft,
   PullMergeMethod,
   PullReviewEvent,
   PullReviewVerdict
 } from '../../shared/github-pull-detail'
-import { GITHUB_LOGIN } from '../../shared/github-pull-detail'
+import { GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullCommentBody, isPullLineDraft, isPullPath } from '../../shared/github-pull-detail'
 import {
   GraphQLShapeError,
   PULL_CHECKS_QUERY,
@@ -229,6 +232,31 @@ function conversationItemFrom(value: unknown, kind: 'comment' | 'review'): PullC
   if (kind === 'comment') return { kind, ...base }
   const verdict = typeof item.state === 'string' ? REVIEW_VERDICTS[item.state] : undefined
   return verdict ? { kind, ...base, verdict } : null
+}
+
+/** One review comment on a diff line. GitHub sends `line: null` (and `position: null`) once the line
+ *  left the diff (outdated); a whole-file comment has no line either. `null` = malformed. */
+function lineCommentFrom(value: unknown): PullLineComment | null {
+  const item = object(value)
+  if (!item || !positiveInteger(Number(item.id), Number.MAX_SAFE_INTEGER) || !isoDate(item.created_at) ||
+      !string(item.body, 262_144) || !string(item.html_url, 2_048) || !isPullPath(item.path)) return null
+  let url: URL
+  try { url = new URL(item.html_url) } catch { return null }
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') return null
+  const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
+  if (item.user && !author) return null
+  const id = (key: string): number | null | undefined => item[key] === null || item[key] === undefined ? null
+    : positiveInteger(Number(item[key]), Number.MAX_SAFE_INTEGER) ? Number(item[key]) : undefined
+  const reviewId = id('pull_request_review_id')
+  const inReplyTo = id('in_reply_to_id')
+  const line = id('line')
+  if (reviewId === undefined || inReplyTo === undefined || line === undefined) return null
+  // ponytail: a comment from before GitHub had `side` sits on the head side, as it did then.
+  const side = item.side === 'LEFT' ? 'LEFT' : 'RIGHT'
+  return {
+    id: Number(item.id), reviewId, ...(inReplyTo !== null ? { inReplyTo } : {}), author, body: item.body, at: item.created_at,
+    url: url.toString(), path: item.path, side, line, outdated: item.position === null && item.subject_type !== 'file'
+  }
 }
 
 const FILE_STATUSES: Record<string, PullFileStatus> = {
@@ -611,18 +639,23 @@ export class GitHubIssuesClient {
   async reviewPull(
     repository: string,
     pullNumber: number,
-    review: { event: PullReviewEvent; body: string; commitId: string }
+    review: { event: PullReviewEvent; body: string; commitId: string; comments?: PullLineDraft[] }
   ): Promise<{ id: number }> {
     safeRepository(repository)
+    const comments = review?.comments ?? []
     if (!positiveInteger(pullNumber, 2_147_483_647) || !REVIEW_EVENTS.has(review?.event) ||
         typeof review.commitId !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(review.commitId) ||
-        typeof review.body !== 'string' || review.body.length > 60_000) {
+        typeof review.body !== 'string' || review.body.length > 60_000 ||
+        !Array.isArray(comments) || comments.length > MAX_PULL_REVIEW_COMMENTS || !comments.every(isPullLineDraft)) {
       throw new GitHubClientError('invalid-request')
     }
     const response = await this.request(`/repos/${repository}/pulls/${pullNumber}/reviews`, {
       method: 'POST',
       body: JSON.stringify({
-        event: review.event, ...(review.body.trim() ? { body: review.body } : {}), commit_id: review.commitId
+        event: review.event, ...(review.body.trim() ? { body: review.body } : {}), commit_id: review.commitId,
+        ...(comments.length
+          ? { comments: comments.map(({ path, line, side, body }) => ({ path, line, side, body })) }
+          : {})
       })
     })
     const value = object(await this.json(response))
@@ -727,6 +760,49 @@ export class GitHubIssuesClient {
     } catch {
       return { kind: 'unavailable', reason: 'binary' }
     }
+  }
+
+  /** One page of a PR's review comments on diff lines (`GET /pulls/{n}/comments`), oldest first. */
+  async listPullLineComments(repository: string, pullNumber: number, page: number): Promise<PullLineCommentsPage> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !positiveInteger(page, 100_000)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100&page=${page}`, { method: 'GET' })
+    const value = await this.json(response)
+    if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
+    const comments = value.map(lineCommentFrom)
+    if (comments.includes(null)) throw new GitHubClientError('malformed-response')
+    const next = nextPage(response.headers.get('link'))
+    return { comments: comments as PullLineComment[], ...(next ? { nextPage: next } : {}) }
+  }
+
+  /** Post one line comment (`POST /pulls/{n}/comments`): a new thread on `commitId`, the head the
+   *  user saw, or a reply (`in_reply_to`, where GitHub ignores every field but the body). */
+  async createPullLineComment(
+    repository: string,
+    pullNumber: number,
+    comment: { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
+  ): Promise<{ id: number }> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    let body: Record<string, unknown>
+    if ('inReplyTo' in comment) {
+      if (!positiveInteger(comment.inReplyTo, Number.MAX_SAFE_INTEGER) || !isPullCommentBody(comment.body)) {
+        throw new GitHubClientError('invalid-request')
+      }
+      body = { body: comment.body, in_reply_to: comment.inReplyTo }
+    } else {
+      if (typeof comment?.commitId !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(comment.commitId) ||
+          !isPullLineDraft(comment.draft)) throw new GitHubClientError('invalid-request')
+      const { path, line, side, body: text } = comment.draft
+      body = { body: text, commit_id: comment.commitId, path, line, side }
+    }
+    const value = object(await this.json(await this.request(`/repos/${repository}/pulls/${pullNumber}/comments`, {
+      method: 'POST', body: JSON.stringify(body)
+    })))
+    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('malformed-response')
+    return { id: Number(value.id) }
   }
 
   /** One page of a PR's issue comments (`GET /issues/{n}/comments`), for the Conversation tab. */

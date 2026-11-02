@@ -5,7 +5,7 @@ import { GitHubIssueService, type GitHubIssueServiceContext, type GitHubIssuesCl
 import { GitHubRequestCoordinator } from './request-coordinator'
 import type { NormalisedProjectKanbanGitHub } from '../../shared/github-issues'
 import type {
-  GitHubPullDetail, PullConversationPage, PullMergeMethod, PullReviewEvent
+  GitHubPullDetail, PullConversationPage, PullLineDraft, PullMergeMethod, PullReviewEvent
 } from '../../shared/github-pull-detail'
 
 const config: NormalisedProjectKanbanGitHub = {
@@ -29,8 +29,16 @@ class Client implements GitHubIssuesClientLike {
     if (this.fail) throw this.fail
     return { id: 1 }
   }
+  async createPullLineComment(
+    repository: string, pullNumber: number, comment: { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
+  ): Promise<{ id: number }> {
+    this.writes.push(['line', repository, pullNumber, comment])
+    if (this.fail) throw this.fail
+    return { id: 3 }
+  }
   async reviewPull(
-    repository: string, pullNumber: number, review: { event: PullReviewEvent; body: string; commitId: string }
+    repository: string, pullNumber: number,
+    review: { event: PullReviewEvent; body: string; commitId: string; comments?: PullLineDraft[] }
   ): Promise<{ id: number }> {
     this.writes.push(['review', repository, pullNumber, review])
     if (this.fail) throw this.fail
@@ -113,6 +121,51 @@ describe('GitHubIssueService pull writes', () => {
     expect(contexts()).toBe(0)
   })
 
+  it('posts a line comment at the head the node saw, and a reply by its thread id', async () => {
+    const { client, service, refresh } = harness()
+    const draft: PullLineDraft = { path: 'src/a.ts', line: 3, side: 'LEFT', body: 'Why?' }
+    expect(await service.commentOnPullLine({ ...at, headSha: sha, comment: { ...draft, extra: 1 } as PullLineDraft }))
+      .toEqual({ ok: true })
+    expect(await service.commentOnPullLine({ ...at, inReplyTo: 44, body: 'Because.' })).toEqual({ ok: true })
+    expect(client.writes).toEqual([
+      ['line', 'o/r', 7, { commitId: sha, draft }],
+      ['line', 'o/r', 7, { inReplyTo: 44, body: 'Because.' }]
+    ])
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    ['an empty body', { headSha: sha, comment: { path: 'a.ts', line: 1, side: 'RIGHT', body: ' ' } }],
+    ['a body over the limit', { headSha: sha, comment: { path: 'a.ts', line: 1, side: 'RIGHT', body: 'x'.repeat(60_001) } }],
+    ['a path that climbs', { headSha: sha, comment: { path: '../a.ts', line: 1, side: 'RIGHT', body: 'x' } }],
+    ['line 0', { headSha: sha, comment: { path: 'a.ts', line: 0, side: 'RIGHT', body: 'x' } }],
+    ['a fractional line', { headSha: sha, comment: { path: 'a.ts', line: 1.5, side: 'RIGHT', body: 'x' } }],
+    ['an unknown side', { headSha: sha, comment: { path: 'a.ts', line: 1, side: 'BOTH', body: 'x' } }],
+    ['no head', { headSha: '', comment: { path: 'a.ts', line: 1, side: 'RIGHT', body: 'x' } }],
+    ['a reply id of 0', { inReplyTo: 0, body: 'x' }],
+    ['a reply id that is text', { inReplyTo: '9', body: 'x' }],
+    ['an empty reply', { inReplyTo: 9, body: '' }]
+  ])('refuses a line comment with %s before anything is resolved', async (_, fields) => {
+    const { client, service, contexts } = harness()
+    expect(await service.commentOnPullLine({ ...at, ...fields } as never)).toEqual({ ok: false, reason: 'validation' })
+    expect(client.writes).toEqual([])
+    expect(contexts()).toBe(0)
+  })
+
+  it('sends the pending line comments with the review, and lets a comment-review carry only them', async () => {
+    const { client, service } = harness()
+    const comments: PullLineDraft[] = [{ path: 'src/a.ts', line: 2, side: 'RIGHT', body: 'Rename this.' }]
+    expect(await service.reviewPull({ ...at, event: 'COMMENT', body: '', headSha: sha, comments })).toEqual({ ok: true })
+    expect(client.writes).toEqual([['review', 'o/r', 7, { event: 'COMMENT', body: '', commitId: sha, comments }]])
+    expect(await service.reviewPull({ ...at, event: 'REQUEST_CHANGES', body: '', headSha: sha, comments }))
+      .toEqual({ ok: false, reason: 'validation' })
+    expect(await service.reviewPull({ ...at, event: 'APPROVE', body: '', headSha: sha, comments: [{ ...comments[0], line: -1 }] }))
+      .toEqual({ ok: false, reason: 'validation' })
+    expect(await service.reviewPull({ ...at, event: 'APPROVE', body: '', headSha: sha, comments: Array(51).fill(comments[0]) }))
+      .toEqual({ ok: false, reason: 'validation' })
+    expect(client.writes).toHaveLength(1)
+  })
+
   it('refuses an unapproved repository, a signed-out user and another repository with no request', async () => {
     const unapproved = harness({ code: 'not-approved' })
     expect(await unapproved.service.commentOnPull({ ...at, body: 'x' })).toEqual({ ok: false, reason: 'not-approved' })
@@ -122,6 +175,8 @@ describe('GitHubIssueService pull writes', () => {
       .toEqual({ ok: false, reason: 'signed-out' })
     const { client, service } = harness()
     expect(await service.commentOnPull({ ...at, repository: 'evil/other', body: 'x' }))
+      .toEqual({ ok: false, reason: 'not-approved' })
+    expect(await service.commentOnPullLine({ ...at, repository: 'evil/other', inReplyTo: 9, body: 'x' }))
       .toEqual({ ok: false, reason: 'not-approved' })
     expect(client.writes).toEqual([])
   })
