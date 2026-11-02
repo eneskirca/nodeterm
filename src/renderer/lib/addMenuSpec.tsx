@@ -69,6 +69,7 @@ export type AddItem =
   | { kind: 'whiteboard' }
   | { kind: 'files' } // requiresCwd
   | { kind: 'pull' } // opens the PR picker (the project's approved repository)
+  | { kind: 'issues' } // the open issues of the project's approved repository
   | { kind: 'new-pull' } // requiresCwd: a PR from the folder's current branch
   | { kind: 'dino' }
   | { kind: 'trigger' }
@@ -96,6 +97,7 @@ export const CONTENT_ADD_ITEMS: readonly AddItem[] = [
   { kind: 'files' },
   { kind: 'pull' },
   { kind: 'new-pull' },
+  { kind: 'issues' },
   { kind: 'dino' },
   { kind: 'trigger' },
   { kind: 'open-file' },
@@ -141,6 +143,8 @@ export interface AddHandlers {
   pull: (at?: AddPos) => void
   /** Opens "New pull request" for the folder's current branch; its node lands at `at`. */
   newPull: (at?: AddPos) => void
+  /** Adds the issues node for the project's approved repository at `at`. */
+  issues: (at?: AddPos) => void
   dino: (at?: AddPos) => void
   whiteboard: (at?: AddPos) => void
   /** Adds a trigger node (issue #493) — a canvas-owned schedule that fires into another node. */
@@ -291,6 +295,15 @@ export function contentAddItemsToMenuItems(
           onClick: () => handlers.pull(at)
         })
         break
+      case 'issues':
+        out.push({
+          label: 'Issues…',
+          icon: <IconBranch />,
+          disabled: !!ctx.isRelayTab,
+          hint: ctx.isRelayTab ? PULL_RELAY_HINT : undefined,
+          onClick: () => handlers.issues(at)
+        })
+        break
       case 'new-pull':
         out.push({ label: 'New pull request…', icon: <IconBranch />, ...newPullGate(ctx), onClick: () => handlers.newPull(at) })
         break
@@ -425,6 +438,16 @@ export function contentAddItemsToDockRows(
           onClick: () => handlers.pull()
         })
         break
+      case 'issues':
+        out.push({
+          kind: 'issues',
+          label: 'Issues…',
+          icon: <IconBranch />,
+          disabled: !!ctx.isRelayTab,
+          hint: ctx.isRelayTab ? PULL_RELAY_HINT : undefined,
+          onClick: () => handlers.issues()
+        })
+        break
       case 'new-pull':
         out.push({ kind: 'new-pull', label: 'New pull request', icon: <IconBranch />, ...newPullGate(ctx), onClick: () => handlers.newPull() })
         break
@@ -511,6 +534,7 @@ export const ADD_ITEM_GROUP: Record<AddItem['kind'], AddGroupId> = {
   files: 'view',
   pull: 'view',
   'new-pull': 'view',
+  issues: 'view',
   dino: 'view',
   whiteboard: 'view',
   'open-file': 'files',

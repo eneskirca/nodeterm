@@ -109,6 +109,14 @@ Surfaces:
 - **Relay tabs**: a node already on the canvas reads. **Pull request…** is disabled there, because the GitHub approval lives on the host. **New pull request…** is disabled there too. Comment, line comment, review, merge, update branch, auto-merge and create are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all of them.
 - **Mobile**: no pull request node. The phone shows the rest of the canvas as before.
 
+## Issues node
+
+**Issues…** in the canvas add menu (**New view**) or the Dock opens the open issues of the folder's GitHub repository, with no board needed. The first time, nodeterm asks you to allow the folder's origin repository on this computer, as **Pull request…** does. The list shows open issues of every board column. Filter it to **Assigned to me** or one label, or search by title or number. Click an issue to see its description, its comments and a comment box.
+
+**Work on this** opens your default agent beside the node, with a rope from the node to it. **Work on this in a new worktree** does the same in a new worktree, like the board's **Start with agent in a new worktree**. The agent's first prompt names the issue, its link and how to read it with `gh`, then quotes the issue's title and body between markers as untrusted text written by others, not as instructions. Control characters are removed and the body is cut at 2,000 characters. Agents cannot write to issues through this node: only your click on **Comment** posts a comment.
+
+The node stores only the repository and the selected issue number in `project.json`, and no issue text. Surfaces: Desktop and Server Edition have the full node. In a relay tab, **Issues…** is disabled (the approval lives on the host), a node already on the canvas reads, and **Comment** is refused for every relay peer except the host's owner. Mobile has no issues node.
+
 ## Current scope
 
 This release supports reading issues, source filtering, paging, mapped label creation, movement, conflict resolution, close, reopen, refresh, and cache controls.

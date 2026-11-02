@@ -5,6 +5,7 @@ import { snapshotNode, type ReopenNodeSnapshot, type RestorableNodeKind } from '
 import { absolutePosition, type FocusableNode } from './nodeFocus'
 import { normalizeNodeIcon } from '@shared/node-icon'
 import { normalizePullRef } from '@shared/pull-node'
+import { normalizeIssuesRef } from '@shared/issues-node'
 
 /**
  * Builds one `ClosedSessionEntry` per node in `deletedIds` that `snapshotNode` would also accept
@@ -151,6 +152,7 @@ export function stateToReopenSnapshot(entry: ClosedSessionEntry): ReopenNodeSnap
       // A reopened whiteboard gets a new id; it reads the closed board's file by the old one.
       whiteboardSource: n.kind === 'whiteboard' ? (n.whiteboardSource ?? n.id) : undefined,
       pull: n.kind === 'pull' ? normalizePullRef(n.pull) : undefined,
+      issues: n.kind === 'issues' ? normalizeIssuesRef(n.issues) : undefined,
       url: n.url,
       partition: n.partition,
       diffStaged: n.diffStaged,

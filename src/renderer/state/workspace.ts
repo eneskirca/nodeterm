@@ -38,6 +38,7 @@ import { normalizeNodeIcon } from '@shared/node-icon'
 import { normalizeIssueRef, type IssueRef } from '@shared/github-issue-ref'
 import { isSafeNodeId } from '@shared/safe-id'
 import { normalizePullRef, type PullNodeRef } from '@shared/pull-node'
+import { normalizeIssuesRef, type IssuesNodeRef } from '@shared/issues-node'
 import { openerByTarget, recordedOpenerOf } from '../lib/teamProgress'
 import { normalizePendingLaunch } from '@shared/pending-launch-shape'
 import { normalizeTerminalFontSize } from '../terminal/terminal-font-zoom'
@@ -91,6 +92,8 @@ const SIMULATOR_SIZE = { width: 360, height: 760 }
 const WHITEBOARD_SIZE = { width: 900, height: 600 }
 /** Wide enough for a side-by-side diff in the Files tab, like the Diff node. */
 const PULL_SIZE = { width: 860, height: 600 }
+/** A list beside one issue's detail. */
+const ISSUES_SIZE = { width: 820, height: 580 }
 
 // Height of a node when collapsed (header only). Defined in lib/nodeSizing (a light module, so the
 // control listing can report a collapsed node's size without importing this one) and re-exported.
@@ -200,6 +203,8 @@ export interface NodeData {
   boardRev?: number
   /** pull-only: which PR the node shows and the view it was left on (shared/pull-node.ts). */
   pull?: PullNodeRef
+  /** issues-only: the repository and the selected issue (shared/issues-node.ts). */
+  issues?: IssuesNodeRef
   /** whiteboard-only, renderer-only (never serialized): open the editor as soon as the board has
    *  loaded. Set by `createWhiteboardNode` so a new board opens ready to draw; cleared on use. */
   autoEdit?: boolean
@@ -402,7 +407,8 @@ export const BUILTIN_NODE_SIZES: Readonly<Record<SizableNodeKind, NodeSize>> = {
   trigger: TRIGGER_SIZE,
   simulator: SIMULATOR_SIZE,
   whiteboard: WHITEBOARD_SIZE,
-  pull: PULL_SIZE
+  pull: PULL_SIZE,
+  issues: ISSUES_SIZE
 }
 
 /**
@@ -1386,6 +1392,16 @@ export function createWhiteboardNode(index: number, center?: { x: number; y: num
       group: null,
       autoEdit: true
     }
+  }
+}
+
+/** Creates an issues node (nodes/IssuesNode.tsx): the open issues of `repository`. */
+export function createIssuesNode(index: number, repository: string, center?: { x: number; y: number }): CanvasNode {
+  return {
+    id: nextId('issues'),
+    type: 'issues',
+    ...placeSized('issues', center, index),
+    data: { title: 'Issues', color: '#3fb950', group: null, issues: { repository } }
   }
 }
 
@@ -2993,6 +3009,7 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         boardRev: typeof n.boardRev === 'number' && Number.isFinite(n.boardRev) ? n.boardRev : undefined,
         // Hostile-input seam (git-shared file → live data): a malformed reference shows no PR.
         pull: n.kind === 'pull' ? normalizePullRef(n.pull) : undefined,
+        issues: n.kind === 'issues' ? normalizeIssuesRef(n.issues) : undefined,
         url: n.url,
         partition: n.partition,
         dockTo: n.kind === 'browser' && typeof n.dockTo === 'string' && RUN_NODE_ID.test(n.dockTo) ? n.dockTo : undefined,
@@ -3056,7 +3073,9 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
                             ? WHITEBOARD_SIZE
                             : kind === 'pull'
                               ? PULL_SIZE
-                              : TERMINAL_SIZE
+                              : kind === 'issues'
+                                ? ISSUES_SIZE
+                                : TERMINAL_SIZE
   return nodes
     .map((n) => {
       const kind: NodeKind = (n.type as NodeKind) ?? 'terminal'
@@ -3100,6 +3119,8 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         boardRev: n.data.boardRev,
         // Exactly the four reference fields, re-validated on the way OUT: no PR text reaches the file.
         pull: kind === 'pull' ? normalizePullRef(n.data.pull) : undefined,
+        // Exactly the reference, re-validated on the way OUT: no issue text reaches the file.
+        issues: kind === 'issues' ? normalizeIssuesRef(n.data.issues) : undefined,
         url: n.data.url,
         partition: n.data.partition,
         dockTo: kind === 'browser' && typeof n.data.dockTo === 'string' && RUN_NODE_ID.test(n.data.dockTo) ? n.data.dockTo : undefined,

@@ -9,6 +9,7 @@
 // markers it cannot forge, and the prompt says it is untrusted. The launch assembler then
 // single-quotes the whole prompt as one argument, so the pane's shell never parses it.
 
+import type { GitHubIssueCardView } from './github-issues'
 import { issueLaunchPrompt, issueUrl, normalizeIssueRef, parseRepository, type IssueRef } from './github-issue-ref'
 
 export interface IssuesNodeRef {
@@ -72,10 +73,8 @@ export const ISSUE_WORK_EVENT = 'nodeterm:issue-work'
 export interface IssueWorkRequest {
   /** The issues node: the new agent opens beside it, with a rope from it. */
   nodeId: string
-  issueNumber: number
-  htmlUrl: string
-  title: string
-  body: string
+  /** The issue as the node read it (the board's card shape). */
+  issue: GitHubIssueCardView
   /** Open the agent in a new worktree (the board's "Start with agent in a new worktree"). */
   worktree: boolean
 }

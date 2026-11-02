@@ -22,6 +22,7 @@ const KIND_LABEL: Partial<Record<NodeKind, string>> = {
   dino: 'dino',
   whiteboard: 'whiteboard',
   pull: 'pull request',
+  issues: 'issues',
   group: 'group'
 }
 

@@ -18,7 +18,8 @@ const HEADER_NODES = [
   'VideoNode.tsx',
   'FilesNode.tsx',
   'WhiteboardNode.tsx',
-  'PullNode.tsx'
+  'PullNode.tsx',
+  'IssuesNode.tsx'
 ]
 
 describe('maximize header button', () => {

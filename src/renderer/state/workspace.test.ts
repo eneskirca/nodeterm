@@ -10,6 +10,7 @@ import {
   createDinoNode,
   createWhiteboardNode,
   createPullNode,
+  createIssuesNode,
   duplicateNode,
   createSystemLoginNode,
   isAccountLoginNode,
@@ -1331,5 +1332,20 @@ describe('pull request node serialization', () => {
       expect(back.type).toBe('pull')
       expect(back.data.pull).toBeUndefined()
     }
+  })
+})
+
+describe('issues node serialization', () => {
+  it('persists only the repository and the selected issue; no issue text reaches the file', () => {
+    const node = createIssuesNode(0, 'o/r')
+    node.data.issues = { repository: 'o/r', issueNumber: 3, ...{ title: 'secret', body: 'secret' } }
+    const [state] = flowToNodeStates([node])
+    expect(state.kind).toBe('issues')
+    expect(state.issues).toEqual({ repository: 'o/r', issueNumber: 3 })
+    const [back] = nodeStatesToFlow([state])
+    expect(back.type).toBe('issues')
+    expect(back.data.issues).toEqual(state.issues)
+    const [hostile] = nodeStatesToFlow([{ ...state, issues: { repository: '../x' } as never }])
+    expect(hostile.data.issues).toBeUndefined()
   })
 })

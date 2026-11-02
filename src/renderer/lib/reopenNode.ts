@@ -17,6 +17,7 @@ import {
   createSimulatorNode,
   createWhiteboardNode,
   createPullNode,
+  createIssuesNode,
   isAccountLoginNode
 } from '@renderer/state/workspace'
 import { normalizeRunConfig } from '@shared/run-config'
@@ -24,6 +25,7 @@ import { normalizeSimulatorConfig } from '@shared/simulator'
 import { absolutePosition, type FocusableNode } from './nodeFocus'
 import { normalizeNodeIcon } from '@shared/node-icon'
 import { normalizePullRef } from '@shared/pull-node'
+import { normalizeIssuesRef } from '@shared/issues-node'
 
 export type RestorableNodeKind = Exclude<NodeKind, 'group' | 'subagent' | 'loop'>
 
@@ -211,6 +213,13 @@ function buildBase(snapshot: ReopenNodeSnapshot, ctx: RecreateContext): CanvasNo
       return wb
     }
     // A pull node's whole state is its reference; the PR itself is read again on mount.
+    // An issues node's whole state is its reference; the issues are read again on mount.
+    case 'issues': {
+      const ref = normalizeIssuesRef(d.issues)
+      if (!ref) return null
+      const node = createIssuesNode(0, ref.repository)
+      return { ...node, data: { ...node.data, issues: ref } }
+    }
     case 'pull': {
       const ref = normalizePullRef(d.pull)
       if (!ref) return null

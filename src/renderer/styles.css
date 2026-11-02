@@ -19125,3 +19125,61 @@ body.focus-mode .dock:hover {
 .pull-merge__methods legend { margin-bottom: 4px; color: var(--muted); }
 .pull-merge__method { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .pull-merge__confirm { border-color: var(--success); background: color-mix(in srgb, var(--success) 25%, transparent); }
+
+/* Issues node (nodes/IssuesNode.tsx): the list beside one issue's detail. Reuses the pull node's frame,
+   comment list and composer classes. */
+.issues-node__split {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+.issues-node__list {
+  flex: 0 0 38%;
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding-right: 10px;
+}
+.issues-node__detail {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+.issues-node__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.issues-node__filters select,
+.issues-node__filters input {
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--panel);
+  font: inherit;
+}
+.issues-node__filters input { flex: 1 1 100px; }
+.issues-node__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.issues-node__row {
+  display: block;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.issues-node__row:hover { background: rgba(var(--tint-rgb), 0.08); }
+.issues-node__row[aria-current='true'] { color: var(--text-strong); background: rgba(var(--tint-rgb), 0.14); }
+.issues-node__work { margin-bottom: 10px; }

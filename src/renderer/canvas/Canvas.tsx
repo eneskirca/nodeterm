@@ -116,6 +116,8 @@ import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
 import { pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
+import { IssuesNode } from '../nodes/IssuesNode'
+import { ISSUE_WORK_EVENT, issueWorkPrompt, type IssueWorkRequest } from '@shared/issues-node'
 import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
 import { nodesJoined, usePullAgent } from '../state/pullAgent'
 import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
@@ -956,6 +958,7 @@ import {
   createDinoNode,
   createWhiteboardNode,
   createPullNode,
+  createIssuesNode,
   createTriggerNode,
   createFilesNode,
   createRunNode,
@@ -1077,6 +1080,16 @@ interface HostedMountOpts {
 
 /** What the agent-control handler's `reply` accepts, for helpers that build one outside it. */
 type ControlReply = { ok: boolean; message?: string; result?: unknown; error?: string }
+
+/** How an issue start differs when the issues node's "Work on this" asks for it. */
+type IssueStartOptions = {
+  /** Quote the issue's title and body into the prompt as marked, untrusted data. */
+  withText?: boolean
+  /** The issues node: a rope from it to the new agent. */
+  opener?: string
+  /** Where the agent opens (no worktree). */
+  center?: { x: number; y: number }
+}
 /** An accepted `nodeterm://open` link, as main answered it (prompt possibly spilled to a file). */
 type LinkOpen = Extract<OpenLinkAcceptResult, { ok: true }>['open']
 /** An accepted link waiting for its project to load is dropped after this (see pendingLinkRef). */
@@ -2409,6 +2422,7 @@ export function Canvas() {
       editor: withNodeBoundary(LazyEditorNode),
       diff: withNodeBoundary(LazyDiffNode),
       pull: withNodeBoundary(LazyPullNode),
+      issues: withNodeBoundary(IssuesNode),
       subagent: withNodeBoundary(SubagentNode),
       loop: withNodeBoundary(LoopNode),
       dino: withNodeBoundary(DinoNode),
@@ -11701,7 +11715,7 @@ export function Canvas() {
         const repository = repo.repository
         const allowed = await new Promise<boolean>((resolve) =>
           setConfirm({
-            message: `Allow nodeterm to use ${repository} on this computer? It is this folder's git origin. Pull request nodes and agents on this canvas can then read and act on its pull requests.`,
+            message: `Allow nodeterm to use ${repository} on this computer? It is this folder's git origin. Pull request and issues nodes and agents on this canvas can then read and act on its pull requests and issues.`,
             confirmLabel: 'Allow',
             onConfirm: () => {
               setConfirm(null)
@@ -11778,6 +11792,28 @@ export function Canvas() {
     [approvedRepoFor, placePullNode]
   )
 
+  // The add menu's "Issues…": the open issues of the folder's approved repository. One node per
+  // repository: an existing one is framed instead of a second one.
+  const addIssues = useCallback(
+    async (at?: { x: number; y: number }) => {
+      const projectId = useProjects.getState().activeProjectId
+      if (!projectId) return
+      const repo = await approvedRepoFor(projectId)
+      // The awaits above are where a tab switch can land; never write into another project.
+      if (!repo?.repository || useProjects.getState().activeProjectId !== projectId) return
+      const repository = repo.repository
+      const existing = nodesRef.current.find((n) => n.type === 'issues' &&
+        n.data.issues?.repository.toLowerCase() === repository.toLowerCase())
+      if (existing) {
+        travelToNodeRef.current(existing.id)
+        return
+      }
+      setNodes((ns) => [...ns, createIssuesNode(ns.length, repository, at ?? emptyNodePos())])
+      markDirty()
+    },
+    [approvedRepoFor, setNodes, markDirty, emptyNodePos]
+  )
+
   // "New pull request…" (add menu, Source Control): a PR from the current branch of `cwd` (the
   // project folder, or the Source Control panel's worktree). The dialog does the push and the
   // create on its own click; the new PR, or the branch's open one, opens as a node.
@@ -11826,6 +11862,7 @@ export function Canvas() {
       whiteboard: (at) => addWhiteboard(at),
       trigger: (at) => addTrigger(at),
       pull: (at) => void addPull(at),
+      issues: (at) => void addIssues(at),
       newPull: (at) => void addNewPull(at),
       openFile: (at) => void openFileDialog(at),
       newFile: (at) => void newProjectFile(at),
@@ -12318,10 +12355,16 @@ export function Canvas() {
       columnId: string | null,
       ref: IssueRef,
       created: { node: CanvasNode; placed: CanvasNode; projectId: string },
-      agentId: AgentId
+      agentId: AgentId,
+      // The issues node whose "Work on this" started it: a rope from it, like a browser popup's.
+      opener?: string
     ) => {
       const { node, projectId: targetProjectId } = created
       const nodeId = node.id
+      if (opener) {
+        setControlEdges((es) => [...es, ropeEdge(`ctrl-${opener}-${nodeId}`, opener, nodeId)])
+        markDirty()
+      }
       // The project addAgentNode charged the node to (its guarded, live read) — not a second read.
       const board = useProjects.getState().getProject(targetProjectId)?.kanban ?? defaultKanban(targetProjectId)
       const column = columnId ? board.columns.find((c) => c.id === columnId) : undefined
@@ -12352,16 +12395,18 @@ export function Canvas() {
       })
       if (started) useBoardLog.getState().append(sessionForProject(targetProjectId).api, targetProjectId, started)
     },
-    [markDirty, castNewNodeNow]
+    [markDirty, castNewNodeNow, setControlEdges]
   )
 
   /** The reference + first prompt of an issue start, or a notice saying why nothing started. The
    *  reference comes from the card's GitHub URL and is validated before anything is created; a card
-   *  whose URL does not parse starts nothing. The issue's title and body never reach the prompt. */
+   *  whose URL does not parse starts nothing. The issue's title and body never reach the prompt,
+   *  except from the issues node's "Work on this" (`opts.withText`), which quotes them as marked,
+   *  untrusted data (`issueWorkPrompt`). */
   const issueStartPrompt = useCallback(
-    (issue: GitHubIssueCardView): { ref: IssueRef; prompt: string } | undefined => {
+    (issue: GitHubIssueCardView, opts: IssueStartOptions = {}): { ref: IssueRef; prompt: string; opener?: string } | undefined => {
       const ref = issueRefFromHtmlUrl(issue.htmlUrl, issue.number)
-      const prompt = ref ? issueLaunchPrompt(ref) : undefined
+      const prompt = ref ? (opts.withText ? issueWorkPrompt(ref, issue) : issueLaunchPrompt(ref)) : undefined
       if (!ref || !prompt) {
         setNotice({
           kind: 'error',
@@ -12369,7 +12414,7 @@ export function Canvas() {
         })
         return undefined
       }
-      return { ref, prompt }
+      return { ref, prompt, ...(opts.opener ? { opener: opts.opener } : {}) }
     },
     []
   )
@@ -12382,14 +12427,14 @@ export function Canvas() {
    * and the issue card's run history gets `run-started` (`fileIssueSession`).
    */
   const startIssueAgent = useCallback(
-    (issue: GitHubIssueCardView, agentId: AgentId, accountId?: string | null) => {
-      const start = issueStartPrompt(issue)
+    (issue: GitHubIssueCardView, agentId: AgentId, accountId?: string | null, opts: IssueStartOptions = {}) => {
+      const start = issueStartPrompt(issue, opts)
       if (!start) return
-      const created = addAgentNode(agentId, undefined, undefined, accountId, start.prompt, {
+      const created = addAgentNode(agentId, opts.center, undefined, accountId, start.prompt, {
         issueRef: start.ref
       })
       if (!created) return // addAgentNode already said why
-      fileIssueSession(issue.columnId, start.ref, created, agentId)
+      fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)
     },
     [addAgentNode, issueStartPrompt, fileIssueSession]
   )
@@ -12799,7 +12844,7 @@ export function Canvas() {
     (
       groupId: string,
       issue: GitHubIssueCardView,
-      start: { ref: IssueRef; prompt: string },
+      start: { ref: IssueRef; prompt: string; opener?: string },
       agentId: AgentId,
       accountId: string | null | undefined
     ): boolean => {
@@ -12837,7 +12882,7 @@ export function Canvas() {
         nodesRef.current = grow(nodesRef.current)
         setNodes((ns) => grow(ns as CanvasNode[]))
       }
-      fileIssueSession(issue.columnId, start.ref, created, agentId)
+      fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)
       return true
     },
     [setNodes, addAgentNode, setupHoldGroup, fileIssueSession]
@@ -12857,13 +12902,13 @@ export function Canvas() {
    * fresh `-2`; nothing on disk is ever overwritten.
    */
   const startIssueAgentInWorktree = useCallback(
-    async (issue: GitHubIssueCardView, agentId: AgentId, accountId?: string | null) => {
+    async (issue: GitHubIssueCardView, agentId: AgentId, accountId?: string | null, opts: IssueStartOptions = {}) => {
       const refusal = issueWorktreeUnavailable()
       if (refusal) {
         setNotice({ kind: 'error', text: `Could not start on #${issue.number} in a new worktree: ${refusal}.` })
         return
       }
-      const start = issueStartPrompt(issue)
+      const start = issueStartPrompt(issue, opts)
       if (!start) return
       const key = issueKey(start.ref) ?? `#${issue.number}`
       const busy = (): void =>
@@ -13055,6 +13100,31 @@ export function Canvas() {
     },
     [agentCreationEntries, issueWorktreeUnavailable, startIssueAgentInWorktree]
   )
+
+  // The issues node's "Work on this": the default agent on the issue, beside the node (or in a new
+  // worktree), with the issue's text quoted into its prompt and a rope from the node. A user click
+  // in the node is the only sender; no control verb reaches it.
+  useEffect(() => {
+    const onWork = (e: Event): void => {
+      const d = (e as CustomEvent<IssueWorkRequest>).detail
+      const all = nodesRef.current
+      const source = all.find((n) => n.id === d?.nodeId && n.type === 'issues')
+      if (!source || !d.issue) return
+      const agentId = resolveNewNodeAgent(undefined, useProjects.getState().activeProjectId, useSettings.getState().settings)
+      const opts = { withText: true, opener: source.id }
+      if (d.worktree) {
+        void startIssueAgentInWorktree(d.issue, agentId, undefined, opts)
+        return
+      }
+      const rect = nodeFitRect(source as FocusableNode, all as FocusableNode[])
+      startIssueAgent(d.issue, agentId, undefined, {
+        ...opts,
+        ...(rect ? { center: { x: rect.x + rect.width + 40 + terminalNodeSize().width / 2, y: rect.y + rect.height / 2 } } : {})
+      })
+    }
+    window.addEventListener(ISSUE_WORK_EVENT, onWork)
+    return () => window.removeEventListener(ISSUE_WORK_EVENT, onWork)
+  }, [startIssueAgent, startIssueAgentInWorktree, nodesRef])
 
     // Global kanban swimlane "New session" path — creates a node in the target project's
   // swimlane even when that project is not the active canvas. The per-column create
@@ -21121,6 +21191,7 @@ export function Canvas() {
         onAddWhiteboard={addWhiteboard}
         onAddTrigger={addTrigger}
         onAddPull={() => void addPull()}
+        onAddIssues={() => void addIssues()}
         onAddNewPull={() => void addNewPull()}
         onAddFiles={() => addFiles()}
         onAddRun={() => void addRun()}

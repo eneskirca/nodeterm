@@ -138,9 +138,9 @@ describe('Start with agent (issue card)', () => {
 
   it('launches with the reference prompt and binds the node — never the issue title or body', () => {
     const body = code(between('const startIssueAgent = useCallback(', 'const issueAgentMenu = useCallback('))
-    expect(body).toContain('issueStartPrompt(issue)')
+    expect(body).toContain('issueStartPrompt(issue, opts)')
     expect(body).toContain('start.prompt, {\n        issueRef: start.ref\n      }')
-    expect(body).toContain('fileIssueSession(issue.columnId, start.ref, created, agentId)')
+    expect(body).toContain('fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)')
     // The attacker-writable fields of the issue never reach this function's launch.
     expect(body).not.toMatch(/issue\.title|issue\.body/)
   })
@@ -151,7 +151,7 @@ describe('Start with agent (issue card)', () => {
     expect(open).toContain('{ issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId) }')
     expect(open).not.toMatch(/issue\.title|issue\.body/)
     const body = code(between('const startIssueAgentInWorktree = useCallback(', 'const issueWorktreeMenu = useCallback('))
-    expect(body).toContain('issueStartPrompt(issue)')
+    expect(body).toContain('issueStartPrompt(issue, opts)')
     // Exactly one read of the title: the slug input of `planIssueWorktree` (@shared/issue-worktree
     // owns every rule about it — allowlist, cap, check-ref-format; proven there against git).
     expect(body.match(/issue\.title/g) ?? []).toHaveLength(1)
@@ -159,6 +159,16 @@ describe('Start with agent (issue card)', () => {
     expect(body).not.toMatch(/issue\.body/)
     // The frame is named after the NUMBER, not the title.
     expect(body).toContain('title: `Issue #${start.ref.number}`')
+  })
+
+  it('the issue text reaches a prompt only from the issues node, quoted by issueWorkPrompt', () => {
+    // The one exception to the reference-only rule: the issues node's "Work on this" (a user click).
+    // `issueWorkPrompt` (@shared/issues-node) strips control bytes, bounds and marks the text.
+    expect(code(src).match(/issueWorkPrompt\(/g) ?? []).toHaveLength(1)
+    expect(code(src).match(/withText: true/g) ?? []).toHaveLength(1)
+    const listener = code(between('const onWork = (e: Event): void => {', 'window.addEventListener(ISSUE_WORK_EVENT, onWork)'))
+    expect(listener).toContain('withText: true')
+    expect(listener).toContain("n.type === 'issues'")
   })
 
   it('the menu reuses the canvas agent + account picker instead of a fourth copy', () => {

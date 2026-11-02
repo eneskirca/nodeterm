@@ -35,6 +35,7 @@ const handlers = (overrides: Partial<AddHandlers> = {}): AddHandlers => ({
   files: noop,
   pull: noop,
   newPull: noop,
+  issues: noop,
   run: noop,
   simulator: noop,
   dino: noop,
@@ -59,6 +60,7 @@ const allKinds: AddItem['kind'][] = [
   'files',
   'pull',
   'new-pull',
+  'issues',
   'dino',
   'trigger',
   'open-file',
@@ -134,6 +136,22 @@ describe('Pull request row', () => {
   })
 })
 
+describe('Issues row', () => {
+  it('adds the issues node from the menu and the Dock, disabled in a relay tab', () => {
+    const calls: unknown[] = []
+    const h = handlers({ issues: (at) => calls.push(at ?? 'dock') })
+    const ctx = { hasCwd: true, isSshProject: false }
+    const row = contentAddItemsToMenuItems(CONTENT_ADD_ITEMS, h, ctx, { x: 4, y: 2 })
+      .find((i) => 'label' in i && i.label === 'Issues…')
+    const dock = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, h, ctx).find((r) => r.kind === 'issues')
+    if (row && 'onClick' in row) row.onClick()
+    dock?.onClick()
+    expect(calls).toEqual([{ x: 4, y: 2 }, 'dock'])
+    const [relay] = contentAddItemsToDockRows([{ kind: 'issues' }], handlers(), { ...ctx, isRelayTab: true })
+    expect(relay).toMatchObject({ kind: 'issues', disabled: true, hint: PULL_RELAY_HINT })
+  })
+})
+
 describe('New pull request row', () => {
   it('opens the form from the menu and the Dock', () => {
     const calls: unknown[] = []
@@ -180,6 +198,7 @@ describe('contentAddItemsToMenuItems', () => {
       'New file manager',
       'Pull request…',
       'New pull request…',
+      'Issues…',
       'New dino game',
       'New trigger…',
       'Open file…',
@@ -288,6 +307,7 @@ describe('contentAddItemsToDockRows', () => {
       'files',
       'pull',
       'new-pull',
+      'issues',
       'dino',
       'trigger',
       'open-file',
@@ -420,6 +440,7 @@ describe('buildGroupedAddMenu', () => {
       'New file manager',
       'Pull request…',
       'New pull request…',
+      'Issues…',
       'New dino game'
     ])
     expect(children(ADD_GROUP_LABEL.files)).toEqual(['Open file…', 'New file…'])
@@ -552,6 +573,7 @@ describe('buildGroupedAddMenu', () => {
       files: () => calls.push('files'),
       pull: () => calls.push('pull'),
       newPull: () => calls.push('newPull'),
+      issues: () => calls.push('issues'),
       dino: () => calls.push('dino'),
       whiteboard: () => calls.push('whiteboard'),
       trigger: () => calls.push('trigger'),
@@ -571,6 +593,7 @@ describe('buildGroupedAddMenu', () => {
       'browser',
       'dino',
       'files',
+      'issues',
       'newFile',
       'newPull',
       'openFile',

@@ -37,6 +37,7 @@ interface DockProps {
   onAddTrigger: () => void
   onAddPull: () => void
   onAddNewPull: () => void
+  onAddIssues: () => void
   onAddFiles: () => void
   /** A run node (a launch.json configuration) rooted in the project folder. */
   onAddRun: () => void
@@ -94,6 +95,7 @@ export function Dock({
   onAddTrigger,
   onAddPull,
   onAddNewPull,
+  onAddIssues,
   onAddFiles,
   onAddRun,
   onAddSimulator,
@@ -239,6 +241,7 @@ export function Dock({
     trigger: onAddTrigger,
     pull: onAddPull,
     newPull: onAddNewPull,
+    issues: onAddIssues,
     files: onAddFiles,
     run: onAddRun,
     simulator: onAddSimulator,
