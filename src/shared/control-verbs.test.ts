@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal, runNowRequested } from './control-verbs'
+import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal, flagRequested, runNowRequested } from './control-verbs'
 
 describe('dryRunRequested', () => {
   it('absent means no dry run', () => {
@@ -59,5 +59,21 @@ describe('runNowRequested (#925)', () => {
   })
   it('only an explicit false|no|0 turns it off', () => {
     for (const v of ['false', 'NO', '0', ' 0 ']) expect(runNowRequested({ 'run-now': v })).toBe(false)
+  })
+})
+
+describe('flagRequested — one reader for every presence flag', () => {
+  it('presence (the shim\'s empty string) is on; only an explicit false|no|0 is off', () => {
+    expect(flagRequested({}, 'notify-opener')).toBe(false)
+    expect(flagRequested({ 'notify-opener': '' }, 'notify-opener')).toBe(true)
+    expect(flagRequested({ 'notify-opener': 'true' }, 'notify-opener')).toBe(true)
+    expect(flagRequested({ 'notify-opener': ' No ' }, 'notify-opener')).toBe(false)
+    expect(flagRequested({ 'notify-opener': '0' }, 'notify-opener')).toBe(false)
+    expect(flagRequested({ 'run-now': '' }, 'notify-opener')).toBe(false)
+  })
+
+  it('runNowRequested is the same rule', () => {
+    for (const v of [undefined, '', 'yes', 'false', 'NO', '0'])
+      expect(runNowRequested({ 'run-now': v })).toBe(flagRequested({ 'run-now': v }, 'run-now'))
   })
 })

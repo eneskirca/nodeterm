@@ -260,17 +260,23 @@ export async function initServerCanvasControl(
   // station), and the canvas leg is the board log plus a push to every attached browser tab.
   // DROPPED arrives only from a browser tab that shows the node (its liveness check); a server with
   // no tab attached reports errored and long-blocked stations only.
-  const stationNotices = new StationNoticeMonitor({
-    now: () => Date.now(),
-    recipientFor: (stationNodeId) =>
+  // Shared with `report-outcome --notify-opener` (#1356): same recipient, same delivery.
+  const opener = {
+    recipientFor: (stationNodeId: string) =>
       stationRecipientFromOwner(
         deps.workspaceStore.persistedCanvases(),
         stationNodeId,
         factory.openerOf(stationNodeId)
       ),
+    deliver: (notice: Parameters<typeof deliverStationNotice>[0]) =>
+      deliverStationNotice(notice, messaging)
+  }
+  const stationNotices = new StationNoticeMonitor({
+    now: () => Date.now(),
+    recipientFor: opener.recipientFor,
     pendingQuestionOf: (nodeId) => mirrorEntry(nodeId)?.pendingQuestion?.toolUseId,
     appendBoardLog: (projectId, entry) => deps.boardLog.append(projectId, entry),
-    deliver: (notice) => deliverStationNotice(notice, messaging),
+    deliver: opener.deliver,
     publish: (views) => platform().broadcast(IPC.stationNoticeChanged, views),
     exists: (nodeId) => deps.workspaceStore.projectIdsForNode(nodeId).length > 0
   })
@@ -305,7 +311,8 @@ export async function initServerCanvasControl(
             return ids.length === 1 ? ids[0] : undefined
           },
           appendBoardLog: (projectId, entry) => deps.boardLog.append(projectId, entry),
-          onRecorded: () => void factory.refreshArmed()
+          onRecorded: () => void factory.refreshArmed(),
+          opener
         }
       ),
     // The board's GitHub lane, read-only, from the GitHub service's cache — the same core module the

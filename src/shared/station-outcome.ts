@@ -25,7 +25,7 @@
 
 import { oneLine } from './one-line'
 import { parseWaitDeadlineArg } from './pr-wait'
-import { runNowRequested } from './control-verbs'
+import { flagRequested, runNowRequested } from './control-verbs'
 import { isSafeNodeId } from './safe-id'
 
 export type StationOutcome = 'succeeded' | 'failed'
@@ -91,7 +91,9 @@ export function sanitizeOutcomeNote(raw: unknown): string | undefined {
 export function parseReportOutcome(
   args: Record<string, string | undefined>,
   callerNodeId: string
-): { ok: true; outcome: StationOutcome; note?: string } | { ok: false; error: string } {
+):
+  | { ok: true; outcome: StationOutcome; note?: string; notifyOpener?: true }
+  | { ok: false; error: string } {
   if (args.node !== undefined && args.node !== callerNodeId) {
     return {
       ok: false,
@@ -108,7 +110,8 @@ export function parseReportOutcome(
     }
   }
   const note = sanitizeOutcomeNote(args.note)
-  return { ok: true, outcome, ...(note ? { note } : {}) }
+  const notifyOpener = flagRequested(args, 'notify-opener')
+  return { ok: true, outcome, ...(note ? { note } : {}), ...(notifyOpener ? { notifyOpener } : {}) }
 }
 
 /** One station's record out of a by-id map, read as an OWN property only — `__proto__` and

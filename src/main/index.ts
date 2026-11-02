@@ -2333,14 +2333,20 @@ app.whenReady().then(async () => {
   // (the station's `openedBy` plus that agent's rope to it), never from the renderer; the canvas
   // leg (board-log line + chip) needs no switch, the pane leg is the messaging service above with
   // every one of its gates, the per-project `agentMessaging` switch included.
+  // Shared with `report-outcome --notify-opener` (#1356): same recipient, same delivery.
+  const stationOpener = {
+    recipientFor: (id: string) => stationRecipient(workspaceStore.persistedCanvases(), id),
+    deliver: (notice: Parameters<typeof deliverStationNotice>[0]) =>
+      deliverStationNotice(notice, messagingDeps)
+  }
   const stationNotices = new StationNoticeMonitor({
     now: () => Date.now(),
-    recipientFor: (id) => stationRecipient(workspaceStore.persistedCanvases(), id),
+    recipientFor: stationOpener.recipientFor,
     // The mirror's correlated, unanswered question — the one fact that says a station is really
     // waiting on a human (station-notice.ts: permission prompts are not a trigger).
     pendingQuestionOf: (id) => mirrorEntry(id)?.pendingQuestion?.toolUseId,
     appendBoardLog: (projectId, entry) => appendBoardLogVia(boardLogRouter, projectId, entry),
-    deliver: (notice) => deliverStationNotice(notice, messagingDeps),
+    deliver: stationOpener.deliver,
     publish: (views) => sendToMain(IPC.stationNoticeChanged, views),
     // The memoized index scan, not `getNode` (which re-parses a project file per call): the sweep
     // asks this for every node it tracks.
@@ -4663,7 +4669,8 @@ app.whenReady().then(async () => {
           store: stationOutcomes,
           now: () => Date.now(),
           projectIdOfNode,
-          appendBoardLog: (projectId, entry) => appendBoardLogVia(boardLogRouter, projectId, entry)
+          appendBoardLog: (projectId, entry) => appendBoardLogVia(boardLogRouter, projectId, entry),
+          opener: stationOpener
         }
       )
     }

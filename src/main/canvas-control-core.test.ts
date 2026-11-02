@@ -1621,7 +1621,7 @@ describe('--after-success + report-outcome: a dependent that waits for a reporte
 
   it.each(bodies)('%s teaches stations to report, honestly, about themselves only', (_name, body) => {
     const flat = body.replace(/\s+/g, ' ')
-    expect(flat).toContain(`\`${REPORT_OUTCOME_VERB} --outcome succeeded|failed [--note "<one line>"]\``)
+    expect(flat).toContain(`\`${REPORT_OUTCOME_VERB} --outcome succeeded|failed [--note "<one line>"] [--notify-opener]\``)
     expect(flat).toContain('REPORT WHEN EVERY TASK YOU ARE GIVEN ENDS')
     expect(flat).toContain('not merely that you stopped')
     expect(flat).toContain('`--node` naming another node is refused')
