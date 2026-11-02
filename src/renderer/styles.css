@@ -18920,3 +18920,34 @@ body.focus-mode .dock:hover {
 }
 .pull-compose__button:hover:not(:disabled) { background: rgba(var(--tint-rgb), 0.14); }
 .pull-compose__button:disabled { opacity: 0.5; cursor: default; }
+.pull-merge { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0; }
+.pull-merge__reason { margin: 0; color: var(--muted); line-height: 1.5; }
+/* Absolute against the node (React Flow's node box), so it covers the whole node whatever the body's scroll. */
+.pull-merge__backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.45);
+}
+.pull-merge__dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.pull-merge__what { margin: 0; color: var(--text-strong); line-height: 1.5; }
+.pull-merge__methods { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; }
+.pull-merge__methods legend { margin-bottom: 4px; color: var(--muted); }
+.pull-merge__method { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.pull-merge__confirm { border-color: var(--success); background: color-mix(in srgb, var(--success) 25%, transparent); }

@@ -22,13 +22,16 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
   PullNodeApi & {
     pullDetail: ReturnType<typeof vi.fn>; pullChecks: ReturnType<typeof vi.fn>; pullConversation: ReturnType<typeof vi.fn>
     commentOnPull: ReturnType<typeof vi.fn>; reviewPull: ReturnType<typeof vi.fn>
+    mergePull: ReturnType<typeof vi.fn>; repoMergeMethods: ReturnType<typeof vi.fn>
   } {
   return {
     pullDetail: vi.fn(async () => result),
     pullChecks: vi.fn(async () => checks),
     pullConversation: vi.fn(async () => conversation),
     commentOnPull: vi.fn(async () => ({ ok: true as const })),
-    reviewPull: vi.fn(async () => ({ ok: true as const }))
+    reviewPull: vi.fn(async () => ({ ok: true as const })),
+    mergePull: vi.fn(async () => ({ ok: true as const })),
+    repoMergeMethods: vi.fn(async () => ({ status: 'ok' as const, methods: ['squash' as const, 'rebase' as const] }))
   }
 }
 
@@ -288,5 +291,91 @@ describe('PullNodeView composer', () => {
       })
     }
     expect(host.querySelector('textarea')!.value).toBe('half a thought')
+  })
+})
+
+describe('PullNodeView merge', () => {
+  const dialog = () => host.querySelector('[role="dialog"]')
+  const openMerge = async (api: PullNodeApi, onWritten = vi.fn()) => {
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    await act(async () => { button(view, 'Merge…').click() })
+    return view
+  }
+
+  it.each([
+    ['draft', { lifecycle: 'draft' }, 'draft'],
+    ['closed', { lifecycle: 'closed', merge: undefined }, 'closed'],
+    ['merged', { lifecycle: 'merged', merge: undefined }, 'already merged'],
+    ['conflicting', { merge: 'conflict' }, 'conflict'],
+    ['blocked', { merge: 'blocked' }, 'blocked']
+  ] as const)('is disabled with a reason for a %s PR', async (_name, change, words) => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 })
+    const view = await render(api)
+    expect(button(view, 'Merge…').disabled).toBe(true)
+    expect(view.querySelector('.pull-merge__reason')?.textContent?.toLowerCase()).toContain(words)
+  })
+
+  it('opens a confirmation naming the PR, its title and the target branch, with only the allowed methods', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    await openMerge(api)
+    expect(dialog()?.textContent).toContain('#7')
+    expect(dialog()?.textContent).toContain('Add the pull node')
+    expect(dialog()?.textContent).toContain('main')
+    const methods = [...dialog()!.querySelectorAll('input[type="radio"]')].map((el) => (el as HTMLInputElement).value)
+    expect(methods).toEqual(['squash', 'rebase'])
+    expect(api.repoMergeMethods).toHaveBeenCalledWith('p', 'o/r')
+    expect(api.mergePull).not.toHaveBeenCalled()
+  })
+
+  it('merges only on Confirm, with the picked method and the head the Overview showed, then reloads', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    const onWritten = vi.fn()
+    await openMerge(api, onWritten)
+    const rebase = dialog()!.querySelector('input[value="rebase"]') as HTMLInputElement
+    await act(async () => { rebase.click() })
+    await act(async () => { button(host, 'Confirm merge').click() })
+    expect(api.mergePull).toHaveBeenCalledWith({
+      projectId: 'p', repository: 'o/r', pullNumber: 7, method: 'rebase', headSha: 'c'.repeat(40)
+    })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+    expect(dialog()).toBeNull()
+  })
+
+  it('Cancel closes the confirmation and merges nothing; the methods are read once per node', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    const view = await openMerge(api)
+    await act(async () => { button(host, 'Cancel').click() })
+    expect(dialog()).toBeNull()
+    await act(async () => { button(view, 'Merge…').click() })
+    expect(api.mergePull).not.toHaveBeenCalled()
+    expect(api.repoMergeMethods).toHaveBeenCalledTimes(1)
+  })
+
+  it('says the head moved and reloads', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.mergePull.mockResolvedValue({ ok: false, reason: 'head-moved' })
+    const onWritten = vi.fn()
+    await openMerge(api, onWritten)
+    await act(async () => { button(host, 'Confirm merge').click() })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('changed since you loaded it')
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('says GitHub would not merge it, and does not reload', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.mergePull.mockResolvedValue({ ok: false, reason: 'not-mergeable' })
+    const onWritten = vi.fn()
+    await openMerge(api, onWritten)
+    await act(async () => { button(host, 'Confirm merge').click() })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('cannot be merged')
+    expect(onWritten).not.toHaveBeenCalled()
+  })
+
+  it('offers no Confirm when the repository allows no method for this token', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.repoMergeMethods.mockResolvedValue({ status: 'ok', methods: [] })
+    await openMerge(api)
+    expect(button(host, 'Confirm merge')).toBeUndefined()
+    expect(dialog()?.textContent).toContain('allows no merge method')
   })
 })

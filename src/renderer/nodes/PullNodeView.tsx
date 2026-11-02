@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import type { GitHubIssuesApi } from '@shared/github-issues'
 import type {
   GitHubPullConversationResult,
+  GitHubPullDetail,
   GitHubPullDetailResult,
+  GitHubRepoMergeMethodsResult,
+  PullMergeMethod,
   PullReadFailure,
   PullRefusal,
   PullReviewEvent,
@@ -17,7 +20,8 @@ import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSumma
 import { mergeLabel } from '../components/kanban/PullStatusBadges'
 
 export type PullNodeApi = Pick<
-  GitHubIssuesApi, 'pullDetail' | 'pullChecks' | 'pullConversation' | 'commentOnPull' | 'reviewPull'
+  GitHubIssuesApi,
+  'pullDetail' | 'pullChecks' | 'pullConversation' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods'
 >
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
@@ -54,6 +58,21 @@ const WRITE_TEXT: Record<PullWriteReason, string> = {
   'not-approved': 'This repository is not approved on this machine. Approve it in the board\'s GitHub settings.',
   validation: 'GitHub refused the request. Refresh the pull request, then try again.',
   network: 'GitHub could not be reached. Check the connection, then try again.'
+}
+
+const METHOD_TEXT: Record<PullMergeMethod, string> = {
+  merge: 'Create a merge commit', squash: 'Squash and merge', rebase: 'Rebase and merge'
+}
+
+/** Why Merge is off: the lifecycle, then the shared pull-status merge state. Null = it may be tried
+ *  (an undecided state included: GitHub then answers, and a 405 says not-mergeable). */
+function mergeBlock(d: GitHubPullDetail): string | null {
+  if (d.lifecycle === 'draft') return 'A draft pull request cannot be merged. Mark it ready for review on GitHub first.'
+  if (d.lifecycle === 'closed') return 'This pull request is closed.'
+  if (d.lifecycle === 'merged') return 'This pull request is already merged.'
+  if (d.merge === 'conflict') return `This pull request has a conflict with ${d.base.ref}. Resolve it first.`
+  if (d.merge === 'blocked') return 'Branch protection blocked this merge. Get the required reviews and checks first.'
+  return null
 }
 
 const LIFECYCLE_TEXT: Record<PullLifecycle, string> = {
@@ -190,10 +209,100 @@ function PullOverview(props: ViewProps & { onHead: (sha: string) => void }): Rea
         </span>
         {merge && <span className={`pull-status__merge pull-status__merge--${d.merge}`}>{merge}</span>}
       </div>
+      <PullMerge {...props} detail={d} />
       {d.body.trim()
         ? <NoteMarkdown text={d.body} className="sticky-node__md pull-node__md" />
         : <p className="pull-node__empty">No description provided.</p>}
       <PullChecks result={checks} expectedHead={d.head.sha} onOpen={onOpenExternal} />
+    </div>
+  )
+}
+
+/**
+ * The Merge button and its confirmation, a modal over the node. Nothing merges without Confirm. The
+ * merge is tied to the head the Overview shows, so GitHub refuses it (head-moved) if the PR moved;
+ * the node then says so and reloads.
+ */
+function PullMerge(props: ViewProps & { detail: GitHubPullDetail }): React.JSX.Element {
+  const { api, projectId, pull, detail: d, onWritten } = props
+  const name = useId()
+  const [open, setOpen] = useState(false)
+  const [methods, setMethods] = useState<GitHubRepoMergeMethodsResult | 'loading' | null>(null)
+  const [method, setMethod] = useState<PullMergeMethod | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
+  const block = mergeBlock(d)
+
+  const show = () => {
+    setOpen(true)
+    setRefusal(null)
+    // ponytail: the allowed methods are read once per node (the Overview stays mounted); only a
+    // failed read is read again, on the next open.
+    if (methods === 'loading' || methods?.status === 'ok') return
+    setMethods('loading')
+    void api.repoMergeMethods(projectId, pull.repository)
+      .catch((): GitHubRepoMergeMethodsResult => ({ status: 'failed', reason: 'unreachable' }))
+      .then((result) => {
+        setMethods(result)
+        if (result.status === 'ok') setMethod(result.methods[0] ?? null)
+      })
+  }
+  const confirm = async () => {
+    if (busy || !method) return
+    setBusy(true)
+    const outcome = await api.mergePull({
+      projectId, repository: pull.repository, pullNumber: pull.pullNumber, method, headSha: d.head.sha
+    }).catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
+    setBusy(false)
+    setOpen(false)
+    if (!outcome.ok) setRefusal(outcome.reason)
+    if (outcome.ok || outcome.reason === 'head-moved') onWritten()
+  }
+
+  const ready = methods !== null && methods !== 'loading' && methods.status === 'ok' ? methods.methods : null
+  return (
+    <div className="pull-merge">
+      <button className="pull-compose__button" disabled={!!block || busy} onClick={show}>Merge…</button>
+      {block && <p className="pull-merge__reason">{block}</p>}
+      {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
+      {open && (
+        <div className="pull-merge__backdrop">
+          <div className="pull-merge__dialog" role="dialog" aria-modal="true" aria-label="Merge pull request">
+            <p className="pull-merge__what">
+              Merge <strong>#{d.number} {d.title}</strong> into <code>{d.base.ref}</code>?
+            </p>
+            {methods === null || methods === 'loading'
+              ? <p className="pull-node__state">Loading the allowed merge methods…</p>
+              : methods.status === 'refused'
+                ? <p className="pull-node__state" role="status">{REFUSAL_TEXT[methods.reason](pull.repository)}</p>
+                : methods.status === 'failed'
+                  ? <p className="pull-node__state" role="status">{FAILURE_TEXT[methods.reason]}</p>
+                  : methods.methods.length === 0
+                    ? <p className="pull-node__state" role="status">
+                        This repository allows no merge method for your GitHub token. Merge on GitHub instead.
+                      </p>
+                    : (
+                      <fieldset className="pull-merge__methods">
+                        <legend>Merge method</legend>
+                        {methods.methods.map((item) => (
+                          <label key={item} className="pull-merge__method">
+                            <input type="radio" name={name} value={item} checked={method === item}
+                              onChange={() => setMethod(item)} />
+                            {METHOD_TEXT[item]}
+                          </label>
+                        ))}
+                      </fieldset>
+                    )}
+            <div className="pull-compose__actions">
+              {ready && ready.length > 0 && (
+                <button className="pull-compose__button pull-merge__confirm" disabled={busy || !method}
+                  onClick={() => void confirm()}>Confirm merge</button>
+              )}
+              <button className="pull-compose__button" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
