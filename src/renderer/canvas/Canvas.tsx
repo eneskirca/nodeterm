@@ -13256,7 +13256,7 @@ export function Canvas() {
         if (!opened) return // addAgentNode already said why
         setNotice({
           kind: 'info',
-          text: `${plan.renamedFrom ? `${plan.renamedFrom} is taken, so ` : ''}Worktree ${branch} has PR #${n}'s head at ${path}; the agent opens there.`
+          text: `${plan.renamedFrom ? `${plan.renamedFrom} is taken, so worktree` : 'Worktree'} ${branch} has PR #${n}'s head at ${path}; the agent opens there.`
         })
       })
       if (!ran) setNotice({ kind: 'info', text: `A worktree for PR #${n} is already being prepared.` })

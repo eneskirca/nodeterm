@@ -60,6 +60,14 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
         isConnectable={false}
         style={{ opacity: 0, pointerEvents: 'none', top: 0 }}
       />
+      {/* And a source handle for the rope to the agent "Work on this PR" started. */}
+      <Handle
+        id="flow-out"
+        type="source"
+        position={Position.Bottom}
+        isConnectable={false}
+        style={{ opacity: 0, pointerEvents: 'none', bottom: 0 }}
+      />
       <div className="pull-node__header" style={{ background: `${data.color}33` }}>
         <span className="term-node__color" style={{ background: data.color }} />
         <input
