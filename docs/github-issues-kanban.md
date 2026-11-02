@@ -80,11 +80,13 @@ GitHub HTTP requests and avatar downloads run only on the trusted project host. 
 
 ## Pull request node
 
-A pull request opens as a canvas node. It has three tabs: Overview (description, checks, merge state, Merge), Files (changed files with a side-by-side diff) and Conversation (comments and reviews, plus a composer for a comment, an approval or a change request). Open it in one of three ways:
+A pull request opens as a canvas node. It has three tabs: Overview (description, checks, merge state, Merge), Files (changed files with a side-by-side diff and review line comments) and Conversation (comments and reviews, plus a composer for a comment, an approval or a change request). Open it in one of three ways:
 
 - Choose **Open as node** in a pull request's summary on the board.
 - Choose **Pull request…** in the canvas add menu (pane right-click, **New view**) or in the Dock. Pick one of the open pull requests the board already knows, or type the number of a closed or merged one.
 - An agent runs `nodeterm open-pr --pr <n>` after `gh pr create`. The node opens beside the agent with a context link.
+
+Line comments: in the Files tab, each review thread shows under its line, on its side of the diff. Outdated threads show below the diff. Click a line number to comment on that line. **Comment** posts it at once. **Add to review** keeps it until your next Comment, Approve or Request changes in the Conversation tab, which sends it in that review. Pending line comments are kept only while the node is open. Each thread has a Reply box. GitHub takes line comments only on changed lines and the lines next to them.
 
 The linked agent can drive the node, when the user asks it to:
 
@@ -98,7 +100,7 @@ The node only opens pull requests of the project's approved repository. It store
 Surfaces:
 
 - **Desktop and Server Edition**: the full node. Every read and write goes through the core, over IPC or the Server Edition WebSocket bridge.
-- **Relay tabs**: a node already on the canvas reads. **Pull request…** is disabled there, because the GitHub approval lives on the host. Comment, review and merge are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all three.
+- **Relay tabs**: a node already on the canvas reads. **Pull request…** is disabled there, because the GitHub approval lives on the host. Comment, line comment, review and merge are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all of them.
 - **Mobile**: no pull request node. The phone shows the rest of the canvas as before.
 
 ## Current scope
