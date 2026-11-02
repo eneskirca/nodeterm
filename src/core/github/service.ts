@@ -87,6 +87,10 @@ export const FULL_REFRESH_MIN_INTERVAL_MS = 120_000
  *  shares one read, and a project gets at most `PULL_CHECKS_PER_MINUTE` reads a minute. Both are
  *  checked before anything is resolved or sent. */
 export const PULL_CHECKS_REUSE_MS = 15_000
+/** Query bounds, checked before anything is read. */
+const MAX_QUERY_SEARCH = 200
+const MAX_QUERY_LABELS = 50
+const MAX_QUERY_LABEL = 100
 export const PULL_CHECKS_PER_MINUTE = 10
 
 export interface GitHubIssuesClientLike {
@@ -564,6 +568,13 @@ export class GitHubIssueService {
     if (!Number.isSafeInteger(request.pageSize) || request.pageSize < 1 || request.pageSize > 50) {
       throw new Error('invalid-query')
     }
+    // Bounded before anything is read: both strings arrive from a renderer or a relay peer.
+    if ((request.search !== undefined && (typeof request.search !== 'string' || request.search.length > MAX_QUERY_SEARCH)) ||
+        (request.labelFilter !== undefined && (!Array.isArray(request.labelFilter) ||
+          request.labelFilter.length > MAX_QUERY_LABELS ||
+          request.labelFilter.some((label) => typeof label !== 'string' || label.length > MAX_QUERY_LABEL)))) {
+      throw new Error('invalid-query')
+    }
     const context = await this.cacheContext(request.projectId)
     const { state, userId } = await this.cachedState(context)
     const throttle = userId ? this.options.coordinator.throttle(userId) : undefined
@@ -581,7 +592,11 @@ export class GitHubIssueService {
         String(item.number).includes(search))
       .filter((item) => filters.size === 0 || item.labels.some((label) =>
         filters.has(foldLabel(label.name))))
-    const visible = filtered.filter((item) => item.columnId === request.columnId)
+    // The issues node lists every column at once, open only, optionally the signed-in user's.
+    const visible = filtered.filter((item) => request.anyColumn === true || item.columnId === request.columnId)
+      .filter((item) => request.openOnly !== true || item.state === 'open')
+      .filter((item) => request.assignedToMe !== true ||
+        (!!userId && item.assignees.some((user) => String(user.id) === userId)))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.number - a.number)
     const offset = request.cursor ? Number(request.cursor) : 0
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid-query')

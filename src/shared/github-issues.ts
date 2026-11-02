@@ -228,6 +228,11 @@ export interface GitHubIssueQuery {
   cursor?: string
   search?: string
   labelFilter?: string[]
+  /** The issues node: every column (`columnId` ignored), open items only, and only items assigned
+   *  to the signed-in user. Absent = the board's page, unchanged. */
+  anyColumn?: boolean
+  openOnly?: boolean
+  assignedToMe?: boolean
 }
 
 export interface GitHubIssuePage {
