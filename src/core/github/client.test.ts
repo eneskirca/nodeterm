@@ -625,3 +625,78 @@ describe('pull request merge', () => {
     await expect(failing(405)).rejects.toMatchObject({ code: 'request-failed', status: 405 })
   })
 })
+
+describe('GitHubIssuesClient pull files', () => {
+  it('reads one page of changed files with its next page, a rename with its previous path', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        calls.push(String(url))
+        return response([
+          { filename: 'src/a.ts', status: 'modified', additions: 3, deletions: 1, patch: '@@' },
+          { filename: 'src/new.ts', previous_filename: 'src/old.ts', status: 'renamed', additions: 0, deletions: 0 },
+          { filename: 'img.png', status: 'added', additions: 0, deletions: 0 },
+          { filename: 'gone.md', status: 'removed', additions: 0, deletions: 9 },
+          { filename: 'copy.ts', previous_filename: 'a.ts', status: 'copied', additions: 1, deletions: 0 },
+          { filename: 'mode.sh', status: 'changed', additions: 0, deletions: 0 }
+        ], { headers: { link: '<https://api.github.com/repos/o/r/pulls/7/files?per_page=100&page=3>; rel="next"' } })
+      }
+    })
+    expect(await client.listPullFiles('o/r', 7, 2)).toEqual({
+      files: [
+        { path: 'src/a.ts', status: 'modified', additions: 3, deletions: 1 },
+        { path: 'src/new.ts', previousPath: 'src/old.ts', status: 'renamed', additions: 0, deletions: 0 },
+        { path: 'img.png', status: 'added', additions: 0, deletions: 0 },
+        { path: 'gone.md', status: 'removed', additions: 0, deletions: 9 },
+        { path: 'copy.ts', status: 'added', additions: 1, deletions: 0 },
+        { path: 'mode.sh', status: 'modified', additions: 0, deletions: 0 }
+      ],
+      nextPage: 3
+    })
+    expect(calls).toEqual(['https://api.github.com/repos/o/r/pulls/7/files?per_page=100&page=2'])
+  })
+
+  it('refuses a malformed file and a bad request', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    await expect(client([{ filename: '', status: 'added', additions: 0, deletions: 0 }]).listPullFiles('o/r', 7, 1))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([{ filename: 'a', status: 'weird', additions: 0, deletions: 0 }]).listPullFiles('o/r', 7, 1))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([]).listPullFiles('o/r', 7, 0)).rejects.toMatchObject({ code: 'invalid-request' })
+  })
+})
+
+describe('GitHubIssuesClient.getFileAt', () => {
+  const file = (bytes: Buffer, over: Record<string, unknown> = {}) =>
+    ({ type: 'file', size: bytes.length, encoding: 'base64', content: bytes.toString('base64'), ...over })
+
+  it('reads one file at a commit, each path segment encoded', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => { calls.push(String(url)); return response(file(Buffer.from('const a = 1\n'))) }
+    })
+    expect(await client.getFileAt('o/r', 'src/my file#1.ts', SHA_HEAD))
+      .toEqual({ kind: 'text', text: 'const a = 1\n' })
+    expect(calls).toEqual([`https://api.github.com/repos/o/r/contents/src/my%20file%231.ts?ref=${SHA_HEAD}`])
+  })
+
+  it('answers binary for a NUL byte or invalid UTF-8, too-large past 1 MB', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    expect(await client(file(Buffer.from([0x89, 0x50, 0x00, 0x01]))).getFileAt('o/r', 'a.png', SHA_HEAD))
+      .toEqual({ kind: 'unavailable', reason: 'binary' })
+    expect(await client(file(Buffer.from([0xff, 0xfe, 0x41]))).getFileAt('o/r', 'a.bin', SHA_HEAD))
+      .toEqual({ kind: 'unavailable', reason: 'binary' })
+    expect(await client({ type: 'file', size: 1_048_577, encoding: 'none', content: '' }).getFileAt('o/r', 'big.json', SHA_HEAD))
+      .toEqual({ kind: 'unavailable', reason: 'too-large' })
+  })
+
+  it('refuses a path that could leave the contents endpoint, and a ref that is not a commit', async () => {
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { throw new Error('no request') } })
+    for (const path of ['../../pulls/7', 'a/./b', '/abs', 'a//b', 'a\u0000b', '']) {
+      await expect(client.getFileAt('o/r', path, SHA_HEAD)).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    await expect(client.getFileAt('o/r', 'a.ts', 'main')).rejects.toMatchObject({ code: 'invalid-request' })
+  })
+})

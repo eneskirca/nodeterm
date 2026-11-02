@@ -17,6 +17,10 @@ import type {
   GitHubPullDetail,
   PullConversationItem,
   PullConversationPage,
+  PullFile,
+  PullFileRead,
+  PullFilesPage,
+  PullFileStatus,
   PullMergeMethod,
   PullReviewEvent,
   PullReviewVerdict
@@ -219,6 +223,38 @@ function conversationItemFrom(value: unknown, kind: 'comment' | 'review'): PullC
   if (kind === 'comment') return { kind, ...base }
   const verdict = typeof item.state === 'string' ? REVIEW_VERDICTS[item.state] : undefined
   return verdict ? { kind, ...base, verdict } : null
+}
+
+const FILE_STATUSES: Record<string, PullFileStatus> = {
+  added: 'added', modified: 'modified', removed: 'removed', renamed: 'renamed',
+  copied: 'added', changed: 'modified', unchanged: 'modified'
+}
+
+/** The Files tab shows a file up to this size; past it the node says "cannot show this file". */
+const MAX_FILE_BYTES = 1_048_576
+
+/** A repository path as `GET /pulls/{n}/files` names it. No empty, `.` or `..` segment, so the URL
+ *  built from it cannot leave the contents endpoint. */
+function repoPath(value: unknown): value is string {
+  return string(value, 4_096) && value.length > 0 && !value.includes('\u0000') &&
+    value.split('/').every((part) => part !== '' && part !== '.' && part !== '..')
+}
+
+/** One changed file. `copied` keeps no previous path: it diffs against empty, like an add. */
+function pullFileFrom(value: unknown): PullFile | null {
+  const item = object(value)
+  const status = item && typeof item.status === 'string' ? FILE_STATUSES[item.status] : undefined
+  if (!item || !status || !repoPath(item.filename) ||
+      !Number.isSafeInteger(item.additions) || (item.additions as number) < 0 ||
+      !Number.isSafeInteger(item.deletions) || (item.deletions as number) < 0) return null
+  if (status === 'renamed' && !repoPath(item.previous_filename)) return null
+  return {
+    path: item.filename,
+    ...(status === 'renamed' ? { previousPath: item.previous_filename as string } : {}),
+    status,
+    additions: item.additions as number,
+    deletions: item.deletions as number
+  }
 }
 
 /** GitHub grows this enum (`duplicate` arrived after the decoder was written, and one such issue
@@ -609,6 +645,46 @@ export class GitHubIssuesClient {
     await this.request(`/repos/${repository}/pulls/${pullNumber}/merge`, {
       method: 'PUT', body: JSON.stringify({ merge_method: merge.method, sha: merge.sha })
     })
+  }
+
+  /** One page of a PR's changed files (`GET /pulls/{n}/files`), for the Files tab. */
+  async listPullFiles(repository: string, pullNumber: number, page: number): Promise<PullFilesPage> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !positiveInteger(page, 100_000)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`/repos/${repository}/pulls/${pullNumber}/files?per_page=100&page=${page}`, { method: 'GET' })
+    const value = await this.json(response)
+    if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
+    const files = value.map(pullFileFrom)
+    if (files.some((file) => !file)) throw new GitHubClientError('malformed-response')
+    const next = nextPage(response.headers.get('link'))
+    return { files: files as PullFile[], ...(next ? { nextPage: next } : {}) }
+  }
+
+  /** One file at one commit (`GET /contents/{path}?ref=`). Over 1 MB, or not UTF-8 text, answers
+   *  `unavailable` instead of content. */
+  async getFileAt(repository: string, path: string, ref: string): Promise<PullFileRead> {
+    safeRepository(repository)
+    if (!repoPath(path) || typeof ref !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(ref)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const encoded = path.split('/').map(encodeURIComponent).join('/')
+    const item = object(await this.json(await this.request(`/repos/${repository}/contents/${encoded}?ref=${ref}`, { method: 'GET' })))
+    if (!item || !Number.isSafeInteger(item.size) || (item.size as number) < 0) throw new GitHubClientError('malformed-response')
+    if ((item.size as number) > MAX_FILE_BYTES) return { kind: 'unavailable', reason: 'too-large' }
+    // ponytail: a symlink or submodule entry has no text to diff; it reads as binary.
+    if (item.type !== 'file' || item.encoding !== 'base64' || typeof item.content !== 'string') {
+      return { kind: 'unavailable', reason: 'binary' }
+    }
+    const bytes = Buffer.from(item.content, 'base64')
+    if (bytes.length > MAX_FILE_BYTES) return { kind: 'unavailable', reason: 'too-large' }
+    if (bytes.includes(0)) return { kind: 'unavailable', reason: 'binary' }
+    try {
+      return { kind: 'text', text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
+    } catch {
+      return { kind: 'unavailable', reason: 'binary' }
+    }
   }
 
   /** One page of a PR's issue comments (`GET /issues/{n}/comments`), for the Conversation tab. */

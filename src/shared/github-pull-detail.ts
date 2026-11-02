@@ -71,3 +71,45 @@ export type GitHubRepoMergeMethodsResult =
 
 /** The one answer every pull node write gives (comment, review, merge). */
 export type PullWriteResult = { ok: true } | { ok: false; reason: PullWriteReason }
+
+/** How a file changed in a PR. GitHub's `copied` reads as added, `changed`/`unchanged` as modified. */
+export type PullFileStatus = 'added' | 'modified' | 'removed' | 'renamed'
+
+/** One entry of the Files tab. `previousPath` only for a rename (the base side's path). */
+export interface PullFile {
+  path: string
+  previousPath?: string
+  status: PullFileStatus
+  additions: number
+  deletions: number
+}
+
+/** One page of `GET /pulls/{n}/files`, as the client reads it. */
+export interface PullFilesPage {
+  files: PullFile[]
+  nextPage?: number
+}
+
+export type GitHubPullFilesResult =
+  /** `truncated` = more than the node lists (300); the rest is on GitHub. */
+  | { status: 'ok'; files: PullFile[]; truncated: boolean; observedAt: number; stale?: PullReadFailure; retryAt?: number }
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
+
+/** Why the node shows "cannot show this file". `not-in-pull`: the PR no longer changes that path. */
+export type PullFileUnavailable = 'binary' | 'too-large' | 'not-in-pull'
+
+/** One side of a diff: the file's text, or `empty` for the missing side of an added or removed file. */
+export type PullFileSide = { kind: 'text'; text: string } | { kind: 'empty' }
+
+/** One file version as the client reads it (`GET /contents/{path}?ref=`). */
+export type PullFileRead = { kind: 'text'; text: string } | { kind: 'unavailable'; reason: 'binary' | 'too-large' }
+
+export type PullFileContents =
+  | { kind: 'diff'; base: PullFileSide; head: PullFileSide }
+  | { kind: 'unavailable'; reason: PullFileUnavailable }
+
+export type GitHubPullFileContentsResult =
+  | { status: 'ok'; contents: PullFileContents; observedAt: number; stale?: PullReadFailure; retryAt?: number }
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
