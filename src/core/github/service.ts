@@ -32,6 +32,12 @@ import type {
   GitHubPullConversationResult,
   GitHubPullDetail,
   GitHubPullDetailResult,
+  GitHubPullFileContentsResult,
+  GitHubPullFilesResult,
+  PullFile,
+  PullFileRead,
+  PullFileSide,
+  PullFilesPage,
   PullConversationItem,
   PullConversationPage,
   PullReadFailure,
@@ -98,6 +104,9 @@ export interface GitHubIssuesClientLike {
   /** One page each of a PR's issue comments and reviews (the Conversation tab). Optional, as above. */
   listPullComments?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
   listPullReviews?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
+  /** One page of a PR's changed files, and one file at one commit (the Files tab). Optional, as above. */
+  listPullFiles?(repository: string, pullNumber: number, page: number): Promise<PullFilesPage>
+  getFileAt?(repository: string, path: string, ref: string): Promise<PullFileRead>
   /** The repository's allowed merge methods, and a merge tied to the head `sha`. Optional, as above. */
   repoMergeMethods?(repository: string): Promise<PullMergeMethod[]>
   mergePull?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
@@ -252,6 +261,9 @@ const MAX_PULL_READS = 100
 
 /** Pages of 100 read per list for the Conversation tab; past it the node says the rest is on GitHub. */
 const MAX_CONVERSATION_PAGES = 10
+
+/** Files the Files tab lists (3 pages of 100); past it the node says the rest is on GitHub. */
+const MAX_PULL_FILES = 300
 
 function repositoryKey(context: GitHubIssueServiceContext): string {
   return `${context.userId}\0${context.repository}`
@@ -1020,6 +1032,66 @@ export class GitHubIssueService {
     })
   }
 
+  /**
+   * One PR's changed files for the Files tab, 100 per page, at most `MAX_PULL_FILES`, past which
+   * `truncated` is set. Same refusals, floor and stale rules as `pullDetail`.
+   */
+  async pullFiles(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullFilesResult> {
+    return this.pullRead('files', request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.listPullFiles) return null
+      const files: PullFile[] = []
+      let page: number | undefined = 1
+      while (page && files.length < MAX_PULL_FILES) {
+        const next: number = page
+        const result = await this.readWithEpoch(captured, () => client.listPullFiles!(repository, pullNumber, next))
+        files.push(...result.files)
+        page = result.nextPage
+      }
+      return {
+        status: 'ok', files: files.slice(0, MAX_PULL_FILES), truncated: !!page || files.length > MAX_PULL_FILES,
+        observedAt: this.now()
+      }
+    })
+  }
+
+  /**
+   * The base and head versions of one changed file, at the SHAs of the latest `pullDetail` read. A
+   * rename's base is read from its previous path; the missing side of an added or removed file is
+   * `empty` (no read). A binary file or one over 1 MB answers `unavailable`. The SHAs are part of the
+   * key, so a moved head reads again; the floor and stale rules are `pullRead`'s.
+   */
+  async pullFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; path: string }
+  ): Promise<GitHubPullFileContentsResult> {
+    if (typeof request?.path !== 'string') return { status: 'refused', reason: 'not-configured' }
+    const detail = await this.pullDetail(request)
+    if (detail.status !== 'ok') return detail
+    const listed = await this.pullFiles(request)
+    if (listed.status !== 'ok') return listed
+    const file = listed.files.find((item) => item.path === request.path)
+    const { base, head } = detail.detail
+    return this.pullRead(`contents\0${base.sha}\0${head.sha}\0${request.path}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.getFileAt) return null
+      if (!file) return { status: 'ok', contents: { kind: 'unavailable', reason: 'not-in-pull' }, observedAt: this.now() }
+      const side = async (path: string, sha: string): Promise<PullFileRead | PullFileSide> =>
+        this.readWithEpoch(captured, () => client.getFileAt!(repository, path, sha))
+      const [before, after] = await Promise.all([
+        file.status === 'added' ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, base.sha),
+        file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, head.sha)
+      ])
+      const unavailable = [before, after].find((item) => item.kind === 'unavailable')
+      return {
+        status: 'ok',
+        contents: unavailable?.kind === 'unavailable'
+          ? { kind: 'unavailable', reason: unavailable.reason }
+          : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
+        observedAt: this.now()
+      }
+    })
+  }
+
   /** Post a comment on a PR from its node: the issue-comment call (a PR is an issue to GitHub). */
   async commentOnPull(
     request: { projectId: string; repository: string; pullNumber: number; body: string }
@@ -1145,7 +1217,7 @@ export class GitHubIssueService {
   }
 
   private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
-    for (const kind of ['detail', 'conversation']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
+    for (const kind of ['detail', 'conversation', 'files']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
   }
 
   /**
@@ -1157,7 +1229,8 @@ export class GitHubIssueService {
    * `read` answers null when this client cannot make the read at all.
    */
   private async pullRead<O extends PullOk>(
-    kind: 'detail' | 'conversation',
+    // `contents\0…` carries the file and SHAs, so a held entry is one file at one head.
+    kind: 'detail' | 'conversation' | 'files' | `contents\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {
