@@ -26,7 +26,8 @@ export const NODE_MIN_SIZES: Record<NodeKind, { width: number; height: number }>
   dino: { width: 400, height: 160 },
   trigger: { width: 240, height: 120 },
   simulator: { width: 200, height: 260 },
-  whiteboard: { width: 320, height: 220 }
+  whiteboard: { width: 320, height: 220 },
+  pull: { width: 420, height: 260 }
 }
 
 /** Height of a node when collapsed (header only). Re-exported by `state/workspace`. */

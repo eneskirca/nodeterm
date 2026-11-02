@@ -9,6 +9,7 @@ import {
   createAgentNode,
   createDinoNode,
   createWhiteboardNode,
+  createPullNode,
   duplicateNode,
   createSystemLoginNode,
   isAccountLoginNode,
@@ -1297,5 +1298,38 @@ describe('pendingLaunch at the serializer seams (a held launch is hostile input 
     expect((flow[0].data.pendingLaunch as { afterPr?: { invalid?: true } }).afterPr?.invalid).toBe(true)
     const out = flowToNodeStates([live({ after: [], command: 'c', afterPr: 'soon' })])
     expect(out[0].pendingLaunch?.afterPr?.invalid).toBe(true)
+  })
+})
+
+describe('pull request node serialization', () => {
+  it('persists only the pull reference: repository, number, tab and selected file', () => {
+    const node = createPullNode(0, 'nodeterm/nodeterm', 42)
+    node.data.pull = { repository: 'nodeterm/nodeterm', pullNumber: 42, tab: 'files', selectedFile: 'src/a.ts' }
+    const [state] = flowToNodeStates([node])
+    expect(state.kind).toBe('pull')
+    expect(state.pull).toEqual({ repository: 'nodeterm/nodeterm', pullNumber: 42, tab: 'files', selectedFile: 'src/a.ts' })
+    expect(state.title).toBe('PR #42')
+    const [back] = nodeStatesToFlow([state])
+    expect(back.type).toBe('pull')
+    expect(back.data.pull).toEqual(state.pull)
+  })
+
+  it('drops PR content that a live node or a hand-edited file put on the reference', () => {
+    const node = createPullNode(0, 'o/r', 7)
+    node.data.pull = { ...node.data.pull!, ...{ body: 'secret', headSha: 'abc' } }
+    expect(flowToNodeStates([node])[0].pull).toEqual({ repository: 'o/r', pullNumber: 7, tab: 'overview' })
+  })
+
+  it('drops a hostile reference from project.json, keeping the node', () => {
+    const [state] = flowToNodeStates([createPullNode(0, 'o/r', 7)])
+    for (const bad of [
+      { repository: '../x', pullNumber: 7, tab: 'overview' },
+      { repository: 'o/r', pullNumber: -1, tab: 'overview' },
+      { repository: 'o/r', pullNumber: 7, tab: 'secrets' }
+    ]) {
+      const [back] = nodeStatesToFlow([{ ...state, pull: bad as never }])
+      expect(back.type).toBe('pull')
+      expect(back.data.pull).toBeUndefined()
+    }
   })
 })

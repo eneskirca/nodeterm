@@ -8,6 +8,7 @@ import type {
   GitHubMutationResult
 } from '../../shared/github-issues'
 import type { GitHubPullBoard, GitHubPullChecksResult } from '../../shared/github-pull-status'
+import type { GitHubPullDetailResult } from '../../shared/github-pull-detail'
 
 export interface GitHubIssueHandlerService {
   subscribe(uiId: number, request: { projectId: string }): Promise<GitHubIssuePage>
@@ -26,6 +27,7 @@ export interface GitHubIssueHandlerService {
   pullStatus(request: { projectId: string }): Promise<GitHubPullBoard>
   chasePulls(request: { projectId: string }): Promise<boolean>
   pullChecks(request: { projectId: string; pullNumber: number }): Promise<GitHubPullChecksResult>
+  pullDetail(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullDetailResult>
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>
   notePullWaits(request: { projectId: string; cardId: string; pulls: number[] }): Promise<number>
 }
@@ -52,6 +54,8 @@ export function registerGitHubIssueHandlers(
     service.chasePulls({ projectId }))
   platform.handle(IPC.githubIssuesPullChecks, (projectId: string, pullNumber: number) =>
     service.pullChecks({ projectId, pullNumber }))
+  platform.handle(IPC.githubIssuesPullDetail, (projectId: string, repository: string, pullNumber: number) =>
+    service.pullDetail({ projectId, repository, pullNumber }))
   platform.handle(IPC.githubIssuesClaimPullAutoMove,
     (request: { projectId: string; cardId: string; pulls: number[] }) => service.claimPullAutoMove(request))
   platform.handle(IPC.githubIssuesNotePullWaits,

@@ -1,4 +1,5 @@
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
+import type { GitHubPullDetailResult } from './github-pull-detail'
 
 export interface ProjectKanbanGitHub {
   repository?: string
@@ -287,6 +288,9 @@ export interface GitHubIssuesApi {
   chasePulls(projectId: string): Promise<boolean>
   /** Per-check detail for one PR — read only when its modal opens. */
   pullChecks(projectId: string, pullNumber: number): Promise<GitHubPullChecksResult>
+  /** One PR's overview for the pull request node. Refused (no request) unless `repository` is the
+   *  project's approved repository; answers from memory inside the 30 s refresh floor. */
+  pullDetail(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullDetailResult>
   /** The one-time permission to move a session card because its linked PRs merged. The first ask
    *  across every window wins; the host remembers it. */
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>

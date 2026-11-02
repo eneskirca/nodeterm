@@ -114,7 +114,8 @@ import {
 } from '../terminal/window-backgrounded'
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
-import { LazyEditorNode, LazyDiffNode } from '../nodes/lazyMonacoNodes'
+import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
+import type { PullNodeRef } from '@shared/pull-node'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -950,6 +951,7 @@ import {
   createBrowserNode,
   createDinoNode,
   createWhiteboardNode,
+  createPullNode,
   createTriggerNode,
   createFilesNode,
   createRunNode,
@@ -2402,6 +2404,7 @@ export function Canvas() {
       group: withNodeBoundary(GroupNode),
       editor: withNodeBoundary(LazyEditorNode),
       diff: withNodeBoundary(LazyDiffNode),
+      pull: withNodeBoundary(LazyPullNode),
       subagent: withNodeBoundary(SubagentNode),
       loop: withNodeBoundary(LoopNode),
       dino: withNodeBoundary(DinoNode),
@@ -12978,6 +12981,28 @@ export function Canvas() {
     [focusNodeById]
   )
 
+  // "Open as node" from the PR summary modal: reuse this PR's node if the canvas has one, else
+  // place a new one; then leave the board and frame it.
+  const openPullAsNode = useCallback(
+    (pull: PullNodeRef) => {
+      const existing = nodesRef.current.find((n) => n.type === 'pull' &&
+        n.data.pull?.repository === pull.repository && n.data.pull.pullNumber === pull.pullNumber)
+      const created = existing
+        ? undefined
+        : createPullNode(nodesRef.current.length, pull.repository, pull.pullNumber, emptyNodePos())
+      const nodeId = existing?.id ?? created!.id
+      if (created) {
+        setNodes((ns) => [...ns, created])
+        markDirty()
+      }
+      const id = useProjects.getState().activeProjectId
+      if (id) useViewMode.getState().toggle(id) // board → canvas
+      // ponytail: one tick so a just-added node is in nodesRef before it is framed.
+      setTimeout(() => focusNodeById(nodeId), 0)
+    },
+    [setNodes, markDirty, emptyNodePos, focusNodeById]
+  )
+
   // Stable identity for the memoized KanbanView — an inline arrow here would re-render the
   // whole board on every Canvas render.
   const setKanbanModalNode = useCallback((id: string | null) => {
@@ -19821,6 +19846,7 @@ export function Canvas() {
           onAutoMoveFromPulls={autoMoveCardFromPulls}
           issueAgentMenu={issueAgentMenu}
           issueWorktreeMenu={issueWorktreeMenu}
+          onOpenPullAsNode={openPullAsNode}
           teams={teamStations}
           onIssueMoved={dispatchOnUserMove}
         />

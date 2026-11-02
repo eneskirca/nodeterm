@@ -17,6 +17,7 @@ import {
   IconBranch,
   IconCollapse,
   IconDuplicate,
+  IconExternal,
   IconGrid,
   IconGroup,
   IconMarkdown,
@@ -38,6 +39,7 @@ import {
 import { modelsForAgent, type GatewayModel } from '@shared/agents/model-gateway'
 import { sshHostKey, type SshServer } from '@shared/ssh'
 import { isRemoteSessionNode } from '@shared/worktree'
+import { PULL_REFRESH_EVENT, pullWebUrl } from '@shared/pull-node'
 import { claudeSwitchHostKey, claudeSwitchTargets } from '../canvas/claude-account-switch'
 import { codexAccountSelectable } from '../canvas/codex-account-switch'
 import type { SessionSource } from '../session/session'
@@ -370,6 +372,27 @@ export function buildNodeActionSections(
               }
             ] as MenuItem[])
           : []
+    },
+    // A pull request node: read it again, or fall back to the web. Not hideable (no inventory id).
+    {
+      id: null,
+      items: ((): MenuItem[] => {
+        const node = ids.length === 1 ? ctx.nodes.find((n) => n.id === ids[0]) : undefined
+        const ref = node?.type === 'pull' ? node.data.pull : undefined
+        if (!ref) return []
+        return [
+          {
+            label: 'Refresh pull request',
+            icon: <IconReload />,
+            onClick: () => window.dispatchEvent(new CustomEvent(PULL_REFRESH_EVENT, { detail: ids[0] }))
+          },
+          {
+            label: 'Open on GitHub',
+            icon: <IconExternal />,
+            onClick: () => void window.nodeTerminal.shell.openExternal(pullWebUrl(ref.repository, ref.pullNumber))
+          }
+        ]
+      })()
     },
     SEPARATOR,
     {

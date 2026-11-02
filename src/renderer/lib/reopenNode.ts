@@ -16,12 +16,14 @@ import {
   createRunNode,
   createSimulatorNode,
   createWhiteboardNode,
+  createPullNode,
   isAccountLoginNode
 } from '@renderer/state/workspace'
 import { normalizeRunConfig } from '@shared/run-config'
 import { normalizeSimulatorConfig } from '@shared/simulator'
 import { absolutePosition, type FocusableNode } from './nodeFocus'
 import { normalizeNodeIcon } from '@shared/node-icon'
+import { normalizePullRef } from '@shared/pull-node'
 
 export type RestorableNodeKind = Exclude<NodeKind, 'group' | 'subagent' | 'loop'>
 
@@ -207,6 +209,13 @@ function buildBase(snapshot: ReopenNodeSnapshot, ctx: RecreateContext): CanvasNo
       wb.data.autoEdit = undefined
       if (d.whiteboardSource) wb.data.whiteboardSource = d.whiteboardSource
       return wb
+    }
+    // A pull node's whole state is its reference; the PR itself is read again on mount.
+    case 'pull': {
+      const ref = normalizePullRef(d.pull)
+      if (!ref) return null
+      const node = createPullNode(0, ref.repository, ref.pullNumber)
+      return { ...node, data: { ...node.data, pull: ref } }
     }
     // A Simulator node's whole state is which device it shows.
     case 'simulator':

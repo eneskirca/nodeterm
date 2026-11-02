@@ -27,6 +27,9 @@ describe('registerGitHubIssueHandlers', () => {
       pullChecks: async (...args: unknown[]) => {
         calls.push(['checks', ...args]); return { status: 'no-checks' as const }
       },
+      pullDetail: async (...args: unknown[]) => {
+        calls.push(['detail', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
+      },
       claimPullAutoMove: async (...args: unknown[]) => { calls.push(['claim', ...args]); return true },
       notePullWaits: async (...args: unknown[]) => { calls.push(['wait', ...args]); return 1 }
     }
@@ -39,6 +42,7 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullStatus]('p1')
     await platform.handlers[IPC.githubIssuesChasePulls]('p1')
     await platform.handlers[IPC.githubIssuesPullChecks]('p1', 12)
+    await platform.handlers[IPC.githubIssuesPullDetail]('p1', 'o/r', 12)
     await platform.handlers[IPC.githubIssuesClaimPullAutoMove]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     await platform.handlers[IPC.githubIssuesNotePullWaits]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     expect(calls).toEqual([
@@ -48,6 +52,7 @@ describe('registerGitHubIssueHandlers', () => {
       ['pullStatus', { projectId: 'p1' }],
       ['chase', { projectId: 'p1' }],
       ['checks', { projectId: 'p1', pullNumber: 12 }],
+      ['detail', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
       ['claim', { projectId: 'p1', cardId: 'n', pulls: [3] }],
       ['wait', { projectId: 'p1', cardId: 'n', pulls: [3] }]
     ])

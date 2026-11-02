@@ -3,6 +3,7 @@ import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from 
 import type { IdentitySeedEntry } from './agent-identity-seed'
 import type { AgentStatusSnapshotEntry } from './agent-status-snapshot'
 import type { WhiteboardFile, WhiteboardSaveResult } from './whiteboard'
+import type { PullNodeRef } from './pull-node'
 import type { PrWaitHold } from './pr-wait'
 import type { SessionBackend } from './session-backend'
 import type { AgentIntegrationsSettings } from './agent-integrations'
@@ -459,7 +460,7 @@ export interface RecycledInfo {
 // 'subagent' and 'loop' are render-only (ephemeral hook-driven viz) and never persisted.
 // 'trigger' is a first-class PERSISTED kind (issue #493) — the canvas-owned schedule node; its
 // spec rides `CanvasNodeState.trigger` and is sanitized on every load path (@shared/trigger).
-export type NodeKind = 'terminal' | 'sticky' | 'group' | 'editor' | 'diff' | 'video' | 'web' | 'browser' | 'files' | 'subagent' | 'loop' | 'dino' | 'trigger' | 'simulator' | 'whiteboard'
+export type NodeKind = 'terminal' | 'sticky' | 'group' | 'editor' | 'diff' | 'video' | 'web' | 'browser' | 'files' | 'subagent' | 'loop' | 'dino' | 'trigger' | 'simulator' | 'whiteboard' | 'pull'
 
 /** Persisted state of a single canvas node (terminal, sticky note, group frame, or editor). */
 /**
@@ -656,6 +657,8 @@ export interface CanvasNodeState {
   /** whiteboard-only: epoch ms of the last editing session that changed the board. Written once
    *  per session (never per stroke) — what a linked agent's "the board changed" keys on. */
   boardRev?: number
+  /** pull-only: which PR the node shows and the view it was left on. Never PR text (shared/pull-node.ts). */
+  pull?: PullNodeRef
   // dino-only: best score reached in the T-Rex Runner game.
   highScore?: number
   // editor / diff

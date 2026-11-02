@@ -48,6 +48,7 @@ import { agentStatusForProject, useSession, useSessionRegistryVersion } from '..
 import { ProjectSessionScope } from '../../session/owning-project'
 import { KanbanSourceFilter, type KanbanSource } from './KanbanSourceFilter'
 import { GitHubIssueSummaryModal } from './GitHubIssueSummaryModal'
+import { pullRefFromHtmlUrl, type PullNodeRef } from '@shared/pull-node'
 import { ConfirmDialog } from '../ConfirmDialog'
 import {
   githubMoveConfirmation,
@@ -166,6 +167,9 @@ export interface KanbanViewProps {
    * same reason as `nodeActionItems`: a board with no canvas behind it offers none.
    */
   issueAgentMenu?: (issue: GitHubIssueCardView) => MenuItem[]
+  /** "Open as node" in the PR summary modal: the canvas places a pull request node and shows it.
+   *  Optional like `issueAgentMenu`: a board with no canvas behind it offers none. */
+  onOpenPullAsNode?: (pull: PullNodeRef) => void
   /**
    * "Start with agent in a new worktree ▸" for a GitHub issue card: the same picker, pointed at a
    * fresh `issue-<N>-<slug>` worktree frame — or the reason it cannot run on this project (an SSH
@@ -255,7 +259,7 @@ function useCanvasCovered(): void {
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
   onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued, onAutoMoveFromPulls, issueAgentMenu,
-  issueWorktreeMenu, teams, onIssueMoved
+  issueWorktreeMenu, teams, onIssueMoved, onOpenPullAsNode
 }: KanbanViewProps) {
   useCanvasCovered()
   const { api } = useSession()
@@ -1364,6 +1368,14 @@ export const KanbanView = memo(function KanbanView({
             setModalNodeId(nodeId)
           }}
           showRunHistory={modalIssue.kind === 'issue'}
+          onOpenAsNode={(() => {
+            const ref = modalIssue.kind === 'pull' && onOpenPullAsNode
+              ? pullRefFromHtmlUrl(modalIssue.item.htmlUrl, modalIssue.item.number)
+              : undefined
+            return ref && onOpenPullAsNode
+              ? () => { setModalIssue(null); onOpenPullAsNode(ref) }
+              : undefined
+          })()}
         />
       )}
       {viewsMenu && (

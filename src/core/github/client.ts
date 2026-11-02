@@ -12,7 +12,8 @@ import type {
   UpdateIssueInput
 } from '../../shared/github-issues'
 import { parseGitHubRepository } from './config'
-import type { GitHubPullChecksResult } from '../../shared/github-pull-status'
+import { mergeState, type GitHubPullChecksResult, type PullLifecycle } from '../../shared/github-pull-status'
+import type { GitHubPullDetail } from '../../shared/github-pull-detail'
 import {
   GraphQLShapeError,
   PULL_CHECKS_QUERY,
@@ -131,6 +132,59 @@ function pullFrom(item: Record<string, unknown>): GitHubPullMeta | null | undefi
 }
 
 const KNOWN_STATE_REASONS: ReadonlySet<string> = new Set(['completed', 'not_planned', 'reopened', 'duplicate'])
+
+const SHA = /^[0-9a-f]{40}$/
+
+function pullRef(value: unknown): { ref: string; sha: string } | null {
+  const item = object(value)
+  if (!item || !string(item.ref, 255) || !item.ref || !string(item.sha, 40) || !SHA.test(item.sha)) return null
+  return { ref: item.ref, sha: item.sha }
+}
+
+/** Decodes `GET /pulls/{n}`. Merge state goes through the board's own rules (`mergeState`), with
+ *  REST's boolean `mergeable` and lower-case `mergeable_state` spelled as GraphQL spells them. */
+function pullDetailFrom(value: unknown): GitHubPullDetail | null {
+  const item = object(value)
+  if (!item || !positiveInteger(Number(item.number), 2_147_483_647) || !string(item.title, 1_024) ||
+      !(item.body === null || item.body === undefined || string(item.body, 262_144)) ||
+      (item.state !== 'open' && item.state !== 'closed') ||
+      !(item.draft === undefined || typeof item.draft === 'boolean') || typeof item.merged !== 'boolean' ||
+      !(item.mergeable === null || item.mergeable === undefined || typeof item.mergeable === 'boolean') ||
+      !(item.mergeable_state === undefined || string(item.mergeable_state, 32)) ||
+      !string(item.html_url, 2_048)) return null
+  const counts = [item.additions, item.deletions, item.changed_files].map(Number)
+  if (counts.some((count) => !Number.isSafeInteger(count) || count < 0)) return null
+  let url: URL
+  try { url = new URL(item.html_url) } catch { return null }
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') return null
+  const base = pullRef(item.base)
+  const head = pullRef(item.head)
+  if (!base || !head) return null
+  const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
+  if (item.user && !author) return null
+  const lifecycle: PullLifecycle = item.state === 'closed'
+    ? item.merged ? 'merged' : 'closed'
+    : item.draft ? 'draft' : 'open'
+  const merge = item.state === 'open'
+    ? mergeState(
+      item.mergeable === true ? 'MERGEABLE' : item.mergeable === false ? 'CONFLICTING' : 'UNKNOWN',
+      typeof item.mergeable_state === 'string' ? item.mergeable_state.toUpperCase() : 'UNKNOWN')
+    : undefined
+  return {
+    number: Number(item.number),
+    title: item.title,
+    body: item.body ?? '',
+    lifecycle,
+    author,
+    base,
+    head,
+    ...(merge !== undefined ? { merge } : {}),
+    additions: counts[0],
+    deletions: counts[1],
+    changedFiles: counts[2],
+    url: url.toString()
+  }
+}
 
 /** GitHub grows this enum (`duplicate` arrived after the decoder was written, and one such issue
  *  failed the WHOLE scan as malformed, so that repository never synced). A value we do not know
@@ -457,6 +511,16 @@ export class GitHubIssuesClient {
       if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
       throw error
     }
+  }
+
+  /** One pull request's overview (`GET /pulls/{n}`), read when its node mounts or refreshes. */
+  async getPull(repository: string, pullNumber: number): Promise<GitHubPullDetail> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const value = await this.json(await this.request(`/repos/${repository}/pulls/${pullNumber}`, { method: 'GET' }))
+    const decoded = pullDetailFrom(value)
+    if (!decoded) throw new GitHubClientError('malformed-response')
+    return decoded
   }
 
   /** Per-check detail for one PR — read only when someone opens that PR. */

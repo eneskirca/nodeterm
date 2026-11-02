@@ -381,3 +381,83 @@ describe('GitHubIssuesClient', () => {
     })
   })
 })
+
+const SHA_BASE = 'b'.repeat(40)
+const SHA_HEAD = 'c'.repeat(40)
+const pull = (over: Record<string, unknown> = {}) => ({
+  number: 7,
+  title: 'Add the pull node',
+  body: '## Why\nBecause.',
+  state: 'open',
+  draft: false,
+  merged: false,
+  user: { id: 2, login: 'octocat', avatar_url: 'https://avatars.githubusercontent.com/u/2?v=4' },
+  base: { ref: 'main', sha: SHA_BASE },
+  head: { ref: 'feat/pull', sha: SHA_HEAD },
+  mergeable: true,
+  mergeable_state: 'clean',
+  additions: 10,
+  deletions: 2,
+  changed_files: 3,
+  html_url: 'https://github.com/nodeterm/nodeterm/pull/7',
+  ...over
+})
+
+describe('GitHubIssuesClient.getPull', () => {
+  it('reads GET /repos/{r}/pulls/{n} and decodes the overview', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response(pull()) }
+    })
+    expect(await client.getPull('nodeterm/nodeterm', 7)).toEqual({
+      number: 7,
+      title: 'Add the pull node',
+      body: '## Why\nBecause.',
+      lifecycle: 'open',
+      author: { id: 2, login: 'octocat', avatarUrl: 'https://avatars.githubusercontent.com/u/2?v=4' },
+      base: { ref: 'main', sha: SHA_BASE },
+      head: { ref: 'feat/pull', sha: SHA_HEAD },
+      merge: 'ready',
+      additions: 10,
+      deletions: 2,
+      changedFiles: 3,
+      url: 'https://github.com/nodeterm/nodeterm/pull/7'
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://api.github.com/repos/nodeterm/nodeterm/pulls/7')
+    expect(calls[0].init.method).toBe('GET')
+  })
+
+  it('applies the board merge rules: conflict, blocked, unknown, and none once closed', async () => {
+    const read = async (over: Record<string, unknown>) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(pull(over))
+    }).getPull('nodeterm/nodeterm', 7)
+    expect((await read({ mergeable: false, mergeable_state: 'dirty' })).merge).toBe('conflict')
+    expect((await read({ mergeable: true, mergeable_state: 'blocked' })).merge).toBe('blocked')
+    expect((await read({ mergeable: null, mergeable_state: 'unknown' })).merge).toBe('undecided')
+    const merged = await read({ state: 'closed', merged: true })
+    expect(merged.lifecycle).toBe('merged')
+    expect(merged.merge).toBeUndefined()
+    expect((await read({ state: 'closed', merged: false })).lifecycle).toBe('closed')
+    expect((await read({ draft: true })).lifecycle).toBe('draft')
+    expect((await read({ body: null })).body).toBe('')
+  })
+
+  it('refuses a malformed answer and an invalid pull number', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    await expect(client(pull({ head: { ref: 'x', sha: 'nope' } })).getPull('nodeterm/nodeterm', 7))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client(pull({ html_url: 'https://evil.example/pull/7' })).getPull('nodeterm/nodeterm', 7))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client(pull()).getPull('nodeterm/nodeterm', 0)).rejects.toMatchObject({ code: 'invalid-request' })
+  })
+
+  it('maps a 404 and a 401 to request-failed with the status', async () => {
+    const client = (status: number) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response({ message: 'x' }, { status })
+    })
+    await expect(client(404).getPull('nodeterm/nodeterm', 7)).rejects.toMatchObject({ code: 'request-failed', status: 404 })
+    await expect(client(401).getPull('nodeterm/nodeterm', 7)).rejects.toMatchObject({ code: 'request-failed', status: 401 })
+  })
+})

@@ -274,6 +274,8 @@ const api: NodeTerminalApi = {
     chasePulls: (projectId) => ipcRenderer.invoke(IPC.githubIssuesChasePulls, projectId),
     pullChecks: (projectId, pullNumber) =>
       ipcRenderer.invoke(IPC.githubIssuesPullChecks, projectId, pullNumber),
+    pullDetail: (projectId, repository, pullNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullDetail, projectId, repository, pullNumber),
     claimPullAutoMove: (request) => ipcRenderer.invoke(IPC.githubIssuesClaimPullAutoMove, request),
     notePullWaits: (request) => ipcRenderer.invoke(IPC.githubIssuesNotePullWaits, request),
     projectAvatar: (projectId) => ipcRenderer.invoke(IPC.githubProjectAvatar, projectId),

@@ -36,7 +36,8 @@ export function GitHubIssueSummaryModal({
   worktreeMenu,
   runs = NO_ISSUE_RUNS,
   onOpenRun,
-  showRunHistory = false
+  showRunHistory = false,
+  onOpenAsNode
 }: {
   issue: GitHubIssueCardView
   columns: KanbanColumn[]
@@ -67,6 +68,8 @@ export function GitHubIssueSummaryModal({
   onOpenRun?: (nodeId: string) => void
   /** Show the issue card's read-only run history (its board-log feed). */
   showRunHistory?: boolean
+  /** Pull kind: open this PR as a canvas node (the canvas places it). Absent = no button. */
+  onOpenAsNode?: () => void
 }): React.JSX.Element {
   const isPull = kind === 'pull'
   const { api } = useSession()
@@ -177,6 +180,7 @@ export function GitHubIssueSummaryModal({
               {ISSUE_WORKTREE_BUTTON_LABEL} ▾
             </Button>
           )}
+          {isPull && onOpenAsNode && <Button onClick={onOpenAsNode}>Open as node</Button>}
           <Button onClick={() => void api.shell.openExternal(issue.htmlUrl)}>Open on GitHub</Button>
         </div>
         {!isPull && onOpenRun && runs.length > 0 && (
@@ -245,7 +249,7 @@ export function GitHubIssueSummaryModal({
 }
 
 /** Per-check detail for an open PR, read once when its modal opens (and again if its head moves). */
-function usePullChecks(
+export function usePullChecks(
   api: { pullChecks: (projectId: string, pullNumber: number) => Promise<GitHubPullChecksResult> },
   projectId: string | undefined,
   pullNumber: number,
