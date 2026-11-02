@@ -49,6 +49,9 @@ import type {
   PullReadFailure,
   GitHubRepoMergeMethodsResult,
   GitHubRepoCollaboratorsResult,
+  GitHubPullForBranchResult,
+  PullCreateDraft,
+  PullCreateResult,
   PullMergeMethod,
   PullRefusal,
   PullReviewEvent,
@@ -56,7 +59,7 @@ import type {
   PullWriteResult
 } from '../../shared/github-pull-detail'
 import {
-  GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullCommentBody, isPullLineDraft
+  GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft
 } from '../../shared/github-pull-detail'
 import { parseGitHubRepository } from './config'
 import type { GitHubHostError } from './host'
@@ -136,6 +139,9 @@ export interface GitHubIssuesClientLike {
   /** The node's "Request review": the collaborators, and one reviewer request. Optional, as above. */
   listCollaborators?(repository: string): Promise<GitHubIssueUser[]>
   requestPullReviewer?(repository: string, pullNumber: number, login: string): Promise<void>
+  /** "New pull request": the form's start, and the create. Optional, as above. */
+  pullForBranch?(repository: string, head: string): Promise<{ defaultBranch: string; existing?: number }>
+  createPull?(repository: string, pull: PullCreateDraft): Promise<{ number: number }>
 }
 
 export interface GitHubIssueProjectContext {
@@ -1241,7 +1247,7 @@ export class GitHubIssueService {
   /** One read per (user, repository), held for the app run. `read` answers undefined when this
    *  client cannot make it at all. Never throws. */
   private async heldRepoRead<T>(
-    held: Map<string, T>,
+    held: Map<string, T> | null,
     request: { projectId: string; repository: string },
     read: (client: GitHubIssuesClientLike) => ((repository: string) => Promise<T>) | undefined
   ): Promise<{ status: 'ok'; value: T } | { status: 'refused'; reason: PullRefusal } | { status: 'failed'; reason: PullReadFailure; retryAt?: number }> {
@@ -1260,17 +1266,42 @@ export class GitHubIssueService {
     // The project's repository may have changed between the two awaits, as in readPull.
     if (captured.repository.toLowerCase() !== repository.toLowerCase()) return { status: 'refused', reason: 'repository-mismatch' }
     const key = `${captured.userId}\0${captured.repository.toLowerCase()}`
-    const hit = held.get(key)
+    const hit = held?.get(key)
     if (hit !== undefined) return { status: 'ok', value: hit }
     const readRepo = read(captured.client)
     if (!readRepo) return { status: 'failed', reason: 'unreachable' }
     try {
       const value = await this.readWithEpoch(captured, () => readRepo(captured.repository))
-      held.set(key, value)
+      held?.set(key, value)
       return { status: 'ok', value }
     } catch (error) {
       return { status: 'failed', ...pullReadFailure(error) }
     }
+  }
+
+  /** "New pull request"'s start for a branch: the default branch and the branch's open PR. Refused
+   *  like a pull read; never held (a PR for the branch may have opened a moment ago). */
+  async pullForBranch(
+    request: { projectId: string; repository: string; head: string }
+  ): Promise<GitHubPullForBranchResult> {
+    if (!isPullBranchName(request?.head)) return { status: 'refused', reason: 'not-configured' }
+    const result = await this.heldRepoRead(null, request, (client) =>
+      client.pullForBranch ? (repository: string) => client.pullForBranch!(repository, request.head) : undefined)
+    return result.status === 'ok' ? { status: 'ok', ...result.value } : result
+  }
+
+  /** Open a pull request from a branch, from the "New pull request" form (a user click only). */
+  async createPull(request: { projectId: string; repository: string } & PullCreateDraft): Promise<PullCreateResult> {
+    if (!isPullCreateDraft(request)) return { ok: false, reason: 'validation' }
+    const { head, base, title, body, draft } = request
+    const result = await this.repoWrite(request, async (client, repository) => {
+      // ponytail: a client that cannot create reads as network; the real client always can.
+      if (!client.createPull) throw new Error('unsupported')
+      return client.createPull(repository, { head, base, title, body, draft })
+    })
+    if (!result.ok) return { ok: false, reason: result.reason }
+    this.afterWrite(request.projectId)
+    return { ok: true, pullNumber: result.value.number }
   }
 
   /** Ask one collaborator to review the PR, from the node's "Request review" (a user click only). */
@@ -1295,11 +1326,28 @@ export class GitHubIssueService {
     request: { projectId: string; repository: string; pullNumber: number },
     write: (client: GitHubIssuesClientLike, repository: string, pullNumber: number) => Promise<unknown>
   ): Promise<PullWriteResult> {
-    const repository = parseGitHubRepository(request.repository)
     const { projectId, pullNumber } = request
-    if (typeof projectId !== 'string' || !repository || !Number.isSafeInteger(pullNumber) || pullNumber < 1) {
-      return { ok: false, reason: 'validation' }
-    }
+    if (!Number.isSafeInteger(pullNumber) || pullNumber < 1) return { ok: false, reason: 'validation' }
+    const result = await this.repoWrite(request, (client, repository) => write(client, repository, pullNumber))
+    // The head moved: the node reloads, and that read must not answer from the held one.
+    if (result.ok || result.reason === 'head-moved') this.dropPullReads(projectId, result.repository!, pullNumber)
+    if (!result.ok) return { ok: false, reason: result.reason }
+    this.afterWrite(projectId)
+    return { ok: true }
+  }
+
+  /**
+   * The shared path of every write a user's click makes (the pull node's, and "New pull request").
+   * It needs the approved repository but not the label-mapping approval. The named repository must
+   * be the project's, or nothing is sent. `repository` is the project's spelling, once resolved.
+   */
+  private async repoWrite<T>(
+    request: { projectId: string; repository: string },
+    write: (client: GitHubIssuesClientLike, repository: string) => Promise<T>
+  ): Promise<{ ok: true; value: T; repository: string } | { ok: false; reason: PullWriteReason; repository?: string }> {
+    const repository = parseGitHubRepository(request.repository)
+    const { projectId } = request
+    if (typeof projectId !== 'string' || !repository) return { ok: false, reason: 'validation' }
     let captured: GitHubIssueServiceContext
     try {
       captured = await this.options.contextForProject(projectId)
@@ -1310,25 +1358,24 @@ export class GitHubIssueService {
     }
     if (captured.repository.toLowerCase() !== repository.toLowerCase()) return { ok: false, reason: 'not-approved' }
     try {
-      await this.options.coordinator.runMutation(captured.userId, async () => {
+      const value = await this.options.coordinator.runMutation(captured.userId, async () => {
         if (epoch(captured) !== epoch(await this.options.contextForProject(projectId))) {
           throw new ConfigurationChangedError()
         }
-        return write(captured.client, captured.repository, pullNumber)
+        return write(captured.client, captured.repository)
       })
+      return { ok: true, value, repository: captured.repository }
     } catch (error) {
-      const reason = pullWriteFailure(error)
-      // The head moved: the node reloads, and that read must not answer from the held one.
-      if (reason === 'head-moved') this.dropPullReads(projectId, captured.repository, pullNumber)
-      return { ok: false, reason }
+      return { ok: false, reason: pullWriteFailure(error), repository: captured.repository }
     }
-    this.dropPullReads(projectId, captured.repository, pullNumber)
-    // A write is a reason to look again: the board's incremental refresh skips its caller floor once
-    // (the full-reconcile floor stays).
+  }
+
+  /** A write is a reason to look again: the board's incremental refresh skips its caller floor once
+   *  (the full-reconcile floor stays). */
+  private afterWrite(projectId: string): void {
     const floor = this.refreshFloors.get(projectId)
     if (floor) this.refreshFloors.set(projectId, { ...floor, any: 0 })
     void this.refresh({ projectId }).catch(() => undefined)
-    return { ok: true }
   }
 
   private dropPullReads(projectId: string, repository: string, pullNumber: number): void {

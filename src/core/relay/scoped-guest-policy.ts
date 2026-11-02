@@ -485,6 +485,7 @@ export const SCOPED: Readonly<Record<string, Check>> = Object.freeze({
   [IPC.githubIssuesPullFileContents]: projectArg0,
   [IPC.githubIssuesRepoMergeMethods]: projectArg0,
   [IPC.githubIssuesRepoCollaborators]: projectArg0,
+  [IPC.githubIssuesPullForBranch]: projectArg0,
   [IPC.githubProjectAvatar]: projectArg0,
 
   // Agent status actions, per node. The two snapshots' RESPONSES are narrowed below.
@@ -563,6 +564,7 @@ export const SCOPED_REFUSED: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullMerge,
   IPC.githubIssuesPullRequestReviewer,
   IPC.githubIssuesPullLineComment,
+  IPC.githubIssuesPullCreate,
   // GitHub credential plane (host-only prefix) — relay-api.ts uses the LOCAL githubControl.
   IPC.githubControlStatus,
   IPC.githubControlApprove,

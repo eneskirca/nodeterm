@@ -99,6 +99,37 @@ export const MAX_PULL_COMMENT_BODY = 60_000
 /** Pending line comments one review may carry. */
 export const MAX_PULL_REVIEW_COMMENTS = 50
 
+/** A new pull request's title: not blank, at most this long (GitHub's own form caps it at 256). */
+export const MAX_PULL_TITLE = 256
+
+/** A branch name git would accept as a ref and no CLI could read as a flag (`git check-ref-format`
+ *  rules: no leading `-`, space, control, `~^:?*[` or backslash, `..`, `@{`, `//`, or a `/`, `.`, `.lock` end). */
+export function isPullBranchName(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 255 && !value.startsWith('-') &&
+    // eslint-disable-next-line no-control-regex
+    !/[\x00-\x20\x7f~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.$|\.lock$|^@$|(^|\/)\./.test(value)
+}
+
+/** One pull request to open: the branch to merge, where into, and what it says. */
+export interface PullCreateDraft { head: string; base: string; title: string; body: string; draft: boolean }
+
+/** Checked at the main/core boundary and again in the client. */
+export function isPullCreateDraft(value: unknown): value is PullCreateDraft {
+  const d = value as Partial<PullCreateDraft> | null
+  return typeof d === 'object' && d !== null && isPullBranchName(d.head) && isPullBranchName(d.base) &&
+    typeof d.title === 'string' && d.title.trim().length > 0 && d.title.length <= MAX_PULL_TITLE &&
+    typeof d.body === 'string' && d.body.length <= MAX_PULL_COMMENT_BODY && typeof d.draft === 'boolean'
+}
+
+/** "New pull request": where the form starts (the default branch) and the branch's open PR, if any. */
+export type GitHubPullForBranchResult =
+  | { status: 'ok'; defaultBranch: string; existing?: number }
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
+
+/** A created pull request's number, or why none was created. */
+export type PullCreateResult = { ok: true; pullNumber: number } | { ok: false; reason: PullWriteReason }
+
 /** A repository path as GitHub names it: no empty, `.` or `..` segment and no NUL. */
 export function isPullPath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 4_096 && !value.includes('\u0000') &&

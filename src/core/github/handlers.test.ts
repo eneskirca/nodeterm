@@ -50,6 +50,8 @@ describe('registerGitHubIssueHandlers', () => {
       },
       requestPullReviewer: async (...args: unknown[]) => { calls.push(['reviewer', ...args]); return { ok: true as const } },
       commentOnPullLine: async (...args: unknown[]) => { calls.push(['line', ...args]); return { ok: true as const } },
+      pullForBranch: async (...args: unknown[]) => { calls.push(['branch', ...args]); return { status: 'ok' as const, defaultBranch: 'main' } },
+      createPull: async (...args: unknown[]) => { calls.push(['create', ...args]); return { ok: true as const, pullNumber: 3 } },
       claimPullAutoMove: async (...args: unknown[]) => { calls.push(['claim', ...args]); return true },
       notePullWaits: async (...args: unknown[]) => { calls.push(['wait', ...args]); return 1 }
     }
@@ -73,6 +75,8 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesRepoCollaborators]('p1', 'o/r')
     await platform.handlers[IPC.githubIssuesPullRequestReviewer]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, reviewer: 'ana' })
     await platform.handlers[IPC.githubIssuesPullLineComment]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, inReplyTo: 4, body: 'b' })
+    await platform.handlers[IPC.githubIssuesPullForBranch]('p1', 'o/r', 'feat/x')
+    await platform.handlers[IPC.githubIssuesPullCreate]({ projectId: 'p1', repository: 'o/r', head: 'feat/x', base: 'main', title: 't', body: '', draft: true })
     await platform.handlers[IPC.githubIssuesClaimPullAutoMove]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     await platform.handlers[IPC.githubIssuesNotePullWaits]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     expect(calls).toEqual([
@@ -93,6 +97,8 @@ describe('registerGitHubIssueHandlers', () => {
       ['collaborators', { projectId: 'p1', repository: 'o/r' }],
       ['reviewer', { projectId: 'p1', repository: 'o/r', pullNumber: 12, reviewer: 'ana' }],
       ['line', { projectId: 'p1', repository: 'o/r', pullNumber: 12, inReplyTo: 4, body: 'b' }],
+      ['branch', { projectId: 'p1', repository: 'o/r', head: 'feat/x' }],
+      ['create', { projectId: 'p1', repository: 'o/r', head: 'feat/x', base: 'main', title: 't', body: '', draft: true }],
       ['claim', { projectId: 'p1', cardId: 'n', pulls: [3] }],
       ['wait', { projectId: 'p1', cardId: 'n', pulls: [3] }]
     ])

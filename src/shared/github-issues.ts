@@ -5,6 +5,9 @@ import type {
   GitHubPullFileContentsResult,
   GitHubPullFilesResult,
   GitHubRepoCollaboratorsResult,
+  GitHubPullForBranchResult,
+  PullCreateDraft,
+  PullCreateResult,
   GitHubRepoMergeMethodsResult,
   PullLineCommentRequest,
   PullLineDraft,
@@ -336,6 +339,10 @@ export interface GitHubIssuesApi {
   requestPullReviewer(
     request: { projectId: string; repository: string; pullNumber: number; reviewer: string }
   ): Promise<PullWriteResult>
+  /** "New pull request"'s start: the default branch and `head`'s open PR. Same refusals as `pullDetail`. */
+  pullForBranch(projectId: string, repository: string, head: string): Promise<GitHubPullForBranchResult>
+  /** Open a pull request from a pushed branch. A user click only, never an agent verb. */
+  createPull(request: { projectId: string; repository: string } & PullCreateDraft): Promise<PullCreateResult>
   /** The one-time permission to move a session card because its linked PRs merged. The first ask
    *  across every window wins; the host remembers it. */
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>

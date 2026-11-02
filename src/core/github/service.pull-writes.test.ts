@@ -5,7 +5,7 @@ import { GitHubIssueService, type GitHubIssueServiceContext, type GitHubIssuesCl
 import { GitHubRequestCoordinator } from './request-coordinator'
 import type { NormalisedProjectKanbanGitHub } from '../../shared/github-issues'
 import type {
-  GitHubPullDetail, PullConversationPage, PullLineCommentWrite, PullLineDraft, PullMergeMethod, PullReviewEvent
+  GitHubPullDetail, PullConversationPage, PullCreateDraft, PullLineCommentWrite, PullLineDraft, PullMergeMethod, PullReviewEvent
 } from '../../shared/github-pull-detail'
 
 const config: NormalisedProjectKanbanGitHub = {
@@ -64,6 +64,17 @@ class Client implements GitHubIssuesClientLike {
     this.collaboratorReads.push(repository)
     if (this.fail) throw this.fail
     return [{ id: 5, login: 'ana', avatarUrl: 'https://avatars.githubusercontent.com/u/5' }]
+  }
+  async createPull(repository: string, pull: PullCreateDraft): Promise<{ number: number }> {
+    this.writes.push(['create', repository, pull])
+    if (this.fail) throw this.fail
+    return { number: 12 }
+  }
+  branchReads: string[] = []
+  async pullForBranch(repository: string, head: string) {
+    this.branchReads.push(`${repository} ${head}`)
+    if (this.fail) throw this.fail
+    return { defaultBranch: 'main', existing: 9 }
   }
   detailReads = 0
   async getPull(): Promise<GitHubPullDetail> { this.detailReads += 1; return {} as GitHubPullDetail }
@@ -305,5 +316,45 @@ describe('GitHubIssueService request reviewer', () => {
     expect(await service.repoCollaborators({ projectId: 'p', repository: 'evil/other' }))
       .toEqual({ status: 'refused', reason: 'repository-mismatch' })
     expect(client.collaboratorReads).toEqual(['o/r'])
+  })
+
+  const pull: PullCreateDraft = { head: 'feat/x', base: 'main', title: 'Add x', body: '', draft: false }
+
+  it('creates a pull request from a branch and answers its number', async () => {
+    const { client, service, refresh } = harness()
+    expect(await service.createPull({ projectId: 'p', repository: 'o/r', ...pull, extra: 1 } as never))
+      .toEqual({ ok: true, pullNumber: 12 })
+    expect(client.writes).toEqual([['create', 'o/r', pull]])
+    expect(refresh).toHaveBeenCalledWith({ projectId: 'p' })
+  })
+
+  it('refuses a bad branch, a blank title or a non-boolean draft before anything is resolved', async () => {
+    const { client, service, contexts } = harness()
+    for (const bad of [{ head: '--force' }, { base: 'a b' }, { title: ' ' }, { draft: 1 }]) {
+      expect(await service.createPull({ projectId: 'p', repository: 'o/r', ...pull, ...bad } as never))
+        .toEqual({ ok: false, reason: 'validation' })
+    }
+    expect(contexts()).toBe(0)
+    expect(await service.createPull({ projectId: 'p', repository: 'evil/other', ...pull }))
+      .toEqual({ ok: false, reason: 'not-approved' })
+    expect(client.writes).toEqual([])
+  })
+
+  it('maps a failed create like any pull write', async () => {
+    const { client, service, refresh } = harness()
+    client.fail = new GitHubClientError('request-failed', 422)
+    expect(await service.createPull({ projectId: 'p', repository: 'o/r', ...pull })).toEqual({ ok: false, reason: 'validation' })
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('reads the default branch and the branch\'s open pull request, refused like a pull read', async () => {
+    const { client, service } = harness()
+    expect(await service.pullForBranch({ projectId: 'p', repository: 'o/r', head: 'feat/x' }))
+      .toEqual({ status: 'ok', defaultBranch: 'main', existing: 9 })
+    expect(await service.pullForBranch({ projectId: 'p', repository: 'evil/other', head: 'feat/x' }))
+      .toEqual({ status: 'refused', reason: 'repository-mismatch' })
+    expect(await service.pullForBranch({ projectId: 'p', repository: 'o/r', head: '-x' }))
+      .toEqual({ status: 'refused', reason: 'not-configured' })
+    expect(client.branchReads).toEqual(['o/r feat/x'])
   })
 })

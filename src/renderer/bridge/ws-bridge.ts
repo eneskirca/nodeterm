@@ -580,6 +580,10 @@ export function buildGitHubApi(
       >,
     requestPullReviewer: (request) =>
       client.request(IPC.githubIssuesPullRequestReviewer, request) as ReturnType<GitHubIssuesApi['requestPullReviewer']>,
+    pullForBranch: (projectId, repository, head) =>
+      client.request(IPC.githubIssuesPullForBranch, projectId, repository, head) as ReturnType<GitHubIssuesApi['pullForBranch']>,
+    createPull: (request) =>
+      client.request(IPC.githubIssuesPullCreate, request) as ReturnType<GitHubIssuesApi['createPull']>,
     commentOnPullLine: (request) =>
       client.request(IPC.githubIssuesPullLineComment, request) as ReturnType<GitHubIssuesApi['commentOnPullLine']>,
     claimPullAutoMove: (request) =>

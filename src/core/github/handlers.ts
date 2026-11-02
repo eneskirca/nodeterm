@@ -14,6 +14,9 @@ import type {
   GitHubPullFileContentsResult,
   GitHubPullFilesResult,
   GitHubRepoCollaboratorsResult,
+  GitHubPullForBranchResult,
+  PullCreateDraft,
+  PullCreateResult,
   GitHubRepoMergeMethodsResult,
   PullLineCommentRequest,
   PullLineDraft,
@@ -63,6 +66,8 @@ export interface GitHubIssueHandlerService {
   requestPullReviewer(
     request: { projectId: string; repository: string; pullNumber: number; reviewer: string }
   ): Promise<PullWriteResult>
+  pullForBranch(request: { projectId: string; repository: string; head: string }): Promise<GitHubPullForBranchResult>
+  createPull(request: { projectId: string; repository: string } & PullCreateDraft): Promise<PullCreateResult>
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>
   notePullWaits(request: { projectId: string; cardId: string; pulls: number[] }): Promise<number>
 }
@@ -107,6 +112,9 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesPullLineComment, (request) => service.commentOnPullLine(request))
   platform.handle(IPC.githubIssuesRepoCollaborators, (projectId: string, repository: string) =>
     service.repoCollaborators({ projectId, repository }))
+  platform.handle(IPC.githubIssuesPullForBranch, (projectId: string, repository: string, head: string) =>
+    service.pullForBranch({ projectId, repository, head }))
+  platform.handle(IPC.githubIssuesPullCreate, (request) => service.createPull(request))
   platform.handle(IPC.githubIssuesClaimPullAutoMove,
     (request: { projectId: string; cardId: string; pulls: number[] }) => service.claimPullAutoMove(request))
   platform.handle(IPC.githubIssuesNotePullWaits,

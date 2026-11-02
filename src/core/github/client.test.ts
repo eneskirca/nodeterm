@@ -860,3 +860,59 @@ describe('pull request reviewers', () => {
     expect(sent).toBe(0)
   })
 })
+
+describe('create a pull request', () => {
+  const draft = { head: 'feat/x', base: 'main', title: 'Add x', body: 'Why', draft: true }
+
+  it('posts head, base, title, body and draft, and answers the new number', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ number: 12 }, { status: 201 }) }
+    })
+    expect(await client.createPull('o/r', draft)).toEqual({ number: 12 })
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls')
+    expect(calls[0].init.method).toBe('POST')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual(draft)
+  })
+
+  it.each([
+    ['a head that is a flag', { head: '-x' }],
+    ['a head with a range', { head: 'a..b' }],
+    ['a base with a space', { base: 'ma in' }],
+    ['a base that is a reflog', { base: 'main@{1}' }],
+    ['a blank title', { title: '  ' }],
+    ['a title over 256', { title: 'x'.repeat(257) }],
+    ['a body over the limit', { body: 'x'.repeat(60_001) }],
+    ['a draft that is not a boolean', { draft: 'yes' }]
+  ])('refuses %s before any request', async (_, bad) => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({ number: 1 }) } })
+    await expect(client.createPull('o/r', { ...draft, ...bad } as typeof draft)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+
+  it('reads the default branch and the open pull request of a branch', async () => {
+    const urls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        urls.push(String(url))
+        return String(url).includes('/pulls') ? response([{ number: 9 }]) : response({ default_branch: 'trunk' })
+      }
+    })
+    expect(await client.pullForBranch('o/r', 'feat/x')).toEqual({ defaultBranch: 'trunk', existing: 9 })
+    expect(urls).toEqual([
+      'https://api.github.com/repos/o/r',
+      'https://api.github.com/repos/o/r/pulls?head=o%3Afeat%2Fx&state=open&per_page=1'
+    ])
+  })
+
+  it('answers no existing pull request when the branch has none', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => String(url).includes('/pulls') ? response([]) : response({ default_branch: 'main' })
+    })
+    expect(await client.pullForBranch('o/r', 'feat/x')).toEqual({ defaultBranch: 'main' })
+  })
+})

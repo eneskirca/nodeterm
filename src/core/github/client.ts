@@ -17,6 +17,7 @@ import type {
   GitHubPullDetail,
   PullConversationItem,
   PullConversationPage,
+  PullCreateDraft,
   PullFile,
   PullFileRead,
   PullFilesPage,
@@ -29,7 +30,9 @@ import type {
   PullReviewEvent,
   PullReviewVerdict
 } from '../../shared/github-pull-detail'
-import { GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullCommentBody, isPullLineDraft, isPullPath } from '../../shared/github-pull-detail'
+import {
+  GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft, isPullPath
+} from '../../shared/github-pull-detail'
 import {
   GraphQLShapeError,
   PULL_CHECKS_QUERY,
@@ -691,6 +694,32 @@ export class GitHubIssuesClient {
     await this.request(`/repos/${repository}/pulls/${pullNumber}/requested_reviewers`, {
       method: 'POST', body: JSON.stringify({ reviewers: [login] })
     })
+  }
+
+  /** Open a pull request (`POST /pulls`) from `head`, a branch of this repository, into `base`. */
+  async createPull(repository: string, pull: PullCreateDraft): Promise<{ number: number }> {
+    safeRepository(repository)
+    if (!isPullCreateDraft(pull)) throw new GitHubClientError('invalid-request')
+    const { head, base, title, body, draft } = pull
+    const value = object(await this.json(await this.request(`/repos/${repository}/pulls`, {
+      method: 'POST', body: JSON.stringify({ head, base, title, body, draft })
+    })))
+    if (!value || !positiveInteger(Number(value.number), 2_147_483_647)) throw new GitHubClientError('malformed-response')
+    return { number: Number(value.number) }
+  }
+
+  /** "New pull request"'s start: the default branch (`GET /repos/{r}`) and the open PR whose head is
+   *  `head` on this repository (`GET /pulls?head=owner:head`), if there is one. */
+  async pullForBranch(repository: string, head: string): Promise<{ defaultBranch: string; existing?: number }> {
+    const [owner] = safeRepository(repository).split('/')
+    if (!isPullBranchName(head)) throw new GitHubClientError('invalid-request')
+    const repo = object(await this.json(await this.request(`/repos/${repository}`, { method: 'GET' })))
+    if (!repo || !isPullBranchName(repo.default_branch)) throw new GitHubClientError('malformed-response')
+    const query = new URLSearchParams({ head: `${owner}:${head}`, state: 'open', per_page: '1' })
+    const pulls = await this.json(await this.request(`/repos/${repository}/pulls?${query}`, { method: 'GET' }))
+    if (!Array.isArray(pulls) || pulls.length > 1) throw new GitHubClientError('malformed-response')
+    const existing = Number(object(pulls[0])?.number)
+    return { defaultBranch: repo.default_branch, ...(positiveInteger(existing, 2_147_483_647) ? { existing } : {}) }
   }
 
   /** Merge a PR (`PUT /pulls/{n}/merge`) only if its head is still `sha`, the commit the user saw:

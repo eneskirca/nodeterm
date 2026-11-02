@@ -581,6 +581,10 @@ export const IPC = {
   githubIssuesPullReview: 'githubIssues:pull-review',
   githubIssuesPullMerge: 'githubIssues:pull-merge',
   githubIssuesPullRequestReviewer: 'githubIssues:pull-request-reviewer',
+  // "New pull request": the create is a write like the ones above (a user click only); the form's
+  // start (default branch, the branch's open PR) is a read, classified like the pull reads.
+  githubIssuesPullCreate: 'githubIssues:pull-create',
+  githubIssuesPullForBranch: 'githubIssues:pull-for-branch',
   githubIssuesPullLineComment: 'githubIssues:pull-line-comment',
   // The merge confirmation's allowed methods: a read, classified like the pull reads above.
   githubIssuesRepoMergeMethods: 'githubIssues:repo-merge-methods',
