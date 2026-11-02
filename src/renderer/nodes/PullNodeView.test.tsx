@@ -2,10 +2,19 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GitHubPullConversationResult, GitHubPullDetail, GitHubPullDetailResult } from '@shared/github-pull-detail'
+import type {
+  GitHubPullConversationResult, GitHubPullDetail, GitHubPullDetailResult, GitHubPullFileContentsResult, GitHubPullFilesResult
+} from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
 import type { PullNodeTab } from '@shared/pull-node'
 import { PullNodeView, type PullNodeApi } from './PullNodeView'
+
+// Monaco does not run in jsdom: the diff shows its two texts and its path instead.
+vi.mock('../editor/TextDiff', () => ({
+  TextDiff: ({ path, original, modified }: { path: string; original: string; modified: string }) => (
+    <div className="text-diff" data-path={path} data-original={original} data-modified={modified} />
+  )
+}))
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -21,6 +30,7 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
 }, conversation: GitHubPullConversationResult = { status: 'ok', items: [], truncated: false, observedAt: 1 }):
   PullNodeApi & {
     pullDetail: ReturnType<typeof vi.fn>; pullChecks: ReturnType<typeof vi.fn>; pullConversation: ReturnType<typeof vi.fn>
+    pullFiles: ReturnType<typeof vi.fn>; pullFileContents: ReturnType<typeof vi.fn>
     commentOnPull: ReturnType<typeof vi.fn>; reviewPull: ReturnType<typeof vi.fn>
     mergePull: ReturnType<typeof vi.fn>; repoMergeMethods: ReturnType<typeof vi.fn>
   } {
@@ -28,6 +38,8 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     pullDetail: vi.fn(async () => result),
     pullChecks: vi.fn(async () => checks),
     pullConversation: vi.fn(async () => conversation),
+    pullFiles: vi.fn(async (): Promise<GitHubPullFilesResult> => ({ status: 'ok', files: [], truncated: false, observedAt: 1 })),
+    pullFileContents: vi.fn(async (): Promise<GitHubPullFileContentsResult> => ({ status: 'refused', reason: 'not-approved' })),
     commentOnPull: vi.fn(async () => ({ ok: true as const })),
     reviewPull: vi.fn(async () => ({ ok: true as const })),
     mergePull: vi.fn(async () => ({ ok: true as const })),
@@ -41,14 +53,14 @@ afterEach(() => { act(() => root.unmount()); host.remove() })
 
 async function render(
   api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'overview', onTab = vi.fn(), onOpenExternal = vi.fn(),
-  onWritten = vi.fn()
+  onWritten = vi.fn(), selectedFile?: string, onSelectFile = vi.fn()
 ): Promise<HTMLDivElement> {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
-    root.render(<PullNodeView api={api} projectId="p" pull={{ repository, pullNumber: 7, tab }}
-      refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} onWritten={onWritten} />)
+    root.render(<PullNodeView api={api} projectId="p" pull={{ repository, pullNumber: 7, tab, selectedFile }}
+      refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} onWritten={onWritten} onSelectFile={onSelectFile} />)
   })
   // The markdown renderer is a lazy chunk; let it land.
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
@@ -102,7 +114,7 @@ describe('PullNodeView overview', () => {
     await render(api)
     await act(async () => {
       root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
-        refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} />)
+        refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
     })
     expect(api.pullDetail).toHaveBeenCalledTimes(2)
   })
@@ -173,7 +185,7 @@ describe('PullNodeView tab switching', () => {
     await render(api)
     const show = async (tab: PullNodeTab) => act(async () => {
       root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab }}
-        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} />)
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
     })
     await show('conversation')
     await show('overview')
@@ -197,7 +209,7 @@ async function renderSeen(api: PullNodeApi, onWritten = vi.fn()): Promise<HTMLDi
   const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
   await act(async () => {
     root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
-      refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} />)
+      refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()} />)
   })
   return view
 }
@@ -287,7 +299,7 @@ describe('PullNodeView composer', () => {
     for (const tab of ['overview', 'conversation'] as const) {
       await act(async () => {
         root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab }}
-          refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} />)
+          refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
       })
     }
     expect(host.querySelector('textarea')!.value).toBe('half a thought')
@@ -377,5 +389,87 @@ describe('PullNodeView merge', () => {
     await openMerge(api)
     expect(button(host, 'Confirm merge')).toBeUndefined()
     expect(dialog()?.textContent).toContain('allows no merge method')
+  })
+})
+
+describe('PullNodeView files', () => {
+  const files: GitHubPullFilesResult = {
+    status: 'ok', truncated: false, observedAt: 1, files: [
+      { path: 'src/a.ts', status: 'modified', additions: 3, deletions: 1 },
+      { path: 'src/new.ts', previousPath: 'src/old.ts', status: 'renamed', additions: 0, deletions: 0 },
+      { path: 'logo.png', status: 'added', additions: 0, deletions: 0 },
+      { path: 'gone.md', status: 'removed', additions: 0, deletions: 9 }
+    ]
+  }
+  const withFiles = (contents?: GitHubPullFileContentsResult) => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.pullFiles.mockResolvedValue(files)
+    if (contents) api.pullFileContents.mockResolvedValue(contents)
+    return api
+  }
+
+  it('lists changed files with status and line counts', async () => {
+    const api = withFiles()
+    const view = await render(api, 'o/r', 'files')
+    expect(api.pullFiles).toHaveBeenCalledWith('p', 'o/r', 7)
+    const rows = [...view.querySelectorAll('.pull-files__file')].map((row) => row.textContent)
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toContain('Modified')
+    expect(rows[0]).toContain('src/a.ts')
+    expect(rows[0]).toContain('+3')
+    expect(rows[0]).toContain('−1')
+    expect(rows[1]).toContain('Renamed')
+    expect(rows[1]).toContain('src/old.ts')
+    expect(rows[2]).toContain('Added')
+    expect(rows[3]).toContain('Removed')
+    expect(view.querySelector('.text-diff')).toBeNull()
+  })
+
+  it('selects a file through onSelectFile, and shows the selected file as a diff', async () => {
+    const onSelect = vi.fn()
+    const api = withFiles({
+      status: 'ok', observedAt: 1,
+      contents: { kind: 'diff', base: { kind: 'text', text: 'old text' }, head: { kind: 'text', text: 'new text' } }
+    })
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), undefined, onSelect)
+    const row = [...view.querySelectorAll<HTMLButtonElement>('.pull-files__file')][0]
+    await act(async () => { row.click() })
+    expect(onSelect).toHaveBeenCalledWith('src/a.ts')
+    act(() => root.unmount()); host.remove()
+
+    const shown = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
+    expect(api.pullFileContents).toHaveBeenCalledWith('p', 'o/r', 7, 'src/a.ts')
+    const diff = shown.querySelector('.text-diff')!
+    expect(diff.getAttribute('data-path')).toBe('src/a.ts')
+    expect(diff.getAttribute('data-original')).toBe('old text')
+    expect(diff.getAttribute('data-modified')).toBe('new text')
+    expect(shown.querySelector('.pull-files__file[aria-current="true"]')?.textContent).toContain('src/a.ts')
+  })
+
+  it('diffs an added file against empty', async () => {
+    const api = withFiles({
+      status: 'ok', observedAt: 1, contents: { kind: 'diff', base: { kind: 'empty' }, head: { kind: 'text', text: 'hello' } }
+    })
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'logo.png')
+    expect(view.querySelector('.text-diff')?.getAttribute('data-original')).toBe('')
+    expect(view.querySelector('.text-diff')?.getAttribute('data-modified')).toBe('hello')
+  })
+
+  it('says it cannot show a binary file, with a GitHub link', async () => {
+    const onOpen = vi.fn()
+    const api = withFiles({ status: 'ok', observedAt: 1, contents: { kind: 'unavailable', reason: 'binary' } })
+    const view = await render(api, 'o/r', 'files', vi.fn(), onOpen, vi.fn(), 'logo.png')
+    expect(view.querySelector('.text-diff')).toBeNull()
+    expect(view.querySelector('.pull-files__unavailable')?.textContent).toContain('Cannot show this file')
+    const link = [...view.querySelectorAll('.pull-files__unavailable button')][0] as HTMLButtonElement
+    await act(async () => { link.click() })
+    expect(onOpen).toHaveBeenCalledWith('https://github.com/o/r/pull/7/files')
+  })
+
+  it('shows the first 300 files and a GitHub link when the list is truncated', async () => {
+    const api = withFiles()
+    api.pullFiles.mockResolvedValue({ ...files, truncated: true })
+    const view = await render(api, 'o/r', 'files')
+    expect(view.querySelector('.pull-files__truncated')?.textContent).toContain('first 300 files')
   })
 })

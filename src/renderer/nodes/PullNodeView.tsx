@@ -1,10 +1,16 @@
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 import type { GitHubIssuesApi } from '@shared/github-issues'
 import type {
   GitHubPullConversationResult,
   GitHubPullDetail,
   GitHubPullDetailResult,
+  GitHubPullFileContentsResult,
+  GitHubPullFilesResult,
   GitHubRepoMergeMethodsResult,
+  PullFile,
+  PullFileSide,
+  PullFileStatus,
+  PullFileUnavailable,
   PullMergeMethod,
   PullReadFailure,
   PullRefusal,
@@ -18,10 +24,11 @@ import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-nod
 import { NoteMarkdown } from '../components/NoteMarkdown'
 import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
 import { mergeLabel } from '../components/kanban/PullStatusBadges'
+import { TextDiff } from '../editor/TextDiff'
 
 export type PullNodeApi = Pick<
   GitHubIssuesApi,
-  'pullDetail' | 'pullChecks' | 'pullConversation' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods'
+  'pullDetail' | 'pullChecks' | 'pullConversation' | 'pullFiles' | 'pullFileContents' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods'
 >
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
@@ -83,8 +90,17 @@ const VERDICT_TEXT: Record<PullReviewVerdict, string> = {
   approved: 'Approved', 'changes-requested': 'Changes requested', commented: 'Commented', dismissed: 'Dismissed'
 }
 
-// ponytail: Files is ticket 03; until it lands a persisted 'files' tab shows Overview.
-const TABS: ReadonlyArray<[PullNodeTab, string]> = [['overview', 'Overview'], ['conversation', 'Conversation']]
+const TABS: ReadonlyArray<[PullNodeTab, string]> = [['overview', 'Overview'], ['files', 'Files'], ['conversation', 'Conversation']]
+
+const FILE_STATUS_TEXT: Record<PullFileStatus, string> = {
+  added: 'Added', modified: 'Modified', removed: 'Removed', renamed: 'Renamed'
+}
+
+const UNAVAILABLE_TEXT: Record<PullFileUnavailable, string> = {
+  binary: 'Cannot show this file: it is a binary file.',
+  'too-large': 'Cannot show this file: it is larger than 1 MB.',
+  'not-in-pull': 'Cannot show this file: the pull request no longer changes it. Refresh the file list.'
+}
 
 type ViewProps = {
   api: PullNodeApi
@@ -119,7 +135,10 @@ function usePullRead<R>(
 
 /** The loading, refused and failed states every tab shows the same way. */
 function readState(
-  result: Read<Exclude<GitHubPullDetailResult | GitHubPullConversationResult, { status: 'ok' }>>,
+  result: Read<Exclude<
+    GitHubPullDetailResult | GitHubPullConversationResult | GitHubPullFilesResult | GitHubPullFileContentsResult,
+    { status: 'ok' }
+  >>,
   repository: string
 ): React.JSX.Element {
   if (result === 'loading') return <p className="pull-node__state">Loading pull request…</p>
@@ -129,7 +148,11 @@ function readState(
   return <p className="pull-node__state" role="status">{FAILURE_TEXT[result.reason]}</p>
 }
 
-type TabsProps = ViewProps & { onTab: (tab: PullNodeTab) => void }
+type TabsProps = ViewProps & {
+  onTab: (tab: PullNodeTab) => void
+  /** The Files tab picked a file; the frame persists it as `selectedFile`. */
+  onSelectFile: (path: string) => void
+}
 
 /**
  * The pull request node's body (nodes/PullNode.tsx is the canvas frame around it). Takes the bridge
@@ -151,9 +174,9 @@ export function PullNodeView({
 
 /** A tab mounts the first time it is shown and then stays mounted (hidden when not shown), so a
  *  switch back costs no read and a draft typed in a tab survives the switch. */
-function PullTabs({ onTab, ...props }: TabsProps): React.JSX.Element {
+function PullTabs({ onTab, onSelectFile, ...props }: TabsProps): React.JSX.Element {
   const { pull, onOpenExternal } = props
-  const shownTab: PullNodeTab = pull.tab === 'conversation' ? 'conversation' : 'overview'
+  const shownTab = pull.tab
   const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
   if (!opened.includes(shownTab)) setOpened([...opened, shownTab])
   // The head commit the Overview last showed: the one a review is tied to.
@@ -172,6 +195,9 @@ function PullTabs({ onTab, ...props }: TabsProps): React.JSX.Element {
       </div>
       {opened.includes('overview') && (
         <div hidden={shownTab !== 'overview'}><PullOverview {...props} onHead={setSeenHead} /></div>
+      )}
+      {opened.includes('files') && (
+        <div hidden={shownTab !== 'files'}><PullFiles {...props} onSelectFile={onSelectFile} /></div>
       )}
       {opened.includes('conversation') && (
         <div hidden={shownTab !== 'conversation'}><PullConversation {...props} seenHead={seenHead} /></div>
@@ -215,6 +241,76 @@ function PullOverview(props: ViewProps & { onHead: (sha: string) => void }): Rea
         : <p className="pull-node__empty">No description provided.</p>}
       <PullChecks result={checks} expectedHead={d.head.sha} onOpen={onOpenExternal} />
     </div>
+  )
+}
+
+/** The Files tab: the changed files, then the selected one as a side-by-side diff. */
+function PullFiles(props: ViewProps & { onSelectFile: (path: string) => void }): React.JSX.Element {
+  const { api, pull, onOpenExternal, onSelectFile } = props
+  const result = usePullRead(api.pullFiles, props)
+  if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
+  const filesUrl = `${pullWebUrl(pull.repository, pull.pullNumber)}/files`
+  const selected = result.files.find((file) => file.path === pull.selectedFile)
+  return (
+    <div className="pull-files">
+      {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
+      {result.files.length === 0
+        ? <p className="pull-node__empty">No changed files.</p>
+        : (
+          <ul className="pull-files__list">
+            {result.files.map((file) => (
+              <li key={file.path}>
+                <button className="pull-files__file" aria-current={file === selected ? 'true' : undefined}
+                  onClick={() => onSelectFile(file.path)}>
+                  <span className={`pull-files__status pull-files__status--${file.status}`}>{FILE_STATUS_TEXT[file.status]}</span>
+                  <span className="pull-files__path">
+                    {file.previousPath && <>{file.previousPath} → </>}{file.path}
+                  </span>
+                  <span className="pull-files__add">+{file.additions}</span>
+                  <span className="pull-files__del">−{file.deletions}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      {result.truncated && (
+        <p className="pull-files__truncated">
+          Showing the first 300 files only.{' '}
+          <button className="pull-node__web" onClick={() => onOpenExternal(filesUrl)}>Open on GitHub</button> for the rest.
+        </p>
+      )}
+      {selected
+        ? <PullFileDiff key={selected.path} {...props} file={selected} filesUrl={filesUrl} />
+        : result.files.length > 0 && <p className="pull-node__empty">Select a file to see its diff.</p>}
+    </div>
+  )
+}
+
+const sideText = (side: PullFileSide): string => side.kind === 'text' ? side.text : ''
+
+function PullFileDiff(props: ViewProps & { file: PullFile; filesUrl: string }): React.JSX.Element {
+  const { api, pull, file, filesUrl, onOpenExternal } = props
+  const path = file.path
+  const read = useCallback(
+    (projectId: string, repository: string, pullNumber: number) => api.pullFileContents(projectId, repository, pullNumber, path),
+    [api, path]
+  )
+  const result = usePullRead(read, props)
+  if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
+  const { contents } = result
+  if (contents.kind === 'unavailable') {
+    return (
+      <p className="pull-files__unavailable" role="status">
+        {UNAVAILABLE_TEXT[contents.reason]}{' '}
+        <button className="pull-node__web" onClick={() => onOpenExternal(filesUrl)}>Open on GitHub</button>
+      </p>
+    )
+  }
+  return (
+    <>
+      {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
+      <TextDiff className="pull-files__diff" path={path} original={sideText(contents.base)} modified={sideText(contents.head)} />
+    </>
   )
 }
 

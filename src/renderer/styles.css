@@ -18861,6 +18861,61 @@ body.focus-mode .dock:hover {
 .pull-node__tab:hover,
 .pull-node__web:hover { color: var(--text-strong); background: rgba(var(--tint-rgb), 0.08); }
 .pull-node__tab[aria-selected='true'] { color: var(--text-strong); background: rgba(var(--tint-rgb), 0.12); }
+.pull-files__list {
+  margin: 0 0 10px;
+  padding: 0;
+  max-height: 180px;
+  overflow: auto;
+  list-style: none;
+}
+.pull-files__file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pull-files__file:hover { background: rgba(var(--tint-rgb), 0.08); }
+.pull-files__file[aria-current='true'] { background: rgba(var(--tint-rgb), 0.14); color: var(--text-strong); }
+.pull-files__status {
+  flex: none;
+  width: 66px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pull-files__status--added { color: var(--success); }
+.pull-files__status--removed { color: var(--danger); }
+.pull-files__status--renamed { color: var(--warn); }
+.pull-files__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+.pull-files__add { color: var(--success); }
+.pull-files__del { color: var(--danger); }
+.pull-files__truncated,
+.pull-files__unavailable {
+  margin: 0 0 10px;
+  color: var(--muted);
+}
+/* ponytail: a fixed height; the node body scrolls past it. Filling the node would need the body to
+   stop scrolling for this one tab. */
+.pull-files__diff {
+  height: 420px;
+  margin: 0 -14px;
+  border-top: 1px solid var(--border);
+}
 .pull-convo {
   margin: 0;
   padding: 0;

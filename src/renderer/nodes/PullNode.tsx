@@ -12,7 +12,7 @@ import { PullNodeView } from './PullNodeView'
 import { PULL_REFRESH_EVENT, pullWebUrl } from '@shared/pull-node'
 
 /**
- * A pull request on the canvas (ticket 01: the Overview). Node data holds only the reference
+ * A pull request on the canvas: Overview, Files and Conversation tabs. Node data holds only the reference
  * (`data.pull`, shared/pull-node.ts); everything shown is read through the core's GitHub layer on
  * mount and on Refresh, and nothing read is ever persisted.
  */
@@ -105,6 +105,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           pull={pull}
           refreshTick={refreshTick}
           onTab={(tab) => { if (pull) updateNodeData(id, { pull: { ...pull, tab } }) }}
+          onSelectFile={(selectedFile) => { if (pull) updateNodeData(id, { pull: { ...pull, selectedFile } }) }}
           onOpenExternal={(url) => void api.shell.openExternal(url)}
           onWritten={() => setRefreshTick((tick) => tick + 1)}
         />
