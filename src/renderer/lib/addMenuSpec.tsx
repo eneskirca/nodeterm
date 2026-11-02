@@ -69,6 +69,7 @@ export type AddItem =
   | { kind: 'whiteboard' }
   | { kind: 'files' } // requiresCwd
   | { kind: 'pull' } // opens the PR picker (the project's approved repository)
+  | { kind: 'new-pull' } // requiresCwd: a PR from the folder's current branch
   | { kind: 'dino' }
   | { kind: 'trigger' }
   | { kind: 'open-file' }
@@ -94,6 +95,7 @@ export const CONTENT_ADD_ITEMS: readonly AddItem[] = [
   { kind: 'sticky' },
   { kind: 'files' },
   { kind: 'pull' },
+  { kind: 'new-pull' },
   { kind: 'dino' },
   { kind: 'trigger' },
   { kind: 'open-file' },
@@ -137,6 +139,8 @@ export interface AddHandlers {
   files: (at?: AddPos) => void
   /** Opens the pull request picker; the chosen PR's node lands at `at`. */
   pull: (at?: AddPos) => void
+  /** Opens "New pull request" for the folder's current branch; its node lands at `at`. */
+  newPull: (at?: AddPos) => void
   dino: (at?: AddPos) => void
   whiteboard: (at?: AddPos) => void
   /** Adds a trigger node (issue #493) — a canvas-owned schedule that fires into another node. */
@@ -174,6 +178,13 @@ export function simulatorRefusal(relayTab = false, sshProject = false): string |
 /** A relay tab's GitHub approval is the host's, and this machine's control cannot read it, so the
  *  picker would only say "no approved repository". A PR node already on the canvas still reads. */
 export const PULL_RELAY_HINT = 'Open pull requests on the host: its GitHub approval lives there'
+
+/** "New pull request" reads the branch of the project folder, and the approval as "Pull request…" does. */
+function newPullGate(ctx: AddCtx): { disabled: boolean; hint?: string } {
+  if (ctx.isRelayTab) return { disabled: true, hint: PULL_RELAY_HINT }
+  if (!ctx.hasCwd) return { disabled: true, hint: NEW_FILE_NO_CWD_HINT }
+  return { disabled: false }
+}
 
 /** The core's launcher is a POSIX `sh` script stopped by POSIX signals (see `RUN_WINDOWS_REASON`). */
 export const RUN_WINDOWS_HINT = 'Run configurations that launch a process are not supported on Windows yet'
@@ -279,6 +290,9 @@ export function contentAddItemsToMenuItems(
           hint: ctx.isRelayTab ? PULL_RELAY_HINT : undefined,
           onClick: () => handlers.pull(at)
         })
+        break
+      case 'new-pull':
+        out.push({ label: 'New pull request…', icon: <IconBranch />, ...newPullGate(ctx), onClick: () => handlers.newPull(at) })
         break
       case 'whiteboard':
         out.push({ label: 'New whiteboard', icon: <IconWhiteboard />, onClick: () => handlers.whiteboard(at) })
@@ -411,6 +425,9 @@ export function contentAddItemsToDockRows(
           onClick: () => handlers.pull()
         })
         break
+      case 'new-pull':
+        out.push({ kind: 'new-pull', label: 'New pull request', icon: <IconBranch />, ...newPullGate(ctx), onClick: () => handlers.newPull() })
+        break
       case 'whiteboard':
         out.push({ kind: 'whiteboard', label: 'Whiteboard', icon: <IconWhiteboard />, onClick: () => handlers.whiteboard() })
         break
@@ -493,6 +510,7 @@ export const ADD_ITEM_GROUP: Record<AddItem['kind'], AddGroupId> = {
   sticky: 'view',
   files: 'view',
   pull: 'view',
+  'new-pull': 'view',
   dino: 'view',
   whiteboard: 'view',
   'open-file': 'files',

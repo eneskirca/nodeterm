@@ -34,6 +34,7 @@ const handlers = (overrides: Partial<AddHandlers> = {}): AddHandlers => ({
   sticky: noop,
   files: noop,
   pull: noop,
+  newPull: noop,
   run: noop,
   simulator: noop,
   dino: noop,
@@ -57,6 +58,7 @@ const allKinds: AddItem['kind'][] = [
   'sticky',
   'files',
   'pull',
+  'new-pull',
   'dino',
   'trigger',
   'open-file',
@@ -132,6 +134,26 @@ describe('Pull request row', () => {
   })
 })
 
+describe('New pull request row', () => {
+  it('opens the form from the menu and the Dock', () => {
+    const calls: unknown[] = []
+    const h = handlers({ newPull: (at) => calls.push(at ?? 'dock') })
+    const ctx = { hasCwd: true, isSshProject: false }
+    const row = contentAddItemsToMenuItems(CONTENT_ADD_ITEMS, h, ctx, { x: 4, y: 2 })
+      .find((i) => 'label' in i && i.label === 'New pull request…')
+    const dock = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, h, ctx).find((r) => r.kind === 'new-pull')
+    if (row && 'onClick' in row) row.onClick()
+    dock?.onClick()
+    expect(calls).toEqual([{ x: 4, y: 2 }, 'dock'])
+  })
+  it('is disabled with its reason without a folder, and in a relay tab', () => {
+    const [noCwd] = contentAddItemsToMenuItems([{ kind: 'new-pull' }], handlers(), { hasCwd: false, isSshProject: false })
+    expect(noCwd).toMatchObject({ disabled: true, hint: NEW_FILE_NO_CWD_HINT })
+    const [relay] = contentAddItemsToDockRows([{ kind: 'new-pull' }], handlers(), { hasCwd: true, isSshProject: false, isRelayTab: true })
+    expect(relay).toMatchObject({ kind: 'new-pull', disabled: true, hint: PULL_RELAY_HINT })
+  })
+})
+
 describe('CONTENT_ADD_ITEMS', () => {
   it('lists every content kind in the canonical order', () => {
     expect(CONTENT_ADD_ITEMS.map((i) => i.kind)).toEqual(allKinds)
@@ -157,6 +179,7 @@ describe('contentAddItemsToMenuItems', () => {
       'New sticky note',
       'New file manager',
       'Pull request…',
+      'New pull request…',
       'New dino game',
       'New trigger…',
       'Open file…',
@@ -264,6 +287,7 @@ describe('contentAddItemsToDockRows', () => {
       'sticky',
       'files',
       'pull',
+      'new-pull',
       'dino',
       'trigger',
       'open-file',
@@ -395,6 +419,7 @@ describe('buildGroupedAddMenu', () => {
       'New sticky note',
       'New file manager',
       'Pull request…',
+      'New pull request…',
       'New dino game'
     ])
     expect(children(ADD_GROUP_LABEL.files)).toEqual(['Open file…', 'New file…'])
@@ -526,6 +551,7 @@ describe('buildGroupedAddMenu', () => {
       sticky: () => calls.push('sticky'),
       files: () => calls.push('files'),
       pull: () => calls.push('pull'),
+      newPull: () => calls.push('newPull'),
       dino: () => calls.push('dino'),
       whiteboard: () => calls.push('whiteboard'),
       trigger: () => calls.push('trigger'),
@@ -546,6 +572,7 @@ describe('buildGroupedAddMenu', () => {
       'dino',
       'files',
       'newFile',
+      'newPull',
       'openFile',
       'pull',
       'remote',

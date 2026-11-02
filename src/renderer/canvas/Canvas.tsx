@@ -132,6 +132,7 @@ import VideoNode from '../nodes/VideoNode'
 import WebNode from '../nodes/WebNode'
 import { withNodeBoundary } from '../components/NodeBoundary'
 import { Dock } from '../components/Dock'
+import { CreatePullDialog } from '../components/CreatePullDialog'
 import { TabBar } from '../components/TabBar'
 import { ContextMenu, type MenuItem } from '../components/ContextMenu'
 import { tidySeparators } from '../lib/tidySeparators'
@@ -11678,10 +11679,11 @@ export function Canvas() {
   // The add menu's "Pull request…": one of the open PRs the board's poll already holds (no new
   // read), or a typed number for a closed or merged one. The repository is the host's approved one,
   // as for `open-pr`. An existing node for that PR is framed instead of a second one.
-  const addPull = useCallback(
-    async (at?: { x: number; y: number }) => {
-      const projectId = useProjects.getState().activeProjectId
-      if (!projectId) return
+  // The project's approved GitHub repository, asking once to allow the folder's git origin.
+  // Repository access comes from the folder's git origin, never from the board. The one click
+  // stays: it is the machine-local consent that lets this token (and agents' verbs) touch it.
+  const approvedRepoFor = useCallback(
+    async (projectId: string): Promise<{ repository?: string; approved: boolean } | undefined> => {
       const toast = (message: string): void => {
         window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
       }
@@ -11690,10 +11692,8 @@ export function Canvas() {
       let repo = view?.project
       if (!repo?.repository) {
         toast('This folder has no GitHub remote. Add one with git remote add origin <url>.')
-        return
+        return undefined
       }
-      // Repository access comes from the folder's git origin, never from the board. The one click
-      // stays: it is the machine-local consent that lets this token (and agents' verbs) touch it.
       if (!repo.approved) {
         const repository = repo.repository
         const allowed = await new Promise<boolean>((resolve) =>
@@ -11707,7 +11707,7 @@ export function Canvas() {
             onCancel: () => resolve(false)
           })
         )
-        if (!allowed) return
+        if (!allowed) return undefined
         try {
           repo = (await api.githubControl.approve({
             projectId,
@@ -11716,13 +11716,49 @@ export function Canvas() {
           })).project
         } catch {
           toast(`Could not allow ${repository}. Try again.`)
-          return
+          return undefined
         }
         // ponytail: the first refresh fills the open-PR list for the picker (it also reads issues).
         await api.githubIssues.refresh(projectId).catch(() => undefined)
       }
-      if (!repo?.approved || !repo.repository) return
-      const board = await api.githubIssues.pullStatus(projectId).catch(() => undefined)
+      return repo?.approved && repo.repository ? repo : undefined
+    },
+    [setConfirm]
+  )
+
+  // Open PR `input` (a number) of the approved repository as a node, or frame its node: the same
+  // plan as the `open-pr` verb. False when the input is not a PR number.
+  const placePullNode = useCallback(
+    (projectId: string, repo: { repository?: string; approved: boolean }, input: string, at?: { x: number; y: number }): boolean => {
+      // The awaits before this are where a tab switch can land; never write into another project.
+      if (useProjects.getState().activeProjectId !== projectId) return true
+      const plan = planOpenPr({
+        args: { pr: input },
+        repo,
+        pullNodes: nodesRef.current.filter((n) => n.type === 'pull').map((n) => ({ id: n.id, pull: n.data.pull }))
+      })
+      if (plan.kind === 'refuse') return false
+      if (plan.kind === 'reuse') {
+        travelToNodeRef.current(plan.nodeId)
+        return true
+      }
+      setNodes((ns) => [...ns, createPullNode(ns.length, plan.ref.repository, plan.ref.pullNumber, at ?? emptyNodePos())])
+      markDirty()
+      return true
+    },
+    [setNodes, markDirty, emptyNodePos]
+  )
+
+  // The add menu's "Pull request…": one of the open PRs the board's poll already holds (no new
+  // read), or a typed number for a closed or merged one. The repository is the host's approved one,
+  // as for `open-pr`. An existing node for that PR is framed instead of a second one.
+  const addPull = useCallback(
+    async (at?: { x: number; y: number }) => {
+      const projectId = useProjects.getState().activeProjectId
+      if (!projectId) return
+      const repo = await approvedRepoFor(projectId)
+      if (!repo?.repository) return
+      const board = await sessionForProject(projectId).api.githubIssues.pullStatus(projectId).catch(() => undefined)
       const input = await promptDialog({
         message: `Open a pull request of ${repo.repository}. Pick an open one, or type a number:`,
         placeholder: '#123',
@@ -11730,26 +11766,32 @@ export function Canvas() {
         choices: pullPickerChoices(board)
       })
       if (input === null) return
-      // The awaits above are where a tab switch can land; never write into another project.
-      if (useProjects.getState().activeProjectId !== projectId) return
-      // The same plan as the `open-pr` verb: refuse, reuse this PR's node, or create one.
-      const plan = planOpenPr({
-        args: { pr: input },
-        repo,
-        pullNodes: nodesRef.current.filter((n) => n.type === 'pull').map((n) => ({ id: n.id, pull: n.data.pull }))
-      })
-      if (plan.kind === 'refuse') {
-        toast('Type a pull request number, for example 123.')
-        return
+      if (!placePullNode(projectId, repo, input, at)) {
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', {
+          detail: { kind: 'error', message: 'Type a pull request number, for example 123.' }
+        }))
       }
-      if (plan.kind === 'reuse') {
-        travelToNodeRef.current(plan.nodeId)
-        return
-      }
-      setNodes((ns) => [...ns, createPullNode(ns.length, plan.ref.repository, plan.ref.pullNumber, at ?? emptyNodePos())])
-      markDirty()
     },
-    [setNodes, markDirty, emptyNodePos, setConfirm]
+    [approvedRepoFor, placePullNode]
+  )
+
+  // "New pull request…" (add menu, Source Control): a PR from the current branch of `cwd` (the
+  // project folder, or the Source Control panel's worktree). The dialog does the push and the
+  // create on its own click; the new PR, or the branch's open one, opens as a node.
+  const [newPull, setNewPull] = useState<{
+    projectId: string; repo: { repository: string; approved: boolean }; cwd: string; at?: { x: number; y: number }
+  } | null>(null)
+  const addNewPull = useCallback(
+    async (at?: { x: number; y: number }, scopeCwd?: string) => {
+      const projectId = useProjects.getState().activeProjectId
+      const project = projectId ? useProjects.getState().getProject(projectId) : undefined
+      const cwd = scopeCwd ?? project?.ssh?.remoteCwd ?? project?.cwd
+      if (!projectId || !cwd) return
+      const repo = await approvedRepoFor(projectId)
+      if (!repo?.repository || useProjects.getState().activeProjectId !== projectId) return
+      setNewPull({ projectId, repo: { repository: repo.repository, approved: true }, cwd, at })
+    },
+    [approvedRepoFor]
   )
 
   // The shared bag of creation callbacks + project context that every "add" menu derives its
@@ -11781,6 +11823,7 @@ export function Canvas() {
       whiteboard: (at) => addWhiteboard(at),
       trigger: (at) => addTrigger(at),
       pull: (at) => void addPull(at),
+      newPull: (at) => void addNewPull(at),
       openFile: (at) => void openFileDialog(at),
       newFile: (at) => void newProjectFile(at),
       spawnTeam: (at) => setSpawnTeamDialog({ at }),
@@ -11799,6 +11842,7 @@ export function Canvas() {
       addWhiteboard,
       addTrigger,
       addPull,
+      addNewPull,
       openFileDialog,
       newProjectFile,
       openWorktreeDialog
@@ -20482,6 +20526,23 @@ export function Canvas() {
           scopes={scmScopeList}
           defaultScope={defaultScmScope(scmScopeList, selectedGroupIdForScm)}
           onNewWorktree={() => openWorktreeDialog(null)}
+          onNewPull={(cwd) => {
+            setScOpen(false)
+            void addNewPull(undefined, cwd)
+          }}
+        />
+      )}
+      {newPull && (
+        <CreatePullDialog
+          api={sessionForProject(newPull.projectId).api}
+          projectId={newPull.projectId}
+          repository={newPull.repo.repository}
+          cwd={newPull.cwd}
+          onOpen={(pullNumber) => {
+            setNewPull(null)
+            placePullNode(newPull.projectId, newPull.repo, String(pullNumber), newPull.at)
+          }}
+          onClose={() => setNewPull(null)}
         />
       )}
 
@@ -21057,6 +21118,7 @@ export function Canvas() {
         onAddWhiteboard={addWhiteboard}
         onAddTrigger={addTrigger}
         onAddPull={() => void addPull()}
+        onAddNewPull={() => void addNewPull()}
         onAddFiles={() => addFiles()}
         onAddRun={() => void addRun()}
         onAddSimulator={() => addSimulator()}
