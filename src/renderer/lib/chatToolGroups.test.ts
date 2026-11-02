@@ -86,6 +86,18 @@ describe('groupToolCalls', () => {
     expect(layout.groupAt.size).toBe(0)
   })
 
+  it('folds a superseded todo list like any call; the latest one (a card) stays a boundary', () => {
+    const todo = (body: string): ChatMessage => ({ role: 'assistant', parts: [tool('TodoWrite', { body })] })
+    const messages = [call('Bash'), todo('- [ ] old'), call('Bash'), todo('- [x] latest'), call('Bash')]
+
+    const layout = groupToolCalls(messages)
+
+    expect(runs(messages)).toEqual([['0:0', '1:0', '2:0']])
+    expect(layout.absorbed.has('1:0')).toBe(true)
+    expect(layout.absorbed.has('3:0')).toBe(false)
+    expect(layout.absorbed.has('4:0')).toBe(false)
+  })
+
   it('a Compaction chip between tool calls splits the run and is never folded (it is a system record)', () => {
     const compaction: ChatMessage = {
       role: 'assistant',

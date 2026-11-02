@@ -8,6 +8,7 @@
 import type { ChatMessage, ChatPart } from '@shared/types'
 import { isSystemRecordMessage } from '@shared/chat-system-records'
 import { isLocalCommandTool } from '@shared/chat-command'
+import { latestTodoIndex, staleTodo } from './chatFocus'
 
 /** Fewer calls than this stay as plain chips: a block holding one chip only adds a click. */
 export const TOOL_GROUP_MIN = 2
@@ -56,13 +57,18 @@ export interface GroupToolCallsOptions {
 
 /**
  * A tool call the agent made, shown as a chip. Not one:
- * - a plan / question card (`body`): that IS the content, never folded away;
+ * - a plan / question / latest todo-list card (`body`): that IS the content, never folded away —
+ *   but a SUPERSEDED todo list (lib/chatFocus.ts) is drawn as its chip, so it folds like one;
  * - the user's own `/command`, `!` line or command output: the person did that, not the agent;
  * - a system record (a background task finishing, another agent's message): it is not the agent's
  *   work either, and the thread already treats it as a turn boundary.
  */
-function isFoldableTool(p: ChatPart): boolean {
-  return p.kind === 'tool' && p.body === undefined && !isLocalCommandTool(p.name)
+function isFoldableTool(p: ChatPart, message: number, latestTodo: number): boolean {
+  return (
+    p.kind === 'tool' &&
+    (p.body === undefined || staleTodo(p, message, latestTodo)) &&
+    !isLocalCommandTool(p.name)
+  )
 }
 
 /**
@@ -75,6 +81,7 @@ function isFoldableTool(p: ChatPart): boolean {
 export function groupToolCalls(messages: readonly ChatMessage[], opts: GroupToolCallsOptions = {}): ToolGroupLayout {
   const groupAt = new Map<string, ToolGroup>()
   const absorbed = new Set<string>()
+  const latestTodo = latestTodoIndex(messages)
   let run: ToolGroupMember[] = []
   const flush = (): void => {
     if (run.length >= TOOL_GROUP_MIN) {
@@ -90,7 +97,7 @@ export function groupToolCalls(messages: readonly ChatMessage[], opts: GroupTool
       return
     }
     m.parts.forEach((p, j) => {
-      if (isFoldableTool(p)) run.push({ message: i, part: j })
+      if (isFoldableTool(p, i, latestTodo)) run.push({ message: i, part: j })
       else flush()
     })
   })

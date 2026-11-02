@@ -1038,7 +1038,8 @@ export function ChatPanel({
       <div key={key} className={`term-chat__tool-card${p.name === TODO_WRITE_TOOL ? ' term-chat__todo' : ''}`}>
         <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
         <MarkdownText text={p.body} />
-        {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
+        {/* A TodoWrite's result is the CLI's canned "Todos have been modified…": plumbing, not content. */}
+        {p.result && p.name !== TODO_WRITE_TOOL && <pre className="term-chat__tool-result">{p.result}</pre>}
         {answerCard && answerCard.card.message === i && answerCard.card.part === j && (
           // Keyed by the BOUND ticket: a new hold on the same card starts from a clean
           // state, and every answer names the request this card was drawn for.

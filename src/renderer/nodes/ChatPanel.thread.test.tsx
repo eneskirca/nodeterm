@@ -348,11 +348,12 @@ describe('⌘M thread look', () => {
 })
 
 describe('⌘M Focus view and the todo-list card', () => {
-  const todo = (key: number, body: string): ChatMessage => ({
+  const todo = (key: number, body: string, result?: string): ChatMessage => ({
     role: 'assistant',
-    parts: [{ kind: 'tool', name: 'TodoWrite', arg: '', body }],
+    parts: [{ kind: 'tool', name: 'TodoWrite', arg: '', body, ...(result ? { result } : {}) }],
     key
   })
+  const TODO_RESULT = 'Todos have been modified successfully. Ensure that you continue to use the todo list'
   const focusOn = (): void => useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: true } }))
 
   it('only the latest todo list is a card; an older one is the plain chip (Focus off too)', async () => {
@@ -360,11 +361,14 @@ describe('⌘M Focus view and the todo-list card', () => {
       { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
       todo(10, '- [ ] a\n- [ ] b'),
       { role: 'assistant', parts: [{ kind: 'text', text: 'working' }], key: 20 },
-      todo(30, '- [x] a\n- [ ] **b** _(in progress)_')
+      todo(30, '- [x] a\n- [ ] **b** _(in progress)_', TODO_RESULT)
     ])
     const cards = [...host.querySelectorAll('.term-chat__tool-card')]
     expect(cards).toHaveLength(1)
     expect(cards[0].classList.contains('term-chat__todo')).toBe(true)
+    // The CLI's canned reply to a TodoWrite is plumbing: the card shows the list, not the result.
+    expect(cards[0].querySelector('.term-chat__tool-result')).toBeNull()
+    expect(cards[0].textContent).not.toContain('Todos have been modified')
     expect(cards[0].querySelector('.term-chat__tool-card-title')?.textContent).toBe('Todo list')
     const boxes = [...cards[0].querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
     expect(boxes.map((b) => [b.checked, b.disabled])).toEqual([
@@ -376,6 +380,23 @@ describe('⌘M Focus view and the todo-list card', () => {
     expect(chips).toHaveLength(1)
     expect(chips[0].querySelector('.term-chat__tool-name')?.textContent).toBe('TodoWrite')
     expect(host.querySelector('.term-chat__focus')?.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('a superseded todo list folds into the tool block around it, drawn there as its chip', async () => {
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10 },
+      todo(20, '- [ ] old', TODO_RESULT),
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'b' }], key: 30 },
+      todo(40, '- [x] latest')
+    ])
+    const groups = [...host.querySelectorAll('.term-chat__tool-group')]
+    expect(groups).toHaveLength(1)
+    expect(groups[0].querySelector('.term-chat__tool-group-count')?.textContent).toBe('3 tool calls')
+    const names = [...groups[0].querySelectorAll('.term-chat__tool-group-body .term-chat__tool-name')].map((n) => n.textContent)
+    expect(names).toEqual(['Bash', 'TodoWrite', 'Bash'])
+    expect(groups[0].querySelector('.term-chat__tool-card')).toBeNull()
+    expect(host.querySelectorAll('.term-chat__tool-card')).toHaveLength(1)
   })
 
   it('Focus hides chips, groups and thinking; keeps text, the latest todo card and a question card', async () => {
