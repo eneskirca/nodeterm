@@ -41,12 +41,14 @@ const END = '[END ISSUE TEXT]'
 
 /** One line of inert text: no C0/C1 control, no DEL, no bidi override, no marker, bounded. */
 function inert(text: string, max: number): string {
-  const flat = text
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, ' ')
-    .replace(/\[\s*(BEGIN|END)\s+ISSUE\s+TEXT\s*\]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  // eslint-disable-next-line no-control-regex
+  let flat = text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ')
+  // Until nothing changes: removing one marker must not join the halves of another into a new one.
+  for (let before = ''; before !== flat;) {
+    before = flat
+    flat = flat.replace(/\[\s*(BEGIN|END)\s+ISSUE\s+TEXT\s*\]/gi, ' ').replace(/\s+/g, ' ')
+  }
+  flat = flat.trim()
   return flat.length > max ? `${flat.slice(0, max)} (truncated: read the rest with gh)` : flat
 }
 

@@ -678,6 +678,11 @@ describe('GitHubIssueService', () => {
       projectId: 'project-1', columnId: null, anyColumn: true, openOnly: true, assignedToMe: true, pageSize: 50
     })
     expect(mine.items.map((item) => item.number)).toEqual([1])
+    // A node opened for another repository than the project's gets no list.
+    await expect(service.query({ projectId: 'project-1', columnId: null, anyColumn: true, pageSize: 50, repository: 'x/y' }))
+      .rejects.toThrow('repository-mismatch')
+    expect((await service.query({ projectId: 'project-1', columnId: null, anyColumn: true, openOnly: true, pageSize: 50, repository: 'O/R' })).items)
+      .toHaveLength(2)
   })
 
   it('refuses an oversized search or label filter before reading anything', async () => {

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { GitHubIssueCardView, GitHubIssuesApi } from '@shared/github-issues'
-import type { GitHubIssueConversationResult, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
+import type {
+  GitHubIssueConversationResult, PullReadFailure, PullRefusal, PullWriteReason, PullWriteResult
+} from '@shared/github-pull-detail'
 import type { IssuesNodeRef } from '@shared/issues-node'
 import { NoteMarkdown } from '../components/NoteMarkdown'
 
@@ -17,7 +19,7 @@ const WRITE_TEXT: Partial<Record<PullWriteReason, string>> = {
 }
 const WRITE_FALLBACK = 'GitHub refused the comment. Refresh, then try again.'
 
-const READ_TEXT: Record<string, string> = {
+const READ_TEXT: Record<PullRefusal | PullReadFailure, string> = {
   throttled: 'GitHub is throttling requests. Refresh again in a minute.',
   unreachable: 'GitHub could not be reached. Check the connection, then refresh.',
   'signed-out': 'You are not signed in to GitHub. Sign in from the board\'s GitHub settings.',
@@ -26,7 +28,10 @@ const READ_TEXT: Record<string, string> = {
   'not-configured': 'This project has no GitHub repository. Add an origin remote, then add the Issues node again.'
 }
 
-type ListState = { status: 'loading' } | { status: 'failed' } | { status: 'ok'; items: GitHubIssueCardView[]; more?: string }
+/** `key` names the filters a page was read with, so a late "Load more" never lands in another list. */
+type ListState =
+  | { status: 'loading' } | { status: 'failed' }
+  | { status: 'ok'; key: string; items: GitHubIssueCardView[]; more?: string }
 
 /**
  * The issues node's body (nodes/IssuesNode.tsx is the canvas frame). The list reads the board's
@@ -50,9 +55,9 @@ export function IssuesNodeView(props: {
   const [labels, setLabels] = useState<string[]>([])
 
   const read = (cursor?: string) => api.query({
-    projectId, columnId: null, anyColumn: true, openOnly: true, pageSize: 50,
-    // ponytail: the core bounds both; the box caps what is typed.
+    projectId, repository: issues.repository, columnId: null, anyColumn: true, openOnly: true, pageSize: 50,
     ...(filter === 'mine' ? { assignedToMe: true } : {}),
+    // ponytail: the core bounds the search and the label; the box only caps what is typed.
     ...(search.trim() ? { search: search.trim() } : {}),
     ...(label ? { labelFilter: [label] } : {}),
     ...(cursor ? { cursor } : {})
@@ -69,12 +74,14 @@ export function IssuesNodeView(props: {
 
   useEffect(() => {
     let live = true
+    const key = `${filter}\0${label}\0${search}`
     // A short wait so typing a search reads once, not per key.
     const timer = setTimeout(() => {
       read()
         .then((page) => {
           if (!live) return
-          setList({ status: 'ok', items: page.items, more: page.nextCursor })
+          setList({ status: 'ok', key, items: page.items, more: page.nextCursor })
+          // ponytail: the label choices are the labels seen on read pages, not the repository's list.
           setLabels((known) => [...new Set([...known, ...page.items.flatMap((item) => item.labels.map((l) => l.name))])].sort())
         })
         .catch(() => { if (live) setList({ status: 'failed' }) })
@@ -120,9 +127,9 @@ export function IssuesNodeView(props: {
         </ul>
         {list.status === 'ok' && list.more && (
           <button className="pull-compose__button" onClick={() => {
-            const cursor = list.more
-            void read(cursor).then((page) => setList((current) => current.status === 'ok'
-              ? { status: 'ok', items: [...current.items, ...page.items], more: page.nextCursor }
+            const { key, more } = list
+            void read(more).then((page) => setList((current) => current.status === 'ok' && current.key === key
+              ? { ...current, items: [...current.items, ...page.items], more: page.nextCursor }
               : current)).catch(() => undefined)
           }}>Load more</button>
         )}

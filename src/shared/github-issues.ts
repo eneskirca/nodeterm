@@ -234,6 +234,8 @@ export interface GitHubIssueQuery {
   anyColumn?: boolean
   openOnly?: boolean
   assignedToMe?: boolean
+  /** The repository the issues node was opened for: refused unless it is the project's. */
+  repository?: string
 }
 
 export interface GitHubIssuePage {

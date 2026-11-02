@@ -133,13 +133,14 @@ describe('Start with agent (issue card)', () => {
     expect(prompt).toContain('issueRefFromHtmlUrl(issue.htmlUrl, issue.number)')
     expect(prompt).toContain('issueLaunchPrompt(ref)')
     expect(prompt).not.toMatch(/issue\.title|issue\.body/)
-    expect(code(src).match(/issueLaunchPrompt\(ref\)/g) ?? []).toHaveLength(1)
+    // The second one is the issues node's fallback when its quoted prompt cannot be spilled.
+    expect(code(src).match(/issueLaunchPrompt\(ref\)/g) ?? []).toHaveLength(2)
   })
 
   it('launches with the reference prompt and binds the node — never the issue title or body', () => {
     const body = code(between('const startIssueAgent = useCallback(', 'const issueAgentMenu = useCallback('))
     expect(body).toContain('issueStartPrompt(issue, opts)')
-    expect(body).toContain('start.prompt, {\n        issueRef: start.ref\n      }')
+    expect(body).toContain('start.prompt, {\n        issueRef: start.ref,\n        promptFile: start.promptFile\n      }')
     expect(body).toContain('fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)')
     // The attacker-writable fields of the issue never reach this function's launch.
     expect(body).not.toMatch(/issue\.title|issue\.body/)
@@ -148,7 +149,7 @@ describe('Start with agent (issue card)', () => {
   it('in a new worktree: the title reaches ONLY the branch planner, never a prompt or a launch line', () => {
     const open = code(between('const openIssueAgentInFrame = useCallback(', 'const startIssueAgentInWorktree = useCallback('))
     expect(open).toContain('start.prompt,')
-    expect(open).toContain('{ issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId) }')
+    expect(open).toContain('{ issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId), promptFile: start.promptFile }')
     expect(open).not.toMatch(/issue\.title|issue\.body/)
     const body = code(between('const startIssueAgentInWorktree = useCallback(', 'const issueWorktreeMenu = useCallback('))
     expect(body).toContain('issueStartPrompt(issue, opts)')
@@ -165,10 +166,14 @@ describe('Start with agent (issue card)', () => {
     // The one exception to the reference-only rule: the issues node's "Work on this" (a user click).
     // `issueWorkPrompt` (@shared/issues-node) strips control bytes, bounds and marks the text.
     expect(code(src).match(/issueWorkPrompt\(/g) ?? []).toHaveLength(1)
-    expect(code(src).match(/withText: true/g) ?? []).toHaveLength(1)
-    const listener = code(between('const onWork = (e: Event): void => {', 'window.addEventListener(ISSUE_WORK_EVENT, onWork)'))
-    expect(listener).toContain('withText: true')
+    const listener = code(between('const onWork = async (e: Event): Promise<void> => {', 'window.addEventListener(ISSUE_WORK_EVENT, listener)'))
+    expect(listener).toContain('issueWorkPrompt(ref, d.issue)')
     expect(listener).toContain("n.type === 'issues'")
+    // Spilled to a file when too long for a typed line (#706); else the reference-only prompt.
+    expect(listener).toContain('launchPromptFor({ prompt, localFs: !ssh }')
+    expect(listener).toContain('launch = { prompt: issueLaunchPrompt(ref) }')
+    // `opts.launch` is set nowhere else.
+    expect(code(src).match(/\blaunch, opener\b/g) ?? []).toHaveLength(1)
   })
 
   it('the menu reuses the canvas agent + account picker instead of a fourth copy', () => {

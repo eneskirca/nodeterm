@@ -626,7 +626,7 @@ import { OpenLinkSheet } from '../components/OpenLinkSheet'
 import { NEW_PROJECT_KEY, nextSheetAction, type LinkPermissionView } from '../lib/openLinkSheet'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { promptFilePathError } from '@shared/agents/launch'
-import { encodeUtf8Base64, launchPromptFor } from '../lib/promptSpill'
+import { encodeUtf8Base64, launchPromptFor, promptExceedsLineBudget } from '../lib/promptSpill'
 import { parseTeamSpec } from '../lib/teamSpec'
 import { relativeTime } from '../lib/relativeTime'
 import { AgentIcon } from '../lib/agentIcons'
@@ -1083,8 +1083,9 @@ type ControlReply = { ok: boolean; message?: string; result?: unknown; error?: s
 
 /** How an issue start differs when the issues node's "Work on this" asks for it. */
 type IssueStartOptions = {
-  /** Quote the issue's title and body into the prompt as marked, untrusted data. */
-  withText?: boolean
+  /** The issues node's own first prompt (`issueWorkPrompt`: the issue's text as marked, untrusted
+   *  data), already spilled to a file when it is too long for a typed line (#706). */
+  launch?: { prompt?: string; promptFile?: string }
   /** The issues node: a rope from it to the new agent. */
   opener?: string
   /** Where the agent opens (no worktree). */
@@ -12401,20 +12402,25 @@ export function Canvas() {
   /** The reference + first prompt of an issue start, or a notice saying why nothing started. The
    *  reference comes from the card's GitHub URL and is validated before anything is created; a card
    *  whose URL does not parse starts nothing. The issue's title and body never reach the prompt,
-   *  except from the issues node's "Work on this" (`opts.withText`), which quotes them as marked,
+   *  except from the issues node's "Work on this" (`opts.launch`), which composed them as marked,
    *  untrusted data (`issueWorkPrompt`). */
   const issueStartPrompt = useCallback(
-    (issue: GitHubIssueCardView, opts: IssueStartOptions = {}): { ref: IssueRef; prompt: string; opener?: string } | undefined => {
+    (issue: GitHubIssueCardView, opts: IssueStartOptions = {}):
+      { ref: IssueRef; prompt: string; promptFile?: string; opener?: string } | undefined => {
       const ref = issueRefFromHtmlUrl(issue.htmlUrl, issue.number)
-      const prompt = ref ? (opts.withText ? issueWorkPrompt(ref, issue) : issueLaunchPrompt(ref)) : undefined
-      if (!ref || !prompt) {
+      const prompt = ref ? (opts.launch ? opts.launch.prompt ?? '' : issueLaunchPrompt(ref)) : undefined
+      if (!ref || (!prompt && !opts.launch?.promptFile)) {
         setNotice({
           kind: 'error',
           text: `Could not start an agent on #${issue.number}: its GitHub address could not be read. Nothing was started.`
         })
         return undefined
       }
-      return { ref, prompt, ...(opts.opener ? { opener: opts.opener } : {}) }
+      return {
+        ref, prompt: prompt ?? '',
+        ...(opts.launch?.promptFile ? { promptFile: opts.launch.promptFile } : {}),
+        ...(opts.opener ? { opener: opts.opener } : {})
+      }
     },
     []
   )
@@ -12431,7 +12437,8 @@ export function Canvas() {
       const start = issueStartPrompt(issue, opts)
       if (!start) return
       const created = addAgentNode(agentId, opts.center, undefined, accountId, start.prompt, {
-        issueRef: start.ref
+        issueRef: start.ref,
+        promptFile: start.promptFile
       })
       if (!created) return // addAgentNode already said why
       fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)
@@ -12844,7 +12851,7 @@ export function Canvas() {
     (
       groupId: string,
       issue: GitHubIssueCardView,
-      start: { ref: IssueRef; prompt: string; opener?: string },
+      start: { ref: IssueRef; prompt: string; promptFile?: string; opener?: string },
       agentId: AgentId,
       accountId: string | null | undefined
     ): boolean => {
@@ -12862,7 +12869,7 @@ export function Canvas() {
         start.prompt,
         // A frame whose setup script is still preparing the checkout holds the launch, exactly like
         // a control open into it; a frame with nothing to prepare launches at once.
-        { issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId) }
+        { issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId), promptFile: start.promptFile }
       )
       if (!created) return false // addAgentNode already said why
       // Grow the frame to hold the node as BUILT (snap-to-grid can round its size up). Queued after
@@ -13105,26 +13112,39 @@ export function Canvas() {
   // worktree), with the issue's text quoted into its prompt and a rope from the node. A user click
   // in the node is the only sender; no control verb reaches it.
   useEffect(() => {
-    const onWork = (e: Event): void => {
+    const onWork = async (e: Event): Promise<void> => {
       const d = (e as CustomEvent<IssueWorkRequest>).detail
-      const all = nodesRef.current
-      const source = all.find((n) => n.id === d?.nodeId && n.type === 'issues')
-      if (!source || !d.issue) return
-      const agentId = resolveNewNodeAgent(undefined, useProjects.getState().activeProjectId, useSettings.getState().settings)
-      const opts = { withText: true, opener: source.id }
+      const source = nodesRef.current.find((n) => n.id === d?.nodeId && n.type === 'issues')
+      const ref = d?.issue ? issueRefFromHtmlUrl(d.issue.htmlUrl, d.issue.number) : undefined
+      const prompt = ref && issueWorkPrompt(ref, d.issue)
+      if (!source || !ref || !prompt) return
+      const projectId = useProjects.getState().activeProjectId
+      const ssh = !!useProjects.getState().getProject(projectId)?.ssh
+      // Too long for a typed line: a file the pane's shell reads (#706). An SSH pane cannot read this
+      // machine's file, so there an over-long prompt falls back to the reference-only one.
+      let launch = await launchPromptFor({ prompt, localFs: !ssh }, {
+        saveUpload: (name, data) => api.files.saveUpload(name, data), encodeBase64: encodeUtf8Base64
+      })
+      if (!launch.promptFile && promptExceedsLineBudget(launch.prompt)) launch = { prompt: issueLaunchPrompt(ref) }
+      // The await above is where a tab switch can land; never start into another project.
+      if (useProjects.getState().activeProjectId !== projectId) return
+      const agentId = resolveNewNodeAgent(undefined, projectId, useSettings.getState().settings)
+      const opts = { launch, opener: source.id }
       if (d.worktree) {
         void startIssueAgentInWorktree(d.issue, agentId, undefined, opts)
         return
       }
+      const all = nodesRef.current
       const rect = nodeFitRect(source as FocusableNode, all as FocusableNode[])
       startIssueAgent(d.issue, agentId, undefined, {
         ...opts,
         ...(rect ? { center: { x: rect.x + rect.width + 40 + terminalNodeSize().width / 2, y: rect.y + rect.height / 2 } } : {})
       })
     }
-    window.addEventListener(ISSUE_WORK_EVENT, onWork)
-    return () => window.removeEventListener(ISSUE_WORK_EVENT, onWork)
-  }, [startIssueAgent, startIssueAgentInWorktree, nodesRef])
+    const listener = (e: Event): void => { void onWork(e) }
+    window.addEventListener(ISSUE_WORK_EVENT, listener)
+    return () => window.removeEventListener(ISSUE_WORK_EVENT, listener)
+  }, [startIssueAgent, startIssueAgentInWorktree, nodesRef, api])
 
     // Global kanban swimlane "New session" path — creates a node in the target project's
   // swimlane even when that project is not the active canvas. The per-column create

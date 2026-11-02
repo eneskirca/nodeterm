@@ -577,6 +577,10 @@ export class GitHubIssueService {
       throw new Error('invalid-query')
     }
     const context = await this.cacheContext(request.projectId)
+    if (request.repository !== undefined &&
+        (typeof request.repository !== 'string' || request.repository.toLowerCase() !== context.repository.toLowerCase())) {
+      throw new Error('repository-mismatch')
+    }
     const { state, userId } = await this.cachedState(context)
     const throttle = userId ? this.options.coordinator.throttle(userId) : undefined
     // One snapshot holds both kinds (they arrive on the same endpoint), so the kind filter is
