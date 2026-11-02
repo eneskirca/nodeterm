@@ -718,6 +718,29 @@ describe('pull request merge', () => {
   })
 })
 
+describe('GitHubIssuesClient update branch', () => {
+  const sha = 'c'.repeat(40)
+  it('merges the base into the head only if the head is still the commit the user saw', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ message: 'Updating pull request branch.' }, { status: 202 }) }
+    })
+    await client.updatePullBranch('o/r', 7, sha)
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/7/update-branch')
+    expect(calls[0].init.method).toBe('PUT')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ expected_head_sha: sha })
+  })
+
+  it('refuses a bad commit or number before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({}) } })
+    await expect(client.updatePullBranch('o/r', 7, 'main')).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.updatePullBranch('o/r', 0, sha)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+})
+
 describe('GitHubIssuesClient pull files', () => {
   it('reads one page of changed files with its next page, a rename with its previous path', async () => {
     const calls: string[] = []

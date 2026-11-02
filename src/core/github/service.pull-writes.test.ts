@@ -48,6 +48,10 @@ class Client implements GitHubIssuesClientLike {
     this.writes.push(['merge', repository, pullNumber, merge])
     if (this.fail) throw this.fail
   }
+  async updatePullBranch(repository: string, pullNumber: number, sha: string): Promise<void> {
+    this.writes.push(['update', repository, pullNumber, sha])
+    if (this.fail) throw this.fail
+  }
   methods: PullMergeMethod[] = ['squash']
   methodReads: string[] = []
   async repoMergeMethods(repository: string): Promise<PullMergeMethod[]> {
@@ -288,6 +292,25 @@ describe('GitHubIssueService merge', () => {
     client.fail = new GitHubClientError('request-failed', 502)
     expect(await service.repoMergeMethods({ projectId: 'p', repository: 'o/r' }))
       .toEqual({ status: 'failed', reason: 'unreachable' })
+  })
+})
+
+describe('GitHubIssueService update branch', () => {
+  it('updates the branch from the head the node showed, then refreshes', async () => {
+    const { client, service, refresh } = harness()
+    expect(await service.updatePullBranch({ ...at, headSha: sha })).toEqual({ ok: true })
+    expect(client.writes).toEqual([['update', 'o/r', 7, sha]])
+    expect(refresh).toHaveBeenCalledWith({ projectId: 'p' })
+  })
+
+  it('refuses a missing head or a bad number before anything is resolved, another repository with no request', async () => {
+    const { client, service, contexts } = harness()
+    expect(await service.updatePullBranch({ ...at, headSha: '' })).toEqual({ ok: false, reason: 'validation' })
+    expect(await service.updatePullBranch({ ...at, pullNumber: -1, headSha: sha })).toEqual({ ok: false, reason: 'validation' })
+    expect(contexts()).toBe(0)
+    expect(await service.updatePullBranch({ ...at, repository: 'evil/other', headSha: sha }))
+      .toEqual({ ok: false, reason: 'not-approved' })
+    expect(client.writes).toEqual([])
   })
 })
 

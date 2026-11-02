@@ -125,6 +125,8 @@ export interface GitHubIssuesClientLike {
   /** The repository's allowed merge methods, and a merge tied to the head `sha`. Optional, as above. */
   repoMergeMethods?(repository: string): Promise<PullMergeMethod[]>
   mergePull?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
+  /** "Update branch": merge the base into the head, tied to the head `sha`. Optional, as above. */
+  updatePullBranch?(repository: string, pullNumber: number, sha: string): Promise<void>
   /** Submit one review on a PR (the node's Approve / Request changes). Optional, as above. */
   reviewPull?(
     repository: string, pullNumber: number,
@@ -1225,6 +1227,20 @@ export class GitHubIssueService {
       // ponytail: a client that cannot merge reads as network; the real client always can.
       if (!client.mergePull) throw new Error('unsupported')
       return client.mergePull(repository, pullNumber, { method, sha: headSha })
+    })
+  }
+
+  /** "Update branch" from the node (a user click only): GitHub merges the base into the head, and
+   *  refuses (422) if the head is no longer `headSha`, the commit the Overview showed. */
+  async updatePullBranch(
+    request: { projectId: string; repository: string; pullNumber: number; headSha: string }
+  ): Promise<PullWriteResult> {
+    const headSha = request?.headSha
+    if (typeof headSha !== 'string' || !headSha) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot update reads as network; the real client always can.
+      if (!client.updatePullBranch) throw new Error('unsupported')
+      return client.updatePullBranch(repository, pullNumber, headSha)
     })
   }
 

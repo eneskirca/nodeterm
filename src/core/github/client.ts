@@ -736,6 +736,18 @@ export class GitHubIssuesClient {
     })
   }
 
+  /** "Update branch" (`PUT /pulls/{n}/update-branch`): merge the base into the head, only if the
+   *  head is still `sha`, the commit the user saw. GitHub answers 202 and does it in the background. */
+  async updatePullBranch(repository: string, pullNumber: number, sha: string): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || typeof sha !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    await this.request(`/repos/${repository}/pulls/${pullNumber}/update-branch`, {
+      method: 'PUT', body: JSON.stringify({ expected_head_sha: sha })
+    })
+  }
+
   /** One page of a PR's changed files (`GET /pulls/{n}/files`), for the Files tab. */
   async listPullFiles(repository: string, pullNumber: number, page: number): Promise<PullFilesPage> {
     safeRepository(repository)
