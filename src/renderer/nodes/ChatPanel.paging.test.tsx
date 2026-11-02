@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage, ChatTranscriptResult } from '@shared/types'
 import type { ChatTranscriptPageRequest } from '@shared/chat-page'
 import { useAgentStatus } from '../state/agentStatus'
+import { useSettings } from '../state/settings'
 import { CHAT_OLDER_PAGE_BYTES, CHAT_TAIL_PAGE_BYTES } from '../lib/chatPaging'
 
 /**
@@ -125,6 +126,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
+  useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: false } }))
   useAgentStatus.setState((s) => {
     const byId = { ...s.byId }
     delete byId[NODE]
@@ -155,7 +157,7 @@ describe('ChatPanel progressive loading', () => {
 
   it('reads only a small tail window first', async () => {
     await render()
-    expect(pending[0].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, thinking: true })
+    expect(pending[0].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, thinking: true, rich: true })
   })
 
   it('pages back on scroll-up, prepends, and keeps the viewport on the same content', async () => {
@@ -167,7 +169,7 @@ describe('ChatPanel progressive loading', () => {
 
     await scrollTo(50)
     expect(pending).toHaveLength(2)
-    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
+    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
     expect(host.querySelector('.term-chat__older')?.textContent).toContain('Loading earlier messages…')
     // The app's one spinner, inside the row that is the status region.
     expect(host.querySelector('.term-chat__older[role="status"] .nt-spinner')).not.toBeNull()
@@ -205,7 +207,7 @@ describe('ChatPanel progressive loading', () => {
     expect(pending).toHaveLength(2)
     await act(async () => row.querySelector('button')!.click())
     expect(pending).toHaveLength(3)
-    expect(pending[2].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
+    expect(pending[2].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
     await settle(2, { messages: [say(0, 'older')], olderCursor: null })
     expect(bubbles()).toEqual(['older', 'tail'])
   })
@@ -231,7 +233,7 @@ describe('ChatPanel progressive loading', () => {
       useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'done' } as never } }))
     })
     expect(pending).toHaveLength(3)
-    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, thinking: true })
+    expect(pending[2].page).toEqual({ maxBytes: CHAT_TAIL_PAGE_BYTES, thinking: true, rich: true })
     await settle(2, { messages: [say(1000, 'm1000'), say(2000, 'm2000')], olderCursor: 1000 })
     expect(bubbles()).toEqual(['m0', 'm1000', 'm2000'])
   })
@@ -256,7 +258,7 @@ describe('ChatPanel progressive loading', () => {
     await render()
     await settle(0, { messages: [say(1000, 'short')], olderCursor: 1000 })
     expect(pending).toHaveLength(2)
-    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
+    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
   })
 
   it('a HIDDEN panel (collapsed node, display:none: every metric 0) never pages in the background', async () => {
@@ -303,7 +305,7 @@ describe('ChatPanel progressive loading', () => {
     expect(bubbles()).toEqual(['tail'])
     await scrollTo(0)
     expect(pending).toHaveLength(4)
-    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
+    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
   })
 
   it('switching session while an older page is in flight drops that page and starts clean', async () => {
@@ -332,7 +334,7 @@ describe('ChatPanel progressive loading', () => {
     expect(pending).toHaveLength(3)
     await settle(2, { messages: [say(1000, 'tail')], olderCursor: 1000 })
     expect(pending).toHaveLength(4)
-    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
+    expect(pending[3].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
   })
   // A tail window can hold no message at all and still have history behind it (its records were
   // all metadata, or — before core grew such windows — one line bigger than the page). That is
@@ -343,7 +345,7 @@ describe('ChatPanel progressive loading', () => {
     expect(host.textContent).not.toContain('No conversation yet.')
     expect(host.querySelector('[role="status"]')?.textContent).toContain('Loading conversation…')
     expect(pending).toHaveLength(2) // it paged back on its own
-    expect(pending[1].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
+    expect(pending[1].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
     await settle(1, { messages: [say(0, 'older')], olderCursor: null })
     expect(bubbles()).toEqual(['older'])
     expect(host.textContent).not.toContain('Loading conversation…')
@@ -357,7 +359,7 @@ describe('ChatPanel progressive loading', () => {
     expect(host.textContent).toContain("Couldn't load earlier messages.")
     await act(async () => host.querySelector<HTMLButtonElement>('.term-chat__older .term-chat__retry')!.click())
     expect(pending).toHaveLength(3)
-    expect(pending[2].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true })
+    expect(pending[2].page).toEqual({ before: 5000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
   })
 
   it('switching session to one whose read REJECTS clears the previous session\'s thread', async () => {
@@ -367,6 +369,60 @@ describe('ChatPanel progressive loading', () => {
     await act(async () => pending[1].reject(new Error('boom')))
     expect(bubbles()).toEqual([])
     expect(host.textContent).toContain("Couldn't read the transcript.")
+  })
+})
+
+// Focus view (the bar toggle) hides whole messages, so flipping it changes the thread's height with
+// no new message and no scroll event: the follow and paging checks must run on the flip itself.
+describe('ChatPanel Focus toggle re-runs follow and paging', () => {
+  const think = (key: number): ChatMessage => ({ role: 'assistant', key, parts: [{ kind: 'thinking', text: 'hmm' }] })
+  const focus = async (on: boolean): Promise<void> => {
+    await act(async () => {
+      useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: on } }))
+    })
+  }
+
+  it('turning Focus on pages back when the filtered thread now fits the viewport', async () => {
+    geo.perMsg = 300 // three bubbles overflow the 400px viewport; one does not
+    await render()
+    await settle(0, { messages: [think(1000), think(1100), say(1200, 'answer')], olderCursor: 1000 })
+    expect(msgs().scrollTop).toBe(500) // pinned to the bottom, far from the top: no fetch
+    expect(pending).toHaveLength(1)
+
+    await focus(true)
+
+    expect(bubbles()).toEqual(['answer'])
+    expect(pending).toHaveLength(2)
+    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
+  })
+
+  it('turning Focus off while following lands at the new bottom', async () => {
+    geo.perMsg = 300
+    await focus(true)
+    await render()
+    await settle(0, { messages: [say(0, 'a'), say(10, 'b'), think(20), think(30), say(40, 'c')] })
+    expect(bubbles()).toEqual(['a', 'b', 'c'])
+    // Three bubbles and the "Beginning of conversation" row, scrolled to the bottom.
+    expect(msgs().scrollTop).toBe(3 * 300 + ROW - 400)
+
+    await focus(false)
+
+    expect(host.querySelectorAll('.term-chat__msg')).toHaveLength(5)
+    expect(msgs().scrollTop).toBe(5 * 300 + ROW - 400)
+    expect(host.querySelector('.term-chat__to-latest')).toBeNull()
+  })
+
+  it('a reader scrolled up keeps their place across the flip', async () => {
+    geo.perMsg = 300
+    await focus(true)
+    await render()
+    await settle(0, { messages: [say(0, 'a'), say(10, 'b'), think(20), think(30), say(40, 'c')] })
+    await scrollTo(100)
+
+    await focus(false)
+
+    expect(msgs().scrollTop).toBe(100)
+    expect(host.querySelector('.term-chat__to-latest')).not.toBeNull()
   })
 })
 

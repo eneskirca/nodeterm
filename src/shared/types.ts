@@ -2001,6 +2001,11 @@ export interface Settings {
   /** Body size (CSS px) of the same views; headings scale from it, code is 0.92 of it. Read
    *  through `resolveMarkdownFontSize`, which clamps to 8–28 and answers 13 for garbage. */
   markdownFontSize: number
+  /** The ⌘M chat view's Focus toggle (its bar's `Focus` button): the thread leaves out tool calls
+   *  and thinking, and keeps the prompts, answers, images and the cards that ask something (a plan,
+   *  a question — with their answer controls — and the latest todo list). Default OFF; read
+   *  strictly (`=== true`), since the file is hand-editable. Machine-local, like the fonts above. */
+  chatFocusView: boolean
   /** Default size (px) for NEW terminal/agent nodes on the canvas. Existing nodes keep
    *  whatever size they were saved with; other node kinds keep their own defaults. */
   defaultNodeWidth: number
@@ -2530,6 +2535,7 @@ export const DEFAULT_SETTINGS: Settings = {
   groupFrameBacking: 0,
   markdownFontFamily: DEFAULT_MARKDOWN_FONT_FAMILY,
   markdownFontSize: DEFAULT_MARKDOWN_FONT_SIZE,
+  chatFocusView: false,
   defaultNodeWidth: 640,
   defaultNodeHeight: 440,
   defaultNodeSizes: {},
@@ -3595,7 +3601,34 @@ export interface TranscriptLine {
  *  metadata so committed tool cards keep the same summary/diff-click treatment as live ones. */
 export type ChatPart =
   | { kind: 'text'; text: string }
-  | { kind: 'thinking'; text: string }
+  | {
+      kind: 'thinking'
+      text: string
+      /**
+       * How long the model thought, in ms — this record's timestamp minus that of the newest `user`
+       * record before it (the prompt, tool_result or meta line the request answered). Present only on
+       * the opt-in `thinking` read, only when both stamps exist and the gap is ≥ 0. Measured 2026-11-02
+       * on CLI 2.1.275–2.1.316: a thinking record is written when the thinking ENDS, and the record
+       * after it is a tool call whose write time scales with its input, so the gap to the NEXT record
+       * is not thinking time; nor is the gap to the record right BEFORE it, which is an empty
+       * encrypted thinking record of the same message written ~10 ms earlier (1,018 of 1,037).
+       * A paged read sees only its own window, so a thinking record with no `user` record before it
+       * in that window (the start of an older page) carries no `ms`.
+       */
+      ms?: number
+    }
+  | {
+      /**
+       * An image the user attached to a prompt (a pasted screenshot): `data` is the base64 payload,
+       * drawn as `data:<mediaType>;base64,<data>`. Present only on the opt-in `rich` read
+       * (`ChatParseOptions.rich`), and only for a base64 source whose `mediaType` is in
+       * `CHAT_IMAGE_TYPES` (core/transcript-reader.ts) — never `image/svg+xml`. An image a tool
+       * returned (inside a `tool_result`) is tool output and never becomes one.
+       */
+      kind: 'image'
+      mediaType: string
+      data: string
+    }
   | {
       kind: 'tool'
       name: string
@@ -3603,17 +3636,35 @@ export type ChatPart =
       result?: string
       summary?: ChatToolSummary
       /** Markdown worth reading in full (an `ExitPlanMode` plan, an `AskUserQuestion` question and
-       *  its options — `core/chat-tool-body.ts`). Present = the renderer shows an expanded card
-       *  instead of the collapsed chip. Capped at 64K characters. */
+       *  its options, and on the opt-in `rich` read a `TodoWrite` checklist — `core/chat-tool-body.ts`).
+       *  Present = the renderer shows an expanded card instead of the collapsed chip (a superseded
+       *  todo list excepted: `lib/chatFocus.ts`). Capped at 64K characters. */
       body?: string
       /** `AskUserQuestion` only: the questions read for the answer controls (`readQuestions`) —
        *  the SAME reader the held request's texts come from, so a surface can match the card to the
        *  held ticket. Absent = unreadable input = the card stays read-only. */
       questions?: ChatQuestion[]
+      /** `Edit` / `Write` only, on the opt-in `rich` read (`ChatParseOptions.rich`): the change the
+       *  call asked for, read from its INPUT — never from the result — so the renderer can draw it as
+       *  a diff. Absent = any other tool, an unreadable input, or a read without `rich`. */
+      diff?: ChatToolDiff
       /** The transcript's `tool_use` id. Set only by a PAGED read (`ChatTranscriptResult.olderCursor`
        *  present): a result carried across a page boundary (`unmatchedResults`) is attached by it. */
       id?: string
     }
+
+/**
+ * The change an `Edit` / `Write` tool call asked for (`ChatPart` tool `diff`). Edit's
+ * `{file_path, old_string, new_string}` maps to `{filePath, oldText, newText}`; Write's
+ * `{file_path, content}` to `{filePath, oldText: '', newText: content}`. An empty `newText` on an
+ * Edit is a deletion. Each text is capped at a tool body's length (`capText`, core/chat-tool-body.ts:
+ * 64K characters, then `TOOL_BODY_TRUNCATED`, with no markdown fence repair — it is file content).
+ */
+export interface ChatToolDiff {
+  filePath: string
+  oldText: string
+  newText: string
+}
 
 /** A structured chat message reconstructed from a Claude session transcript. */
 export interface ChatMessage {
@@ -3629,7 +3680,8 @@ export interface ChatMessage {
   /**
    * When the transcript line was written (epoch ms, from claude's ISO `timestamp`). Set on BOTH
    * read paths; absent when the line states none (grok, older records). The ⌘M thread shows it as a
-   * relative time under an assistant message.
+   * relative time under an assistant turn and a clock time under a user message, and starts a day
+   * divider at each local day's first stamped message.
    */
   at?: number
 }

@@ -4,16 +4,18 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import type { TranscriptLine, ChatMessage, ChatPart, ChatCarriedToolResult } from '../shared/types'
+import type { TranscriptLine, ChatMessage, ChatPart, ChatCarriedToolResult, ChatToolDiff } from '../shared/types'
 import { transcriptRootFor } from './claude-accounts-core'
 import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
-import { toolBody } from './chat-tool-body'
+import { capText, toolBody } from './chat-tool-body'
+import { isRecord } from '../shared/is-record'
 import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
 import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../shared/chat-command'
 import {
   AGENT_MESSAGE_TOOL,
   BACKGROUND_TASK_TOOL,
+  COMPACTION_TOOL,
   SYSTEM_TOOL,
   expandPastedContent
 } from '../shared/chat-system-records'
@@ -183,8 +185,6 @@ export function classifyLocalCommand(content: string): LocalCommandRecord | null
   if (onlyFrom(tags, BASH_OUT_TAGS)) return { kind: 'output', family: 'bash', text: outputText(tags) }
   return null
 }
-
-export { COMMAND_OUTPUT_TOOL }
 
 // ── System-injected user records ─────────────────────────────────────────────────────────────────
 // Claude Code writes several things that are NOT the user's words as `type:"user"` records. Measured
@@ -365,10 +365,85 @@ export interface ChatParseOptions {
    * claude's TUI prints between tool calls. Most thinking blocks carry only an encrypted
    * `signature` and an empty `thinking` (measured: 137 of 913 on one machine had text); those, and
    * every `redacted_thinking`, yield nothing either way. Off by default: the shared golden fixtures
-   * (`thinking.pages.json`) and the phone's `chat.page` keep dropping them.
+   * (`thinking.pages.json`) and the phone's `chat.page` keep dropping them. Each part carries `ms`,
+   * how long the model thought, when the stamps can tell (see the `ChatPart` type).
    */
   thinking?: boolean
+  /**
+   * Emit the parts only the desktop ⌘M panel draws. Today: an `image` part for each image block of a
+   * user record's content array — a pasted screenshot, measured (CLI 2.1.314) as
+   * `{type:'image', source:{type:'base64', media_type, data}}` — when the source is base64, its
+   * media type is in `CHAT_IMAGE_TYPES` and `data` is a non-empty string. An image inside a
+   * `tool_result` is tool output and stays out (`summarizeResult` ignores it, as before). Off by
+   * default, like `thinking`: the golden fixtures and the phone's `chat.page` never set it.
+   * Also: a `diff` on each `Edit` / `Write` tool part whose input reads (`toolDiff`), a
+   * `Compaction` chip for each context compaction (`compactionPart`) in place of the long summary
+   * record the model continues from, which is skipped, and a checklist `body` on each `TodoWrite`
+   * tool part whose `todos` read (`toolBody`).
+   */
+  rich?: boolean
 }
+
+/**
+ * The image types an `image` part may carry (`ChatParseOptions.rich`): the raster formats claude
+ * accepts as a pasted image. Closed on purpose — anything else (`image/svg+xml` is scriptable markup,
+ * an unknown type is unrenderable) yields no part rather than a `data:` URL of unknown content.
+ */
+export const CHAT_IMAGE_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+/** An image block of a user record, as an `image` part — or null when it is not one we draw. */
+function imagePart(source: unknown): Extract<ChatPart, { kind: 'image' }> | null {
+  if (!source || typeof source !== 'object') return null
+  const { type, media_type: mediaType, data } = source as { type?: unknown; media_type?: unknown; data?: unknown }
+  if (type !== 'base64' || typeof mediaType !== 'string' || !CHAT_IMAGE_TYPES.includes(mediaType)) return null
+  if (typeof data !== 'string' || !data) return null
+  return { kind: 'image', mediaType, data }
+}
+
+/**
+ * The change an `Edit` / `Write` call asked for (`ChatParseOptions.rich`), from its INPUT — measured
+ * (CLI 2.1.314) as `Edit → {file_path, old_string, new_string, replace_all?}` and
+ * `Write → {file_path, content}`. Undefined for any other tool or shape: the plain chip, as before.
+ * An empty `new_string` is a deletion and still a diff. Each text is capped at the tool-body length
+ * (`capText`) with no markdown repair: it is file content, and is shown as it was written.
+ */
+function toolDiff(name: string, input: unknown): ChatToolDiff | undefined {
+  if (!isRecord(input)) return undefined
+  const filePath = input.file_path
+  if (typeof filePath !== 'string' || !filePath) return undefined
+  if (name === 'Edit') {
+    const { old_string: oldText, new_string: newText } = input
+    if (typeof oldText !== 'string' || typeof newText !== 'string') return undefined
+    return { filePath, oldText: capText(oldText), newText: capText(newText) }
+  }
+  if (name === 'Write') {
+    return typeof input.content === 'string' ? { filePath, oldText: '', newText: capText(input.content) } : undefined
+  }
+  return undefined
+}
+
+/**
+ * A context compaction (`ChatParseOptions.rich`) as ONE tool part, from the `compactMetadata` of the
+ * `type:'system'` record claude writes at the boundary — measured (CLI 2.1.314) as
+ * `{subtype:'compact_boundary', content:'Conversation compacted', compactMetadata:{trigger:'auto' |
+ * 'manual', preTokens, postTokens, …}}`. The trigger is the `arg` ('' when it is not a string; capped
+ * like any tool arg); the `result` is `<preTokens> → <postTokens> tokens` in plain digits, only when
+ * both are finite numbers.
+ */
+function compactionPart(meta: unknown): Extract<ChatPart, { kind: 'tool' }> {
+  const m: Record<string, unknown> = isRecord(meta) ? meta : {}
+  const part: Extract<ChatPart, { kind: 'tool' }> = {
+    kind: 'tool',
+    name: COMPACTION_TOOL,
+    arg: typeof m.trigger === 'string' ? m.trigger.slice(0, CHAT_TOOL_ARG_MAX) : ''
+  }
+  const { preTokens: pre, postTokens: post } = m
+  if (typeof pre === 'number' && Number.isFinite(pre) && typeof post === 'number' && Number.isFinite(post)) {
+    part.result = `${pre} → ${post} tokens`
+  }
+  return part
+}
+
 const userTextOf = (text: string, opts: ChatParseOptions | undefined): string =>
   opts?.expandPastes === false ? text : expandPastedContent(text)
 
@@ -534,6 +609,9 @@ function parseChatRecords(
   // its output record (cleared by any other push, so output attaches only to the record right
   // before it).
   let awaitingOutput: { family: 'slash' | 'bash'; part: Extract<ChatPart, { kind: 'tool' }> } | null = null
+  // The stamp of the newest `user` record so far, hidden meta lines included: when the request a
+  // thinking record answers was made, so its `ms` (see the type). Read only on the opt-in branch.
+  let lastUserAt: number | undefined
   const push = (m: ChatMessage, offset: number): void => {
     awaitingOutput = null
     // `at` rides BOTH paths (additive): the time the line was written, for the thread's relative
@@ -546,6 +624,9 @@ function parseChatRecords(
     let o: Parameters<typeof isHiddenMetaRecord>[0] & {
       timestamp?: unknown
       effort?: unknown
+      subtype?: unknown
+      compactMetadata?: unknown
+      isCompactSummary?: unknown
       message?: { content?: unknown; model?: unknown }
     }
     try {
@@ -556,6 +637,8 @@ function parseChatRecords(
     // `null` / a number / a string parse fine and would throw on the reads below, failing the whole
     // page over one line another program wrote. One bad line costs one line (the Swift port agrees).
     if (!o || typeof o !== 'object' || Array.isArray(o)) continue
+    // Before the meta check: a hidden user line is still a request the model answers.
+    if (o.type === 'user') lastUserAt = lineTime(o.timestamp)
     if (isHiddenMetaRecord(o)) continue
     at = lineTime(o.timestamp)
     const content = o.message?.content
@@ -563,6 +646,14 @@ function parseChatRecords(
       model = metaString(o.message?.model)
       effort = metaString(o.effort)
     }
+    // Opt-in (see `ChatParseOptions.rich`): without it the boundary yields nothing and the summary
+    // is a user message, as before. The summary is the model's own recap of the conversation so far,
+    // not the user's words: the chip carries the fact, and the summary is skipped whatever its shape.
+    if (opts?.rich && o.type === 'system' && o.subtype === 'compact_boundary') {
+      push({ role: 'assistant', parts: [compactionPart(o.compactMetadata)] }, offset)
+      continue
+    }
+    if (opts?.rich && o.type === 'user' && o.isCompactSummary === true) continue
     if (o.type === 'assistant' && Array.isArray(content)) {
       const parts: ChatPart[] = []
       for (const c of content as Array<{
@@ -577,7 +668,14 @@ function parseChatRecords(
         if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: c.text })
         else if (c.type === 'thinking') {
           if (opts?.thinking && typeof c.thinking === 'string' && c.thinking.trim()) {
-            parts.push({ kind: 'thinking', text: c.thinking })
+            // Capped like a system record's body: one runaway block must not size the whole page.
+            const part: Extract<ChatPart, { kind: 'thinking' }> = {
+              kind: 'thinking',
+              text: c.thinking.slice(0, SYSTEM_RESULT_MAX)
+            }
+            const ms = at !== undefined && lastUserAt !== undefined ? at - lastUserAt : undefined
+            if (ms !== undefined && ms >= 0) part.ms = ms
+            parts.push(part)
           }
         }
         else if (c.type === 'tool_use') {
@@ -586,8 +684,11 @@ function parseChatRecords(
             name: c.name ?? 'tool',
             arg: toolArg(c.input)
           }
-          const body = toolBody(part.name, c.input)
+          const body = toolBody(part.name, c.input, { rich: opts?.rich === true })
           if (body) part.body = body
+          // Opt-in (see `ChatParseOptions.rich`): without it an Edit is the plain chip, as before.
+          const diff = opts?.rich ? toolDiff(part.name, c.input) : undefined
+          if (diff) part.diff = diff
           if (part.name === ASK_USER_QUESTION_TOOL) {
             const questions = readQuestions(c.input)
             if (questions) part.questions = questions
@@ -605,11 +706,16 @@ function parseChatRecords(
         text?: string
         tool_use_id?: string
         content?: unknown
+        source?: unknown
       }>) {
         if (!c || typeof c !== 'object') continue
         // A non-string `text` is passed through as before; only a string is a paste to expand.
         if (c.type === 'text' && c.text) parts.push({ kind: 'text', text: typeof c.text === 'string' ? userTextOf(c.text, opts) : c.text })
-        else if (c.type === 'tool_result') {
+        else if (c.type === 'image') {
+          // Opt-in (see `ChatParseOptions.rich`): without it the record keeps only its text, as before.
+          const part = opts?.rich ? imagePart(c.source) : null
+          if (part) parts.push(part)
+        } else if (c.type === 'tool_result') {
           const tool = c.tool_use_id ? toolById.get(c.tool_use_id) : undefined
           const s = summarizeResult(c.content)
           if (tool) {

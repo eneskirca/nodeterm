@@ -185,14 +185,14 @@ describe('ChatPanel rendering', () => {
     expect(card.querySelector('.term-chat__tool-result')).toBeNull()
   })
 
-  it('renders a thinking summary inline and dimmed, apart from the answer text', async () => {
+  it('renders a thinking summary in a closed fold, apart from the answer text', async () => {
     await render()
 
     await resolveAt(0, [{ role: 'assistant', parts: [{ kind: 'thinking', text: 'pondering' }, { kind: 'text', text: 'answer' }] }])
 
-    const thinking = host.querySelector('.term-chat__thinking')
+    const thinking = host.querySelector<HTMLDetailsElement>('details.term-chat__thinking')
+    expect(thinking?.open).toBe(false)
     expect(thinking?.textContent).toContain('pondering')
-    expect(host.querySelector('details.term-chat__thinking')).toBeNull()
     // The answer stays ordinary text, outside the thinking block.
     const answers = [...host.querySelectorAll('.term-chat__msg > .term-chat__text')].map((e) => e.textContent?.trim())
     expect(answers).toEqual(['answer'])

@@ -3506,6 +3506,12 @@ body,
 .term-chat__msg--assistant + .term-chat__msg--assistant {
   margin-top: -8px;
 }
+/* Every part of this message is drawn in a tool block above it (ChatPanel): it is only its turn's
+   action row, with no body of its own to pad. */
+.term-chat__msg--folded {
+  padding: 0;
+  min-height: 0;
+}
 .term-chat__actions {
   display: flex;
   align-items: center;
@@ -3551,6 +3557,23 @@ body,
   padding: 0 4px;
   white-space: nowrap;
 }
+/* The clock time under a user message (its bubble's last line), quiet like the action row's. */
+.term-chat__time--user {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+/* A day divider (lib/chatThread.ts `dayDividers`): a quiet centered caption before the first
+   message of each local calendar day. */
+.term-chat__day {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 11px;
+  color: rgba(var(--tint-rgb), 0.35);
+}
 .term-chat__text > :first-child {
   margin-top: 0;
 }
@@ -3576,6 +3599,11 @@ body,
 }
 .term-chat__code > pre {
   margin: 0;
+}
+/* A syntax-colored block (nodes/CodeHighlight.tsx): its text is split across Monaco's token spans,
+   which must not collapse the code's spaces or line breaks. */
+.term-chat__text pre code[data-highlighted] {
+  white-space: pre;
 }
 /* Same control as the per-turn Copy (.term-chat__action), in the block's top-right corner. Hidden
    until the block is hovered or the button is keyboard-focused, and kept while it says "Copied".
@@ -3659,6 +3687,44 @@ body,
   font-family: ui-monospace, monospace;
   font-size: 11px;
   opacity: 0.85;
+}
+/* An Edit / Write call (nodes/ChatToolDiff.tsx): the chip's summary ends in the `+N −M` counts, and
+   it opens to the line diff. The block is a one-column grid sized to its widest line (at least the
+   chip's width), so a line's tint spans the whole row even while the block is scrolled sideways;
+   code keeps its indentation (`pre`, never wrapped), and a long Write scrolls inside its own box. */
+.term-chat__diff-counts {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+}
+.term-chat__diff {
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+  margin: 6px 0 0;
+  padding: 4px 0;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--surface-sunken);
+  border-radius: 6px;
+}
+.term-chat__diff-line {
+  padding: 0 8px;
+}
+.term-chat__diff-line--ctx {
+  color: var(--muted);
+}
+.term-chat__diff-line--add {
+  color: var(--success);
+  background: color-mix(in srgb, var(--state-success) 12%, transparent);
+}
+.term-chat__diff-line--del {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--state-error) 12%, transparent);
 }
 /* A run of consecutive tool calls folded into one block (nodes/ChatToolGroup.tsx), closed by
    default. Closed, it is one chip-sized line: a chevron, the count, the tools used. Open, the same
@@ -4139,11 +4205,90 @@ body,
 .term-chat__refresh:hover {
   background: rgba(var(--tint-rgb), 0.1);
 }
-/* Claude's thinking summary between tool calls: inline like the TUI, dimmed so it never reads as
-   the answer. */
+/* The Focus toggle (ChatPanel; settings.chatFocusView): a quiet text button beside ↻ that is FILLED
+   while pressed, so the bar itself says the thread is filtered. */
+.term-chat__focus {
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: inherit;
+  background: none;
+  border: 1px solid rgba(var(--tint-rgb), 0.14);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.term-chat__focus:hover {
+  background: rgba(var(--tint-rgb), 0.1);
+}
+.term-chat__focus[aria-pressed='true'] {
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+}
+/* The latest todo list (a TodoWrite card): its disabled checkboxes are the markers, so no bullets. */
+.term-chat__todo ul {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+}
+.term-chat__todo li {
+  margin: 2px 0;
+}
+.term-chat__todo input[type='checkbox'] {
+  margin: 0 6px 0 0;
+  vertical-align: -1px;
+  accent-color: var(--accent);
+}
+/* Claude's thinking summary between tool calls (a <details>, closed by default): a dimmed line —
+   chevron + "Thought for 12s" — so it never reads as the answer; open, the text stays dimmed too. */
 .term-chat__thinking {
   margin: 4px 0;
   color: var(--muted);
+}
+.term-chat__thinking > summary {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+}
+.term-chat__thinking > summary::-webkit-details-marker {
+  display: none;
+}
+/* Drawn like the tool block's chevron: '▸' at this size renders as a dot. */
+.term-chat__thinking > summary::before {
+  content: '';
+  flex: 0 0 auto;
+  align-self: center;
+  width: 5px;
+  height: 5px;
+  margin: 0 2px 0 1px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.12s ease;
+}
+.term-chat__thinking[open] > summary::before {
+  transform: rotate(45deg);
+}
+.term-chat__thinking > .term-chat__text {
+  margin-top: 4px;
+}
+/* An image the user attached to a prompt (ChatImage): a height-capped thumbnail in the bubble; a click
+   drops the cap to show it at full size, still never wider than the bubble. */
+.term-chat__image {
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  margin: 4px 0;
+  border-radius: 8px;
+  cursor: zoom-in;
+}
+.term-chat__image--full {
+  max-height: none;
+  cursor: zoom-out;
 }
 
 /* Transparent overlay that lets you pan across a terminal until you dwell/click. */

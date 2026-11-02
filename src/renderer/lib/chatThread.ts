@@ -1,6 +1,6 @@
 // Pure decisions behind the ⌘M thread's claude.ai look (ChatPanel): where an assistant turn's
-// action row goes, what its Copy copies, and how its time reads. No React — see ChatPanel.tsx for
-// the glue and chatThread.test.ts for the pins.
+// action row goes, what its Copy copies, how its time reads, and where a day divider goes. No
+// React — see ChatPanel.tsx for the glue and chatThread.test.ts for the pins.
 import type { ChatMessage } from '@shared/types'
 import { isSystemRecordMessage } from '@shared/chat-system-records'
 
@@ -27,6 +27,51 @@ export function chatRelativeTime(at: number, now: number): string {
 /** The tooltip: the absolute time, in the viewer's locale. */
 export function chatAbsoluteTime(at: number): string {
   return new Date(at).toLocaleString()
+}
+
+// One formatter for the whole module: `toLocaleTimeString` builds a fresh Intl.DateTimeFormat per
+// call, and the thread formats every stamped user message on every render (each composer keystroke
+// is one). With hour + minute given, the output is the same as `toLocaleTimeString`'s.
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' })
+
+/** The clock time under a user message ("09:41"), in the viewer's locale. */
+export function chatClockTime(at: number): string {
+  return CLOCK.format(at)
+}
+
+const localDay = (d: Date): string => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+
+/**
+ * Where the thread draws a day divider: message index → its label, on the FIRST stamped message of
+ * each LOCAL calendar day (the viewer's, not the transcript writer's — an SSH host's midnight is not
+ * the reader's). Unstamped messages never start a day; they sit under whichever day came before.
+ * "Today" / "Yesterday" by the viewer's clock `now`, else a short date, with the year only when it
+ * is not `now`'s.
+ */
+export function dayDividers(messages: readonly ChatMessage[], now: number): Map<number, string> {
+  const dividers = new Map<number, string>()
+  const today = new Date(now)
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+  let last: string | undefined
+  messages.forEach((m, i) => {
+    if (typeof m.at !== 'number') return
+    const d = new Date(m.at)
+    const day = localDay(d)
+    if (day === last) return
+    last = day
+    if (day === localDay(today)) dividers.set(i, 'Today')
+    else if (day === localDay(yesterday)) dividers.set(i, 'Yesterday')
+    else
+      dividers.set(
+        i,
+        d.toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          ...(d.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {})
+        })
+      )
+  })
+  return dividers
 }
 
 export interface TurnEnd {

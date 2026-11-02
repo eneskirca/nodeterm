@@ -112,7 +112,15 @@ describe('readSessionName — remote (SSH project) sessions', () => {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 import os from 'os'
 import path from 'path'
-import { parseChatMessages, parseChatWindow, readChatWindow } from './transcript-reader'
+import {
+  CHAT_IMAGE_TYPES,
+  claudeChatRecordParser,
+  parseChatMessages,
+  parseChatWindow,
+  readChatWindow,
+  SYSTEM_RESULT_MAX
+} from './transcript-reader'
+import { TOOL_BODY_CAP, TOOL_BODY_TRUNCATED } from './chat-tool-body'
 
 const jl = (o: object): string => JSON.stringify(o) + '\n'
 const said = (role: 'user' | 'assistant', text: string): string =>
@@ -360,6 +368,384 @@ describe('message time (`at`, from the line\'s ISO `timestamp`)', () => {
       (said('user', 'none') + stamped('user', 'bad', 'yesterday') + stamped('user', 'num', 12345)).split('\n')
     )
     expect(msgs.map((m) => 'at' in m)).toEqual([false, false, false])
+  })
+})
+
+describe('thinking parts (opt-in `thinking`)', () => {
+  const T0 = Date.parse('2026-11-02T10:00:00.000Z')
+  const iso = (ms: number): string => new Date(T0 + ms).toISOString()
+  const assistantThinkingLine = (thinking: string, timestamp?: string): string =>
+    jl({ type: 'assistant', timestamp, message: { id: 'msg_1', content: [{ type: 'thinking', thinking, signature: 'sig' }] } })
+  const promptAt = (timestamp?: string): string => jl({ type: 'user', timestamp, message: { content: 'go' } })
+  const thinkingPart = (raw: string, opts = { thinking: true }) => {
+    const msgs = parseChatMessages(raw.split('\n'), opts)
+    const parts = msgs.flatMap((m) => m.parts).filter((p) => p.kind === 'thinking')
+    expect(parts).toHaveLength(1)
+    return parts[0] as { kind: 'thinking'; text: string; ms?: number }
+  }
+
+  it('caps a thinking text at SYSTEM_RESULT_MAX, like a system record\'s body', () => {
+    const msgs = parseChatMessages([assistantThinkingLine('x'.repeat(SYSTEM_RESULT_MAX + 5))], { thinking: true })
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0].parts).toHaveLength(1)
+    expect(msgs[0].parts[0].kind).toBe('thinking')
+    expect((msgs[0].parts[0] as { text: string }).text).toHaveLength(SYSTEM_RESULT_MAX)
+  })
+
+  it('without the option a thinking-only line is still no message (unchanged)', () => {
+    expect(parseChatMessages([assistantThinkingLine('x'.repeat(SYSTEM_RESULT_MAX + 5))])).toEqual([])
+    expect(parseChatMessages((promptAt(iso(0)) + assistantThinkingLine('hmm', iso(12_400))).split('\n'))).toEqual([
+      { role: 'user', parts: [{ kind: 'text', text: 'go' }], at: T0 }
+    ])
+  })
+
+  it('stamps how long the model thought: from the user prompt 12.4 s earlier', () => {
+    expect(thinkingPart(promptAt(iso(0)) + assistantThinkingLine('hmm', iso(12_400)))).toEqual({ kind: 'thinking', text: 'hmm', ms: 12_400 })
+  })
+
+  it('measures from the newest USER record, not the record right before the thinking (the shape claude writes)', () => {
+    // Measured: the record right before a thinking summary is an EMPTY encrypted thinking block of
+    // the same message ~10 ms earlier, with attachment / api-request lines in between; the request
+    // started at the tool_result.
+    const raw =
+      toolUse('t1', 'ls') +
+      jl({ type: 'user', timestamp: iso(0), message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'x' }] } }) +
+      jl({ type: 'attachment', timestamp: iso(5), attachment: { type: 'todo_reminder' } }) +
+      jl({ type: 'api-request', timestamp: iso(20) }) +
+      jl({ type: 'assistant', timestamp: iso(8_990), message: { id: 'msg_1', content: [{ type: 'thinking', thinking: '', signature: 'sig' }] } }) +
+      assistantThinkingLine('now the fix', iso(9_000))
+    expect(thinkingPart(raw).ms).toBe(9_000)
+  })
+
+  it('a hidden meta user line is a request too', () => {
+    const meta = jl({ type: 'user', isMeta: true, timestamp: iso(3_000), message: { content: 'caveat' } })
+    expect(thinkingPart(promptAt(iso(0)) + meta + assistantThinkingLine('hmm', iso(5_000))).ms).toBe(2_000)
+  })
+
+  it('no `ms` when the newest user record is unstamped, the gap is negative, or no user record precedes it', () => {
+    expect('ms' in thinkingPart(promptAt(iso(0)) + promptAt(undefined) + assistantThinkingLine('hmm', iso(12_400)))).toBe(false)
+    expect('ms' in thinkingPart(promptAt(iso(0)) + assistantThinkingLine('hmm', undefined))).toBe(false)
+    expect('ms' in thinkingPart(promptAt(iso(12_400)) + assistantThinkingLine('hmm', iso(0)))).toBe(false)
+    // The first record in the window.
+    expect('ms' in thinkingPart(assistantThinkingLine('hmm', iso(12_400)))).toBe(false)
+  })
+
+  it('a paged window that starts after the prompt carries no `ms` (it cannot see the request)', () => {
+    const prompt = promptAt(iso(0))
+    const file = Buffer.from(prompt + assistantThinkingLine('hmm', iso(12_400)))
+    const parse = claudeChatRecordParser({ thinking: true })
+    const whole = parseChatWindow(file, 0, parse).messages.flatMap((m) => m.parts)
+    expect(whole[1]).toEqual({ kind: 'thinking', text: 'hmm', ms: 12_400 })
+    // The window starts on the thinking line: the buffer begins one lookbehind byte earlier.
+    const older = parseChatWindow(file.subarray(prompt.length - 1), prompt.length - 1, parse).messages.flatMap((m) => m.parts)
+    expect(older).toEqual([{ kind: 'thinking', text: 'hmm' }])
+  })
+})
+
+describe('image parts (opt-in `rich`)', () => {
+  // The measured shape (CLI 2.1.314): a pasted image is a block of the user record's content array.
+  const userLine = (content: unknown[]): string => JSON.stringify({ type: 'user', message: { content } })
+  const image = (media_type: unknown, data: unknown = 'iVBORw0', sourceType: unknown = 'base64') => ({
+    type: 'image',
+    source: { type: sourceType, media_type, data }
+  })
+
+  it('rich: a pasted image becomes an image part; without rich the record keeps only its text', () => {
+    const line = userLine([{ type: 'text', text: 'see' }, image('image/png')])
+    expect(parseChatMessages([line], { rich: true })[0].parts).toEqual([
+      { kind: 'text', text: 'see' },
+      { kind: 'image', mediaType: 'image/png', data: 'iVBORw0' }
+    ])
+    expect(parseChatMessages([line])[0].parts).toEqual([{ kind: 'text', text: 'see' }])
+    expect(parseChatMessages([line], { thinking: true })[0].parts).toEqual([{ kind: 'text', text: 'see' }])
+  })
+
+  it('rich: each allowlisted media type is kept, in content order; an image-only record is a message', () => {
+    expect([...CHAT_IMAGE_TYPES]).toEqual(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+    const line = userLine(CHAT_IMAGE_TYPES.map((t) => image(t, `d-${t}`)))
+    expect(parseChatMessages([line], { rich: true })).toEqual([
+      { role: 'user', parts: CHAT_IMAGE_TYPES.map((t) => ({ kind: 'image', mediaType: t, data: `d-${t}` })) }
+    ])
+    // Without the option the same record has nothing to show, as before.
+    expect(parseChatMessages([line])).toEqual([])
+  })
+
+  it('rich: an image of an unknown media type, a non-base64 source, or inside a tool_result yields no part', () => {
+    const refused = [
+      image('image/svg+xml'), // scriptable markup, never a data: URL in the thread
+      image('image/bmp'),
+      image('IMAGE/PNG'),
+      image(undefined),
+      image('image/png', ''),
+      image('image/png', 42),
+      { type: 'image', source: { type: 'base64', media_type: 'image/png' } }, // no data
+      image('image/png', 'iVBORw0', 'url'),
+      { type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } },
+      { type: 'image' },
+      { type: 'image', source: null }
+    ]
+    const line = userLine([{ type: 'text', text: 'see' }, ...refused])
+    expect(parseChatMessages([line], { rich: true })[0].parts).toEqual([{ kind: 'text', text: 'see' }])
+
+    // An image a tool returned is tool OUTPUT: its call's result stays the text summary, as today.
+    const raw =
+      toolUse('t1', 'screenshot') +
+      jl({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'shot' }, image('image/png')] }
+          ]
+        }
+      })
+    expect(parseChatMessages(raw.split('\n'), { rich: true }).flatMap((m) => m.parts)).toEqual([
+      { kind: 'tool', name: 'Bash', arg: 'screenshot', result: 'shot' }
+    ])
+  })
+
+  it('rich rides the paged parser too (claudeChatRecordParser), and combines with thinking', () => {
+    const file = Buffer.from(
+      jl({ type: 'user', message: { content: [image('image/webp', 'UklGR')] } }) +
+        jl({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm', signature: 's' }] } })
+    )
+    const parts = (opts: { thinking?: boolean; rich?: boolean }) =>
+      parseChatWindow(file, 0, claudeChatRecordParser(opts)).messages.flatMap((m) => m.parts)
+    expect(parts({ thinking: true, rich: true })).toEqual([
+      { kind: 'image', mediaType: 'image/webp', data: 'UklGR' },
+      { kind: 'thinking', text: 'hmm' }
+    ])
+    expect(parts({ rich: true })).toEqual([{ kind: 'image', mediaType: 'image/webp', data: 'UklGR' }])
+    expect(parts({ thinking: true })).toEqual([{ kind: 'thinking', text: 'hmm' }])
+  })
+})
+
+describe('Edit / Write diffs (opt-in `rich`)', () => {
+  // The measured inputs (CLI 2.1.314): Edit → {file_path, old_string, new_string, replace_all?},
+  // Write → {file_path, content}.
+  const call = (id: string, name: string, input: unknown): string =>
+    jl({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
+  const toolPart = (raw: string, opts?: { rich?: boolean; thinking?: boolean }) =>
+    parseChatMessages(raw.split('\n'), opts).flatMap((m) => m.parts)
+
+  it('rich: Edit and Write tool calls carry a diff; a malformed input carries none', () => {
+    const raw =
+      call('e1', 'Edit', { file_path: '/a.ts', old_string: 'a\nb', new_string: 'a\nc', replace_all: false }) +
+      toolResult('e1', 'The file /a.ts has been updated.') +
+      call('w1', 'Write', { file_path: '/b.ts', content: 'x\ny\n' }) +
+      // An empty new_string deletes the old text: still a diff.
+      call('e2', 'Edit', { file_path: '/c.ts', old_string: 'gone', new_string: '' })
+    expect(toolPart(raw, { rich: true })).toEqual([
+      {
+        kind: 'tool',
+        name: 'Edit',
+        arg: '/a.ts',
+        diff: { filePath: '/a.ts', oldText: 'a\nb', newText: 'a\nc' },
+        result: 'The file /a.ts has been updated.'
+      },
+      { kind: 'tool', name: 'Write', arg: '/b.ts', diff: { filePath: '/b.ts', oldText: '', newText: 'x\ny\n' } },
+      { kind: 'tool', name: 'Edit', arg: '/c.ts', diff: { filePath: '/c.ts', oldText: 'gone', newText: '' } }
+    ])
+
+    const malformed = [
+      call('m1', 'Edit', { file_path: '', old_string: 'a', new_string: 'b' }),
+      call('m2', 'Edit', { file_path: 42, old_string: 'a', new_string: 'b' }),
+      call('m3', 'Edit', { old_string: 'a', new_string: 'b' }),
+      call('m4', 'Edit', { file_path: '/a.ts', old_string: 'a' }),
+      call('m5', 'Edit', { file_path: '/a.ts', old_string: null, new_string: 'b' }),
+      call('m6', 'Write', { file_path: '/a.ts' }),
+      call('m7', 'Write', { file_path: '/a.ts', content: ['x'] }),
+      call('m8', 'Edit', null),
+      call('m9', 'Write', 'not an object'),
+      // Another tool with the same field names is not an edit.
+      call('m10', 'MultiEdit', { file_path: '/a.ts', old_string: 'a', new_string: 'b' }),
+      call('m11', 'Read', { file_path: '/a.ts', content: 'x' })
+    ].join('')
+    const parts = toolPart(malformed, { rich: true })
+    expect(parts).toHaveLength(11)
+    for (const part of parts) {
+      expect(part.kind).toBe('tool')
+      expect('diff' in part, JSON.stringify(part)).toBe(false)
+    }
+  })
+
+  it('rich: each text is capped like a tool body, with the truncation marker', () => {
+    const long = 'x'.repeat(TOOL_BODY_CAP + 10)
+    const raw =
+      call('e1', 'Edit', { file_path: '/a.ts', old_string: long, new_string: long + 'y' }) +
+      call('w1', 'Write', { file_path: '/b.ts', content: long })
+    const diffs = toolPart(raw, { rich: true }).map((p) => (p.kind === 'tool' ? p.diff : undefined))
+    const capped = 'x'.repeat(TOOL_BODY_CAP) + TOOL_BODY_TRUNCATED
+    expect(diffs).toEqual([
+      { filePath: '/a.ts', oldText: capped, newText: capped },
+      { filePath: '/b.ts', oldText: '', newText: capped }
+    ])
+  })
+
+  it('rich: a capped side is the file as written — no fence repair for a cut inside a code block', () => {
+    // A balanced markdown Write whose cut lands inside its ```ts block. A tool BODY closes the fence
+    // there (it is rendered as markdown); a diff side is file content, so a line the file never had
+    // would show as `+```` in the diff.
+    const content = '# Doc\n```ts\n' + 'x'.repeat(TOOL_BODY_CAP) + '\n```\n'
+    const [part] = toolPart(call('w1', 'Write', { file_path: '/d.md', content }), { rich: true })
+    expect(part.kind === 'tool' ? part.diff : undefined).toEqual({
+      filePath: '/d.md',
+      oldText: '',
+      newText: content.slice(0, TOOL_BODY_CAP) + TOOL_BODY_TRUNCATED
+    })
+  })
+
+  it('without rich an Edit is the same chip as before', () => {
+    const raw =
+      call('e1', 'Edit', { file_path: '/a.ts', old_string: 'a', new_string: 'b' }) +
+      toolResult('e1', 'ok') +
+      call('w1', 'Write', { file_path: '/b.ts', content: 'x' })
+    const chips = [
+      { kind: 'tool', name: 'Edit', arg: '/a.ts', result: 'ok' },
+      { kind: 'tool', name: 'Write', arg: '/b.ts' }
+    ]
+    expect(toolPart(raw)).toEqual(chips)
+    expect(toolPart(raw, { thinking: true })).toEqual(chips)
+  })
+
+  it('rich rides the paged parser too: the diff sits beside the id', () => {
+    const file = Buffer.from(call('e1', 'Edit', { file_path: '/a.ts', old_string: 'a', new_string: 'b' }))
+    expect(parseChatWindow(file, 0, claudeChatRecordParser({ rich: true })).messages[0].parts).toEqual([
+      { kind: 'tool', name: 'Edit', arg: '/a.ts', diff: { filePath: '/a.ts', oldText: 'a', newText: 'b' }, id: 'e1' }
+    ])
+    expect(parseChatWindow(file, 0).messages[0].parts).toEqual([{ kind: 'tool', name: 'Edit', arg: '/a.ts', id: 'e1' }])
+  })
+})
+
+describe('TodoWrite checklist (opt-in `rich`)', () => {
+  // The tool's schema (no TodoWrite record exists on this server to measure — chat-tool-body.ts).
+  const raw = jl({
+    type: 'assistant',
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id: 't1',
+          name: 'TodoWrite',
+          input: { todos: [{ content: 'a', status: 'completed', activeForm: 'A-ing' }, { content: 'b', status: 'pending' }] }
+        }
+      ]
+    }
+  })
+
+  it('rich: the call carries the checklist body; without rich it is the same chip as before', () => {
+    const part = (opts?: { rich?: boolean; thinking?: boolean }) => parseChatMessages(raw.split('\n'), opts)[0].parts
+    expect(part({ rich: true })).toEqual([{ kind: 'tool', name: 'TodoWrite', arg: '', body: '- [x] a\n- [ ] b' }])
+    expect(part()).toEqual([{ kind: 'tool', name: 'TodoWrite', arg: '' }])
+    expect(part({ thinking: true })).toEqual([{ kind: 'tool', name: 'TodoWrite', arg: '' }])
+  })
+
+  it('rich rides the paged parser too', () => {
+    const file = Buffer.from(raw)
+    expect(parseChatWindow(file, 0, claudeChatRecordParser({ rich: true })).messages[0].parts).toEqual([
+      { kind: 'tool', name: 'TodoWrite', arg: '', body: '- [x] a\n- [ ] b', id: 't1' }
+    ])
+    expect(parseChatWindow(file, 0).messages[0].parts).toEqual([{ kind: 'tool', name: 'TodoWrite', arg: '', id: 't1' }])
+  })
+})
+
+describe('Compaction chip (opt-in `rich`)', () => {
+  // The measured records (CLI 2.1.314): the boundary is a `system` record, and the summary the model
+  // continues from is a `user` record flagged `isCompactSummary` — the model's text, not the user's.
+  const compactBoundary = (trigger: unknown, preTokens?: unknown, postTokens?: unknown): string =>
+    JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: 'Conversation compacted',
+      timestamp: '2026-11-02T10:00:00.000Z',
+      compactMetadata: { trigger, preTokens, postTokens }
+    })
+  const compactSummaryUser = (text: string, flag: unknown = true): string =>
+    JSON.stringify({
+      type: 'user',
+      isCompactSummary: flag,
+      isVisibleInTranscriptOnly: true,
+      timestamp: '2026-11-02T10:00:01.000Z',
+      message: { role: 'user', content: text }
+    })
+
+  it('rich: a compact boundary is a Compaction chip and the compact summary record is skipped', () => {
+    const out = parseChatMessages(
+      [compactSummaryUser('This session is being continued…'), compactBoundary('auto', 274430, 16889)],
+      { rich: true }
+    )
+    expect(out).toEqual([
+      {
+        role: 'assistant',
+        parts: [{ kind: 'tool', name: 'Compaction', arg: 'auto', result: '274430 → 16889 tokens' }],
+        at: expect.any(Number)
+      }
+    ])
+    expect(out[0].at).toBe(Date.parse('2026-11-02T10:00:00.000Z'))
+  })
+
+  it('without rich the boundary yields nothing and the summary is a user message', () => {
+    const raw = [compactBoundary('auto', 274430, 16889), compactSummaryUser('This session is being continued…')]
+    const summary = [
+      {
+        role: 'user',
+        parts: [{ kind: 'text', text: 'This session is being continued…' }],
+        at: Date.parse('2026-11-02T10:00:01.000Z')
+      }
+    ]
+    expect(parseChatMessages(raw)).toEqual(summary)
+    expect(parseChatMessages(raw, { thinking: true })).toEqual(summary)
+  })
+
+  it('a boundary with no token counts has no result', () => {
+    const noMeta = JSON.stringify({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted' })
+    const raw = [
+      compactBoundary('manual'),
+      compactBoundary('auto', 274430), // one count only
+      compactBoundary('auto', '274430', '16889'), // counts that are not numbers
+      compactBoundary(42, 1, 2), // a trigger that is not a string
+      noMeta,
+      JSON.stringify({ type: 'system', subtype: 'compact_boundary', compactMetadata: null })
+    ]
+    expect(parseChatMessages(raw, { rich: true }).flatMap((m) => m.parts)).toEqual([
+      { kind: 'tool', name: 'Compaction', arg: 'manual' },
+      { kind: 'tool', name: 'Compaction', arg: 'auto' },
+      { kind: 'tool', name: 'Compaction', arg: 'auto' },
+      { kind: 'tool', name: 'Compaction', arg: '', result: '1 → 2 tokens' },
+      { kind: 'tool', name: 'Compaction', arg: '' },
+      { kind: 'tool', name: 'Compaction', arg: '' }
+    ])
+  })
+
+  it('the trigger is capped like any tool arg', () => {
+    const [part] = parseChatMessages([compactBoundary('x'.repeat(250))], { rich: true }).flatMap((m) => m.parts)
+    expect(part).toEqual({ kind: 'tool', name: 'Compaction', arg: 'x'.repeat(200) })
+  })
+
+  it('rich: another system record yields nothing, and a summary flag that is not `true` stays a user message', () => {
+    const raw = [
+      JSON.stringify({ type: 'system', subtype: 'turn_duration', durationMs: 1200 }),
+      JSON.stringify({ type: 'system', content: 'Conversation compacted' }),
+      compactSummaryUser('typed by a person', 'true')
+    ]
+    expect(parseChatMessages(raw, { rich: true })).toEqual([
+      { role: 'user', parts: [{ kind: 'text', text: 'typed by a person' }], at: Date.parse('2026-11-02T10:00:01.000Z') }
+    ])
+  })
+
+  it('rich rides the paged parser too: the chip carries its line offset as key', () => {
+    const before = said('user', 'go')
+    const file = Buffer.from(before + compactBoundary('auto', 9, 3) + '\n' + compactSummaryUser('continued…') + '\n')
+    const rich = parseChatWindow(file, 0, claudeChatRecordParser({ rich: true })).messages
+    expect(rich).toEqual([
+      { role: 'user', parts: [{ kind: 'text', text: 'go' }], key: 0 },
+      {
+        role: 'assistant',
+        parts: [{ kind: 'tool', name: 'Compaction', arg: 'auto', result: '9 → 3 tokens' }],
+        at: Date.parse('2026-11-02T10:00:00.000Z'),
+        key: Buffer.byteLength(before)
+      }
+    ])
+    expect(parseChatWindow(file, 0).messages.map((m) => m.role)).toEqual(['user', 'user'])
   })
 })
 

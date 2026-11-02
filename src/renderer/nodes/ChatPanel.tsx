@@ -1,6 +1,6 @@
 import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
 import { claudeScreenBlocksInput, readClaudeScreen } from '@shared/agents/claude-screen'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
@@ -55,9 +55,14 @@ import type { PermissionAnswer } from '@shared/agents/permission-answer'
 import { ChatComposer } from './ChatComposer'
 import { ChatTurnActions } from './ChatTurnActions'
 import { useCodeBlockCopy } from './CodeBlockCopy'
-import { assistantTurnEnds } from '../lib/chatThread'
+import { useCodeHighlight } from './CodeHighlight'
+import { assistantTurnEnds, chatAbsoluteTime, chatClockTime, dayDividers } from '../lib/chatThread'
 import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
+import { thinkingLabel } from '../lib/chatThinking'
+import { TODO_WRITE_TOOL, focusHides, latestTodoIndex, staleTodo } from '../lib/chatFocus'
 import { ChatToolGroup } from './ChatToolGroup'
+import { ChatImage } from './ChatImage'
+import { ChatToolDiff } from './ChatToolDiff'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 
@@ -65,11 +70,13 @@ import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
 // `breaks`: a single newline is a line break, as Claude Code's own TUI renders it — without it a
 // multi-line prompt, or a reply quoting one line by line (`> a` / `> b`), collapsed onto one line.
-// Every code block gets a Copy button in its top-right corner (useCodeBlockCopy).
+// Every code block gets a Copy button in its top-right corner (useCodeBlockCopy), and a fenced block
+// whose language lib/codeHighlight.ts names is syntax-colored by Monaco (useCodeHighlight).
 export const MarkdownText = memo(function MarkdownText({ text }: { text: string }) {
   const html = useMemo(() => renderMarkdown(text, { breaks: true }), [text])
   const ref = useRef<HTMLDivElement>(null)
   const copyButtons = useCodeBlockCopy(ref, html)
+  useCodeHighlight(ref, html)
   return (
     <>
       <div ref={ref} className="term-chat__text" dangerouslySetInnerHTML={{ __html: html }} />
@@ -266,6 +273,10 @@ export function ChatPanel({
   // the same object across same-ticket events, so this selector re-renders only on a new hold.
   const held = useAgentStatus((s) => s.byId[nodeId]?.held)
   const customAgents = useSettings((s) => s.settings.customAgents)
+  // Focus view (the bar toggle; lib/chatFocus.ts): tool chips and thinking are left out. Strict, as
+  // the setting is hand-editable. Flipping it changes the thread's height with no new message, so
+  // the follow and older-page checks below re-run on it.
+  const focusView = useSettings((s) => s.settings.chatFocusView === true)
   // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
   // and a pane whose CLI is gone (hibernated/paused/dropped/exited) is a SHELL that would execute it.
   const refusal = chatSendRefusal(agentId, { state, hibernated, paused, dropped, sessionEnded })
@@ -440,6 +451,7 @@ export function ChatPanel({
     void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
       maxBytes: CHAT_TAIL_PAGE_BYTES,
       thinking: true,
+      rich: true,
       // A hook-driven refresh the user did not ask for: an expensive reader (opencode's export) may
       // space these out. An open, ↻, Retry or a held-request rebind is never marked.
       ...(live && !rebind ? { background: true } : {})
@@ -537,7 +549,8 @@ export function ChatPanel({
     void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
       before,
       maxBytes: CHAT_OLDER_PAGE_BYTES,
-      thinking: true
+      thinking: true,
+      rich: true
     }).then(
       (res) => {
         if (token !== olderReqRef.current) return
@@ -771,7 +784,9 @@ export function ChatPanel({
     }
     justSentRef.current = false
     // `activity` / `screenBlock`: a row appearing at the end grows the thread like a message does.
-  }, [messages, olderState, activity, screenBlock, markFollowing])
+    // `focusView`: the Focus toggle shows or hides whole messages — a user following the bottom
+    // stays there (turned off, it would leave them mid-thread); a reader scrolled up is left alone.
+  }, [messages, olderState, activity, screenBlock, focusView, markFollowing])
 
   const maybeLoadOlder = useCallback(() => {
     const el = msgsRef.current
@@ -792,10 +807,11 @@ export function ChatPanel({
   }, [thread.identity, thread.olderCursor, identity, olderState, loadState, tailLoading, loadOlder])
 
   // After every thread change too, not only on scroll: a thread shorter than the viewport cannot
-  // scroll, so without this its older history would be unreachable.
+  // scroll, so without this its older history would be unreachable. The Focus toggle is such a
+  // change: turned on, a thread can shrink below the viewport with no scroll event to page it.
   useEffect(() => {
     maybeLoadOlder()
-  }, [maybeLoadOlder])
+  }, [maybeLoadOlder, focusView])
 
   // The panel's box changing size — above all a collapsed node being EXPANDED (display:none → a
   // real box). Nothing else re-runs the checks then: while hidden, follow and anchor had zero
@@ -968,8 +984,17 @@ export function ChatPanel({
   // the turn's last message. `now` is ONE clock for every row's relative time, ticked once a minute
   // (a per-row timer would be a timer per turn for a label that changes once a minute).
   const turnEnds = useMemo(() => assistantTurnEnds(messages), [messages])
-  // Runs of consecutive tool calls, folded into one closed block each (lib/chatToolGroups.ts).
-  const toolGroups = useMemo(() => groupToolCalls(messages), [messages])
+  // Runs of consecutive tool calls, folded into one closed block each (lib/chatToolGroups.ts) —
+  // except, while the turn is live, the run at the end of the thread: its calls stay open chips until
+  // something else ends the run. Live = working, or waiting on a prompt (`dialog`: a permission
+  // request or question lands MID-turn, and folding on it would close the run on every prompt).
+  // A prompt queued meanwhile is drawn at the very end, but is not the turn's output: the tail is
+  // measured before it (`isQueued`; the set gains a send before the thread does, so it is current).
+  const liveTurn = refusal === 'working' || refusal === 'dialog'
+  const toolGroups = useMemo(
+    () => groupToolCalls(messages, { foldTail: !liveTurn, isQueued: (m) => queuedRef.current.has(m) }),
+    [messages, liveTurn]
+  )
   // The last key IS the latest turn end: `assistantTurnEnds` inserts in thread order.
   const latestTurnEnd = useMemo(() => {
     let last = -1
@@ -981,6 +1006,23 @@ export function ChatPanel({
     const t = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(t)
   }, [])
+  // A divider at the first message of each local day; the same `now`, so Today rolls to Yesterday.
+  const days = useMemo(() => dayDividers(messages, now), [messages, now])
+  // Only the latest todo list is a card, in both views (Focus: `focusView`, above).
+  const latestTodo = useMemo(() => latestTodoIndex(messages), [messages])
+  // Whether the part at (i, j) draws anything at its own place: not when an earlier tool block holds
+  // it, nor in Focus view when it is hidden — or, for a block's first member, when its every member is.
+  const drawsAt = (i: number, j: number): boolean => {
+    const at = partPosition(i, j)
+    if (toolGroups.absorbed.has(at)) return false
+    if (!focusView) return true
+    const group = toolGroups.groupAt.get(at)
+    if (!group) return !focusHides(messages[i].parts[j], i, latestTodo)
+    return group.members.some((mb) => {
+      const p = messages[mb.message]?.parts[mb.part]
+      return p !== undefined && !focusHides(p, mb.message, latestTodo)
+    })
+  }
 
   // One part of a message, as the thread draws it. Also used for the members of a folded tool block,
   // which are drawn inside the block instead of at their own place (lib/chatToolGroups.ts).
@@ -988,18 +1030,26 @@ export function ChatPanel({
     p.kind === 'text' ? (
       <MarkdownText key={key} text={p.text} />
     ) : p.kind === 'thinking' ? (
-      // Claude's thinking summary — the "thinking out loud" line its TUI prints between
-      // tool calls. Shown inline like the TUI does, dimmed so it never reads as the answer.
-      <div key={key} className="term-chat__thinking">
+      // Claude's thinking summary — the "thinking out loud" line its TUI prints between tool calls.
+      // A fold, closed by default and dimmed, so it never reads as the answer; its line says how long
+      // the thinking took when the parser could stamp it (`p.ms`). Native and uncontrolled, like the
+      // tool block: it keeps whatever the user opened while the thread re-renders.
+      <details key={key} className="term-chat__thinking">
+        <summary>{thinkingLabel(p.ms)}</summary>
         <MarkdownText text={p.text} />
-      </div>
-    ) : p.body ? (
-      // A plan / question is the content itself, not plumbing: shown expanded, in full,
-      // flowing with the thread (no inner scroll box). The answer stays under it.
-      <div key={key} className="term-chat__tool-card">
+      </details>
+    ) : p.kind === 'image' ? (
+      // An image the user attached to the prompt (the opt-in `rich` read): a thumbnail, click to enlarge.
+      <ChatImage key={key} mediaType={p.mediaType} data={p.data} />
+    ) : p.body && !staleTodo(p, i, latestTodo) ? (
+      // A plan / question / the latest todo list is the content itself, not plumbing: shown
+      // expanded, in full, flowing with the thread (no inner scroll box). The answer stays under it.
+      // A superseded todo list falls through to the plain chip.
+      <div key={key} className={`term-chat__tool-card${p.name === TODO_WRITE_TOOL ? ' term-chat__todo' : ''}`}>
         <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
         <MarkdownText text={p.body} />
-        {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
+        {/* A TodoWrite's result is the CLI's canned "Todos have been modified…": plumbing, not content. */}
+        {p.result && p.name !== TODO_WRITE_TOOL && <pre className="term-chat__tool-result">{p.result}</pre>}
         {answerCard && answerCard.card.message === i && answerCard.card.part === j && (
           // Keyed by the BOUND ticket: a new hold on the same card starts from a clean
           // state, and every answer names the request this card was drawn for.
@@ -1024,6 +1074,9 @@ export function ChatPanel({
           <AnswerControlsUpdating chip={mdChip} />
         )}
       </div>
+    ) : p.diff ? (
+      // An Edit / Write (the opt-in `rich` read): the plain chip plus `+N −M`, opening to the diff.
+      <ChatToolDiff key={key} name={p.name} diff={p.diff} result={p.result} />
     ) : (
       <details key={key} className="term-chat__tool">
         <summary>
@@ -1052,6 +1105,15 @@ export function ChatPanel({
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">
+          <button
+            type="button"
+            className="term-chat__focus"
+            aria-pressed={focusView}
+            onClick={() => useSettings.getState().update({ chatFocusView: !focusView })}
+            title="Focus view: hide tool calls and thinking"
+          >
+            Focus
+          </button>
           <button
             className="term-chat__refresh"
             onClick={() => load()}
@@ -1106,37 +1168,65 @@ export function ChatPanel({
             </div>
           )}
           {messages.map((m, i) => {
-            // A message whose every part is drawn inside an earlier message's tool block has nothing of
-            // its own to draw, unless it ends a turn (its action row) or is queued.
-            const folded = m.parts.length > 0 && m.parts.every((_, j) => toolGroups.absorbed.has(partPosition(i, j)))
-            if (folded && !turnEnds.has(i) && !queuedRef.current.has(m)) return null
-            return (
-              // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
-              // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
-              // bubble) fall back to their position.
-              <div
-                key={m.key !== undefined ? `k${m.key}` : `i${i}`}
-                className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
-                  queuedRef.current.has(m) ? ' term-chat__msg--queued' : ''
-                }`}
-              >
-                {m.parts.map((p, j) => {
-                  const at = partPosition(i, j)
-                  const group = toolGroups.groupAt.get(at)
-                  if (group) return <ChatToolGroup key={group.key} messages={messages} group={group} renderPart={renderPart} />
-                  if (toolGroups.absorbed.has(at)) return null
-                  return renderPart(p, i, j)
-                })}
-                {queuedRef.current.has(m) && <div className="term-chat__queued-label">Queued</div>}
-                {turnEnds.has(i) && (
-                  <ChatTurnActions
-                    copyText={turnEnds.get(i)!.copyText}
-                    at={turnEnds.get(i)!.at}
-                    now={now}
-                    latest={i === latestTurnEnd}
-                  />
-                )}
+            // A message whose every part is drawn inside an earlier message's tool block (or, in Focus
+            // view, hidden) has nothing of its own to draw, unless it ends a turn: then it draws that
+            // turn's action row and nothing else — bar a day divider (below). (Only assistant parts
+            // fold or hide, so a queued message — the user's — never does.)
+            const folded = m.parts.length > 0 && m.parts.every((_, j) => !drawsAt(i, j))
+            const turnEnd = turnEnds.get(i)
+            // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
+            // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
+            // bubble) fall back to their position.
+            const key = m.key !== undefined ? `k${m.key}` : `i${i}`
+            // The day divider is a sibling BEFORE the wrapper, a folded one's too. A message drawn
+            // whole inside an earlier tool block still draws its divider alone: its day would
+            // otherwise lose its label, since the divider goes only on a day's FIRST stamped message.
+            const day = days.get(i)
+            const divider = day !== undefined && (
+              <div className="term-chat__day" role="separator" aria-label={day}>
+                {day}
               </div>
+            )
+            if (folded && !turnEnd) return divider ? <Fragment key={key}>{divider}</Fragment> : null
+            const actions = turnEnd && (
+              <ChatTurnActions copyText={turnEnd.copyText} at={turnEnd.at} now={now} latest={i === latestTurnEnd} />
+            )
+            if (folded) {
+              return (
+                <Fragment key={key}>
+                  {divider}
+                  <div className={`term-chat__msg term-chat__msg--${m.role} term-chat__msg--folded`}>{actions}</div>
+                </Fragment>
+              )
+            }
+            const queued = queuedRef.current.has(m)
+            return (
+              <Fragment key={key}>
+                {divider}
+                <div
+                  className={`term-chat__msg term-chat__msg--${m.role}${m.role === 'user' ? ' term-chat__bubble' : ''}${
+                    queued ? ' term-chat__msg--queued' : ''
+                  }`}
+                >
+                  {m.parts.map((p, j) => {
+                    if (!drawsAt(i, j)) return null
+                    const group = toolGroups.groupAt.get(partPosition(i, j))
+                    if (group) return <ChatToolGroup key={group.key} messages={messages} group={group} renderPart={renderPart} />
+                    return renderPart(p, i, j)
+                  })}
+                  {m.role === 'user' && m.at !== undefined && (
+                    <time
+                      className="term-chat__time term-chat__time--user"
+                      dateTime={new Date(m.at).toISOString()}
+                      title={chatAbsoluteTime(m.at)}
+                    >
+                      {chatClockTime(m.at)}
+                    </time>
+                  )}
+                  {queued && <div className="term-chat__queued-label">Queued</div>}
+                  {actions}
+                </div>
+              </Fragment>
             )
           })}
           {screenBlock && (
