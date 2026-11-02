@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage, ChatTranscriptResult } from '@shared/types'
 import type { ChatTranscriptPageRequest } from '@shared/chat-page'
 import { useAgentStatus } from '../state/agentStatus'
+import { useSettings } from '../state/settings'
 import { CHAT_OLDER_PAGE_BYTES, CHAT_TAIL_PAGE_BYTES } from '../lib/chatPaging'
 
 /**
@@ -125,6 +126,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
+  useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: false } }))
   useAgentStatus.setState((s) => {
     const byId = { ...s.byId }
     delete byId[NODE]
@@ -367,6 +369,60 @@ describe('ChatPanel progressive loading', () => {
     await act(async () => pending[1].reject(new Error('boom')))
     expect(bubbles()).toEqual([])
     expect(host.textContent).toContain("Couldn't read the transcript.")
+  })
+})
+
+// Focus view (the bar toggle) hides whole messages, so flipping it changes the thread's height with
+// no new message and no scroll event: the follow and paging checks must run on the flip itself.
+describe('ChatPanel Focus toggle re-runs follow and paging', () => {
+  const think = (key: number): ChatMessage => ({ role: 'assistant', key, parts: [{ kind: 'thinking', text: 'hmm' }] })
+  const focus = async (on: boolean): Promise<void> => {
+    await act(async () => {
+      useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: on } }))
+    })
+  }
+
+  it('turning Focus on pages back when the filtered thread now fits the viewport', async () => {
+    geo.perMsg = 300 // three bubbles overflow the 400px viewport; one does not
+    await render()
+    await settle(0, { messages: [think(1000), think(1100), say(1200, 'answer')], olderCursor: 1000 })
+    expect(msgs().scrollTop).toBe(500) // pinned to the bottom, far from the top: no fetch
+    expect(pending).toHaveLength(1)
+
+    await focus(true)
+
+    expect(bubbles()).toEqual(['answer'])
+    expect(pending).toHaveLength(2)
+    expect(pending[1].page).toEqual({ before: 1000, maxBytes: CHAT_OLDER_PAGE_BYTES, thinking: true, rich: true })
+  })
+
+  it('turning Focus off while following lands at the new bottom', async () => {
+    geo.perMsg = 300
+    await focus(true)
+    await render()
+    await settle(0, { messages: [say(0, 'a'), say(10, 'b'), think(20), think(30), say(40, 'c')] })
+    expect(bubbles()).toEqual(['a', 'b', 'c'])
+    // Three bubbles and the "Beginning of conversation" row, scrolled to the bottom.
+    expect(msgs().scrollTop).toBe(3 * 300 + ROW - 400)
+
+    await focus(false)
+
+    expect(host.querySelectorAll('.term-chat__msg')).toHaveLength(5)
+    expect(msgs().scrollTop).toBe(5 * 300 + ROW - 400)
+    expect(host.querySelector('.term-chat__to-latest')).toBeNull()
+  })
+
+  it('a reader scrolled up keeps their place across the flip', async () => {
+    geo.perMsg = 300
+    await focus(true)
+    await render()
+    await settle(0, { messages: [say(0, 'a'), say(10, 'b'), think(20), think(30), say(40, 'c')] })
+    await scrollTo(100)
+
+    await focus(false)
+
+    expect(msgs().scrollTop).toBe(100)
+    expect(host.querySelector('.term-chat__to-latest')).not.toBeNull()
   })
 })
 

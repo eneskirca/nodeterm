@@ -273,6 +273,10 @@ export function ChatPanel({
   // the same object across same-ticket events, so this selector re-renders only on a new hold.
   const held = useAgentStatus((s) => s.byId[nodeId]?.held)
   const customAgents = useSettings((s) => s.settings.customAgents)
+  // Focus view (the bar toggle; lib/chatFocus.ts): tool chips and thinking are left out. Strict, as
+  // the setting is hand-editable. Flipping it changes the thread's height with no new message, so
+  // the follow and older-page checks below re-run on it.
+  const focusView = useSettings((s) => s.settings.chatFocusView === true)
   // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
   // and a pane whose CLI is gone (hibernated/paused/dropped/exited) is a SHELL that would execute it.
   const refusal = chatSendRefusal(agentId, { state, hibernated, paused, dropped, sessionEnded })
@@ -780,7 +784,9 @@ export function ChatPanel({
     }
     justSentRef.current = false
     // `activity` / `screenBlock`: a row appearing at the end grows the thread like a message does.
-  }, [messages, olderState, activity, screenBlock, markFollowing])
+    // `focusView`: the Focus toggle shows or hides whole messages — a user following the bottom
+    // stays there (turned off, it would leave them mid-thread); a reader scrolled up is left alone.
+  }, [messages, olderState, activity, screenBlock, focusView, markFollowing])
 
   const maybeLoadOlder = useCallback(() => {
     const el = msgsRef.current
@@ -801,10 +807,11 @@ export function ChatPanel({
   }, [thread.identity, thread.olderCursor, identity, olderState, loadState, tailLoading, loadOlder])
 
   // After every thread change too, not only on scroll: a thread shorter than the viewport cannot
-  // scroll, so without this its older history would be unreachable.
+  // scroll, so without this its older history would be unreachable. The Focus toggle is such a
+  // change: turned on, a thread can shrink below the viewport with no scroll event to page it.
   useEffect(() => {
     maybeLoadOlder()
-  }, [maybeLoadOlder])
+  }, [maybeLoadOlder, focusView])
 
   // The panel's box changing size — above all a collapsed node being EXPANDED (display:none → a
   // real box). Nothing else re-runs the checks then: while hidden, follow and anchor had zero
@@ -1001,9 +1008,7 @@ export function ChatPanel({
   }, [])
   // A divider at the first message of each local day; the same `now`, so Today rolls to Yesterday.
   const days = useMemo(() => dayDividers(messages, now), [messages, now])
-  // Focus view (the bar toggle; lib/chatFocus.ts): tool chips and thinking are left out. Strict, as
-  // the setting is hand-editable. Only the latest todo list is a card, in both views.
-  const focusView = useSettings((s) => s.settings.chatFocusView === true)
+  // Only the latest todo list is a card, in both views (Focus: `focusView`, above).
   const latestTodo = useMemo(() => latestTodoIndex(messages), [messages])
   // Whether the part at (i, j) draws anything at its own place: not when an earlier tool block holds
   // it, nor in Focus view when it is hidden — or, for a block's first member, when its every member is.
