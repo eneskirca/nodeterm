@@ -6,6 +6,7 @@ import { withCodexNoDaemon } from '@shared/agents/codex-daemon'
 import { codexApprovalCaps } from '../state/codexCli'
 import { TEXT_NOT_SUBMITTED } from '@shared/text-delivery'
 import { VisibleMiniMap } from './VisibleMiniMap'
+import { GlassFrostSync } from './GlassFrostSync'
 import { MinimapDock } from './MinimapDock'
 import { keepGlassBlurWhileMoving } from '../lib/glassContrast'
 import { LINK_ENDPOINT_NOT_FOUND } from '@shared/canvas-link'
@@ -20035,6 +20036,9 @@ export function Canvas() {
             color="var(--canvas-dot)"
           />
           )}
+          {/* Liquid Glass static frost for terminal nodes: on/off, the wallpaper copy, and the
+              per-frame alignment (GlassFrostSync.tsx). Renders a <style> rule or nothing. */}
+          <GlassFrostSync />
           {/* The shared glyph canvas: a <ReactFlow> child (so it is a sibling of the background
               and of the node renderer) at z-index 0 — above the dot grid, below every node. Only
               mounted in the experimental 'shared' renderer mode; nothing about it exists for the

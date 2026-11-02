@@ -476,6 +476,16 @@ export function glassRefraction(t: number): number {
   return GLASS_REFRACT_MAX * (1 - t)
 }
 
+/** Whether the refraction filter runs at all at slider position `t`: only LEFT of the Readable
+ *  tick, where the blur is light enough for the bend to show. From the tick to Tinted it moved an
+ *  already ~20px-blurred backdrop by 3px or less (0 at Tinted), and it was the costliest part of
+ *  the glass: MEASURED on an M2 with one streaming terminal and six glass terminals, 74% → 42% GPU
+ *  without it. Its feImage source makes Chromium treat every refracting surface as damaged across
+ *  its whole rect, so one changing pixel re-ran the blur of the surfaces around it too. */
+export function glassRefractionOn(t: number): boolean {
+  return t < GLASS_READABLE_TICK
+}
+
 /** The system accessibility settings that outrank the Glass slider, like iOS. */
 export interface GlassA11y {
   /** Reduce Transparency: glass becomes opaque (and loses blur, refraction and sheen in CSS). */

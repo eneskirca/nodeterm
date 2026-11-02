@@ -268,6 +268,7 @@ import { useClickToFocus } from './useClickToFocus'
 import { reparentKeepingFocus } from './reparentKeepingFocus'
 import { isHidden } from '../lib/ui-visibility'
 import { useTerminalGlass } from '../lib/useTerminalGlass'
+import { useFrostLayer } from '../canvas/GlassFrostSync'
 import { isLiquidGlass } from '../lib/appTheme'
 import { readsClaudeTranscript } from '../lib/transcriptGates'
 import { liveProjectJumpTarget } from '../lib/projectJump'
@@ -1445,6 +1446,7 @@ export function TerminalNode({
   // Glass terminals (Settings → Appearance): xterm paints no background and the node supplies a
   // translucent tint of THIS node's effective theme (lib/useTerminalGlass.ts).
   const { glass, tint, vars: glassVars } = useTerminalGlass(visual.terminalTheme)
+  const frostRef = useFrostLayer()
   // The alpha app-painted cell backgrounds follow on this node (null = not glass, stock rendering).
   // A ref too, because `acquireWebgl` (inside the lifecycle closure) syncs every fresh addon to it.
   const glassCellAlphaRef = useRef<number | null>(null)
@@ -6182,6 +6184,16 @@ export function TerminalNode({
       onMouseEnter={() => (hoveredRef.current = true)}
       onMouseLeave={() => (hoveredRef.current = false)}
     >
+      {/* Liquid Glass static frost: a filtered copy of the wallpaper behind this node, under its
+          tint (canvas/GlassFrostSync.tsx). Shown only while the frost is on (styles.css). */}
+      {glassOn && (
+        <div
+          className="term-node__frost"
+          aria-hidden
+          ref={frostRef}
+          style={{ '--node-x': positionAbsoluteX, '--node-y': positionAbsoluteY } as React.CSSProperties}
+        />
+      )}
       {/* Paint only: the old resize box in its old place (see .nt-resize-ghost in styles.css). */}
       <NodeResizer isVisible={selected && !collapsed && !focused} color="#0a84ff" lineClassName="nt-resize-ghost" handleClassName="nt-resize-ghost" />
       {/* Invisible source handle so edges to subagent/loop nodes can attach. */}
