@@ -27,6 +27,7 @@ import { chatMessagesFromCodex, locateCodexRollout, parseCodexChatWindow } from 
 import { chatMessagesFromCopilot, locateCopilotTranscript, parseCopilotChatWindow } from './copilot-chat'
 import { readOpencodeChat, type OpencodeExportRun } from './opencode-chat'
 import { readCursorChat } from './cursor-chat'
+import { readOmpChat } from './omp-chat'
 import { locateGrok } from './handoff/locate'
 import { capabilityAgentId } from '../shared/agents/config'
 import {
@@ -440,6 +441,11 @@ export async function readChatTranscript(
   // its whole-UUID id, never claude's resolver, whose cwd fallback would answer with a stranger's
   // session. Local only (`CHAT_LOCAL_ONLY`). See core/cursor-chat.ts.
   if (agentId && capabilityAgentId(agentId) === 'cursor') return readCursorChat({ sessionId, cwd, remoteOnly }, page)
+  // omp's session files live under `~/.omp/agent/sessions/<cwd-slug>/<ts>_<id>.jsonl`, located
+  // strictly by the session id (core/omp-chat.ts) — never claude's resolver, whose cwd fallback
+  // would answer with a stranger's session. Local only (`CHAT_LOCAL_ONLY`): a remote omp node has
+  // no reader on its host, and is refused before anything is read.
+  if (agentId && capabilityAgentId(agentId) === 'omp') return readOmpChat({ sessionId, remoteOnly }, page)
   if (page) return readChatPage({ sessionId, cwd, accountId, nodeId, ...(remoteOnly ? { remoteOnly } : {}) }, page, deps)
   const remote = deps.readRemote ? await deps.readRemote({ sessionId, cwd, accountId, nodeId }) : null
   // A resolved-but-unreadable remote file is NOT "no conversation yet" — the read failed

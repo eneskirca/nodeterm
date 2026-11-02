@@ -125,6 +125,8 @@ describe('registry invariants', () => {
         darwin: [], other: [] },
       { id: 'node.newAgent.opencode', title: 'New opencode node', group: 'Nodes', scope: 'canvas',
         darwin: [], other: [] },
+      { id: 'node.newAgent.omp', title: 'New OMP node', group: 'Nodes', scope: 'canvas',
+        darwin: [], other: [] },
       { id: 'node.newAgent.grok', title: 'New Grok node', group: 'Nodes', scope: 'canvas',
         darwin: [], other: [] },
       { id: 'node.newAgent.copilot', title: 'New GitHub Copilot node', group: 'Nodes',
@@ -247,7 +249,7 @@ describe('registry invariants', () => {
       'node.newDino',
       'node.newFile'
     ]
-    expect(added).toHaveLength(13)
+    expect(added).toHaveLength(14)
     for (const id of added) {
       const d = COMMANDS_BY_ID.get(id as CommandId)
       expect(d, id).toBeDefined()

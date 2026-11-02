@@ -77,6 +77,7 @@ export type CommandId =
   | 'node.newAgent.codex'
   | 'node.newAgent.gemini'
   | 'node.newAgent.opencode'
+  | 'node.newAgent.omp'
   | 'node.newAgent.grok'
   | 'node.newAgent.copilot'
   | 'node.newAgent.antigravity'
@@ -203,6 +204,8 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   { id: 'node.newAgent.gemini', title: `New ${AGENT_CONFIG.gemini.label} node`, group: 'Nodes',
     scope: 'canvas', defaultBindings: both() },
   { id: 'node.newAgent.opencode', title: `New ${AGENT_CONFIG.opencode.label} node`, group: 'Nodes',
+    scope: 'canvas', defaultBindings: both() },
+  { id: 'node.newAgent.omp', title: `New ${AGENT_CONFIG.omp.label} node`, group: 'Nodes',
     scope: 'canvas', defaultBindings: both() },
   { id: 'node.newAgent.grok', title: `New ${AGENT_CONFIG.grok.label} node`, group: 'Nodes',
     scope: 'canvas', defaultBindings: both() },

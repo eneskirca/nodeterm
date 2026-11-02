@@ -9,6 +9,7 @@ export type BuiltinAgentId =
   | 'codex'
   | 'gemini'
   | 'opencode'
+  | 'omp'
   | 'grok'
   | 'copilot'
   | 'antigravity'
@@ -89,6 +90,7 @@ export const BUILTIN_AGENT_IDS: readonly BuiltinAgentId[] = [
   'antigravity',
   'gemini',
   'opencode',
+  'omp',
   'grok',
   'copilot',
   'cursor'
@@ -136,6 +138,14 @@ export const AGENT_CONFIG: Record<BuiltinAgentId, AgentConfig> = {
     // through --prompt (see createAgentNode's flag-prompt branch).
     promptInjectionMode: 'flag-prompt',
     expectedProcess: 'opencode'
+  },
+  omp: {
+    label: 'OMP',
+    color: '#f59e0b',
+    launchCmd: 'omp',
+    // omp takes a positional MESSAGES prompt (`omp --help`), no subcommands could shadow it.
+    promptInjectionMode: 'argv',
+    expectedProcess: 'omp'
   },
   grok: {
     label: 'Grok',
@@ -218,6 +228,7 @@ export const AGENT_HOOK_TARGETS = [
   'codex',
   'gemini',
   'opencode',
+  'omp',
   'grok',
   'copilot',
   'antigravity',
@@ -310,6 +321,9 @@ export const BRANCH_CAPABLE = ['claude'] as const
 // in the `<agent_skills>` block of a real chat's own context (measured in its store.db), i.e. it reads
 // `~/.claude/skills` like grok. Its transcript is a SQLite store read by `core/cursor-chat.ts`.
 // UNVERIFIED: a user setting that switches that Claude-compat scan off.
+// omp joins with its own locator (`locateOmpTranscript`, core/omp-chat.ts) and parser
+// (`linesFromOmp`, core/context-link-render.ts): its session id arrives through the shared
+// opencode-dialect hook, the file is found by that id, and the read is local-only.
 export const CONTEXT_LINK_CAPABLE = [
   'claude',
   'codex',
@@ -317,7 +331,8 @@ export const CONTEXT_LINK_CAPABLE = [
   'opencode',
   'grok',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'omp'
 ] as const
 // Agents whose per-node context meter we can fill. Each needs BOTH numbers: a used count and a
 // TRUSTWORTHY window.
@@ -385,6 +400,10 @@ export const USAGE_CAPABLE = ['claude', 'codex', 'gemini', 'grok', 'cursor', 'an
 // antigravity joined 2026-10 with its own reader (`core/antigravity-chat.ts`), reading
 // `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl` strictly by
 // conversation id (`locateAntigravity`).
+// omp joined 2026-11 with its own reader (core/omp-chat.ts): its session file lives under
+// `~/.omp/agent/sessions/<cwd-slug>/<ts>_<id>.jsonl`, located strictly by the session id in the
+// file name. The file's `title` line is rewritten in place at position 1, which shifts every
+// byte offset below it — so like grok it does NOT page; every read is the newest capped tail.
 export const CHAT_CAPABLE = [
   'claude',
   'grok',
@@ -393,7 +412,8 @@ export const CHAT_CAPABLE = [
   'copilot',
   'opencode',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'omp'
 ] as const
 // CHAT_CAPABLE agents whose reader has NO remote leg: a remote (SSH) node's session lives on its
 // host, so core answers `unreadable` before touching anything — and the local reader never sets that
@@ -403,7 +423,7 @@ export const CHAT_CAPABLE = [
 // remote nodes are read on the host (`core/remote-grok-chat.ts`, `main/remote-codex-chat-page.ts`).
 // opencode has no remote leg either but is NOT here: its `unreadable` also means a failed LOCAL
 // `opencode export`, which Retry heals — the panel gives it its own copy (`exportError`) instead.
-export const CHAT_LOCAL_ONLY = ['gemini', 'copilot', 'cursor', 'antigravity'] as const
+export const CHAT_LOCAL_ONLY = ['gemini', 'copilot', 'cursor', 'antigravity', 'omp'] as const
 // CHAT_CAPABLE agents whose chat-view prompts are TYPED as keystrokes instead of pasted
 // (core/typed-input.ts): a multi-line paste is recorded by Claude Code as <pasted_content>, content
 // its model is told may not be the user's own words. The typed path puts a line break in as tmux's
@@ -536,6 +556,9 @@ export const SHARED_IDENTITY_CAPABLE = ['codex'] as const
 // third-party skills (gated by its `thirdPartyExtensibility` setting, default on in the CLI), and
 // MEASURED on 2026.10.01 its interactive session listed `~/.claude/skills/manage-nodeterm-canvas`
 // right after its own built-ins, ahead of the tail it truncates when the skill list is long.
+// omp joins by its OWN skills dir (`<omp agent dir>/skills` — PI_CODING_AGENT_DIR-aware,
+// skillRootsFor), not a ~/.claude/skills scan: the same consent lifecycle writes the skills
+// there as for codex or gemini.
 export const CANVAS_CONTROL_CAPABLE = [
   'claude',
   'codex',
@@ -544,7 +567,8 @@ export const CANVAS_CONTROL_CAPABLE = [
   'grok',
   'copilot',
   'cursor',
-  'antigravity'
+  'antigravity',
+  'omp'
 ] as const
 // Agents whose TOOL shell on Windows is POSIX: Claude Code runs its Bash tool (and its hooks)
 // through Git Bash, so `sh "<shim>.sh"` works there exactly as on macOS/Linux. Every other agent

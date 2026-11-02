@@ -1225,6 +1225,9 @@ export function normalizeFor(agentId: AgentId, env: RawHookEnvelope): Normalized
   if (agentId === 'codex') return normalizeCodex(env)
   if (agentId === 'gemini') return normalizeGemini(env)
   if (agentId === 'opencode') return normalizeOpencode(env)
+  // omp's managed hook posts the opencode dialect deliberately (hooks/omp.ts), so one normalizer
+  // serves both — the receiving tract (statuses, notifications, kanban) is reused as-is.
+  if (agentId === 'omp') return normalizeOpencode(env)
   if (agentId === 'grok') return normalizeGrok(env)
   if (agentId === 'copilot') return normalizeCopilot(env)
   if (agentId === 'antigravity') return normalizeAntigravity(env)
