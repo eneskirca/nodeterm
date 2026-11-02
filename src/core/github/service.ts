@@ -35,7 +35,10 @@ import type {
   PullConversationItem,
   PullConversationPage,
   PullReadFailure,
-  PullRefusal
+  PullRefusal,
+  PullReviewEvent,
+  PullWriteReason,
+  PullWriteResult
 } from '../../shared/github-pull-detail'
 import { parseGitHubRepository } from './config'
 import type { GitHubHostError } from './host'
@@ -93,6 +96,10 @@ export interface GitHubIssuesClientLike {
   /** One page each of a PR's issue comments and reviews (the Conversation tab). Optional, as above. */
   listPullComments?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
   listPullReviews?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
+  /** Submit one review on a PR (the node's Approve / Request changes). Optional, as above. */
+  reviewPull?(
+    repository: string, pullNumber: number, review: { event: PullReviewEvent; body: string; commitId: string }
+  ): Promise<{ id: number }>
 }
 
 export interface GitHubIssueProjectContext {
@@ -191,6 +198,21 @@ function pullReadFailure(error: unknown): { reason: PullReadFailure; retryAt?: n
     return failure.retryAt !== undefined ? { reason: 'throttled', retryAt: failure.retryAt } : { reason: 'throttled' }
   }
   return { reason: 'unreachable' }
+}
+
+/** Why a pull write that reached GitHub (or the coordinator) did not land. */
+function pullWriteFailure(error: unknown): PullWriteReason {
+  const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+  if (code === 'own-pull') return 'own-pull'
+  // A write the token may not make: a 403 that is not a rate limit, or GitHub's 404 for "no access".
+  if (code === 'insufficient-permission' || (code === 'request-failed' && (status === 403 || status === 404))) {
+    return 'forbidden'
+  }
+  if (code === 'request-failed' && status === 422) return 'validation'
+  const failure = classifyGitHubFailure(error)
+  if (failure.kind === 'unauthorized') return 'signed-out'
+  if (failure.kind === 'rate-limited') return 'throttled'
+  return 'network'
 }
 
 /** What every pull node read answers: fresh (or the last good answer, marked stale), a refusal
@@ -977,6 +999,76 @@ export class GitHubIssueService {
       const items = [...comments.items, ...reviews.items].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
       return { status: 'ok', items, truncated: comments.truncated || reviews.truncated, observedAt: this.now() }
     })
+  }
+
+  /** Post a comment on a PR from its node: the issue-comment call (a PR is an issue to GitHub). */
+  async commentOnPull(
+    request: { projectId: string; repository: string; pullNumber: number; body: string }
+  ): Promise<PullWriteResult> {
+    if (typeof request?.body !== 'string' || !request.body.trim()) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, (client, repository, pullNumber) =>
+      client.createIssueComment(repository, pullNumber, request.body))
+  }
+
+  /**
+   * Submit a review from the node, tied to `headSha` (the head the node last read), so GitHub
+   * refuses it if that commit is no longer the PR's. REQUEST_CHANGES and COMMENT need a message.
+   */
+  async reviewPull(request: {
+    projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
+  }): Promise<PullWriteResult> {
+    const { event, body, headSha } = request ?? {}
+    if (typeof body !== 'string' || typeof headSha !== 'string' || !headSha ||
+        (event !== 'APPROVE' && event !== 'REQUEST_CHANGES' && event !== 'COMMENT') ||
+        (event !== 'APPROVE' && !body.trim())) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      if (!client.reviewPull) throw new Error('unsupported')
+      return client.reviewPull(repository, pullNumber, { event, body, commitId: headSha })
+    })
+  }
+
+  /**
+   * The shared path of every pull node write (merge reuses it). Only a user's click reaches it, so it
+   * needs the approved repository but not the label-mapping approval. The node's repository must be
+   * the project's; the write runs on the coordinator's mutation path. A landed write drops this PR's
+   * held reads (so the node's next read is fresh) and refreshes the board. Never throws.
+   */
+  private async pullWrite(
+    request: { projectId: string; repository: string; pullNumber: number },
+    write: (client: GitHubIssuesClientLike, repository: string, pullNumber: number) => Promise<unknown>
+  ): Promise<PullWriteResult> {
+    const repository = parseGitHubRepository(request.repository)
+    const { projectId, pullNumber } = request
+    if (typeof projectId !== 'string' || !repository || !Number.isSafeInteger(pullNumber) || pullNumber < 1) {
+      return { ok: false, reason: 'validation' }
+    }
+    let captured: GitHubIssueServiceContext
+    try {
+      captured = await this.options.contextForProject(projectId)
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code
+      const refusal = typeof code === 'string' ? PULL_REFUSALS[code as GitHubHostError['code']] : undefined
+      if (refusal) return { ok: false, reason: refusal === 'signed-out' ? 'signed-out' : 'not-approved' }
+      return { ok: false, reason: pullWriteFailure(error) }
+    }
+    if (captured.repository.toLowerCase() !== repository.toLowerCase()) return { ok: false, reason: 'not-approved' }
+    try {
+      await this.options.coordinator.runMutation(captured.userId, async () => {
+        if (epoch(captured) !== epoch(await this.options.contextForProject(projectId))) {
+          throw new ConfigurationChangedError()
+        }
+        return write(captured.client, captured.repository, pullNumber)
+      })
+    } catch (error) {
+      return { ok: false, reason: pullWriteFailure(error) }
+    }
+    for (const kind of ['detail', 'conversation']) {
+      this.pullReads.delete(`${kind}\0${projectId}\0${captured.repository}\0${pullNumber}`)
+    }
+    // A write is a reason to look again: the board refresh skips its caller floor once.
+    this.refreshFloors.delete(projectId)
+    void this.refresh({ projectId }).catch(() => undefined)
+    return { ok: true }
   }
 
   /**
