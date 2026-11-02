@@ -123,9 +123,14 @@ async function git(cwd: string, args: string[]): Promise<Exec> {
 // repository (worktrees share one), the window doubling after each failure up to the cap, and
 // never a prompt of any kind. GIT_ASKPASS='' ends git's whole askpass chain (core.askPass and
 // SSH_ASKPASS included), SSH_ASKPASS_REQUIRE=never does the same for ssh, GCM_INTERACTIVE=never
-// for Git Credential Manager, and GIT_TERMINAL_PROMPT=0 rides GIT_ENV. A stored credential (a
-// keychain helper, an ssh agent) still answers; anything that would ask fails, and backs off.
-const MAIN_FETCH_EVERY_MS = 2 * 60_000
+// for Git Credential Manager, and GIT_TERMINAL_PROMPT=0 rides GIT_ENV. On POSIX the fetch also
+// runs in its own session (`detached`), so it has no controlling terminal and ssh cannot open
+// /dev/tty for a passphrase or a host-key question when the app was started from a shell. A
+// stored credential (a keychain helper, an ssh agent) still answers; anything that would ask
+// fails, and backs off.
+// The window is a little under the renderer's 2-min poll, so a poll that lands a few ms early
+// still fetches.
+const MAIN_FETCH_EVERY_MS = 110_000
 const MAIN_FETCH_BACKOFF_MAX_MS = 30 * 60_000
 const MAIN_FETCH_TIMEOUT_MS = 60_000
 const QUIET_FETCH_ENV: NodeJS.ProcessEnv = {
@@ -135,18 +140,44 @@ const QUIET_FETCH_ENV: NodeJS.ProcessEnv = {
   GCM_INTERACTIVE: 'never'
 }
 
-async function quietFetchOrigin(cwd: string): Promise<boolean> {
-  try {
-    await run('git', ['fetch', '--quiet', '--no-tags', 'origin'], {
-      cwd,
-      env: QUIET_FETCH_ENV,
-      timeout: MAIN_FETCH_TIMEOUT_MS,
-      killSignal: 'SIGKILL'
+function quietFetchOrigin(cwd: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    // Detached on POSIX: its own session (no terminal) and its own process group, so the timeout
+    // below ends git AND the ssh or https helper it started. Windows has no terminal to lose, and
+    // detached there opens a console window.
+    const group = process.platform !== 'win32'
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn('git', ['fetch', '--quiet', '--no-tags', 'origin'], {
+        cwd,
+        env: QUIET_FETCH_ENV,
+        stdio: 'ignore',
+        detached: group,
+        windowsHide: true
+      })
+    } catch {
+      resolve(false)
+      return
+    }
+    // SIGTERM, not SIGKILL: git removes its ref lock files on SIGTERM, so a timed-out fetch does
+    // not break the user's next one.
+    const timer = setTimeout(() => {
+      try {
+        if (group && child.pid) process.kill(-child.pid, 'SIGTERM')
+        else child.kill('SIGTERM')
+      } catch {
+        /* already gone */
+      }
+    }, MAIN_FETCH_TIMEOUT_MS)
+    child.once('error', () => {
+      clearTimeout(timer)
+      resolve(false)
     })
-    return true
-  } catch {
-    return false
-  }
+    child.once('exit', (code) => {
+      clearTimeout(timer)
+      resolve(code === 0)
+    })
+  })
 }
 
 /** The marker files of a merge, rebase, cherry-pick or revert that is still open in `cwd`. */
@@ -725,7 +756,15 @@ export class GitService {
       return { ok: false, reason: 'in-progress', message: 'A merge or rebase is already in progress here. Finish it first.' }
     }
     const drift = await this.mainDrift(cwd)
-    if (!drift.ok) return { ok: false, reason: 'no-base', message: "Can't find origin's default branch here." }
+    if (!drift.ok) {
+      const message =
+        drift.reason === 'detached'
+          ? 'This checkout is not on a branch.'
+          : drift.reason === 'no-origin'
+            ? 'This folder has no origin remote.'
+            : "Can't find origin's default branch here."
+      return { ok: false, reason: 'no-base', message }
+    }
     const status = await git(cwd, ['status', '--porcelain', '--untracked-files=no'])
     if (!status.ok) return { ok: false, reason: 'failed', message: fail(status).message }
     if (status.out.trim()) {
@@ -738,7 +777,14 @@ export class GitService {
     }
     // A conflict is never resolved here: undo the operation so the tree is exactly as it was.
     if (await gitOpInProgress(cwd)) {
-      await git(cwd, [mode, '--abort'])
+      const aborted = await git(cwd, [mode, '--abort'])
+      if (!aborted.ok) {
+        return {
+          ok: false,
+          reason: 'conflict',
+          message: `The ${mode} with ${drift.base} hit conflicts and could not be undone: ${fail(aborted).message} Finish or abort it in a terminal on ${drift.branch}.`
+        }
+      }
       return {
         ok: false,
         reason: 'conflict',

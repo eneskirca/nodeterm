@@ -11,7 +11,13 @@ export interface BusyCheckNode {
 /** Mid-turn states: an update that rewrites files under an agent at these points races its edits. */
 const BUSY = new Set(['working', 'blocked', 'waiting'])
 
-const trimSep = (p: string): string => p.replace(/[\\/]+$/, '')
+// One spelling for comparison: `/` separators, no trailing one, and a Windows drive path lowercased
+// (its filesystem ignores case). ponytail: a POSIX name holding `\` reads as a separator; that can
+// only find MORE busy agents, so the check errs toward refusing.
+const norm = (p: string): string => {
+  const s = p.replace(/\\/g, '/').replace(/\/+$/, '')
+  return /^[a-z]:\//i.test(s) ? s.toLowerCase() : s
+}
 
 /**
  * The title of an agent node that is mid-turn in `dir` (or a folder below it), else null. Read at
@@ -24,11 +30,11 @@ export function busyAgentIn(
   nodes: readonly BusyCheckNode[],
   statusOf: (nodeId: string) => { state?: string } | undefined
 ): string | null {
-  const root = trimSep(dir)
+  const root = norm(dir)
   for (const n of nodes) {
     if (!n.agentId || !n.cwd) continue
-    const cwd = trimSep(n.cwd)
-    const inside = cwd === root || cwd.startsWith(root + '/') || cwd.startsWith(root + '\\')
+    const cwd = norm(n.cwd)
+    const inside = cwd === root || cwd.startsWith(root + '/')
     if (inside && BUSY.has(statusOf(n.id)?.state ?? '')) return n.title || n.id
   }
   return null

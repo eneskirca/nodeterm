@@ -13,6 +13,7 @@ import { useProjectSetup } from '../state/projectSetup'
 import { useSettings } from '../state/settings'
 import { backedFillStyle } from '@shared/canvas-backing'
 import { MainDriftBadge } from '../components/MainDriftBadge'
+import { useOwningProjectId } from '../session/owning-project'
 
 export type WorktreeAction = 'merge' | 'remove' | 'unbind' | 'rerun-setup'
 
@@ -70,7 +71,10 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
   // which rewrites the children's cwds. Worktrees are unsupported in SSH projects (v1): the honest
   // behaviour is no facts at all, not local facts about a remote checkout.
   const sshProject = useProjects((s) => !!s.projects.find((p) => p.id === s.activeProjectId)?.ssh)
+  // The project whose nodes React Flow holds, never the active id alone (Projects (tabs) rule).
+  const owner = useOwningProjectId()
   const activeProjectId = useProjects((s) => s.activeProjectId)
+  const owningProjectId = owner ?? activeProjectId
   const wtPath = sshProject ? undefined : wt?.path
   const { api } = useSession()
   const branch = useGitBranch(api.git, wtPath)
@@ -238,9 +242,9 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
                 )}
               </span>
             )}
-            {!stale && activeProjectId && (
+            {!stale && owningProjectId && (
               <MainDriftBadge
-                projectId={activeProjectId}
+                projectId={owningProjectId}
                 cwd={wtPath}
                 nodes={() =>
                   (getNodes() as CanvasNode[]).map((n) => ({

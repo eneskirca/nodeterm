@@ -57,7 +57,7 @@ export function MainDriftBadge({ projectId, cwd, nodes, onUpdated }: MainDriftBa
     setRunning(true)
     try {
       const r = await git.updateFromMain(cwd, next)
-      if (!r.ok) toast(r.message)
+      if (!r.ok && r.reason !== 'up-to-date') toast(r.message)
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
     } finally {

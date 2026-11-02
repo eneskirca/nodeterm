@@ -18,6 +18,11 @@ describe('busyAgentIn', () => {
     expect(busyAgentIn('/repo/wt', nodes, status({ a: 'waiting' }))).toBe('Claude')
   })
 
+  it('matches a Windows path whatever its drive case or separators', () => {
+    const win = [{ id: 'w', title: 'Win', agentId: 'claude', cwd: 'c:/Repo/wt\\sub' }]
+    expect(busyAgentIn('C:\\Repo\\wt', win, status({ w: 'working' }))).toBe('Win')
+  })
+
   it('ignores idle agents, plain terminals and a sibling folder that only shares a prefix', () => {
     expect(busyAgentIn('/repo/wt', nodes, status({ a: 'done', c: 'working', d: 'working' }))).toBeNull()
     expect(busyAgentIn('/repo/wt', nodes, status({}))).toBeNull()

@@ -36,7 +36,8 @@ export function ProjectBranch({
       <MainDriftBadge
         projectId={project.id}
         cwd={canRead ? cwd : undefined}
-        nodes={() => liveNodes ?? project.nodes}
+        // A node with no cwd of its own runs in the project folder.
+        nodes={() => (liveNodes ?? project.nodes).map((n) => ({ ...n, cwd: n.cwd ?? cwd }))}
         onUpdated={() => {
           if (cwd) void readBranchStatus(git, cwd, sshId).catch(() => {})
         }}
