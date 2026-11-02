@@ -575,3 +575,53 @@ describe('pull request writes', () => {
     await expect(failing(401)).rejects.toMatchObject({ code: 'request-failed', status: 401 })
   })
 })
+
+describe('pull request merge', () => {
+  const sha = 'c'.repeat(40)
+  it('reads the merge methods the repository allows', async () => {
+    const urls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        urls.push(String(url))
+        return response({ allow_merge_commit: false, allow_squash_merge: true, allow_rebase_merge: true })
+      }
+    })
+    expect(await client.repoMergeMethods('o/r')).toEqual(['squash', 'rebase'])
+    expect(urls).toEqual(['https://api.github.com/repos/o/r'])
+  })
+
+  it('reads no method when the answer leaves the flags out (a token without write access)', async () => {
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => response({ full_name: 'o/r' }) })
+    expect(await client.repoMergeMethods('o/r')).toEqual([])
+  })
+
+  it('merges with the chosen method and the head commit the user saw', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ merged: true, sha: 'd'.repeat(40) }) }
+    })
+    await client.mergePull('o/r', 7, { method: 'squash', sha })
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/7/merge')
+    expect(calls[0].init.method).toBe('PUT')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ merge_method: 'squash', sha })
+  })
+
+  it('refuses a bad method, commit or number before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({}) } })
+    await expect(client.mergePull('o/r', 7, { method: 'octopus' as 'merge', sha })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.mergePull('o/r', 7, { method: 'merge', sha: 'main' })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.mergePull('o/r', 0, { method: 'merge', sha })).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+
+  it('keeps 409 (head moved) and 405 (not mergeable) as their statuses', async () => {
+    const failing = (status: number) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response({ message: 'x' }, { status })
+    }).mergePull('o/r', 7, { method: 'merge', sha })
+    await expect(failing(409)).rejects.toMatchObject({ code: 'request-failed', status: 409 })
+    await expect(failing(405)).rejects.toMatchObject({ code: 'request-failed', status: 405 })
+  })
+})

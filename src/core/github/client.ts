@@ -17,6 +17,7 @@ import type {
   GitHubPullDetail,
   PullConversationItem,
   PullConversationPage,
+  PullMergeMethod,
   PullReviewEvent,
   PullReviewVerdict
 } from '../../shared/github-pull-detail'
@@ -33,6 +34,9 @@ import {
 
 const API_ORIGIN = 'https://api.github.com'
 const REVIEW_EVENTS: ReadonlySet<unknown> = new Set<PullReviewEvent>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT'])
+const MERGE_METHODS: ReadonlyArray<[PullMergeMethod, string]> = [
+  ['merge', 'allow_merge_commit'], ['squash', 'allow_squash_merge'], ['rebase', 'allow_rebase_merge']
+]
 const API_VERSION = '2022-11-28'
 const DEFAULT_MAX_RESPONSE = 8 * 1024 * 1024
 const MAX_ERROR_METADATA_BYTES = 4 * 1024
@@ -583,6 +587,28 @@ export class GitHubIssuesClient {
       throw new GitHubClientError('malformed-response')
     }
     return { id: Number(value.id) }
+  }
+
+  /** The merge methods the repository allows (`GET /repos/{r}`). GitHub sends the `allow_*` flags
+   *  only to a token that may push; without them no method is offered. */
+  async repoMergeMethods(repository: string): Promise<PullMergeMethod[]> {
+    const value = object(await this.json(await this.request(`/repos/${safeRepository(repository)}`, { method: 'GET' })))
+    if (!value) throw new GitHubClientError('malformed-response')
+    return MERGE_METHODS.filter(([, flag]) => value[flag] === true).map(([method]) => method)
+  }
+
+  /** Merge a PR (`PUT /pulls/{n}/merge`) only if its head is still `sha`, the commit the user saw:
+   *  GitHub answers 409 when the head moved and 405 when the PR cannot merge. */
+  async mergePull(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !MERGE_METHODS.some(([method]) => method === merge?.method) ||
+        typeof merge.sha !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(merge.sha)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    // ponytail: a 2xx is the merge; its body (the merge commit) is not needed by anyone.
+    await this.request(`/repos/${repository}/pulls/${pullNumber}/merge`, {
+      method: 'PUT', body: JSON.stringify({ merge_method: merge.method, sha: merge.sha })
+    })
   }
 
   /** One page of a PR's issue comments (`GET /issues/{n}/comments`), for the Conversation tab. */

@@ -43,8 +43,10 @@ const STALE_TEXT: Record<PullReadFailure, string> = {
   'signed-out': 'GitHub refused the token: showing the last loaded version.'
 }
 
-/** One sentence per write refusal (merge, ticket 05, adds its own reasons here). */
+/** One sentence per write refusal. */
 const WRITE_TEXT: Record<PullWriteReason, string> = {
+  'head-moved': 'The pull request changed since you loaded it, so nothing was merged. It has been reloaded: check the new commits, then merge again.',
+  'not-mergeable': 'GitHub says this pull request cannot be merged right now. Check its merge state on GitHub, then try again.',
   'own-pull': 'GitHub does not let you approve or request changes on your own pull request. Leave a comment instead.',
   forbidden: 'Your GitHub token may not write to this repository. Give it Pull requests write access, then try again.',
   throttled: 'GitHub is throttling requests. Try again in a minute.',

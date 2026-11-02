@@ -58,7 +58,16 @@ export type PullReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
 
 /** Why a write from the node did not land. Each has one sentence in the node (PullNodeView). */
 export type PullWriteReason =
-  | 'own-pull' | 'forbidden' | 'throttled' | 'signed-out' | 'not-approved' | 'validation' | 'network'
+  | 'head-moved' | 'not-mergeable' | 'own-pull' | 'forbidden' | 'throttled' | 'signed-out' | 'not-approved' | 'validation' | 'network'
 
-/** The one answer every pull node write gives (comment, review; merge reuses it). */
+/** How a merge from the node lands. The repository decides which ones it allows. */
+export type PullMergeMethod = 'merge' | 'squash' | 'rebase'
+
+/** The repository's allowed merge methods (`repoMergeMethods`), refused and failed as a pull read. */
+export type GitHubRepoMergeMethodsResult =
+  | { status: 'ok'; methods: PullMergeMethod[] }
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
+
+/** The one answer every pull node write gives (comment, review, merge). */
 export type PullWriteResult = { ok: true } | { ok: false; reason: PullWriteReason }
