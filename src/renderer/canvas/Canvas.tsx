@@ -573,6 +573,7 @@ import {
   effectiveWorktreeBaseRef,
   effectiveWorktreeTemplate,
   isRemoteSessionNode,
+  isValidGitRef,
   resolveBaseRef,
   sanitizeWorktreeBranch,
   worktreeFromEntry,
@@ -669,6 +670,7 @@ import {
 import { dispatchEntry, useBoardDispatch, type DispatchCardEntry } from '../state/boardDispatch'
 import type { GitHubIssueCardView as DispatchIssueCard } from '@shared/github-issues'
 import { planIssueWorktree } from '@shared/issue-worktree'
+import { PULL_WORK_EVENT, planPullWorktree, pullWorkPrompt, type PullWorkRequest } from '@shared/pull-work'
 import { sharedBasePathOf, sharedWorktreeLocationRefusal } from '@shared/worktree-location'
 import {
   frameAgentPlacement,
@@ -12846,12 +12848,14 @@ export function Canvas() {
    * between — a zustand write flushes one — would mirror the ref back to a node list without it,
    * so the agent's cwd would fall back to the project folder. The slot is the control opens' grid
    * (`frameAgentPlacement`), and the frame grows to hold the node as actually built.
+   * The pull node's "Work on this PR" opens its agent the same way with `issue` null: no issue
+   * binding and no board filing, only the rope from the pull node.
    */
   const openIssueAgentInFrame = useCallback(
     (
       groupId: string,
-      issue: GitHubIssueCardView,
-      start: { ref: IssueRef; prompt: string; promptFile?: string; opener?: string },
+      issue: GitHubIssueCardView | null,
+      start: { ref?: IssueRef; prompt: string; promptFile?: string; opener?: string },
       agentId: AgentId,
       accountId: string | null | undefined
     ): boolean => {
@@ -12889,10 +12893,15 @@ export function Canvas() {
         nodesRef.current = grow(nodesRef.current)
         setNodes((ns) => grow(ns as CanvasNode[]))
       }
-      fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)
+      if (issue && start.ref) fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)
+      else if (start.opener) {
+        const id = created.node.id
+        setControlEdges((es) => [...es, ropeEdge(`ctrl-${start.opener}-${id}`, start.opener!, id)])
+        markDirty()
+      }
       return true
     },
-    [setNodes, addAgentNode, setupHoldGroup, fileIssueSession]
+    [setNodes, addAgentNode, setupHoldGroup, fileIssueSession, setControlEdges, markDirty]
   )
 
   /**
@@ -13145,6 +13154,117 @@ export function Canvas() {
     window.addEventListener(ISSUE_WORK_EVENT, listener)
     return () => window.removeEventListener(ISSUE_WORK_EVENT, listener)
   }, [startIssueAgent, startIssueAgentInWorktree, nodesRef, api])
+
+  // The pull node's "Work on this PR": the PR's head in a FRESH worktree (`pr-<n>-<slug>`, the next
+  // free `-k` when taken, never a reuse), a frame bound to it, the default agent inside with the PR
+  // named in its prompt (title and body as marked, untrusted data), and a rope from the pull node so
+  // `pr-show` / `pr-propose` work from that agent. A user click in the node is the only sender.
+  useEffect(() => {
+    const onWork = async (e: Event): Promise<void> => {
+      const { nodeId, detail: pr } = (e as CustomEvent<PullWorkRequest>).detail ?? {}
+      const source = nodesRef.current.find((n) => n.id === nodeId && n.type === 'pull')
+      const pull = source?.data.pull as PullNodeRef | undefined
+      if (!source || !pull || !pr || pr.number !== pull.pullNumber) return
+      const n = pr.number
+      const refusal = issueWorktreeUnavailable()
+      if (refusal) {
+        setNotice({ kind: 'error', text: `Could not work on PR #${n} in a new worktree: ${refusal}.` })
+        return
+      }
+      const projectId = useProjects.getState().activeProjectId
+      const project = useProjects.getState().getProject(projectId ?? '')
+      const { repoRoot, entries, staleGroupIds } = useWorktrees.getState()
+      if (!projectId || !project || !repoRoot) return // issueWorktreeUnavailable already refused these
+      const agentId = resolveNewNodeAgent(undefined, projectId, useSettings.getState().settings)
+      const why = agentCreateRefusal(agentId, undefined)
+      if (why) {
+        setNotice({ kind: 'error', text: why })
+        return
+      }
+      const pw = projectLaunchInfoNow(project.id)?.resolved.worktree
+      const defaults = { basePath: pw?.basePath?.value, baseRef: pw?.baseRef?.value }
+      const template = effectiveWorktreeTemplate(defaults, useSettings.getState().settings.worktreePathTemplate)
+      // The frame merges back into the PR's base; one git would not take falls back to the usual base.
+      const baseRef = isValidGitRef(pr.base.ref) ? pr.base.ref : effectiveWorktreeBaseRef(defaults, entries)
+      const key = `${pull.repository}#${n}`
+      const ran = await runExclusive(issueWorktreeInFlightRef.current, key, async () => {
+        const status = await api.git.status(repoRoot).catch(() => null)
+        const plan = await planPullWorktree({
+          number: n,
+          headRef: pr.head.ref,
+          repoRoot,
+          template,
+          entries,
+          branches: status?.branches ?? null,
+          remoteBranches: status?.remoteBranches ?? [],
+          bound: issueWorktreeFrames(nodesRef.current, repoRoot, staleGroupIds),
+          sharedBasePath: sharedBasePathOf(pw)
+        }, (path) => api.fs.exists(path))
+        if (plan.kind === 'refused') {
+          setNotice({ kind: 'error', text: `Could not work on PR #${n} in a new worktree: ${plan.reason}` })
+          return
+        }
+        const { branch, path } = plan.target
+        const fork = !!pr.fromFork
+        const promptFor = (text: { title: string; body: string }): string | undefined => pullWorkPrompt({
+          repository: pull.repository, number: n, title: text.title, body: text.body,
+          base: pr.base.ref, head: pr.head.ref, branch, fork
+        })
+        const prompt = promptFor(pr)
+        if (!prompt) return
+        // Too long for a typed line: a file the pane's shell reads (#706); SSH never gets here.
+        let launch = await launchPromptFor({ prompt, localFs: true }, {
+          saveUpload: (name, data) => api.files.saveUpload(name, data), encodeBase64: encodeUtf8Base64
+        })
+        // ponytail: a spill that failed drops the quoted text; the agent reads it with gh instead.
+        if (!launch.promptFile && promptExceedsLineBudget(launch.prompt)) launch = { prompt: promptFor({ title: '', body: '' }) ?? '' }
+        if (useProjects.getState().activeProjectId !== projectId) {
+          setNotice({ kind: 'info', text: `The project changed, so nothing was started for PR #${n}.` })
+          return
+        }
+        const size = terminalNodeSize()
+        const { frame: need } = frameAgentPlacement({ x: 0, y: 0 }, 0, size)
+        const frame = {
+          width: Math.max(WORKTREE_GROUP_SIZE.width, need.width),
+          height: Math.max(WORKTREE_GROUP_SIZE.height, need.height)
+        }
+        let opened = false
+        const out = await createBoundWorktree(
+          {
+            // The core fetches the PR's head and adds the worktree on `branch` (never an existing one).
+            worktreeAdd: (repoPath, wtPath) => api.git.pullWorktreeAdd(repoPath, wtPath, { number: n, headRef: pr.head.ref, fork, branch }),
+            activeProjectId: () => useProjects.getState().activeProjectId,
+            attach: (t, wt) => {
+              const groupId = worktreeControlRef.current.attachWorktree(t, wt)
+              opened = openIssueAgentInFrame(groupId, null, {
+                prompt: launch.prompt ?? '', ...(launch.promptFile ? { promptFile: launch.promptFile } : {}), opener: source.id
+              }, agentId, undefined)
+              return groupId
+            }
+          },
+          { repoPath: repoRoot, mode: 'new', branch, baseRef, path },
+          { target: () => ({ groupId: null, at: emptyNodePos({ w: frame.width, h: frame.height }), size: frame, title: `PR #${n}` }), projectId }
+        )
+        if (!out.ok && out.reason === 'git') {
+          setNotice({ kind: 'error', text: `Could not check out PR #${n}: ${out.message}` })
+          return
+        }
+        if (!out.ok) {
+          setNotice({ kind: 'info', text: `Created worktree ${branch} at ${path}. The project changed, so no group or agent was started.` })
+          return
+        }
+        if (!opened) return // addAgentNode already said why
+        setNotice({
+          kind: 'info',
+          text: `${plan.renamedFrom ? `${plan.renamedFrom} is taken, so ` : ''}Worktree ${branch} has PR #${n}'s head at ${path}; the agent opens there.`
+        })
+      })
+      if (!ran) setNotice({ kind: 'info', text: `A worktree for PR #${n} is already being prepared.` })
+    }
+    const listener = (e: Event): void => { void onWork(e) }
+    window.addEventListener(PULL_WORK_EVENT, listener)
+    return () => window.removeEventListener(PULL_WORK_EVENT, listener)
+  }, [issueWorktreeUnavailable, agentCreateRefusal, openIssueAgentInFrame, emptyNodePos, nodesRef, api])
 
     // Global kanban swimlane "New session" path — creates a node in the target project's
   // swimlane even when that project is not the active canvas. The per-column create

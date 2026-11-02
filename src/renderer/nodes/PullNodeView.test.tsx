@@ -77,7 +77,7 @@ afterEach(() => { act(() => root.unmount()); host.remove() })
 
 async function render(
   api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'overview', onTab = vi.fn(), onOpenExternal = vi.fn(),
-  onWritten = vi.fn(), selectedFile?: string, onSelectFile = vi.fn(), onOpenTerminal = vi.fn()
+  onWritten = vi.fn(), selectedFile?: string, onSelectFile = vi.fn(), onOpenTerminal = vi.fn(), onWork = vi.fn()
 ): Promise<HTMLDivElement> {
   host = document.createElement('div')
   document.body.append(host)
@@ -85,7 +85,7 @@ async function render(
   await act(async () => {
     root.render(<PullNodeView api={api} projectId="p" pull={{ repository, pullNumber: 7, tab, selectedFile }}
       refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} onWritten={onWritten} onSelectFile={onSelectFile}
-      onOpenTerminal={onOpenTerminal} />)
+      onOpenTerminal={onOpenTerminal} onWork={onWork} />)
   })
   // The markdown renderer is a lazy chunk; let it land.
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
@@ -492,6 +492,21 @@ describe('PullNodeView merge blockers', () => {
     const odd = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict', head: { ref: 'x;rm -rf ~', sha: 'c'.repeat(40) } }, observedAt: 1 }))
     expect(button(odd, 'Open terminal on this branch')).toBeUndefined()
     expect(odd.querySelector('.pull-merge__reason')?.textContent).toContain('conflicts with main')
+  })
+})
+
+describe('PullNodeView Work on this PR', () => {
+  it('an open or draft PR offers Work on this PR, which hands the detail the Overview showed to the canvas', async () => {
+    const onWork = vi.fn()
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, lifecycle: 'draft' }, observedAt: 1 }),
+      'o/r', 'overview', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), vi.fn(), onWork)
+    await act(async () => { button(view, 'Work on this PR').click() })
+    expect(onWork).toHaveBeenCalledWith({ ...detail, lifecycle: 'draft' })
+  })
+
+  it('a merged or closed PR offers nothing to work on', async () => {
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, lifecycle: 'merged' }, observedAt: 1 }))
+    expect(button(view, 'Work on this PR')).toBeUndefined()
   })
 })
 

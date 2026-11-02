@@ -117,6 +117,8 @@ type ViewProps = {
   onWritten: () => void
   /** Open a terminal node in the project that runs `command` (the conflict's "Open terminal on this branch"). */
   onOpenTerminal?: (command: string) => void
+  /** "Work on this PR": the PR's head in a fresh worktree with the default agent (Canvas does it). */
+  onWork?: (detail: GitHubPullDetail) => void
 }
 
 /** A bridge call that rejected (a dropped socket) reads as unreachable. */
@@ -271,6 +273,9 @@ function PullOverview(props: ViewProps & {
         </span>
         {merge && <span className={`pull-status__merge pull-status__merge--${d.merge}`}>{merge}</span>}
       </div>
+      {props.onWork && (d.lifecycle === 'open' || d.lifecycle === 'draft') && (
+        <button className="pull-compose__button" onClick={() => props.onWork?.(d)}>Work on this PR</button>
+      )}
       <PullReviewers {...props} detail={d} />
       <PullMerge {...props} detail={d} checks={checks} />
       {d.body.trim()

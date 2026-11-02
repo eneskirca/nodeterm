@@ -20,6 +20,7 @@ import { isPullBranchName } from './github-pull-detail'
 import { parseRepository } from './github-issue-ref'
 import { inert, ISSUE_TEXT_BODY_MAX, ISSUE_TEXT_TITLE_MAX } from './issues-node'
 import { pullWebUrl } from './pull-node'
+import type { GitHubPullDetail } from './github-pull-detail'
 
 const MAX_NUMBER = 2 ** 31 - 1
 const validNumber = (n: unknown): n is number =>
@@ -155,4 +156,15 @@ export function pullWorkPrompt(pr: {
     `[BEGIN PR TEXT] Title: ${inert(pr.title, ISSUE_TEXT_TITLE_MAX, 'PR')} Base: ${inert(pr.base, 255, 'PR')} ` +
       `Head: ${inert(pr.head, 255, 'PR')} Body: ${inert(pr.body, ISSUE_TEXT_BODY_MAX, 'PR')} [END PR TEXT]`
   ].join(' ')
+}
+
+/** The pull node's "Work on this PR" asks Canvas to start (detail: `PullWorkRequest`). A user click
+ *  in the node is the only sender; no control verb reaches it. */
+export const PULL_WORK_EVENT = 'nodeterm:pull-work'
+
+export interface PullWorkRequest {
+  /** The pull node: the rope to the new agent starts there. */
+  nodeId: string
+  /** The PR as the Overview showed it. */
+  detail: GitHubPullDetail
 }

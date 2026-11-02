@@ -11,6 +11,7 @@ import { MaximizeButton } from './MaximizeButton'
 import { PullNodeView } from './PullNodeView'
 import { PULL_REFRESH_EVENT, pullWebUrl } from '@shared/pull-node'
 import { usePullAgent } from '../state/pullAgent'
+import { PULL_WORK_EVENT, type PullWorkRequest } from '@shared/pull-work'
 
 /**
  * A pull request on the canvas: Overview, Files and Conversation tabs. Node data holds only the reference
@@ -112,6 +113,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           onOpenExternal={(url) => void api.shell.openExternal(url)}
           onWritten={() => setRefreshTick((tick) => tick + 1)}
           onOpenTerminal={(cmd) => window.dispatchEvent(new CustomEvent('nodeterm:open-terminal', { detail: { cmd, nearNodeId: id } }))}
+          onWork={(detail) => window.dispatchEvent(new CustomEvent<PullWorkRequest>(PULL_WORK_EVENT, { detail: { nodeId: id, detail } }))}
           proposal={proposal}
           onDismiss={() => usePullAgent.getState().dismiss(id)}
           highlight={highlight}
