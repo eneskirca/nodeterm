@@ -573,6 +573,7 @@ export const IPC = {
   githubIssuesChasePulls: 'githubIssues:chase-pulls',
   githubIssuesPullChecks: 'githubIssues:pull-checks',
   githubIssuesPullDetail: 'githubIssues:pull-detail',
+  githubIssuesPullConversation: 'githubIssues:pull-conversation',
   githubIssuesClaimPullAutoMove: 'githubIssues:claim-pull-auto-move',
   githubIssuesNotePullWaits: 'githubIssues:note-pull-waits',
   githubIssuesChanged: (projectId: string) => `githubIssues:changed:${projectId}`,

@@ -480,6 +480,7 @@ export const SCOPED: Readonly<Record<string, Check>> = Object.freeze({
   [IPC.githubIssuesChasePulls]: projectArg0,
   [IPC.githubIssuesPullChecks]: projectArg0,
   [IPC.githubIssuesPullDetail]: projectArg0,
+  [IPC.githubIssuesPullConversation]: projectArg0,
   [IPC.githubProjectAvatar]: projectArg0,
 
   // Agent status actions, per node. The two snapshots' RESPONSES are narrowed below.

@@ -1,5 +1,5 @@
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
-import type { GitHubPullDetailResult } from './github-pull-detail'
+import type { GitHubPullConversationResult, GitHubPullDetailResult } from './github-pull-detail'
 
 export interface ProjectKanbanGitHub {
   repository?: string
@@ -291,6 +291,9 @@ export interface GitHubIssuesApi {
   /** One PR's overview for the pull request node. Refused (no request) unless `repository` is the
    *  project's approved repository; answers from memory inside the 30 s refresh floor. */
   pullDetail(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullDetailResult>
+  /** One PR's comments and reviews, oldest first, for the node's Conversation tab. Same refusals
+   *  and refresh floor as `pullDetail`. */
+  pullConversation(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullConversationResult>
   /** The one-time permission to move a session card because its linked PRs merged. The first ask
    *  across every window wins; the host remembers it. */
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>
