@@ -210,7 +210,7 @@ function stalePull<O extends PullOk>(last: O | undefined, error: unknown): PullR
 }
 
 /** Pull read entries kept for the stale fallback and the refresh floor. Oldest go first. */
-const MAX_PULL_DETAILS = 100
+const MAX_PULL_READS = 100
 
 /** Pages of 100 read per list for the Conversation tab; past it the node says the rest is on GitHub. */
 const MAX_CONVERSATION_PAGES = 10
@@ -988,7 +988,7 @@ export class GitHubIssueService {
    * `read` answers null when this client cannot make the read at all.
    */
   private async pullRead<O extends PullOk>(
-    kind: string,
+    kind: 'detail' | 'conversation',
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {
@@ -1009,7 +1009,7 @@ export class GitHubIssueService {
     if (!entry) {
       entry = { floorUntil: 0 }
       this.pullReads.set(key, entry)
-      if (this.pullReads.size > MAX_PULL_DETAILS) this.pullReads.delete(this.pullReads.keys().next().value!)
+      if (this.pullReads.size > MAX_PULL_READS) this.pullReads.delete(this.pullReads.keys().next().value!)
     }
     // ponytail: one map for every kind; the key carries the kind, so an entry only ever holds its own O.
     const held = entry as { last?: O; floorUntil: number; reading?: Promise<PullResult<O>> }

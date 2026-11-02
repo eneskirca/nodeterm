@@ -57,11 +57,12 @@ type ViewProps = {
   onOpenExternal: (url: string) => void
 }
 
-type Read<R> = R | 'loading'
+/** A bridge call that rejected (a dropped socket) reads as unreachable. */
+type Read<R> = R | { status: 'failed'; reason: 'unreachable' } | 'loading'
 
-/** Reads on mount and whenever `refreshTick` moves; the core answers from memory inside its 30 s
- *  floor, so a fast Refresh or a tab switch costs no request. */
-function usePullRead<R extends { status: string }>(
+/** Reads when the tab first mounts and whenever `refreshTick` moves; the core answers from memory
+ *  inside its 30 s floor, so a fast Refresh costs no request. */
+function usePullRead<R>(
   read: (projectId: string, repository: string, pullNumber: number) => Promise<R>,
   { projectId, pull, refreshTick }: ViewProps
 ): Read<R> {
@@ -71,7 +72,7 @@ function usePullRead<R extends { status: string }>(
     let live = true
     read(projectId, repository, pullNumber)
       .then((value) => { if (live) setResult(value) })
-      .catch(() => { if (live) setResult({ status: 'failed', reason: 'unreachable' } as unknown as R) })
+      .catch(() => { if (live) setResult({ status: 'failed', reason: 'unreachable' }) })
     return () => { live = false }
   }, [read, projectId, repository, pullNumber, refreshTick])
   return result
@@ -89,37 +90,49 @@ function readState(
   return <p className="pull-node__state" role="status">{FAILURE_TEXT[result.reason]}</p>
 }
 
+type TabsProps = ViewProps & { onTab: (tab: PullNodeTab) => void }
+
 /**
  * The pull request node's body (nodes/PullNode.tsx is the canvas frame around it). Takes the bridge
- * as a prop so a test can hand it a fake. Each tab reads its own data when it is shown.
+ * as a prop so a test can hand it a fake.
  */
 export function PullNodeView({
   pull,
   projectId,
-  onTab,
   ...rest
-}: Omit<ViewProps, 'pull' | 'projectId'> & {
+}: Omit<TabsProps, 'pull' | 'projectId'> & {
   projectId: string | null
   pull: PullNodeRef | undefined
-  onTab: (tab: PullNodeTab) => void
 }): React.JSX.Element {
   if (!pull || !projectId) {
     return <p className="pull-node__state" role="status">This node has no valid pull request reference.</p>
   }
-  const props = { ...rest, pull, projectId }
+  return <PullTabs {...rest} pull={pull} projectId={projectId} />
+}
+
+/** A tab mounts the first time it is shown and then stays mounted (hidden when not shown), so a
+ *  switch back costs no read and a draft typed in a tab survives the switch. */
+function PullTabs({ onTab, ...props }: TabsProps): React.JSX.Element {
+  const { pull, onOpenExternal } = props
+  const shownTab: PullNodeTab = pull.tab === 'conversation' ? 'conversation' : 'overview'
+  const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
+  if (!opened.includes(shownTab)) setOpened([...opened, shownTab])
   return (
     <>
       <div className="pull-node__tabs" role="tablist">
         {TABS.map(([tab, label]) => (
-          <button key={tab} role="tab" aria-selected={(pull.tab === 'conversation') === (tab === 'conversation')}
-            className="pull-node__tab" onClick={() => onTab(tab)}>{label}</button>
+          <button key={tab} role="tab" aria-selected={tab === shownTab} className="pull-node__tab"
+            onClick={() => onTab(tab)}>{label}</button>
         ))}
         <span className="term-node__spacer" />
-        <button className="pull-node__web" onClick={() => rest.onOpenExternal(pullWebUrl(pull.repository, pull.pullNumber))}>
+        <button className="pull-node__web" onClick={() => onOpenExternal(pullWebUrl(pull.repository, pull.pullNumber))}>
           Open on GitHub
         </button>
       </div>
-      {pull.tab === 'conversation' ? <PullConversation {...props} /> : <PullOverview {...props} />}
+      {opened.includes('overview') && <div hidden={shownTab !== 'overview'}><PullOverview {...props} /></div>}
+      {opened.includes('conversation') && (
+        <div hidden={shownTab !== 'conversation'}><PullConversation {...props} /></div>
+      )}
     </>
   )
 }

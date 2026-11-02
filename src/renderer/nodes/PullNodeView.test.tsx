@@ -157,3 +157,20 @@ describe('PullNodeView conversation', () => {
     expect(onOpen).toHaveBeenCalledWith('https://github.com/o/r/pull/7')
   })
 })
+
+describe('PullNodeView tab switching', () => {
+  it('keeps a tab mounted after a switch, so switching back reads nothing again', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    await render(api)
+    const show = async (tab: PullNodeTab) => act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} />)
+    })
+    await show('conversation')
+    await show('overview')
+    await show('conversation')
+    expect(api.pullDetail).toHaveBeenCalledTimes(1)
+    expect(api.pullConversation).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('.pull-node__overview')?.closest('[hidden]')).not.toBeNull()
+  })
+})
