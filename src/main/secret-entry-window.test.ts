@@ -120,7 +120,7 @@ describe('promptSecretEntry', () => {
   it('tells the window only the project and variable names', () => {
     void promptSecretEntry({ parent, projectName: 'Repo', env: 'API_TOKEN', check })
     for (const fn of last().wcEvents.get('did-finish-load') ?? []) fn()
-    expect(last().sent).toEqual([[IPC.secretEntryInit, { projectName: 'Repo', env: 'API_TOKEN' }]])
+    expect(last().sent).toEqual([[IPC.secretEntryInit, { projectName: 'Repo', env: 'API_TOKEN', replacing: false }]])
   })
 
   it('ignores a value from any other sender', async () => {

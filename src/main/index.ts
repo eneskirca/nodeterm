@@ -2533,9 +2533,10 @@ app.whenReady().then(async () => {
       backgroundTray?.update({ ...trayState })
     }
   })
-  // Project secrets (docs/project-secrets.md): values fetched only after the person's click AND a
-  // native confirmation, held in this process's memory, injected by PtyManager into agent nodes of
-  // the declaring project. Desktop only: the Server Edition never wires it.
+  // Project secrets (docs/project-secrets.md): values the person pastes into a window of main's own,
+  // or fetched only after the person's click AND a native confirmation; held in this process's
+  // memory, injected by PtyManager into agent nodes of the declaring project. Desktop only: the
+  // Server Edition never wires it.
   projectSecrets = registerProjectSecretsIpc({
     workspace: workspaceStore,
     settings: () => settingsStore.get(),

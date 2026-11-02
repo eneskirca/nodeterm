@@ -4641,8 +4641,8 @@ export class PtyManager {
       for (const [k, v] of Object.entries(projectEnv)) env[k] = v
     }
 
-    // PROJECT SECRETS (core/project-secrets.ts, docs/project-secrets.md): values the person fetched
-    // in the app, held in main-process memory. Who receives them is decided in ONE place,
+    // PROJECT SECRETS (core/project-secrets.ts, docs/project-secrets.md): values the person pasted
+    // or fetched in the app, held in main-process memory. Who receives them is decided in ONE place,
     // `spawnEnv`: an agent node of the declaring project, spawned locally for this machine's own app
     // (the main window, or a headless start it asked for — never a relay peer, phone or hosted
     // teammate, whose creates arrive with a peer id or none), for the exact declaration authorized.

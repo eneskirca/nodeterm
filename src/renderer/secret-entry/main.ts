@@ -5,7 +5,7 @@ import './secret-entry.css'
 // Local mirror of the preload's contract (src/preload/secret-entry.ts), kept self-contained so this
 // entry has no cross-project type dependency (the HUD entry does the same).
 interface SecretEntryApi {
-  onInit(cb: (init: { projectName: string; env: string }) => void): void
+  onInit(cb: (init: { projectName: string; env: string; replacing?: boolean }) => void): void
   onError(cb: (message: string) => void): void
   submit(value: string): void
   cancel(): void
@@ -26,9 +26,11 @@ const error = document.getElementById('error') as HTMLParagraphElement
 const envEl = document.getElementById('env') as HTMLElement
 const lead = document.getElementById('lead') as HTMLParagraphElement
 
-api.onInit(({ projectName, env }) => {
+api.onInit(({ projectName, env, replacing }) => {
   envEl.textContent = env
-  lead.textContent = `for the agents of “${projectName}”.`
+  lead.textContent =
+    `for the agents of “${projectName}”.` +
+    (replacing ? ' It replaces the value held now; Cancel keeps that one.' : '')
   input.focus()
 })
 
@@ -38,14 +40,30 @@ api.onError((message) => {
   input.focus()
 })
 
-// A password field silently REMOVES line breaks from pasted text, so a multi-line paste would be
-// kept as a different, joined value. Refuse it instead (line endings at the ends are fine).
+// A password field silently REMOVES line breaks from inserted text, so a multi-line paste would be
+// kept as a different, joined value. Every way text can arrive is checked BEFORE the field sees it:
+// `beforeinput` covers paste (Ctrl+V, Win+V clipboard history), drop and replacement text; `paste`
+// and `drop` are checked too in case an insertion reports no text there. Line endings at the ends
+// are fine (main removes them). Unicode line and paragraph separators count as line breaks.
+const LINE_BREAK = /[\r\n\v\f\u0085\u2028\u2029]/
+const EDGE_BREAKS = /^[\r\n]+|[\r\n]+$/g
+function refuses(text: string | null | undefined): boolean {
+  return !!text && LINE_BREAK.test(text.replace(EDGE_BREAKS, ''))
+}
+function refuse(e: Event): void {
+  e.preventDefault()
+  e.stopImmediatePropagation()
+  error.textContent = 'Not pasted: the text has more than one line. A secret here is one line.'
+}
+input.addEventListener('beforeinput', (e) => {
+  if (!e.inputType.startsWith('insertFrom') && e.inputType !== 'insertReplacementText') return
+  if (refuses(e.dataTransfer?.getData('text/plain') ?? e.data)) refuse(e)
+})
 input.addEventListener('paste', (e) => {
-  const text = e.clipboardData?.getData('text') ?? ''
-  if (/[\r\n]/.test(text.replace(/^[\r\n]+|[\r\n]+$/g, ''))) {
-    e.preventDefault()
-    error.textContent = 'Not pasted: the copied text has more than one line. A secret here is one line.'
-  }
+  if (refuses(e.clipboardData?.getData('text/plain'))) refuse(e)
+})
+input.addEventListener('drop', (e) => {
+  if (refuses(e.dataTransfer?.getData('text/plain'))) refuse(e)
 })
 
 input.addEventListener('input', () => {

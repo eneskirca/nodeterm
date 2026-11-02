@@ -92,6 +92,11 @@ export function valueProblem(value: Buffer, from: 'command' | 'paste' = 'command
   }
   // An environment value is text; refuse bytes that are not valid UTF-8 rather than mangle them.
   if (!isUtf8(value)) return 'the value is not valid UTF-8 text'
+  // A typed value: Unicode line and paragraph separators (and NEL) are line breaks too. No secret
+  // contains one, and a paste that carries one was more than one line where it was copied.
+  if (from === 'paste' && /[\u0085\u2028\u2029\v\f]/.test(value.toString('utf8'))) {
+    return 'the value is more than one line'
+  }
   return null
 }
 
@@ -267,7 +272,8 @@ export interface ProjectSecretsDeps {
   promptValue?(
     projectId: string,
     secret: DeclaredSecret,
-    check: (value: Buffer) => string | null
+    check: (value: Buffer) => string | null,
+    replacing: boolean
   ): Promise<Buffer | null>
   /** The machine-local cross-project policy, read live. */
   crossProjectPolicy(): CrossProjectSecretsPolicy
@@ -306,7 +312,7 @@ export interface SecretSpawnInput {
 export class ProjectSecretsService {
   private held = new Map<string, Map<string, Held>>()
   private failures = new Map<string, Map<string, Failure>>()
-  /** The folder each project's values were fetched for: a re-bound folder drops them. */
+  /** The folder each project's values were fetched or pasted for: a re-bound folder drops them. */
   private heldCwd = new Map<string, string>()
   private inFlight = new Set<string>()
   /** `${projectId}\0${nodeId}` → the person's answer for a cross-project node, this app run. */
@@ -463,7 +469,8 @@ export class ProjectSecretsService {
     try {
       let value: Buffer | null = null
       try {
-        value = await this.deps.promptValue(projectId, secret, (v) => valueProblem(v, 'paste'))
+        const replacing = this.held.get(projectId)?.has(env) === true
+        value = await this.deps.promptValue(projectId, secret, (v) => valueProblem(v, 'paste'), replacing)
       } catch {
         value = null
       }
@@ -511,7 +518,7 @@ export class ProjectSecretsService {
   }
 
   /**
-   * Keep only the projects still open here, at the folder their values were fetched for. Called
+   * Keep only the projects still open here, at the folder their values were taken for. Called
    * by the shell after workspace writes: closing, deleting or re-binding a project drops its values.
    */
   retainProjects(open: ReadonlyMap<string, string | undefined>): void {

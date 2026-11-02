@@ -355,6 +355,10 @@ describe('ProjectSecretsService — pasted secrets', () => {
     expect((await svc.paste('p1', 'PASTED_TOKEN')).kind).toBe('cancelled')
     expect(checks).toEqual(['the value is more than one line'])
     expect(valueProblem(Buffer.alloc(0), 'paste')).toBe('the value is empty')
+    // Unicode line and paragraph separators are line breaks in a pasted value.
+    for (const sep of ['\u2028', '\u2029', '\u0085', '\v']) {
+      expect(valueProblem(Buffer.from(`a${sep}b`), 'paste')).toBe('the value is more than one line')
+    }
     expect(svc.spawnEnv(input())).toEqual({})
   })
 
@@ -386,6 +390,22 @@ describe('ProjectSecretsService — pasted secrets', () => {
     const { svc } = pasteService('pasted-dummy-value-987654')
     await svc.paste('p1', 'PASTED_TOKEN')
     expect(svc.spawnEnv(input({ declarations: [{ env: 'PASTED_TOKEN', command: ['print'] }] }))).toEqual({})
+  })
+
+  it('tells the window whether it replaces a held value', async () => {
+    const seen: boolean[] = []
+    const svc = new ProjectSecretsService({
+      readDeclarations: async () => both,
+      confirm: async () => true,
+      promptValue: async (_p, _s, _c, replacing) => {
+        seen.push(replacing)
+        return Buffer.from('dummy-value-xyz')
+      },
+      crossProjectPolicy: () => 'deny'
+    })
+    await svc.paste('p1', 'PASTED_TOKEN')
+    await svc.paste('p1', 'PASTED_TOKEN')
+    expect(seen).toEqual([false, true])
   })
 
   it('replacing a pasted value zeroes the old one', async () => {

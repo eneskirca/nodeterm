@@ -24,6 +24,8 @@ const IPC = {
 export interface SecretEntryInitPayload {
   projectName: string
   env: string
+  /** A value is already held for this name: the window says the paste replaces it. */
+  replacing?: boolean
 }
 
 export interface SecretEntryApi {
@@ -41,7 +43,7 @@ let initCb: ((init: SecretEntryInitPayload) => void) | null = null
 ipcRenderer.on(IPC.secretEntryInit, (_e, payload: unknown) => {
   const p = payload as Partial<SecretEntryInitPayload> | null
   if (!p || typeof p.projectName !== 'string' || typeof p.env !== 'string') return
-  init = { projectName: p.projectName, env: p.env }
+  init = { projectName: p.projectName, env: p.env, replacing: p.replacing === true }
   initCb?.(init)
 })
 

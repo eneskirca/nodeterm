@@ -99,11 +99,11 @@ export function registerProjectSecretsIpc(deps: ProjectSecretsIpcDeps): ProjectS
       })
       return answer.response === 1
     },
-    promptValue: async (projectId, secret, check) => {
+    promptValue: async (projectId, secret, check, replacing) => {
       const win = deps.mainWindow()
       if (!win || win.isDestroyed()) return null
       const name = deps.workspace.projectTargetInfo(projectId)?.name ?? 'this project'
-      return promptSecretEntry({ parent: win, projectName: name, env: secret.decl.env, check })
+      return promptSecretEntry({ parent: win, projectName: name, env: secret.decl.env, replacing, check })
     }
   })
 

@@ -6693,13 +6693,15 @@ principle. Per-agent write-ups: `docs/grok-agent.md`, `docs/gemini-agent.md`.
     group (a typed `/exit` can land in the agent composer as prompt text), recycle the persistent
     session, and let cold restore resume with the new model under the newly injected environment.
 
-## Project secrets (a human-authorized fetch, held in memory, injected into agent nodes)
+## Project secrets (pasted or fetched by the person, held in memory, injected into agent nodes)
 
 A project declares, in `.nodeterm/settings.json` → `agents.secrets`, the environment variables its
-agents need and per variable an argv `command` whose standard output is the value (shared file or
-the local overlay, resolved local-over-shared like every other field). The person fetches them from
-the project tab menu → **Secrets…**; main runs each command once, holds the values in memory, and
-`PtyManager` injects them into the project's agent nodes. Shapes: `@shared/project-secrets`; holder
+agents need; per variable either nothing more (the person PASTES the value) or an argv `command`
+whose standard output is the value (FETCHED). Resolved local-over-shared like every other field,
+though no screen edits the local overlay's `secrets` today, so in practice it is the shared file.
+The person pastes or fetches from the project tab menu → **Secrets…**; main holds the values in
+memory (a fetch runs each command once), and `PtyManager` injects them into the project's agent
+nodes. Shapes: `@shared/project-secrets`; holder
 and runner: `core/project-secrets.ts`; desktop leg: `main/project-secrets-ipc.ts`; user doc:
 `docs/project-secrets.md`. The design follows established practice and invents no rule — each one
 below names its source:
@@ -6737,7 +6739,7 @@ below names its source:
   client (`platform().isOwnerClient`, or `HEADLESS_CLIENT` 0 for a Run now / `--run-now` this app
   asked for) and never with `sinks` (relay host attach), `joinOnly` or a watcher; the held value's
   `secretDeclKey` must equal the CURRENT declaration's (a pulled commit that changes the command
-  injects nothing until the person fetches again). Reserved names: Infisical's never-injected list,
+  injects nothing until the person pastes or fetches again). Reserved names: Infisical's never-injected list,
   spawn-critical names and `NODETERM_*`, case-insensitively, plus `isReservedSpawnEnvKey` at the
   merge; `__proto__` refused by name. On Windows a differently-cased inherited duplicate is dropped.
 - **Never on an argv** (CWE-214): tmux gets the value through the client env and

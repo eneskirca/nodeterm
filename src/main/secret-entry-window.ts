@@ -22,6 +22,8 @@ export interface SecretEntryRequest {
   parent: BrowserWindow
   projectName: string
   env: string
+  /** A value is already held for this name (the window says the paste replaces it). */
+  replacing?: boolean
   /** Why a candidate is refused (shown in the window, which stays open), or null to accept it. */
   check: (value: Buffer) => string | null
 }
@@ -30,6 +32,7 @@ export interface SecretEntryRequest {
 export interface SecretEntryInit {
   projectName: string
   env: string
+  replacing: boolean
 }
 
 let open: BrowserWindow | null = null
@@ -108,7 +111,7 @@ export function promptSecretEntry(req: SecretEntryRequest): Promise<Buffer | nul
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     win.webContents.on('did-finish-load', () => {
       if (win.isDestroyed()) return
-      const init: SecretEntryInit = { projectName: req.projectName, env: req.env }
+      const init: SecretEntryInit = { projectName: req.projectName, env: req.env, replacing: req.replacing === true }
       win.webContents.send(IPC.secretEntryInit, init)
     })
     // Shown only in answer to the person's click on "Paste value…" in the Secrets dialog.
