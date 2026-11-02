@@ -44,7 +44,8 @@ export function pullRefFromHtmlUrl(htmlUrl: unknown, expectedNumber: number): Pu
 }
 
 /** The add-menu picker's rows: the open and draft PRs the board's poll already holds (no new
- *  read), newest number first. A closed or merged PR is not in that poll; the user types its number. */
+ *  read), newest number first. The poll keeps only a few recent closed or merged PRs, so those are
+ *  left out and the user types the number instead. */
 export function pullPickerChoices(board: GitHubPullBoard | undefined): { label: string; value: string }[] {
   return (board?.pulls ?? [])
     .filter((p) => p.lifecycle === 'open' || p.lifecycle === 'draft')

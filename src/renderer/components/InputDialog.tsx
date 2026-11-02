@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useDialogStack } from './dialog-stack'
 
+/** A one-click answer listed above the field. */
+export interface PromptChoice {
+  label: string
+  value: string
+}
+
 interface InputDialogProps {
   message: string
   initialValue?: string
@@ -11,7 +17,7 @@ interface InputDialogProps {
   /** Longest value the field accepts (the HTML attribute: typing and pasting stop there). */
   maxLength?: number
   /** One-click answers listed above the field; a click submits its value. */
-  choices?: { label: string; value: string }[]
+  choices?: PromptChoice[]
   onSubmit: (value: string) => void
   onCancel: () => void
 }

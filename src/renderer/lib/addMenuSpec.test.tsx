@@ -17,6 +17,7 @@ import {
   WORKTREE_NO_CWD_HINT,
   WORKTREE_SSH_HINT,
   type AddItem,
+  PULL_RELAY_HINT,
   type AddHandlers,
   type AgentAddEntry
 } from './addMenuSpec'
@@ -121,6 +122,13 @@ describe('Pull request row', () => {
     if (row && 'onClick' in row) row.onClick()
     dock?.onClick()
     expect(calls).toEqual([{ x: 4, y: 2 }, 'dock'])
+  })
+  it('is disabled with its reason in a relay tab, menu and Dock alike: the approval lives on the host', () => {
+    const ctx = { hasCwd: true, isSshProject: false, isRelayTab: true }
+    const [row] = contentAddItemsToMenuItems([{ kind: 'pull' }], handlers(), ctx)
+    expect(row).toMatchObject({ label: 'Pull request…', disabled: true, hint: PULL_RELAY_HINT })
+    const [dock] = contentAddItemsToDockRows([{ kind: 'pull' }], handlers(), ctx)
+    expect(dock).toMatchObject({ kind: 'pull', disabled: true, hint: PULL_RELAY_HINT })
   })
 })
 

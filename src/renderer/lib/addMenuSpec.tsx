@@ -171,6 +171,10 @@ export function simulatorRefusal(relayTab = false, sshProject = false): string |
   return undefined
 }
 
+/** A relay tab's GitHub approval is the host's, and this machine's control cannot read it, so the
+ *  picker would only say "no approved repository". A PR node already on the canvas still reads. */
+export const PULL_RELAY_HINT = 'Open pull requests on the host: its GitHub approval lives there'
+
 /** The core's launcher is a POSIX `sh` script stopped by POSIX signals (see `RUN_WINDOWS_REASON`). */
 export const RUN_WINDOWS_HINT = 'Run configurations that launch a process are not supported on Windows yet'
 
@@ -268,7 +272,13 @@ export function contentAddItemsToMenuItems(
         })
         break
       case 'pull':
-        out.push({ label: 'Pull request…', icon: <IconBranch />, onClick: () => handlers.pull(at) })
+        out.push({
+          label: 'Pull request…',
+          icon: <IconBranch />,
+          disabled: !!ctx.isRelayTab,
+          hint: ctx.isRelayTab ? PULL_RELAY_HINT : undefined,
+          onClick: () => handlers.pull(at)
+        })
         break
       case 'whiteboard':
         out.push({ label: 'New whiteboard', icon: <IconWhiteboard />, onClick: () => handlers.whiteboard(at) })
@@ -392,7 +402,14 @@ export function contentAddItemsToDockRows(
         })
         break
       case 'pull':
-        out.push({ kind: 'pull', label: 'Pull request…', icon: <IconBranch />, onClick: () => handlers.pull() })
+        out.push({
+          kind: 'pull',
+          label: 'Pull request…',
+          icon: <IconBranch />,
+          disabled: !!ctx.isRelayTab,
+          hint: ctx.isRelayTab ? PULL_RELAY_HINT : undefined,
+          onClick: () => handlers.pull()
+        })
         break
       case 'whiteboard':
         out.push({ kind: 'whiteboard', label: 'Whiteboard', icon: <IconWhiteboard />, onClick: () => handlers.whiteboard() })

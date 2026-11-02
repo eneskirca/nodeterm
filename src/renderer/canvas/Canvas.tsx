@@ -115,8 +115,8 @@ import {
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
-import { normalizePullRef, pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
-import { openPrArgsRefusal, planOpenPr, pullNumberArg } from '@shared/open-pr-verb'
+import { pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
+import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -11699,21 +11699,23 @@ export function Canvas() {
         choices: pullPickerChoices(board)
       })
       if (input === null) return
-      const ref = normalizePullRef({ repository: repo.repository, pullNumber: pullNumberArg(input), tab: 'overview' })
-      if (!ref) {
+      // The awaits above are where a tab switch can land; never write into another project.
+      if (useProjects.getState().activeProjectId !== projectId) return
+      // The same plan as the `open-pr` verb: refuse, reuse this PR's node, or create one.
+      const plan = planOpenPr({
+        args: { pr: input },
+        repo,
+        pullNodes: nodesRef.current.filter((n) => n.type === 'pull').map((n) => ({ id: n.id, pull: n.data.pull }))
+      })
+      if (plan.kind === 'refuse') {
         toast('Type a pull request number, for example 123.')
         return
       }
-      // The awaits above are where a tab switch can land; never write into another project.
-      if (useProjects.getState().activeProjectId !== projectId) return
-      const key = ref.repository.toLowerCase()
-      const existing = nodesRef.current.find((n) => n.type === 'pull' &&
-        n.data.pull?.pullNumber === ref.pullNumber && n.data.pull.repository.toLowerCase() === key)
-      if (existing) {
-        travelToNodeRef.current(existing.id)
+      if (plan.kind === 'reuse') {
+        travelToNodeRef.current(plan.nodeId)
         return
       }
-      setNodes((ns) => [...ns, createPullNode(ns.length, ref.repository, ref.pullNumber, at ?? emptyNodePos())])
+      setNodes((ns) => [...ns, createPullNode(ns.length, plan.ref.repository, plan.ref.pullNumber, at ?? emptyNodePos())])
       markDirty()
     },
     [setNodes, markDirty, emptyNodePos]

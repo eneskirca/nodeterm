@@ -91,7 +91,7 @@ The node only opens pull requests of the project's approved repository. It store
 Surfaces:
 
 - **Desktop and Server Edition**: the full node. Every read and write goes through the core, over IPC or the Server Edition WebSocket bridge.
-- **Relay tabs**: reads work. Comment, review and merge are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all three.
+- **Relay tabs**: a node already on the canvas reads. **Pull request…** is disabled there, because the GitHub approval lives on the host. Comment, review and merge are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all three.
 - **Mobile**: no pull request node. The phone shows the rest of the canvas as before.
 
 ## Current scope
