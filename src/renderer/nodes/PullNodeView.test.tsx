@@ -189,6 +189,16 @@ function type(ta: HTMLTextAreaElement, text: string): void {
 const button = (view: HTMLElement, label: string) =>
   [...view.querySelectorAll('button')].find((el) => el.textContent === label) as HTMLButtonElement
 
+/** Shows the Overview first (the head a review is tied to), then the Conversation tab. */
+async function renderSeen(api: PullNodeApi, onWritten = vi.fn()): Promise<HTMLDivElement> {
+  const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+  await act(async () => {
+    root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
+      refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} />)
+  })
+  return view
+}
+
 describe('PullNodeView composer', () => {
   it('posts a comment, clears the draft and refreshes the node', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
@@ -203,18 +213,30 @@ describe('PullNodeView composer', () => {
     expect(onWritten).toHaveBeenCalledTimes(1)
   })
 
-  it('approves with an optional message against the head commit of the latest detail read', async () => {
+  it('approves with an optional message against the head commit the Overview showed', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
-    const view = await render(api, 'o/r', 'conversation')
+    const view = await renderSeen(api)
     await act(async () => { button(view, 'Approve').click() })
     expect(api.reviewPull).toHaveBeenCalledWith({
       projectId: 'p', repository: 'o/r', pullNumber: 7, event: 'APPROVE', body: '', headSha: 'c'.repeat(40)
     })
+    expect(api.pullDetail).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers no review before the Overview showed a head commit, and reads none for it', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    const view = await render(api, 'o/r', 'conversation')
+    await act(async () => { type(view.querySelector('textarea')!, 'x') })
+    expect(button(view, 'Approve').disabled).toBe(true)
+    expect(button(view, 'Request changes').disabled).toBe(true)
+    expect(button(view, 'Comment').disabled).toBe(false)
+    expect(view.textContent).toContain('Open the Overview tab to review')
+    expect(api.pullDetail).not.toHaveBeenCalled()
   })
 
   it('needs a message to request changes', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
-    const view = await render(api, 'o/r', 'conversation')
+    const view = await renderSeen(api)
     expect(button(view, 'Request changes').disabled).toBe(true)
     await act(async () => { type(view.querySelector('textarea')!, 'Fix the test') })
     await act(async () => { button(view, 'Request changes').click() })
@@ -225,7 +247,7 @@ describe('PullNodeView composer', () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     let land!: (value: { ok: true }) => void
     api.commentOnPull.mockImplementation(() => new Promise((resolve) => { land = resolve }))
-    const view = await render(api, 'o/r', 'conversation')
+    const view = await renderSeen(api)
     await act(async () => { type(view.querySelector('textarea')!, 'x') })
     await act(async () => { button(view, 'Comment').click() })
     expect(['Comment', 'Approve', 'Request changes'].map((label) => button(view, label).disabled)).toEqual([true, true, true])
@@ -247,7 +269,7 @@ describe('PullNodeView composer', () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     api.reviewPull.mockResolvedValue({ ok: false, reason })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
+    const view = await renderSeen(api, onWritten)
     await act(async () => { type(view.querySelector('textarea')!, 'Ship it') })
     await act(async () => { button(view, 'Approve').click() })
     expect(view.querySelector('[role="alert"]')?.textContent?.toLowerCase()).toContain(words)

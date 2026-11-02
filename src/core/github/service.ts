@@ -200,7 +200,15 @@ function pullReadFailure(error: unknown): { reason: PullReadFailure; retryAt?: n
   return { reason: 'unreachable' }
 }
 
-/** Why a pull write that reached GitHub (or the coordinator) did not land. */
+/** A host refusal (coded context error) as the node names it, else undefined. */
+function pullRefusalOf(error: unknown): PullRefusal | undefined {
+  const code = (error as { code?: unknown } | null)?.code
+  return typeof code === 'string' ? PULL_REFUSALS[code as GitHubHostError['code']] : undefined
+}
+
+/** Why a pull write that reached GitHub (or the coordinator) did not land. A write has answers a
+ *  read never gets (own-pull, a 403/404 that means "may not write", a 422); everything else is
+ *  decided by `classifyGitHubFailure`, as for reads. */
 function pullWriteFailure(error: unknown): PullWriteReason {
   const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
   if (code === 'own-pull') return 'own-pull'
@@ -1022,6 +1030,7 @@ export class GitHubIssueService {
         (event !== 'APPROVE' && event !== 'REQUEST_CHANGES' && event !== 'COMMENT') ||
         (event !== 'APPROVE' && !body.trim())) return { ok: false, reason: 'validation' }
     return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot review reads as network; the real client always can.
       if (!client.reviewPull) throw new Error('unsupported')
       return client.reviewPull(repository, pullNumber, { event, body, commitId: headSha })
     })
@@ -1046,8 +1055,7 @@ export class GitHubIssueService {
     try {
       captured = await this.options.contextForProject(projectId)
     } catch (error) {
-      const code = (error as { code?: unknown } | null)?.code
-      const refusal = typeof code === 'string' ? PULL_REFUSALS[code as GitHubHostError['code']] : undefined
+      const refusal = pullRefusalOf(error)
       if (refusal) return { ok: false, reason: refusal === 'signed-out' ? 'signed-out' : 'not-approved' }
       return { ok: false, reason: pullWriteFailure(error) }
     }
@@ -1065,8 +1073,10 @@ export class GitHubIssueService {
     for (const kind of ['detail', 'conversation']) {
       this.pullReads.delete(`${kind}\0${projectId}\0${captured.repository}\0${pullNumber}`)
     }
-    // A write is a reason to look again: the board refresh skips its caller floor once.
-    this.refreshFloors.delete(projectId)
+    // A write is a reason to look again: the board's incremental refresh skips its caller floor once
+    // (the full-reconcile floor stays).
+    const floor = this.refreshFloors.get(projectId)
+    if (floor) this.refreshFloors.set(projectId, { ...floor, any: 0 })
     void this.refresh({ projectId }).catch(() => undefined)
     return { ok: true }
   }
@@ -1144,8 +1154,7 @@ export class GitHubIssueService {
 
   /** A context that could not be resolved: a coded host refusal, else a failure to reach GitHub. */
   private pullContextFailure<O extends PullOk>(error: unknown, last?: O): PullResult<O> {
-    const code = (error as { code?: unknown } | null)?.code
-    const refusal = typeof code === 'string' ? PULL_REFUSALS[code as GitHubHostError['code']] : undefined
+    const refusal = pullRefusalOf(error)
     if (refusal) return { status: 'refused', reason: refusal }
     return stalePull(last, error)
   }

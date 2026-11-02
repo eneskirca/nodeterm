@@ -135,6 +135,8 @@ function PullTabs({ onTab, ...props }: TabsProps): React.JSX.Element {
   const shownTab: PullNodeTab = pull.tab === 'conversation' ? 'conversation' : 'overview'
   const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
   if (!opened.includes(shownTab)) setOpened([...opened, shownTab])
+  // The head commit the Overview last showed: the one a review is tied to.
+  const [seenHead, setSeenHead] = useState<string | undefined>()
   return (
     <>
       <div className="pull-node__tabs" role="tablist">
@@ -147,18 +149,22 @@ function PullTabs({ onTab, ...props }: TabsProps): React.JSX.Element {
           Open on GitHub
         </button>
       </div>
-      {opened.includes('overview') && <div hidden={shownTab !== 'overview'}><PullOverview {...props} /></div>}
+      {opened.includes('overview') && (
+        <div hidden={shownTab !== 'overview'}><PullOverview {...props} onHead={setSeenHead} /></div>
+      )}
       {opened.includes('conversation') && (
-        <div hidden={shownTab !== 'conversation'}><PullConversation {...props} /></div>
+        <div hidden={shownTab !== 'conversation'}><PullConversation {...props} seenHead={seenHead} /></div>
       )}
     </>
   )
 }
 
-function PullOverview(props: ViewProps): React.JSX.Element {
-  const { api, projectId, pull, onOpenExternal } = props
+function PullOverview(props: ViewProps & { onHead: (sha: string) => void }): React.JSX.Element {
+  const { api, projectId, pull, onOpenExternal, onHead } = props
   const result = usePullRead(api.pullDetail, props)
   const detail = result !== 'loading' && result.status === 'ok' ? result.detail : undefined
+  const head = detail?.head.sha
+  useEffect(() => { if (head) onHead(head) }, [head, onHead])
   const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
   const checks = usePullChecks(api, readsChecks ? projectId : undefined, pull.pullNumber, detail?.head.sha)
 
@@ -190,17 +196,10 @@ function PullOverview(props: ViewProps): React.JSX.Element {
   )
 }
 
-/** The write reason for a detail read that gave no head commit to review against. */
-function detailReason(result: Exclude<GitHubPullDetailResult, { status: 'ok' }>): PullWriteReason {
-  if (result.reason === 'signed-out') return 'signed-out'
-  if (result.status === 'refused') return 'not-approved'
-  return result.reason === 'throttled' ? 'throttled' : 'network'
-}
-
 /** The Conversation tab: comments and reviews, oldest first, then the composer. The draft lives here
  *  (the tab stays mounted), so it survives a tab switch; it is never persisted. */
-function PullConversation(props: ViewProps): React.JSX.Element {
-  const { api, projectId, pull, onWritten } = props
+function PullConversation(props: ViewProps & { seenHead: string | undefined }): React.JSX.Element {
+  const { api, projectId, pull, onWritten, seenHead } = props
   const result = usePullRead(api.pullConversation, props)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -217,13 +216,10 @@ function PullConversation(props: ViewProps): React.JSX.Element {
     setDraft('')
     onWritten()
   }
-  // The review is tied to the head of the latest detail read (inside the core's 30 s floor that is
-  // the one the Overview showed), so GitHub refuses it if the PR moved since.
-  const review = (event: PullReviewEvent) => run(async () => {
-    const read = await api.pullDetail(projectId, pull.repository, pull.pullNumber)
-    if (read.status !== 'ok') return { ok: false, reason: detailReason(read) }
-    return api.reviewPull({ ...at, event, body: draft, headSha: read.detail.head.sha })
-  })
+  // A review is tied to the head the Overview showed, so GitHub refuses it if the PR moved since.
+  // ponytail: no head seen yet (Overview never opened) disables review rather than reading one here.
+  const review = (event: PullReviewEvent) => seenHead && run(() =>
+    api.reviewPull({ ...at, event, body: draft, headSha: seenHead }))
 
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   return (
@@ -255,10 +251,12 @@ function PullConversation(props: ViewProps): React.JSX.Element {
         <div className="pull-compose__actions">
           <button className="pull-compose__button" disabled={busy || !draft.trim()}
             onClick={() => void run(() => api.commentOnPull({ ...at, body: draft }))}>Comment</button>
-          <button className="pull-compose__button" disabled={busy} onClick={() => void review('APPROVE')}>Approve</button>
-          <button className="pull-compose__button" disabled={busy || !draft.trim()}
+          <button className="pull-compose__button" disabled={busy || !seenHead}
+            onClick={() => void review('APPROVE')}>Approve</button>
+          <button className="pull-compose__button" disabled={busy || !seenHead || !draft.trim()}
             onClick={() => void review('REQUEST_CHANGES')}>Request changes</button>
         </div>
+        {!seenHead && <p className="pull-node__empty">Open the Overview tab to review: a review is tied to the commit it shows.</p>}
       </div>
     </div>
   )
