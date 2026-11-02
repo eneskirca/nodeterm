@@ -363,6 +363,14 @@ export const IPC = {
   projectSecretsClear: 'project-secrets:clear',
   projectSecretsCrossGate: 'project-secrets:cross-project-gate',
   projectSecretsCrossDecide: 'project-secrets:cross-project-decide',
+  projectSecretsPaste: 'project-secrets:paste',
+  /** main → paste window: which project and variable it asks for. */
+  secretEntryInit: 'secret-entry:init',
+  /** main → paste window: why the last value was refused (the window stays open). */
+  secretEntryError: 'secret-entry:error',
+  /** paste window → main (ipcMain.on, only from that window's webContents). */
+  secretEntrySubmit: 'secret-entry:submit',
+  secretEntryCancel: 'secret-entry:cancel',
   /** main → renderer: a project's held state changed (payload: projectId). */
   projectSecretsChanged: 'project-secrets:changed',
   appUpdatePrepInspect: 'app:update-prep-inspect',

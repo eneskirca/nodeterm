@@ -73,6 +73,12 @@ describe('registerProjectSecretsIpc', () => {
     expect(svc.holdsAny()).toBe(false)
   })
 
+  it('a paste request from any sender but the main window opens nothing', async () => {
+    registerProjectSecretsIpc({ workspace: workspace(), settings: () => ({ projectSecretsCrossProject: 'deny' }), mainWindow: () => win as never })
+    const r = await handlers.get(IPC.projectSecretsPaste)!({ sender: { id: 99 } }, 'p1', 'API_TOKEN')
+    expect(r).toMatchObject({ kind: 'refused', reason: 'unsupported' })
+  })
+
   it('the native dialog defaults to Cancel', async () => {
     registerProjectSecretsIpc({ workspace: workspace(), settings: () => ({ projectSecretsCrossProject: 'deny' }), mainWindow: () => win as never })
     await handlers.get(IPC.projectSecretsAuthorize)!({ sender: { id: MAIN } }, 'p1')

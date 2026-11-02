@@ -9,15 +9,19 @@ import {
   authorizeSummary,
   canClear,
   canFetch,
-  fetchButtonLabel
+  fetchButtonLabel,
+  fetchOffered,
+  pasteButtonLabel,
+  pasteSummary
 } from '../lib/projectSecrets'
 
 /**
  * The project's declared secrets: names, the exact commands, where each was declared and its state
  * this app run. NEVER a value — main holds those (docs/project-secrets.md). "Fetch secrets…" asks
  * main, which then raises its own native confirmation listing the same commands; only that answer
- * runs them. This button is the ONE renderer call site of `projectSecrets.authorize`
- * (pinned by `project-secrets.guard.test.ts`).
+ * runs them. "Paste value…" asks main to open its own small window, where the person types the
+ * value; this window never sees it. These two buttons are the ONE renderer call site each of
+ * `projectSecrets.authorize` and `projectSecrets.paste` (pinned by `project-secrets.guard.test.ts`).
  */
 export function ProjectSecretsDialog({
   projectId,
@@ -72,6 +76,18 @@ export function ProjectSecretsDialog({
       .catch(() => setNote('The fetch could not be started.'))
       .finally(() => setBusy(false))
   }
+  const pasteNow = (env: string): void => {
+    setBusy(true)
+    setNote(null)
+    void api
+      .paste(projectId, env)
+      .then((r) => {
+        setView(r.view)
+        setNote(pasteSummary(env, r))
+      })
+      .catch(() => setNote('The paste window could not be opened.'))
+      .finally(() => setBusy(false))
+  }
   const clearNow = (): void => {
     setBusy(true)
     void api
@@ -95,7 +111,8 @@ export function ProjectSecretsDialog({
           <>
             <p className="confirm__msg">
               This project declares no secrets. Declare them in <code>.nodeterm/settings.json</code>: each entry
-              names the environment variable your agents expect and the command whose output is the value.
+              names the environment variable your agents expect, and either nothing more (you paste the value
+              here) or the command whose output is the value.
             </p>
             <pre className="secrets-dialog__example">{SECRETS_EXAMPLE}</pre>
           </>
@@ -109,7 +126,16 @@ export function ProjectSecretsDialog({
                     <span className="secrets-dialog__state">{SECRET_STATE_LABEL[s.state]}</span>
                     <span className="secrets-dialog__source">{s.source === 'shared' ? 'shared file' : 'this computer'}</span>
                   </div>
-                  <code className="secrets-dialog__command">{displayCommand(s.command)}</code>
+                  {s.input === 'command' ? (
+                    <code className="secrets-dialog__command">{displayCommand(s.command ?? [])}</code>
+                  ) : (
+                    <div className="secrets-dialog__paste">
+                      <span className="secrets-dialog__paste-text">Pasted by you</span>
+                      <button className="confirm__btn" disabled={busy} onClick={() => pasteNow(s.env)}>
+                        {pasteButtonLabel(s)}
+                      </button>
+                    </div>
+                  )}
                   {s.state === 'failed' && (
                     <div className="secrets-dialog__error">
                       {s.error}
@@ -120,8 +146,8 @@ export function ProjectSecretsDialog({
               ))}
             </ul>
             <p className="secrets-dialog__hint">
-              Fetched values stay in nodeterm’s memory until you quit, close this project or clear them, and are
-              never written to disk. Agent nodes of this project that start afterwards receive them as environment
+              Fetched and pasted values stay in nodeterm’s memory until you quit, close this project or clear
+              them, and are never written to disk. Agent nodes of this project that start afterwards receive them as environment
               variables; agents already running keep what they started with — restart them to pick the values up.
             </p>
           </>
@@ -136,7 +162,7 @@ export function ProjectSecretsDialog({
               Clear
             </button>
           )}
-          {view && !view.unavailable && view.secrets.length > 0 && (
+          {fetchOffered(view) && view && (
             <button className="confirm__btn primary" disabled={!canFetch(view, busy)} onClick={fetchNow}>
               {busy ? 'Fetching…' : fetchButtonLabel(view)}
             </button>

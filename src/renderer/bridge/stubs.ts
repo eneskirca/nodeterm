@@ -179,6 +179,11 @@ export function buildStubApi(): Omit<
         reason: 'unsupported' as const,
         view: { unavailable: 'unsupported' as const, secrets: [] }
       }),
+      paste: async () => ({
+        kind: 'refused' as const,
+        reason: 'unsupported' as const,
+        view: { unavailable: 'unsupported' as const, secrets: [] }
+      }),
       clear: async () => ({ unavailable: 'unsupported' as const, secrets: [] }),
       crossProjectGate: async () => ({ kind: 'proceed' as const }),
       decideCrossProject: async () => undefined,

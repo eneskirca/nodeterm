@@ -16,6 +16,8 @@
  *  - No copy on disk in any form, encrypted or not (stricter than CWE-312's mitigations and than
  *    Doppler's encrypted fallback file, which is the one source that persists): nothing here writes.
  *  - One fetch per human authorization (rate limits: OWASP §4.4): nothing here refetches by itself.
+ *  - A declaration with no command is PASTED: the person types the value into a small window main
+ *    opens for it (`deps.promptValue`); the canvas window never holds it.
  *
  * Who may receive a value is decided in `spawnEnv` and nowhere else.
  */
@@ -31,11 +33,13 @@ import {
   SECRET_VALUE_MAX_BYTES,
   isValidSecretName,
   secretDeclKey,
+  secretInput,
   type CrossProjectSecretsGate,
   type CrossProjectSecretsPolicy,
   type ProjectSecretDecl,
   type ProjectSecretStatus,
   type ProjectSecretsAuthorizeResult,
+  type ProjectSecretsPasteResult,
   type ProjectSecretsUnsupported,
   type ProjectSecretsView
 } from '../shared/project-secrets'
@@ -75,12 +79,15 @@ export function stripOneLineEnding(buf: Buffer): Buffer {
   return buf.subarray(0, end)
 }
 
-/** Why a candidate value is unusable as an environment value, or null when it is fine. */
-export function valueProblem(value: Buffer): string | null {
-  if (value.length === 0) return 'the command printed nothing'
+/** Why a candidate value is unusable as an environment value, or null when it is fine. `from`
+ *  only words the message: a fetched value was printed, a pasted one was typed. */
+export function valueProblem(value: Buffer, from: 'command' | 'paste' = 'command'): string | null {
+  if (value.length === 0) return from === 'paste' ? 'the value is empty' : 'the command printed nothing'
   if (value.length > SECRET_VALUE_MAX_BYTES) return `the value is longer than ${SECRET_VALUE_MAX_BYTES} bytes`
   for (const byte of value) {
-    if (byte === 0x0a || byte === 0x0d) return 'the command printed more than one line'
+    if (byte === 0x0a || byte === 0x0d) {
+      return from === 'paste' ? 'the value is more than one line' : 'the command printed more than one line'
+    }
     if (byte === 0x00) return 'the value contains a NUL byte'
   }
   // An environment value is text; refuse bytes that are not valid UTF-8 rather than mangle them.
@@ -95,6 +102,19 @@ function isUtf8(buf: Buffer): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * A pasted value as it will be held: line endings at either end removed (copying a token often
+ * brings a trailing newline); every other character is kept, spaces included. Returns a NEW buffer;
+ * the caller wipes the input.
+ */
+export function normalizePasted(raw: Buffer): Buffer {
+  let start = 0
+  let end = raw.length
+  while (start < end && (raw[start] === 0x0a || raw[start] === 0x0d)) start++
+  while (end > start && (raw[end - 1] === 0x0a || raw[end - 1] === 0x0d)) end--
+  return Buffer.from(raw.subarray(start, end))
 }
 
 /** Zero a buffer in place. `Buffer.fill` writes the bytes; the GC frees the memory later. */
@@ -239,6 +259,16 @@ export interface ProjectSecretsDeps {
   readDeclarations(projectId: string): Promise<DeclarationsRead>
   /** The human confirmation (desktop: a native dialog in main). Resolves true only on "Fetch". */
   confirm(projectId: string, secrets: DeclaredSecret[]): Promise<boolean>
+  /**
+   * The person types one value (desktop: a small window main opens). `check` answers why a
+   * candidate is refused (shown in that window, which stays open) or null to accept it. Resolves the
+   * accepted value, or null when the person cancels. Absent = pasting is not offered.
+   */
+  promptValue?(
+    projectId: string,
+    secret: DeclaredSecret,
+    check: (value: Buffer) => string | null
+  ): Promise<Buffer | null>
   /** The machine-local cross-project policy, read live. */
   crossProjectPolicy(): CrossProjectSecretsPolicy
   run?: (command: string[], cwd: string) => Promise<SecretFetchResult>
@@ -306,7 +336,12 @@ export class ProjectSecretsService {
     const failures = this.failures.get(projectId)
     const secrets: ProjectSecretStatus[] = read.secrets.map(({ decl, source }) => {
       const key = secretDeclKey(decl)
-      const base = { env: decl.env, command: [...decl.command], source }
+      const base = {
+        env: decl.env,
+        input: secretInput(decl),
+        ...(decl.command ? { command: [...decl.command] } : {}),
+        source
+      }
       const h = held?.get(decl.env)
       if (h) return { ...base, state: h.key === key ? 'available' : 'declaration-changed' }
       const f = failures?.get(decl.env)
@@ -345,7 +380,8 @@ export class ProjectSecretsService {
     if (read.kind === 'unavailable') {
       return { kind: 'refused', reason: read.reason, view: this.viewFor(projectId, read) }
     }
-    if (read.secrets.length === 0) {
+    const fetched = read.secrets.filter((s) => s.decl.command)
+    if (fetched.length === 0) {
       return { kind: 'refused', reason: 'nothing-declared', view: this.viewFor(projectId, read) }
     }
     if (this.inFlight.has(projectId)) {
@@ -355,22 +391,23 @@ export class ProjectSecretsService {
     try {
       let confirmed = false
       try {
-        confirmed = await this.deps.confirm(projectId, read.secrets)
+        confirmed = await this.deps.confirm(projectId, fetched)
       } catch {
         confirmed = false
       }
       if (!confirmed) return { kind: 'cancelled', view: this.viewFor(projectId, read) }
-      // Re-authorization replaces everything: what the person just approved is the whole set.
+      // Re-authorization replaces every FETCHED value: what the person just approved is the whole
+      // set of commands. A pasted value is kept while its declaration still asks for a paste.
+      const held = this.takePasted(projectId, read.secrets, read.cwd)
       this.dropProject(projectId, false)
-      const held = new Map<string, Held>()
       const failures = new Map<string, Failure>()
       const run = this.deps.run ?? ((c: string[], cwd: string) => runSecretCommand(c, cwd))
       // Sequentially: a secret manager's own approval prompts then appear one at a time.
-      for (const { decl } of read.secrets) {
+      for (const { decl } of fetched) {
         const key = secretDeclKey(decl)
         let r: SecretFetchResult
         try {
-          r = await run(decl.command, read.cwd)
+          r = await run(decl.command!, read.cwd)
         } catch {
           r = { ok: false, error: 'the command could not be run' }
         }
@@ -382,6 +419,72 @@ export class ProjectSecretsService {
         this.heldCwd.set(projectId, read.cwd)
       }
       if (failures.size) this.failures.set(projectId, failures)
+      this.emit(projectId)
+      return { kind: 'done', view: this.viewFor(projectId, read) }
+    } finally {
+      this.inFlight.delete(projectId)
+    }
+  }
+
+  /** The held pasted values whose declaration still asks for a paste, at the same folder, moved OUT
+   *  of the project's map (so a following `dropProject` does not wipe them). */
+  private takePasted(projectId: string, secrets: DeclaredSecret[], cwd: string): Map<string, Held> {
+    const out = new Map<string, Held>()
+    const held = this.held.get(projectId)
+    if (!held || this.heldCwd.get(projectId) !== cwd) return out
+    for (const { decl } of secrets) {
+      if (decl.command) continue
+      const h = held.get(decl.env)
+      if (h && h.key === secretDeclKey(decl)) {
+        out.set(decl.env, h)
+        held.delete(decl.env)
+      }
+    }
+    return out
+  }
+
+  /**
+   * The ONLY path that takes a pasted value: the desktop's paste IPC (the person's click in the
+   * Secrets dialog) asks `deps.promptValue`, i.e. the person types it into main's own window.
+   */
+  async paste(projectId: string, env: string): Promise<ProjectSecretsPasteResult> {
+    const read = await this.safeRead(projectId)
+    if (read.kind === 'unavailable') {
+      return { kind: 'refused', reason: read.reason, view: this.viewFor(projectId, read) }
+    }
+    const secret = read.secrets.find((s) => s.decl.env === env && !s.decl.command)
+    if (!secret || !this.deps.promptValue) {
+      return { kind: 'refused', reason: 'not-pasted', view: this.viewFor(projectId, read) }
+    }
+    if (this.inFlight.has(projectId)) {
+      return { kind: 'refused', reason: 'busy', view: this.viewFor(projectId, read) }
+    }
+    this.inFlight.add(projectId)
+    try {
+      let value: Buffer | null = null
+      try {
+        value = await this.deps.promptValue(projectId, secret, (v) => valueProblem(v, 'paste'))
+      } catch {
+        value = null
+      }
+      // The window already refused a bad value; checked again so no caller can skip it.
+      if (value && valueProblem(value, 'paste')) {
+        wipe(value)
+        value = null
+      }
+      if (!value) return { kind: 'cancelled', view: this.viewFor(projectId, read) }
+      // Values held for another folder go first (the project was re-bound since).
+      const heldAt = this.heldCwd.get(projectId)
+      if (heldAt !== undefined && heldAt !== read.cwd) this.dropProject(projectId, false)
+      let held = this.held.get(projectId)
+      if (!held) {
+        held = new Map()
+        this.held.set(projectId, held)
+      }
+      wipe(held.get(env)?.buf)
+      held.set(env, { key: secretDeclKey(secret.decl), buf: value })
+      this.heldCwd.set(projectId, read.cwd)
+      this.failures.get(projectId)?.delete(env)
       this.emit(projectId)
       return { kind: 'done', view: this.viewFor(projectId, read) }
     } finally {

@@ -8,6 +8,7 @@ import path from 'path'
 import { testTmpDir } from './test-tmp'
 import {
   ProjectSecretsService,
+  normalizePasted,
   runSecretCommand,
   stripOneLineEnding,
   valueProblem,
@@ -296,5 +297,114 @@ describe('ProjectSecretsService — redaction of text Nodeterm writes', () => {
     const { svc } = service({ run: async () => ({ ok: true, value: Buffer.from('abc') }) })
     await svc.authorize('p1')
     expect(svc.redact('abcabc')).toBe('abcabc')
+  })
+})
+
+describe('ProjectSecretsService — pasted secrets', () => {
+  const PASTED: ProjectSecretDecl = { env: 'PASTED_TOKEN' }
+  const both: DeclarationsRead = {
+    kind: 'ok',
+    cwd: '/p',
+    secrets: [
+      { decl: PASTED, source: 'shared' },
+      { decl: DECL, source: 'shared' }
+    ]
+  }
+  function pasteService(answer: string | null, read: DeclarationsRead = both) {
+    const checks: (string | null)[] = []
+    const promptValue = vi.fn(async (_p: string, _s: unknown, check: (v: Buffer) => string | null) => {
+      if (answer === null) return null
+      const v = normalizePasted(Buffer.from(answer))
+      checks.push(check(v))
+      return v
+    })
+    const run = vi.fn(async () => ({ ok: true as const, value: Buffer.from(DUMMY) }))
+    const confirm = vi.fn(async () => true)
+    const svc = new ProjectSecretsService({
+      readDeclarations: async () => read,
+      confirm,
+      promptValue,
+      crossProjectPolicy: () => 'deny',
+      run
+    })
+    return { svc, promptValue, run, confirm, checks }
+  }
+  const input = (over: Partial<SecretSpawnInput> = {}) => spawnInput({ declarations: [PASTED, DECL], ...over })
+
+  it('a declaration without a command is pasted: status says so and the value is never shown', async () => {
+    const { svc, run } = pasteService('pasted-dummy-value-987654\r\n')
+    expect((await svc.status('p1')).secrets[0]).toMatchObject({ env: 'PASTED_TOKEN', input: 'paste', state: 'not-fetched' })
+    expect((await svc.status('p1')).secrets[0].command).toBeUndefined()
+    const r = await svc.paste('p1', 'PASTED_TOKEN')
+    expect(r.kind).toBe('done')
+    expect(r.view.secrets[0].state).toBe('available')
+    expect(JSON.stringify(r)).not.toContain('pasted-dummy-value')
+    expect(run).not.toHaveBeenCalled()
+    // Line endings at the ends are dropped (a copied token often brings one).
+    expect(svc.spawnEnv(input())).toEqual({ PASTED_TOKEN: 'pasted-dummy-value-987654' })
+  })
+
+  it('cancelling keeps nothing', async () => {
+    const { svc } = pasteService(null)
+    expect((await svc.paste('p1', 'PASTED_TOKEN')).kind).toBe('cancelled')
+    expect(svc.spawnEnv(input())).toEqual({})
+  })
+
+  it('the window is given the paste check: empty and multi-line values are refused', async () => {
+    const { svc, checks } = pasteService('two\nlines')
+    expect((await svc.paste('p1', 'PASTED_TOKEN')).kind).toBe('cancelled')
+    expect(checks).toEqual(['the value is more than one line'])
+    expect(valueProblem(Buffer.alloc(0), 'paste')).toBe('the value is empty')
+    expect(svc.spawnEnv(input())).toEqual({})
+  })
+
+  it('refuses a paste for a secret that has a command, or is not declared, without opening anything', async () => {
+    const { svc, promptValue } = pasteService('x-dummy-value')
+    expect(await svc.paste('p1', 'API_TOKEN')).toMatchObject({ kind: 'refused', reason: 'not-pasted' })
+    expect(await svc.paste('p1', 'NOPE')).toMatchObject({ kind: 'refused', reason: 'not-pasted' })
+    expect(promptValue).not.toHaveBeenCalled()
+  })
+
+  it('Fetch runs only the commands and keeps the pasted value; Clear drops both', async () => {
+    const { svc, run, confirm } = pasteService('pasted-dummy-value-987654')
+    await svc.paste('p1', 'PASTED_TOKEN')
+    await svc.authorize('p1')
+    expect(confirm).toHaveBeenCalledWith('p1', [{ decl: DECL, source: 'shared' }])
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(svc.spawnEnv(input())).toEqual({ PASTED_TOKEN: 'pasted-dummy-value-987654', API_TOKEN: DUMMY })
+    await svc.clear('p1')
+    expect(svc.spawnEnv(input())).toEqual({})
+  })
+
+  it('Fetch is refused when every secret is pasted', async () => {
+    const { svc, confirm } = pasteService('x', { kind: 'ok', cwd: '/p', secrets: [{ decl: PASTED, source: 'shared' }] })
+    expect(await svc.authorize('p1')).toMatchObject({ kind: 'refused', reason: 'nothing-declared' })
+    expect(confirm).not.toHaveBeenCalled()
+  })
+
+  it('a pasted value is not injected once the declaration gains a command', async () => {
+    const { svc } = pasteService('pasted-dummy-value-987654')
+    await svc.paste('p1', 'PASTED_TOKEN')
+    expect(svc.spawnEnv(input({ declarations: [{ env: 'PASTED_TOKEN', command: ['print'] }] }))).toEqual({})
+  })
+
+  it('replacing a pasted value zeroes the old one', async () => {
+    const first = Buffer.from('first-dummy-value')
+    let n = 0
+    const svc = new ProjectSecretsService({
+      readDeclarations: async () => both,
+      confirm: async () => true,
+      promptValue: async () => (n++ === 0 ? first : Buffer.from('second-dummy-value')),
+      crossProjectPolicy: () => 'deny'
+    })
+    await svc.paste('p1', 'PASTED_TOKEN')
+    await svc.paste('p1', 'PASTED_TOKEN')
+    expect([...first].every((b) => b === 0)).toBe(true)
+    expect(svc.spawnEnv(input())).toEqual({ PASTED_TOKEN: 'second-dummy-value' })
+  })
+
+  it('is not offered when the shell gives no way to paste', async () => {
+    const svc = new ProjectSecretsService({ readDeclarations: async () => both, confirm: async () => true, crossProjectPolicy: () => 'deny' })
+    expect(await svc.paste('p1', 'PASTED_TOKEN')).toMatchObject({ kind: 'refused', reason: 'not-pasted' })
   })
 })

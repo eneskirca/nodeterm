@@ -118,7 +118,9 @@ export function makeProjectSpawnOverrides(
     if (shellSetting && (!isShared(shellSetting) || (await admit('shell')))) {
       out.shell = shellSetting.value
     }
-    if (secretsSetting) out.secrets = secretsSetting.value.map((d) => ({ env: d.env, command: [...d.command] }))
+    if (secretsSetting) {
+      out.secrets = secretsSetting.value.map((d) => (d.command ? { env: d.env, command: [...d.command] } : { env: d.env }))
+    }
     return out.env || out.shell || out.secrets ? out : null
   }
 }

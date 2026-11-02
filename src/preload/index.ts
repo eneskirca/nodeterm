@@ -221,6 +221,7 @@ const api: NodeTerminalApi = {
   projectSecrets: {
     status: (projectId) => ipcRenderer.invoke(IPC.projectSecretsStatus, projectId),
     authorize: (projectId) => ipcRenderer.invoke(IPC.projectSecretsAuthorize, projectId),
+    paste: (projectId, env) => ipcRenderer.invoke(IPC.projectSecretsPaste, projectId, env),
     clear: (projectId) => ipcRenderer.invoke(IPC.projectSecretsClear, projectId),
     crossProjectGate: (projectId, nodeId) => ipcRenderer.invoke(IPC.projectSecretsCrossGate, projectId, nodeId),
     decideCrossProject: (projectId, nodeId, grant) =>

@@ -350,7 +350,7 @@ function reportOutcomeDocLines(): string[] {
 export function projectSecretsGuidanceLines(): string[] {
   return [
     '  Project secrets: a project may declare environment variables its agents need, which the user',
-    '  fetches in the app; agent nodes of that project started afterwards receive them as environment',
+    '  pastes or fetches in the app; agent nodes of that project started afterwards receive them as environment',
     '  variables. No command here fetches, shows, sets or clears one. Never print, log, commit or send',
     '  their values. A node you open in ANOTHER project gets them only as the user\'s setting allows;',
     '  when the reply says the node waits for the person, ask the user to answer in that node — do not',

@@ -38,10 +38,30 @@ describe('project secrets guard', () => {
     ])
   })
 
+  it('the renderer opens the paste window from ONE place: the Secrets dialog', () => {
+    const sites = files(join(SRC, 'renderer')).filter((p) => {
+      const text = read(p)
+      if (!/projectSecrets/.test(text) || /[\\/]bridge[\\/]/.test(p)) return false
+      return codeLines(text).some((l) => /(^|[^\w])\.\s*paste\s*\(/.test(l))
+    })
+    expect(sites.map((p) => p.slice(SRC.length + 1).replace(/\\/g, '/'))).toEqual([
+      'renderer/components/ProjectSecretsDialog.tsx'
+    ])
+  })
+
+  it('the paste window\'s page imports no app code (only its stylesheet)', () => {
+    const page = read(join(SRC, 'renderer', 'secret-entry', 'main.ts'))
+    const imports = codeLines(page).filter((l) => /^\s*import\s/.test(l))
+    expect(imports).toEqual(["import './secret-entry.css'"])
+  })
+
   it('every request channel is host-only', () => {
     for (const ch of [
       IPC.projectSecretsStatus,
       IPC.projectSecretsAuthorize,
+      IPC.projectSecretsPaste,
+      IPC.secretEntrySubmit,
+      IPC.secretEntryCancel,
       IPC.projectSecretsClear,
       IPC.projectSecretsCrossGate,
       IPC.projectSecretsCrossDecide
@@ -66,7 +86,13 @@ describe('project secrets guard', () => {
   })
 
   it('the core holder and the main leg never log', () => {
-    for (const p of [join(SRC, 'core', 'project-secrets.ts'), join(SRC, 'main', 'project-secrets-ipc.ts')]) {
+    for (const p of [
+      join(SRC, 'core', 'project-secrets.ts'),
+      join(SRC, 'main', 'project-secrets-ipc.ts'),
+      join(SRC, 'main', 'secret-entry-window.ts'),
+      join(SRC, 'preload', 'secret-entry.ts'),
+      join(SRC, 'renderer', 'secret-entry', 'main.ts')
+    ]) {
       expect(codeLines(read(p)).filter((l) => /console\.|\blog\(/.test(l)), p).toEqual([])
     }
   })

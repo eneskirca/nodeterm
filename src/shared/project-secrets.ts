@@ -1,8 +1,9 @@
 /**
  * Project secrets: a project DECLARES which environment variables its agent nodes need and, per
- * variable, the command whose standard output is the value. A person authorizes the fetch in the
- * desktop app; the main process runs each command once, holds the values in memory only, and
- * injects them into the agent nodes it opens for that project. Docs: docs/project-secrets.md.
+ * variable, where the value comes from: the command whose standard output is the value, or (no
+ * command) the person pasting it in the app. A person authorizes the fetch or types the value in the
+ * desktop app; the main process holds the values in memory only and injects them into the agent
+ * nodes it opens for that project. Docs: docs/project-secrets.md.
  *
  * This file holds what every side may know: the declaration shape (git-shared, hostile input), the
  * names and states the renderer is shown, and the cross-project policy. It never holds a VALUE —
@@ -13,11 +14,24 @@
  * secret manager; a declaration names a command, and that command may be anything executable.
  */
 
-/** One declared secret. `command` is an argv array and is run WITHOUT a shell. */
+/**
+ * One declared secret. `command` is an argv array and is run WITHOUT a shell; with no `command` the
+ * person pastes the value into a window main opens (never into the canvas window).
+ */
 export interface ProjectSecretDecl {
   env: string
-  command: string[]
+  command?: string[]
 }
+
+/** Where a declared secret's value comes from. */
+export type ProjectSecretInput = 'command' | 'paste'
+
+export function secretInput(d: ProjectSecretDecl): ProjectSecretInput {
+  return d.command ? 'command' : 'paste'
+}
+
+/** Longest pasted value main accepts over IPC before validating it (characters). */
+export const SECRET_PASTE_MAX_CHARS = 32 * 1024
 
 export const PROJECT_SECRETS_MAX = 32
 export const SECRET_COMMAND_ARGS_MAX = 64
@@ -120,25 +134,29 @@ export function sanitizeSecretDecls(v: unknown): ProjectSecretDecl[] | undefined
   for (const entry of v) {
     if (out.length >= PROJECT_SECRETS_MAX) break
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
-    const env = (entry as Record<string, unknown>).env
+    const rec = entry as Record<string, unknown>
+    const env = rec.env
     if (!isValidSecretName(env)) continue
-    const command = sanitizeCommand((entry as Record<string, unknown>).command)
-    if (!command) continue
+    // No `command` key = pasted by the person. A `command` that is present but malformed is
+    // dropped, never read as "paste": a typo must not turn a fetch into a different input.
+    const pasted = rec.command === undefined
+    const command = pasted ? undefined : sanitizeCommand(rec.command)
+    if (!pasted && !command) continue
     const key = env.toUpperCase()
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ env, command })
+    out.push(command ? { env, command } : { env })
   }
   return out.length ? out : undefined
 }
 
 /**
  * Binds a held value to the exact declaration it was fetched with. A changed command (a pulled
- * commit, a hand edit) leaves the old value un-injected until the person authorizes again: the
- * person approved THAT command, not whatever the file says now.
+ * commit, a hand edit), or a switch between pasted and fetched, leaves the old value un-injected
+ * until the person authorizes again: the person approved THAT input, not whatever the file says now.
  */
 export function secretDeclKey(d: ProjectSecretDecl): string {
-  return JSON.stringify([d.env, d.command])
+  return JSON.stringify([d.env, d.command ?? null])
 }
 
 /**
@@ -169,7 +187,9 @@ export type ProjectSecretState =
 /** What the renderer is told about one secret. Never a value. */
 export interface ProjectSecretStatus {
   env: string
-  command: string[]
+  input: ProjectSecretInput
+  /** The fetch command (input 'command' only). */
+  command?: string[]
   source: 'local' | 'shared'
   state: ProjectSecretState
   /** Failure only: why, in words that never contain the command's output. */
@@ -201,7 +221,22 @@ export interface ProjectSecretsView {
 
 export type ProjectSecretsAuthorizeResult =
   | { kind: 'cancelled'; view: ProjectSecretsView }
-  | { kind: 'refused'; reason: ProjectSecretsUnsupported | 'nothing-declared' | 'busy'; view: ProjectSecretsView }
+  | {
+      kind: 'refused'
+      /** 'nothing-declared': no secret has a fetch command (pasted ones are pasted, not fetched). */
+      reason: ProjectSecretsUnsupported | 'nothing-declared' | 'busy'
+      view: ProjectSecretsView
+    }
+  | { kind: 'done'; view: ProjectSecretsView }
+
+export type ProjectSecretsPasteResult =
+  | { kind: 'cancelled'; view: ProjectSecretsView }
+  | {
+      kind: 'refused'
+      /** 'not-pasted': no declared secret of that name takes a pasted value. */
+      reason: ProjectSecretsUnsupported | 'not-pasted' | 'busy'
+      view: ProjectSecretsView
+    }
   | { kind: 'done'; view: ProjectSecretsView }
 
 /** What a node opened by another project's agent must do before its terminal starts. */
@@ -215,6 +250,8 @@ export interface ProjectSecretsApi {
   status(projectId: string): Promise<ProjectSecretsView>
   /** Runs the declared commands after the person confirms in a native dialog. Desktop only. */
   authorize(projectId: string): Promise<ProjectSecretsAuthorizeResult>
+  /** Opens main's own small window where the person pastes one secret's value. Desktop only. */
+  paste(projectId: string, env: string): Promise<ProjectSecretsPasteResult>
   /** Drop every value held for the project now. Running agents keep what they started with. */
   clear(projectId: string): Promise<ProjectSecretsView>
   /** For a node opened by another project's agent: may its terminal start, or must the person decide? */

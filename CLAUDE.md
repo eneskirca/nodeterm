@@ -6704,6 +6704,18 @@ and runner: `core/project-secrets.ts`; desktop leg: `main/project-secrets-ipc.ts
 `docs/project-secrets.md`. The design follows established practice and invents no rule — each one
 below names its source:
 
+- **A declaration with no `command` is PASTED** (owner decision, 2026-11-02): the dialog's
+  **Paste value…** asks main (`project-secrets:paste`) to open `main/secret-entry-window.ts`, a
+  separate window modal to the main one, with its own sandboxed preload (`preload/secret-entry.ts`,
+  four channels, never `window.nodeTerminal`), its own renderer entry (`secret-entry.html`, plain DOM,
+  imports nothing but its CSS — guard-tested), `devTools: false`, `spellcheck: false` and an
+  IN-MEMORY session (`partition` without `persist:`). The canvas window never holds the value; main
+  listens only to that window's `webContents.id`, normalizes (line endings at the ends), checks
+  (`valueProblem(v, 'paste')`: a refusal keeps the window open) and closes it on accept. A present
+  but malformed `command` drops the entry; it never becomes a paste. Fetch runs only the command
+  entries and keeps pasted values whose declaration still asks for a paste. The clipboard is left
+  alone (owner decision).
+
 - **The protocol is askpass** (git `GIT_ASKPASS`, ssh `SSH_ASKPASS`): run a program, read the value
   from its stdout, once; one trailing newline stripped; a second line, NUL, invalid UTF-8, an empty
   value, a non-zero exit, more than 64 KiB or 120 s are refused, and the error names the variable

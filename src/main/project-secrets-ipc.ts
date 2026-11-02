@@ -10,6 +10,10 @@
 // cannot start a fetch by itself, and what the person approves is the exact command list main is
 // about to run (`displayCommand`), read from this process's own index and settings, never from the
 // renderer.
+//
+// A pasted secret (a declaration with no command) is typed into a small window this process opens
+// (`secret-entry-window.ts`), never into the canvas window; the click in the Secrets dialog only
+// asks for that window.
 
 import { dialog, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import { IPC } from '../shared/ipc'
@@ -19,6 +23,7 @@ import {
   normalizeCrossProjectSecretsPolicy,
   type CrossProjectSecretsGate,
   type ProjectSecretsAuthorizeResult,
+  type ProjectSecretsPasteResult,
   type ProjectSecretsView
 } from '../shared/project-secrets'
 import {
@@ -27,6 +32,7 @@ import {
   type DeclaredSecret
 } from '../core/project-secrets'
 import type { WorkspaceStore } from '../core/workspace-store'
+import { promptSecretEntry } from './secret-entry-window'
 import type { Settings } from '../shared/types'
 
 export interface ProjectSecretsIpcDeps {
@@ -48,7 +54,7 @@ export async function readDeclarationsFrom(
   const snap = await workspace.readProjectSettings(projectId)
   const resolved = resolveProjectSettings(snap?.local, snap?.shared ?? undefined).agents.secrets
   const secrets: DeclaredSecret[] = (resolved?.value ?? []).map((decl) => ({
-    decl: { env: decl.env, command: [...decl.command] },
+    decl: decl.command ? { env: decl.env, command: [...decl.command] } : { env: decl.env },
     source: resolved!.source
   }))
   return { kind: 'ok', cwd: info.cwd, secrets }
@@ -58,7 +64,7 @@ export async function readDeclarationsFrom(
  *  built before any fetch runs, from declarations only). */
 export function confirmText(projectName: string, secrets: DeclaredSecret[]): { message: string; detail: string } {
   const shared = secrets.some((s) => s.source === 'shared')
-  const lines = secrets.map((s) => `${s.decl.env}  ←  ${displayCommand(s.decl.command)}`)
+  const lines = secrets.map((s) => `${s.decl.env}  ←  ${displayCommand(s.decl.command ?? [])}`)
   return {
     message: `Run ${secrets.length === 1 ? 'this command' : `these ${secrets.length} commands`} for “${projectName}” and give the values to its agent nodes?`,
     detail: [
@@ -92,6 +98,12 @@ export function registerProjectSecretsIpc(deps: ProjectSecretsIpcDeps): ProjectS
         noLink: true
       })
       return answer.response === 1
+    },
+    promptValue: async (projectId, secret, check) => {
+      const win = deps.mainWindow()
+      if (!win || win.isDestroyed()) return null
+      const name = deps.workspace.projectTargetInfo(projectId)?.name ?? 'this project'
+      return promptSecretEntry({ parent: win, projectName: name, env: secret.decl.env, check })
     }
   })
 
@@ -113,6 +125,15 @@ export function registerProjectSecretsIpc(deps: ProjectSecretsIpcDeps): ProjectS
       const pid = id(projectId)
       if (!fromMain(event) || !pid) return { kind: 'refused', reason: 'unsupported', view: refusedView }
       return service.authorize(pid)
+    }
+  )
+  ipcMain.handle(
+    IPC.projectSecretsPaste,
+    async (event, projectId: unknown, env: unknown): Promise<ProjectSecretsPasteResult> => {
+      const pid = id(projectId)
+      const name = typeof env === 'string' && env.length > 0 && env.length <= 128 ? env : null
+      if (!fromMain(event) || !pid || !name) return { kind: 'refused', reason: 'unsupported', view: refusedView }
+      return service.paste(pid, name)
     }
   )
   ipcMain.handle(IPC.projectSecretsClear, async (event, projectId: unknown): Promise<ProjectSecretsView> => {

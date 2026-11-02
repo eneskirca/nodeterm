@@ -5,7 +5,9 @@
  */
 import type {
   ProjectSecretState,
+  ProjectSecretStatus,
   ProjectSecretsAuthorizeResult,
+  ProjectSecretsPasteResult,
   ProjectSecretsUnsupported,
   ProjectSecretsView
 } from '@shared/project-secrets'
@@ -29,13 +31,40 @@ export function secretsMenuOffered(project: { cwd?: string; ssh?: unknown; remot
   return !browser && !project.remote && !project.ssh && !!project.cwd
 }
 
+/** The secrets whose value comes from a command (the Fetch button runs those; pasted ones have
+ *  their own button per row). */
+export function fetchedSecrets(view: ProjectSecretsView | null): ProjectSecretStatus[] {
+  return view?.secrets.filter((s) => s.input === 'command') ?? []
+}
+
 /** The Fetch button's label: "again" once anything was fetched or attempted this run. */
 export function fetchButtonLabel(view: ProjectSecretsView): string {
-  return view.secrets.some((s) => s.state !== 'not-fetched') ? 'Fetch again…' : 'Fetch secrets…'
+  return fetchedSecrets(view).some((s) => s.state !== 'not-fetched') ? 'Fetch again…' : 'Fetch secrets…'
+}
+
+/** Is the Fetch button shown at all? Only when some secret has a command. */
+export function fetchOffered(view: ProjectSecretsView | null): boolean {
+  return !!view && !view.unavailable && fetchedSecrets(view).length > 0
 }
 
 export function canFetch(view: ProjectSecretsView | null, busy: boolean): boolean {
-  return !!view && !busy && !view.unavailable && view.secrets.length > 0
+  return !busy && fetchOffered(view)
+}
+
+/** A pasted row's button: "Replace" once a value is held for it. */
+export function pasteButtonLabel(s: ProjectSecretStatus): string {
+  return s.state === 'available' ? 'Replace value…' : 'Paste value…'
+}
+
+/** One line after a paste attempt. */
+export function pasteSummary(env: string, r: ProjectSecretsPasteResult): string | null {
+  if (r.kind === 'cancelled') return `Nothing was kept for ${env}.`
+  if (r.kind === 'refused') {
+    if (r.reason === 'not-pasted') return `${env} is no longer declared as a pasted secret.`
+    if (r.reason === 'busy') return 'Another fetch or paste for this project is still open.'
+    return SECRETS_UNAVAILABLE_TEXT[r.reason]
+  }
+  return `${env} is in memory.`
 }
 
 export function canClear(view: ProjectSecretsView | null, busy: boolean): boolean {
@@ -46,7 +75,7 @@ export function canClear(view: ProjectSecretsView | null, busy: boolean): boolea
 export function authorizeSummary(r: ProjectSecretsAuthorizeResult): string | null {
   if (r.kind === 'cancelled') return 'Nothing was fetched.'
   if (r.kind === 'refused') {
-    if (r.reason === 'nothing-declared') return 'This project declares no secrets.'
+    if (r.reason === 'nothing-declared') return 'This project declares no secrets that are fetched by a command.'
     if (r.reason === 'busy') return 'A fetch for this project is already running.'
     return SECRETS_UNAVAILABLE_TEXT[r.reason]
   }
@@ -57,12 +86,13 @@ export function authorizeSummary(r: ProjectSecretsAuthorizeResult): string | nul
   return parts.join(', ') + '.'
 }
 
-/** The example declaration shown when a project declares none. Generic on purpose: any program
- *  that prints the value works. */
+/** The example declaration shown when a project declares none: one pasted, one fetched. Generic
+ *  on purpose: any program that prints the value works. */
 export const SECRETS_EXAMPLE = `{
   "agents": {
     "secrets": [
-      { "env": "API_TOKEN", "command": ["./scripts/print-api-token"] }
+      { "env": "API_TOKEN" },
+      { "env": "DB_PASSWORD", "command": ["./scripts/print-db-password"] }
     ]
   }
 }`

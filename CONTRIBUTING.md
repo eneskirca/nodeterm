@@ -1490,6 +1490,9 @@ agent nodes (user doc: `docs/project-secrets.md`). Rules a change must keep:
 - **A value is never written anywhere**: not to a settings, state, log, temp or session-host file,
   not to an encrypted store, not to the renderer. `src/core/project-secrets.ts` is the only holder
   (`Buffer`s, zeroed on clear); the renderer and every bridge see names and states only.
+- **A pasted value is typed into main's own window** (`main/secret-entry-window.ts`), never into the
+  canvas window: its page imports no app code and its session is in memory. Do not add a value field
+  to the Secrets dialog.
 - **Only the person starts a fetch**: the Secrets dialog's button is the one renderer call site,
   main raises its own native confirmation, the channels are host-only and main-window-only, and no
   canvas-control verb, hook or relay method reaches the holder. `project-secrets.guard.test.ts`

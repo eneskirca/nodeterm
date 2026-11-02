@@ -6,7 +6,8 @@ import {
   isReservedSecretName,
   normalizeCrossProjectSecretsPolicy,
   sanitizeSecretDecls,
-  secretDeclKey
+  secretDeclKey,
+  secretInput
 } from './project-secrets'
 import { sanitizeProjectSettingsDoc, resolveProjectSettings } from './project-settings'
 import { SETTINGS_VERB_FORBIDDEN_PATTERN } from './settings-verb'
@@ -62,6 +63,19 @@ describe('sanitizeSecretDecls — settings.json is git-shared hostile input', ()
     })
     expect(resolveProjectSettings(local, shared).agents.secrets?.source).toBe('local')
     expect(sanitizeProjectSettingsDoc({ agents: { secrets: 'nope' } }).agents).toBeUndefined()
+  })
+})
+
+describe('pasted declarations', () => {
+  it('an entry with no command key is pasted; a present but malformed command is dropped', () => {
+    expect(sanitizeSecretDecls([{ env: 'A_TOKEN' }, { env: 'B_TOKEN', command: 'echo x' }, { env: 'C_TOKEN', command: null }])).toEqual([
+      { env: 'A_TOKEN' }
+    ])
+    expect(secretInput({ env: 'A' })).toBe('paste')
+    expect(secretInput({ env: 'A', command: ['x'] })).toBe('command')
+  })
+  it('switching between pasted and fetched changes the binding', () => {
+    expect(secretDeclKey({ env: 'A' })).not.toBe(secretDeclKey({ env: 'A', command: ['x'] }))
   })
 })
 
