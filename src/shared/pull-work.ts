@@ -120,7 +120,8 @@ export function pullFetchPlan(req: PullFetchRequest): { fetch: string[]; startPo
   if (fork) {
     return { fetch: ['fetch', '--no-tags', 'origin', `refs/pull/${number}/head:refs/heads/${branch}`], startPoint: branch, isNew: false }
   }
-  if (!isPullBranchName(headRef)) return null
+  // `HEAD` would write through the symbolic `origin/HEAD` and move another branch's tracking ref.
+  if (!isPullBranchName(headRef) || headRef === 'HEAD') return null
   return {
     fetch: ['fetch', '--no-tags', 'origin', `+refs/heads/${headRef}:refs/remotes/origin/${headRef}`],
     startPoint: `origin/${headRef}`,

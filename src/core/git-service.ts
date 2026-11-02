@@ -440,6 +440,8 @@ export class GitService {
     const fetched = await git(repoPath, plan.fetch)
     if (!fetched.ok) return { ok: false, message: `Could not fetch the pull request: ${fail(fetched).message}` }
     const added = await worktreeOps.worktreeAdd(git, repoPath, wtPath, req.branch, plan.startPoint, plan.isNew)
+    // ponytail: a branch of the same name made by hand between the check above and the fetch would be
+    // fast-forwarded, and deleted here on a failed add; the window is one local git call wide.
     if (!added.ok && !plan.isNew) await git(repoPath, ['branch', '-D', req.branch])
     return added
   }

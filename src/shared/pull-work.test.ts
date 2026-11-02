@@ -95,7 +95,7 @@ describe('pullFetchPlan', () => {
     expect(pullFetchPlan({ ...ok, branch: 'pr-8-x' })).toBeNull()
     expect(pullFetchPlan({ ...ok, branch: 'pr-7-x:refs/heads/main' })).toBeNull()
     expect(pullFetchPlan({ ...ok, number: 0 })).toBeNull()
-    for (const headRef of ['-x', 'a..b', 'a:b', 'a b', 'x.lock', '']) {
+    for (const headRef of ['-x', 'a..b', 'a:b', 'a b', 'x.lock', '', 'HEAD']) {
       expect(pullFetchPlan({ ...ok, headRef })).toBeNull()
     }
     // A fork's head name never reaches git, so it is not judged.
