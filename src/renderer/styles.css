@@ -13594,6 +13594,11 @@ button.pull-checks__name {
   animation: nt-pulse 1.1s ease-in-out infinite;
   animation-play-state: var(--nt-anim-state);
 }
+/* Settings → Appearance → Pulse RUNNING on board cards off (`settings.boardRunningPulse`; App.tsx
+   sets the attribute): the same chip, held still. The node header's badge keeps its motion. */
+:root[data-nt-board-pulse='off'] .kanban-badge--running {
+  animation: none;
+}
 .kanban-badge--needs {
   color: var(--attention-text);
   background: color-mix(in srgb, var(--state-attention) 12%, transparent);

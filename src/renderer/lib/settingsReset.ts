@@ -45,6 +45,7 @@ export const APPEARANCE_RESET_KEYS = [
   'hiddenHeaderButtons',
   'showResumeCard',
   'canvasDots',
+  'boardRunningPulse',
   'glassTint',
   'glassBlurWhileMoving',
   'windowTitleActiveSession',
