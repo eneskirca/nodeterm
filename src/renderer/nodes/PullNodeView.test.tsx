@@ -19,11 +19,16 @@ const detail: GitHubPullDetail = {
 function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult = {
   status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [{ name: 'test', state: 'passed' }]
 }, conversation: GitHubPullConversationResult = { status: 'ok', items: [], truncated: false, observedAt: 1 }):
-  PullNodeApi & { pullDetail: ReturnType<typeof vi.fn>; pullChecks: ReturnType<typeof vi.fn>; pullConversation: ReturnType<typeof vi.fn> } {
+  PullNodeApi & {
+    pullDetail: ReturnType<typeof vi.fn>; pullChecks: ReturnType<typeof vi.fn>; pullConversation: ReturnType<typeof vi.fn>
+    commentOnPull: ReturnType<typeof vi.fn>; reviewPull: ReturnType<typeof vi.fn>
+  } {
   return {
     pullDetail: vi.fn(async () => result),
     pullChecks: vi.fn(async () => checks),
-    pullConversation: vi.fn(async () => conversation)
+    pullConversation: vi.fn(async () => conversation),
+    commentOnPull: vi.fn(async () => ({ ok: true as const })),
+    reviewPull: vi.fn(async () => ({ ok: true as const }))
   }
 }
 
@@ -32,14 +37,15 @@ let root: ReturnType<typeof createRoot>
 afterEach(() => { act(() => root.unmount()); host.remove() })
 
 async function render(
-  api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'overview', onTab = vi.fn(), onOpenExternal = vi.fn()
+  api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'overview', onTab = vi.fn(), onOpenExternal = vi.fn(),
+  onWritten = vi.fn()
 ): Promise<HTMLDivElement> {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
     root.render(<PullNodeView api={api} projectId="p" pull={{ repository, pullNumber: 7, tab }}
-      refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} />)
+      refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} onWritten={onWritten} />)
   })
   // The markdown renderer is a lazy chunk; let it land.
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
@@ -93,7 +99,7 @@ describe('PullNodeView overview', () => {
     await render(api)
     await act(async () => {
       root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
-        refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} />)
+        refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} />)
     })
     expect(api.pullDetail).toHaveBeenCalledTimes(2)
   })
@@ -164,7 +170,7 @@ describe('PullNodeView tab switching', () => {
     await render(api)
     const show = async (tab: PullNodeTab) => act(async () => {
       root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab }}
-        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} />)
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} />)
     })
     await show('conversation')
     await show('overview')
@@ -172,5 +178,93 @@ describe('PullNodeView tab switching', () => {
     expect(api.pullDetail).toHaveBeenCalledTimes(1)
     expect(api.pullConversation).toHaveBeenCalledTimes(1)
     expect(host.querySelector('.pull-node__overview')?.closest('[hidden]')).not.toBeNull()
+  })
+})
+
+function type(ta: HTMLTextAreaElement, text: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+  setter.call(ta, text)
+  ta.dispatchEvent(new Event('input', { bubbles: true }))
+}
+const button = (view: HTMLElement, label: string) =>
+  [...view.querySelectorAll('button')].find((el) => el.textContent === label) as HTMLButtonElement
+
+describe('PullNodeView composer', () => {
+  it('posts a comment, clears the draft and refreshes the node', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
+    const box = view.querySelector('textarea')!
+    expect(button(view, 'Comment').disabled).toBe(true)
+    await act(async () => { type(box, 'Looks good') })
+    await act(async () => { button(view, 'Comment').click() })
+    expect(api.commentOnPull).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, body: 'Looks good' })
+    expect(box.value).toBe('')
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('approves with an optional message against the head commit of the latest detail read', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    const view = await render(api, 'o/r', 'conversation')
+    await act(async () => { button(view, 'Approve').click() })
+    expect(api.reviewPull).toHaveBeenCalledWith({
+      projectId: 'p', repository: 'o/r', pullNumber: 7, event: 'APPROVE', body: '', headSha: 'c'.repeat(40)
+    })
+  })
+
+  it('needs a message to request changes', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    const view = await render(api, 'o/r', 'conversation')
+    expect(button(view, 'Request changes').disabled).toBe(true)
+    await act(async () => { type(view.querySelector('textarea')!, 'Fix the test') })
+    await act(async () => { button(view, 'Request changes').click() })
+    expect(api.reviewPull).toHaveBeenCalledWith(expect.objectContaining({ event: 'REQUEST_CHANGES', body: 'Fix the test' }))
+  })
+
+  it('disables every button while a write runs', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    let land!: (value: { ok: true }) => void
+    api.commentOnPull.mockImplementation(() => new Promise((resolve) => { land = resolve }))
+    const view = await render(api, 'o/r', 'conversation')
+    await act(async () => { type(view.querySelector('textarea')!, 'x') })
+    await act(async () => { button(view, 'Comment').click() })
+    expect(['Comment', 'Approve', 'Request changes'].map((label) => button(view, label).disabled)).toEqual([true, true, true])
+    await act(async () => { button(view, 'Comment').click() })
+    expect(api.commentOnPull).toHaveBeenCalledTimes(1)
+    await act(async () => { land({ ok: true }) })
+    expect(button(view, 'Approve').disabled).toBe(false)
+  })
+
+  it.each([
+    ['own-pull', 'your own pull request'],
+    ['forbidden', 'write access'],
+    ['throttled', 'throttling'],
+    ['signed-out', 'sign in'],
+    ['not-approved', 'approve'],
+    ['validation', 'refused'],
+    ['network', 'could not be reached']
+  ] as const)('says what a %s refusal means and keeps the draft', async (reason, words) => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.reviewPull.mockResolvedValue({ ok: false, reason })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
+    await act(async () => { type(view.querySelector('textarea')!, 'Ship it') })
+    await act(async () => { button(view, 'Approve').click() })
+    expect(view.querySelector('[role="alert"]')?.textContent?.toLowerCase()).toContain(words)
+    expect(view.querySelector('textarea')!.value).toBe('Ship it')
+    expect(onWritten).not.toHaveBeenCalled()
+  })
+
+  it('keeps the draft across a tab switch', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    await render(api, 'o/r', 'conversation')
+    await act(async () => { type(host.querySelector('textarea')!, 'half a thought') })
+    for (const tab of ['overview', 'conversation'] as const) {
+      await act(async () => {
+        root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab }}
+          refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} />)
+      })
+    }
+    expect(host.querySelector('textarea')!.value).toBe('half a thought')
   })
 })

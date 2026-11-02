@@ -18890,3 +18890,33 @@ body.focus-mode .dock:hover {
 .pull-convo__verdict--approved { background: color-mix(in srgb, var(--success) 30%, transparent); }
 .pull-convo__verdict--changes-requested { background: color-mix(in srgb, var(--danger) 30%, transparent); }
 .pull-convo__item .pull-node__md { margin: 6px 0 0; padding: 0; border: 0; }
+.pull-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.pull-compose__box {
+  min-height: 72px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-sunken);
+  font: inherit;
+  resize: vertical;
+}
+.pull-compose__box:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pull-compose__error { margin: 0; color: var(--danger); line-height: 1.5; }
+.pull-compose__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.pull-compose__button {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-strong);
+  background: rgba(var(--tint-rgb), 0.08);
+  font: inherit;
+  cursor: pointer;
+}
+.pull-compose__button:hover:not(:disabled) { background: rgba(var(--tint-rgb), 0.14); }
+.pull-compose__button:disabled { opacity: 0.5; cursor: default; }

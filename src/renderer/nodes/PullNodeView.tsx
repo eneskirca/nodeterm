@@ -5,7 +5,10 @@ import type {
   GitHubPullDetailResult,
   PullReadFailure,
   PullRefusal,
-  PullReviewVerdict
+  PullReviewEvent,
+  PullReviewVerdict,
+  PullWriteReason,
+  PullWriteResult
 } from '@shared/github-pull-detail'
 import type { PullLifecycle } from '@shared/github-pull-status'
 import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-node'
@@ -13,7 +16,9 @@ import { NoteMarkdown } from '../components/NoteMarkdown'
 import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
 import { mergeLabel } from '../components/kanban/PullStatusBadges'
 
-export type PullNodeApi = Pick<GitHubIssuesApi, 'pullDetail' | 'pullChecks' | 'pullConversation'>
+export type PullNodeApi = Pick<
+  GitHubIssuesApi, 'pullDetail' | 'pullChecks' | 'pullConversation' | 'commentOnPull' | 'reviewPull'
+>
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
 const REFUSAL_TEXT: Record<PullRefusal, (repository: string) => string> = {
@@ -38,6 +43,17 @@ const STALE_TEXT: Record<PullReadFailure, string> = {
   'signed-out': 'GitHub refused the token: showing the last loaded version.'
 }
 
+/** One sentence per write refusal (merge, ticket 05, adds its own reasons here). */
+const WRITE_TEXT: Record<PullWriteReason, string> = {
+  'own-pull': 'GitHub does not let you approve or request changes on your own pull request. Leave a comment instead.',
+  forbidden: 'Your GitHub token may not write to this repository. Give it Pull requests write access, then try again.',
+  throttled: 'GitHub is throttling requests. Try again in a minute.',
+  'signed-out': 'GitHub refused the token. Sign in again from the board\'s GitHub settings.',
+  'not-approved': 'This repository is not approved on this machine. Approve it in the board\'s GitHub settings.',
+  validation: 'GitHub refused the request. Refresh the pull request, then try again.',
+  network: 'GitHub could not be reached. Check the connection, then try again.'
+}
+
 const LIFECYCLE_TEXT: Record<PullLifecycle, string> = {
   open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed'
 }
@@ -55,6 +71,8 @@ type ViewProps = {
   pull: PullNodeRef
   refreshTick: number
   onOpenExternal: (url: string) => void
+  /** A write landed: the node reads again (the core dropped its held reads for this PR). */
+  onWritten: () => void
 }
 
 /** A bridge call that rejected (a dropped socket) reads as unreachable. */
@@ -172,10 +190,42 @@ function PullOverview(props: ViewProps): React.JSX.Element {
   )
 }
 
-/** The Conversation tab: comments and reviews, oldest first. Ticket 04's composer goes below the list. */
+/** The write reason for a detail read that gave no head commit to review against. */
+function detailReason(result: Exclude<GitHubPullDetailResult, { status: 'ok' }>): PullWriteReason {
+  if (result.reason === 'signed-out') return 'signed-out'
+  if (result.status === 'refused') return 'not-approved'
+  return result.reason === 'throttled' ? 'throttled' : 'network'
+}
+
+/** The Conversation tab: comments and reviews, oldest first, then the composer. The draft lives here
+ *  (the tab stays mounted), so it survives a tab switch; it is never persisted. */
 function PullConversation(props: ViewProps): React.JSX.Element {
-  const result = usePullRead(props.api.pullConversation, props)
-  if (result === 'loading' || result.status !== 'ok') return readState(result, props.pull.repository)
+  const { api, projectId, pull, onWritten } = props
+  const result = usePullRead(api.pullConversation, props)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
+  const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
+
+  const run = async (write: () => Promise<PullWriteResult>) => {
+    if (busy) return
+    setBusy(true)
+    setRefusal(null)
+    const outcome = await write().catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
+    setBusy(false)
+    if (!outcome.ok) { setRefusal(outcome.reason); return }
+    setDraft('')
+    onWritten()
+  }
+  // The review is tied to the head of the latest detail read (inside the core's 30 s floor that is
+  // the one the Overview showed), so GitHub refuses it if the PR moved since.
+  const review = (event: PullReviewEvent) => run(async () => {
+    const read = await api.pullDetail(projectId, pull.repository, pull.pullNumber)
+    if (read.status !== 'ok') return { ok: false, reason: detailReason(read) }
+    return api.reviewPull({ ...at, event, body: draft, headSha: read.detail.head.sha })
+  })
+
+  if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   return (
     <div className="pull-node__conversation">
       {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
@@ -198,6 +248,18 @@ function PullConversation(props: ViewProps): React.JSX.Element {
             ))}
           </ol>
         )}
+      <div className="pull-compose">
+        <textarea className="pull-compose__box" aria-label="Comment" placeholder="Write a comment or a review message"
+          value={draft} onChange={(event) => setDraft(event.target.value)} />
+        {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
+        <div className="pull-compose__actions">
+          <button className="pull-compose__button" disabled={busy || !draft.trim()}
+            onClick={() => void run(() => api.commentOnPull({ ...at, body: draft }))}>Comment</button>
+          <button className="pull-compose__button" disabled={busy} onClick={() => void review('APPROVE')}>Approve</button>
+          <button className="pull-compose__button" disabled={busy || !draft.trim()}
+            onClick={() => void review('REQUEST_CHANGES')}>Request changes</button>
+        </div>
+      </div>
     </div>
   )
 }
