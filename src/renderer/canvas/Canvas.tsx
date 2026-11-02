@@ -115,8 +115,8 @@ import {
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
-import type { PullNodeRef } from '@shared/pull-node'
-import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
+import { normalizePullRef, pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
+import { openPrArgsRefusal, planOpenPr, pullNumberArg } from '@shared/open-pr-verb'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -11673,6 +11673,52 @@ export function Canvas() {
     ]
   }, [])
 
+  // The add menu's "Pull request…": one of the open PRs the board's poll already holds (no new
+  // read), or a typed number for a closed or merged one. The repository is the host's approved one,
+  // as for `open-pr`. An existing node for that PR is framed instead of a second one.
+  const addPull = useCallback(
+    async (at?: { x: number; y: number }) => {
+      const projectId = useProjects.getState().activeProjectId
+      if (!projectId) return
+      const toast = (message: string): void => {
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+      }
+      const { api } = sessionForProject(projectId)
+      const [repo, board] = await Promise.all([
+        api.githubControl.status(projectId).then((v) => v.project, () => undefined),
+        api.githubIssues.pullStatus(projectId).catch(() => undefined)
+      ])
+      if (!repo?.approved || !repo.repository) {
+        toast('This project has no approved GitHub repository. Connect its board first.')
+        return
+      }
+      const input = await promptDialog({
+        message: `Open a pull request of ${repo.repository}. Pick an open one, or type a number:`,
+        placeholder: '#123',
+        confirmLabel: 'Open',
+        choices: pullPickerChoices(board)
+      })
+      if (input === null) return
+      const ref = normalizePullRef({ repository: repo.repository, pullNumber: pullNumberArg(input), tab: 'overview' })
+      if (!ref) {
+        toast('Type a pull request number, for example 123.')
+        return
+      }
+      // The awaits above are where a tab switch can land; never write into another project.
+      if (useProjects.getState().activeProjectId !== projectId) return
+      const key = ref.repository.toLowerCase()
+      const existing = nodesRef.current.find((n) => n.type === 'pull' &&
+        n.data.pull?.pullNumber === ref.pullNumber && n.data.pull.repository.toLowerCase() === key)
+      if (existing) {
+        travelToNodeRef.current(existing.id)
+        return
+      }
+      setNodes((ns) => [...ns, createPullNode(ns.length, ref.repository, ref.pullNumber, at ?? emptyNodePos())])
+      markDirty()
+    },
+    [setNodes, markDirty, emptyNodePos]
+  )
+
   // The shared bag of creation callbacks + project context that every "add" menu derives its
   // CONTENT items from (see lib/addMenuSpec.ts). Built once here so the pane menu, the sidebar
   // project-header "+", and any other ContextMenu-based surface pass the same handlers and can no
@@ -11701,6 +11747,7 @@ export function Canvas() {
       dino: (at) => addDino(at),
       whiteboard: (at) => addWhiteboard(at),
       trigger: (at) => addTrigger(at),
+      pull: (at) => void addPull(at),
       openFile: (at) => void openFileDialog(at),
       newFile: (at) => void newProjectFile(at),
       spawnTeam: (at) => setSpawnTeamDialog({ at }),
@@ -11718,6 +11765,7 @@ export function Canvas() {
       addDino,
       addWhiteboard,
       addTrigger,
+      addPull,
       openFileDialog,
       newProjectFile,
       openWorktreeDialog
@@ -20930,6 +20978,7 @@ export function Canvas() {
         onAddDino={addDino}
         onAddWhiteboard={addWhiteboard}
         onAddTrigger={addTrigger}
+        onAddPull={() => void addPull()}
         onAddFiles={() => addFiles()}
         onAddRun={() => void addRun()}
         onAddSimulator={() => addSimulator()}

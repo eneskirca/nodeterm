@@ -11,6 +11,7 @@ interface PromptOptions {
   placeholder?: string
   confirmLabel?: string
   maxLength?: number
+  choices?: { label: string; value: string }[]
 }
 
 interface PromptState {
@@ -63,6 +64,7 @@ export function PromptDialogHost() {
       placeholder={current.placeholder}
       confirmLabel={current.confirmLabel}
       maxLength={current.maxLength}
+      choices={current.choices}
       onSubmit={submit}
       onCancel={cancel}
     />

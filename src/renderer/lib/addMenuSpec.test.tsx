@@ -32,6 +32,7 @@ const handlers = (overrides: Partial<AddHandlers> = {}): AddHandlers => ({
   web: noop,
   sticky: noop,
   files: noop,
+  pull: noop,
   run: noop,
   simulator: noop,
   dino: noop,
@@ -54,6 +55,7 @@ const allKinds: AddItem['kind'][] = [
   'web',
   'sticky',
   'files',
+  'pull',
   'dino',
   'trigger',
   'open-file',
@@ -107,6 +109,21 @@ describe('Simulator row', () => {
   })
 })
 
+describe('Pull request row', () => {
+  it('opens the PR picker from the menu and the Dock, where the Dock row comes from the same list', () => {
+    const calls: unknown[] = []
+    const h = handlers({ pull: (at) => calls.push(at ?? 'dock') })
+    const ctx = { hasCwd: true, isSshProject: false }
+    const row = contentAddItemsToMenuItems(CONTENT_ADD_ITEMS, h, ctx, { x: 4, y: 2 })
+      .find((i) => 'label' in i && i.label === 'Pull request…')
+    const dock = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, h, ctx).find((r) => r.kind === 'pull')
+    expect(dock).toMatchObject({ label: 'Pull request…' })
+    if (row && 'onClick' in row) row.onClick()
+    dock?.onClick()
+    expect(calls).toEqual([{ x: 4, y: 2 }, 'dock'])
+  })
+})
+
 describe('CONTENT_ADD_ITEMS', () => {
   it('lists every content kind in the canonical order', () => {
     expect(CONTENT_ADD_ITEMS.map((i) => i.kind)).toEqual(allKinds)
@@ -131,6 +148,7 @@ describe('contentAddItemsToMenuItems', () => {
       'New web view…',
       'New sticky note',
       'New file manager',
+      'Pull request…',
       'New dino game',
       'New trigger…',
       'Open file…',
@@ -237,6 +255,7 @@ describe('contentAddItemsToDockRows', () => {
       'web',
       'sticky',
       'files',
+      'pull',
       'dino',
       'trigger',
       'open-file',
@@ -367,6 +386,7 @@ describe('buildGroupedAddMenu', () => {
       'New web view…',
       'New sticky note',
       'New file manager',
+      'Pull request…',
       'New dino game'
     ])
     expect(children(ADD_GROUP_LABEL.files)).toEqual(['Open file…', 'New file…'])
@@ -497,6 +517,7 @@ describe('buildGroupedAddMenu', () => {
       web: () => calls.push('web'),
       sticky: () => calls.push('sticky'),
       files: () => calls.push('files'),
+      pull: () => calls.push('pull'),
       dino: () => calls.push('dino'),
       whiteboard: () => calls.push('whiteboard'),
       trigger: () => calls.push('trigger'),
@@ -518,6 +539,7 @@ describe('buildGroupedAddMenu', () => {
       'files',
       'newFile',
       'openFile',
+      'pull',
       'remote',
       'scopedCheckout',
       'spawnTeam',

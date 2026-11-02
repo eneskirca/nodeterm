@@ -68,6 +68,7 @@ export type AddItem =
   | { kind: 'sticky' }
   | { kind: 'whiteboard' }
   | { kind: 'files' } // requiresCwd
+  | { kind: 'pull' } // opens the PR picker (the project's approved repository)
   | { kind: 'dino' }
   | { kind: 'trigger' }
   | { kind: 'open-file' }
@@ -92,6 +93,7 @@ export const CONTENT_ADD_ITEMS: readonly AddItem[] = [
   { kind: 'web' },
   { kind: 'sticky' },
   { kind: 'files' },
+  { kind: 'pull' },
   { kind: 'dino' },
   { kind: 'trigger' },
   { kind: 'open-file' },
@@ -133,6 +135,8 @@ export interface AddHandlers {
   web: (at?: AddPos) => void
   sticky: (at?: AddPos) => void
   files: (at?: AddPos) => void
+  /** Opens the pull request picker; the chosen PR's node lands at `at`. */
+  pull: (at?: AddPos) => void
   dino: (at?: AddPos) => void
   whiteboard: (at?: AddPos) => void
   /** Adds a trigger node (issue #493) — a canvas-owned schedule that fires into another node. */
@@ -263,6 +267,9 @@ export function contentAddItemsToMenuItems(
           onClick: () => handlers.files(at)
         })
         break
+      case 'pull':
+        out.push({ label: 'Pull request…', icon: <IconBranch />, onClick: () => handlers.pull(at) })
+        break
       case 'whiteboard':
         out.push({ label: 'New whiteboard', icon: <IconWhiteboard />, onClick: () => handlers.whiteboard(at) })
         break
@@ -384,6 +391,9 @@ export function contentAddItemsToDockRows(
           onClick: () => handlers.files()
         })
         break
+      case 'pull':
+        out.push({ kind: 'pull', label: 'Pull request…', icon: <IconBranch />, onClick: () => handlers.pull() })
+        break
       case 'whiteboard':
         out.push({ kind: 'whiteboard', label: 'Whiteboard', icon: <IconWhiteboard />, onClick: () => handlers.whiteboard() })
         break
@@ -465,6 +475,7 @@ export const ADD_ITEM_GROUP: Record<AddItem['kind'], AddGroupId> = {
   web: 'view',
   sticky: 'view',
   files: 'view',
+  pull: 'view',
   dino: 'view',
   whiteboard: 'view',
   'open-file': 'files',

@@ -15,7 +15,7 @@ export function openPrArgsRefusal(args: Record<string, string | undefined>): str
   return pullNumberArg(args.pr) ? null : 'open-pr requires --pr <number> (the number `gh pr create` printed)'
 }
 
-function pullNumberArg(value: string | undefined): number | undefined {
+export function pullNumberArg(value: string | undefined): number | undefined {
   const raw = (value ?? '').trim().replace(/^#/, '')
   const n = /^\d+$/.test(raw) ? Number(raw) : NaN
   return n >= 1 && n <= 2_147_483_647 ? n : undefined

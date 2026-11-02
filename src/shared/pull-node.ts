@@ -3,6 +3,7 @@
 // read from that hand-editable file, so every load re-validates it (`normalizePullRef`).
 
 import { parseRepository } from './github-issue-ref'
+import type { GitHubPullBoard } from './github-pull-status'
 
 export type PullNodeTab = 'overview' | 'files' | 'conversation'
 
@@ -40,6 +41,15 @@ export function pullRefFromHtmlUrl(htmlUrl: unknown, expectedNumber: number): Pu
   const m = /^https:\/\/github\.com\/([^/?#]+\/[^/?#]+)\/pull\/(\d+)$/.exec(htmlUrl)
   if (!m || Number(m[2]) !== expectedNumber) return undefined
   return normalizePullRef({ repository: m[1], pullNumber: expectedNumber, tab: 'overview' })
+}
+
+/** The add-menu picker's rows: the open and draft PRs the board's poll already holds (no new
+ *  read), newest number first. A closed or merged PR is not in that poll; the user types its number. */
+export function pullPickerChoices(board: GitHubPullBoard | undefined): { label: string; value: string }[] {
+  return (board?.pulls ?? [])
+    .filter((p) => p.lifecycle === 'open' || p.lifecycle === 'draft')
+    .sort((a, b) => b.number - a.number)
+    .map((p) => ({ label: `#${p.number} ${p.headRefName}${p.lifecycle === 'draft' ? ' (draft)' : ''}`, value: String(p.number) }))
 }
 
 /** Where a PR lives on github.com, from the reference alone (no read needed). */

@@ -7302,6 +7302,21 @@ body,
   resize: vertical;
 }
 
+/* One-click answers above a prompt's field (the add menu's pull request picker). */
+.confirm__choices {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: -6px 0 14px;
+}
+
+.confirm__choices .confirm__btn {
+  text-align: left;
+}
+
 .confirm__input:focus {
   outline: none;
   border-color: var(--accent);
