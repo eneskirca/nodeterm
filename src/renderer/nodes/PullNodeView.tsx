@@ -669,7 +669,7 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
   // The head an update was started from: GitHub updates in the background (202), so until the
   // node reads a new head the button stays off and the node says it is under way.
   const [updatedFrom, setUpdatedFrom] = useState<string | null>(null)
-  const updating = updatedFrom === d.head.sha
+  const updating = updatedFrom === d.head.sha && block?.kind === 'behind'
   const update = useWrite(() => { setUpdatedFrom(d.head.sha); onWritten() })
 
   const show = () => {

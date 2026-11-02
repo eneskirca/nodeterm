@@ -6221,11 +6221,16 @@ export function Canvas() {
       }
     }
     // A file-manager node asking for a terminal in the folder it is showing, or a pull node's
-    // conflict asking for one in the project that runs `cmd`. Same no-direct-line-to-the-canvas
-    // pattern as the two above.
+    // conflict asking for one in the project that runs `cmd`, centred right of `nearNodeId` as
+    // `nodeterm:open-agent` does. Same no-direct-line-to-the-canvas pattern as the two above.
     const onTerminal = (e: Event): void => {
-      const d = (e as CustomEvent<{ cwd?: string; cmd?: string }>).detail
-      if (d?.cwd || d?.cmd) addTerminal(undefined, d.cmd, undefined, d.cwd)
+      const d = (e as CustomEvent<{ cwd?: string; cmd?: string; nearNodeId?: string }>).detail
+      if (!d?.cwd && !d?.cmd) return
+      const all = nodesRef.current
+      const source = d.nearNodeId ? all.find((n) => n.id === d.nearNodeId) : undefined
+      const rect = source ? nodeFitRect(source as FocusableNode, all as FocusableNode[]) : null
+      const center = rect ? { x: rect.x + rect.width * 1.5 + 40, y: rect.y + rect.height / 2 } : undefined
+      addTerminal(center, d.cmd, undefined, d.cwd)
     }
     window.addEventListener('nodeterm:open-file', onOpen)
     window.addEventListener('nodeterm:reveal-file', onReveal)
