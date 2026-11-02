@@ -294,11 +294,13 @@ describe('⌘M thread look', () => {
       }
     ])
     expect(host.querySelector('.term-chat__diff-counts')?.textContent).toBe('+1 −1')
-    expect(host.querySelectorAll('.term-chat__diff-line--add')).toHaveLength(1)
     const chip = host.querySelector<HTMLDetailsElement>('details.term-chat__tool.term-chat__tool--diff')!
     expect(chip.open).toBe(false)
     expect(chip.querySelector('summary .term-chat__tool-name')?.textContent).toBe('Edit')
     expect(chip.querySelector('summary .term-chat__tool-arg')?.textContent).toBe('/a.ts')
+    // The diff body is drawn once the chip is opened (ChatToolDiff.test.tsx pins the closed state).
+    await act(async () => chip.querySelector('summary')!.click())
+    expect(host.querySelectorAll('.term-chat__diff-line--add')).toHaveLength(1)
     const lines = [...chip.querySelectorAll('pre.term-chat__diff > .term-chat__diff-line')]
     expect(lines.map((l) => [l.className, l.textContent])).toEqual([
       ['term-chat__diff-line term-chat__diff-line--ctx', ' a'],
@@ -309,6 +311,49 @@ describe('⌘M thread look', () => {
     expect(chip.querySelector('pre.term-chat__diff + pre.term-chat__tool-result')?.textContent).toBe(
       'The file /a.ts has been updated.'
     )
+  })
+
+  it('typing in the composer neither re-renders nor remounts an open diff chip or an image', async () => {
+    // The composer's draft is ChatPanel state, so every keystroke re-renders the panel. A diff chip
+    // (thousands of line elements when open) and an image (a `data:` URL megabytes long) must sit
+    // that out: same props, so `memo` skips them.
+    await mount([
+      { role: 'user', parts: [{ kind: 'image', mediaType: 'image/png', data: 'AAAA' }], key: 0 },
+      {
+        role: 'assistant',
+        parts: [{ kind: 'tool', name: 'Edit', arg: '/a.ts', diff: { filePath: '/a.ts', oldText: 'a', newText: 'b' } }],
+        key: 10
+      }
+    ])
+    const chip = host.querySelector<HTMLDetailsElement>('details.term-chat__tool--diff')!
+    await act(async () => chip.querySelector('summary')!.click())
+    const pre = host.querySelector('pre.term-chat__diff')!
+    const img = host.querySelector('img.term-chat__image')!
+    expect(pre).not.toBeNull()
+    // React swaps a host element's props record (`__reactProps$…`) on every commit that renders it
+    // with a new event handler — both elements take an inline one — so an unchanged record means the
+    // component did not run. (DOM identity alone cannot tell: React reuses the nodes either way.)
+    const propsRecord = (el: Element): unknown => {
+      const k = Object.keys(el).find((key) => key.startsWith('__reactProps$'))
+      expect(k, 'React no longer keeps a props record on the element').toBeDefined()
+      return (el as unknown as Record<string, unknown>)[k!]
+    }
+    const before = { chip: propsRecord(chip), img: propsRecord(img) }
+    const ta = host.querySelector('textarea')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    for (const draft of ['h', 'he', 'hey']) {
+      await act(async () => {
+        setValue.call(ta, draft)
+        ta.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+    }
+    expect(ta.value).toBe('hey')
+
+    expect(host.querySelector('pre.term-chat__diff')).toBe(pre)
+    expect(host.querySelector('img.term-chat__image')).toBe(img)
+    expect(chip.open).toBe(true)
+    expect(propsRecord(chip)).toBe(before.chip)
+    expect(propsRecord(img)).toBe(before.img)
   })
 
   it('a Write with no result is all added lines; a tool without a diff stays the plain chip', async () => {
