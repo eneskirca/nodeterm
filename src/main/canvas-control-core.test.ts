@@ -279,6 +279,24 @@ describe('parseControlRequest', () => {
     expect(isDestructiveVerb('open-browser')).toBe(false)
   })
 
+  it('open-pr takes only --pr, and never a repository', () => {
+    expect(parseControlRequest('open-pr', { pr: '12' })).toEqual({ verb: 'open-pr', args: { pr: '12' } })
+    expect(parseControlRequest('open-pr', {})).toEqual({
+      error: 'open-pr requires --pr <number> (the number `gh pr create` printed)'
+    })
+    expect(parseControlRequest('open-pr', { pr: '12', repository: 'evil/repo' })).toEqual({
+      error: 'open-pr: unknown flag --repository'
+    })
+    expect(isDestructiveVerb('open-pr')).toBe(false)
+  })
+
+  it('both agent-facing bodies tell the agent to run open-pr after gh pr create', () => {
+    for (const body of [buildCanvasSkillBody('/x/canvas.sh'), buildCanvasControlInstructions('/x/canvas.sh')]) {
+      expect(body).toContain('open-pr --pr <number>')
+      expect(body).toContain('gh pr create')
+    }
+  })
+
   it('classifies destructive verbs', () => {
     expect(isDestructiveVerb('write')).toBe(true)
     expect(isDestructiveVerb('close')).toBe(true)

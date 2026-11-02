@@ -175,7 +175,10 @@ const OFF_CANVAS_VERBS: ReadonlySet<string> = new Set([
   'show-image',
   'show-video',
   'show-web',
-  'open-browser'
+  'open-browser',
+  // A pull request node is a display node too: it holds a PR reference and reads on mount. Off
+  // screen it is written beside its opener and linked; an existing one is linked, never framed.
+  'open-pr'
 ])
 
 export function answersOffCanvas(verb: string): boolean {

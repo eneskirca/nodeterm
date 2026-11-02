@@ -8,6 +8,19 @@ import { normalizePullRef, type PullNodeRef } from './pull-node'
 /** The only flag the verb reads. Anything else (`--repository` above all) is refused by name. */
 export const OPEN_PR_FLAGS: ReadonlySet<string> = new Set(['pr'])
 
+/** The flag-and-number half of the plan: the shape gate the Server Edition parser runs too. */
+export function openPrArgsRefusal(args: Record<string, string | undefined>): string | null {
+  const unknown = Object.keys(args).find((k) => !OPEN_PR_FLAGS.has(k))
+  if (unknown) return `open-pr: unknown flag --${unknown}`
+  return pullNumberArg(args.pr) ? null : 'open-pr requires --pr <number> (the number `gh pr create` printed)'
+}
+
+function pullNumberArg(value: string | undefined): number | undefined {
+  const raw = (value ?? '').trim().replace(/^#/, '')
+  const n = /^\d+$/.test(raw) ? Number(raw) : NaN
+  return n >= 1 && n <= 2_147_483_647 ? n : undefined
+}
+
 export type OpenPrPlan =
   | { kind: 'refuse'; error: string }
   /** The project already has this PR's node: link it (and, on screen, frame it). */
@@ -24,14 +37,9 @@ export function planOpenPr(input: {
 }): OpenPrPlan {
   const refuse = (error: string): OpenPrPlan => ({ kind: 'refuse', error })
   if (input.relayGuest) return refuse('open-pr-relay-refused: a relay guest cannot open nodes on this canvas')
-  const unknown = Object.keys(input.args).find((k) => !OPEN_PR_FLAGS.has(k))
-  if (unknown) return refuse(`open-pr: unknown flag --${unknown}`)
-  const raw = (input.args.pr ?? '').trim().replace(/^#/, '')
-  const pullNumber = /^\d+$/.test(raw) ? Number(raw) : NaN
-  if (!(pullNumber >= 1 && pullNumber <= 2_147_483_647)) {
-    return refuse('open-pr requires --pr <number> (the number `gh pr create` printed)')
-  }
-  const ref = normalizePullRef({ repository: input.repo?.repository, pullNumber, tab: 'overview' })
+  const shape = openPrArgsRefusal(input.args)
+  if (shape) return refuse(shape)
+  const ref = normalizePullRef({ repository: input.repo?.repository, pullNumber: pullNumberArg(input.args.pr), tab: 'overview' })
   if (!input.repo?.approved || !ref) {
     return refuse('open-pr-no-repo: this project has no approved GitHub repository; ask the user to connect its board')
   }
