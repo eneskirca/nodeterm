@@ -2001,6 +2001,11 @@ export interface Settings {
   /** Body size (CSS px) of the same views; headings scale from it, code is 0.92 of it. Read
    *  through `resolveMarkdownFontSize`, which clamps to 8–28 and answers 13 for garbage. */
   markdownFontSize: number
+  /** The ⌘M chat view's Focus toggle (its bar's `Focus` button): the thread leaves out tool calls
+   *  and thinking, and keeps the prompts, answers, images and the cards that ask something (a plan,
+   *  a question — with their answer controls — and the latest todo list). Default OFF; read
+   *  strictly (`=== true`), since the file is hand-editable. Machine-local, like the fonts above. */
+  chatFocusView: boolean
   /** Default size (px) for NEW terminal/agent nodes on the canvas. Existing nodes keep
    *  whatever size they were saved with; other node kinds keep their own defaults. */
   defaultNodeWidth: number
@@ -2530,6 +2535,7 @@ export const DEFAULT_SETTINGS: Settings = {
   groupFrameBacking: 0,
   markdownFontFamily: DEFAULT_MARKDOWN_FONT_FAMILY,
   markdownFontSize: DEFAULT_MARKDOWN_FONT_SIZE,
+  chatFocusView: false,
   defaultNodeWidth: 640,
   defaultNodeHeight: 440,
   defaultNodeSizes: {},
@@ -3619,8 +3625,9 @@ export type ChatPart =
       result?: string
       summary?: ChatToolSummary
       /** Markdown worth reading in full (an `ExitPlanMode` plan, an `AskUserQuestion` question and
-       *  its options — `core/chat-tool-body.ts`). Present = the renderer shows an expanded card
-       *  instead of the collapsed chip. Capped at 64K characters. */
+       *  its options, and on the opt-in `rich` read a `TodoWrite` checklist — `core/chat-tool-body.ts`).
+       *  Present = the renderer shows an expanded card instead of the collapsed chip (a superseded
+       *  todo list excepted: `lib/chatFocus.ts`). Capped at 64K characters. */
       body?: string
       /** `AskUserQuestion` only: the questions read for the answer controls (`readQuestions`) —
        *  the SAME reader the held request's texts come from, so a surface can match the card to the

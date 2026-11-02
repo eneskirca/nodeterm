@@ -144,3 +144,13 @@ describe('⌘M code block syntax colors', () => {
     expect(ruleBody('.term-chat__text pre code[data-highlighted]')).toMatch(/white-space:\s*pre;/)
   })
 })
+
+describe('⌘M Focus view toggle and the todo-list card', () => {
+  it('the pressed Focus toggle is filled, so the bar says the view is filtered', () => {
+    expect(ruleBody(".term-chat__focus[aria-pressed='true']")).toMatch(/background:\s*[^;]+;/)
+  })
+
+  it('a todo list drops the bullets: its checkboxes are the markers', () => {
+    expect(ruleBody('.term-chat__todo ul')).toMatch(/list-style:\s*none;/)
+  })
+})

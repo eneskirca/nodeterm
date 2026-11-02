@@ -9,6 +9,12 @@ import { isRecord } from '../shared/is-record'
 //   ExitPlanMode    → {"plan": "<full markdown plan>"}
 //   AskUserQuestion → {"questions": [{"question", "header", "multiSelect", "options": [{"label", "description"?}]}]}
 // Anything that does not match degrades to NO body (today's chip) — never a half-rendered guess.
+//
+// `TodoWrite` (the agent's todo list) gets a body only on the opt-in `rich` read, so the golden
+// fixtures and the phone's `chat.page` keep its chip. Its shape is the tool's own schema —
+//   TodoWrite       → {"todos": [{"content", "status": "pending" | "in_progress" | "completed", "activeForm"?}]}
+// — NOT a measurement: no TodoWrite record exists on this server's transcripts (2026-11-02; its CLIs,
+// 2.1.209–2.1.316, write `TaskCreate` / `TaskUpdate` instead). The same no-guess rule covers that gap.
 
 /** The body crosses IPC/WS with every chat read; a plan is prose, and 64K characters (UTF-16 code
  *  units, i.e. `String.length`) is far past any real one. */
@@ -66,10 +72,37 @@ function questionsBody(input: Record<string, unknown>): string | undefined {
   return blocks.length ? blocks.join('\n\n') : undefined
 }
 
-/** Markdown body for a tool call worth reading in full, or undefined (render the plain chip). */
-export function toolBody(name: string, input: unknown): string | undefined {
+// One checklist line per readable todo: done ticked, the one in progress in bold and named so, any
+// other status (pending, or one the schema does not know) an open box.
+function todosBody(input: Record<string, unknown>): string | undefined {
+  if (!Array.isArray(input.todos)) return undefined
+  const lines: string[] = []
+  for (const t of input.todos) {
+    if (!isRecord(t) || !nonBlank(t.content)) continue
+    const content = escapeEmphasis(oneLine(t.content))
+    lines.push(
+      t.status === 'completed'
+        ? `- [x] ${content}`
+        : t.status === 'in_progress'
+          ? `- [ ] **${content}** _(in progress)_`
+          : `- [ ] ${content}`
+    )
+  }
+  return lines.length ? lines.join('\n') : undefined
+}
+
+/** Markdown body for a tool call worth reading in full, or undefined (render the plain chip).
+ *  `opts.rich` adds the bodies only the desktop ⌘M panel draws (`ChatParseOptions.rich`): today
+ *  the `TodoWrite` checklist. */
+export function toolBody(name: string, input: unknown, opts?: { rich?: boolean }): string | undefined {
   if (!isRecord(input)) return undefined
   const body =
-    name === 'ExitPlanMode' ? planBody(input) : name === 'AskUserQuestion' ? questionsBody(input) : undefined
+    name === 'ExitPlanMode'
+      ? planBody(input)
+      : name === 'AskUserQuestion'
+        ? questionsBody(input)
+        : name === 'TodoWrite' && opts?.rich === true
+          ? todosBody(input)
+          : undefined
   return body === undefined ? undefined : capBody(body)
 }

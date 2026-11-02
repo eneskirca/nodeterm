@@ -376,9 +376,10 @@ export interface ChatParseOptions {
    * media type is in `CHAT_IMAGE_TYPES` and `data` is a non-empty string. An image inside a
    * `tool_result` is tool output and stays out (`summarizeResult` ignores it, as before). Off by
    * default, like `thinking`: the golden fixtures and the phone's `chat.page` never set it.
-   * Also: a `diff` on each `Edit` / `Write` tool part whose input reads (`toolDiff`), and a
+   * Also: a `diff` on each `Edit` / `Write` tool part whose input reads (`toolDiff`), a
    * `Compaction` chip for each context compaction (`compactionPart`) in place of the long summary
-   * record the model continues from, which is skipped.
+   * record the model continues from, which is skipped, and a checklist `body` on each `TodoWrite`
+   * tool part whose `todos` read (`toolBody`).
    */
   rich?: boolean
 }
@@ -682,7 +683,7 @@ function parseChatRecords(
             name: c.name ?? 'tool',
             arg: toolArg(c.input)
           }
-          const body = toolBody(part.name, c.input)
+          const body = toolBody(part.name, c.input, { rich: opts?.rich === true })
           if (body) part.body = body
           // Opt-in (see `ChatParseOptions.rich`): without it an Edit is the plain chip, as before.
           const diff = opts?.rich ? toolDiff(part.name, c.input) : undefined

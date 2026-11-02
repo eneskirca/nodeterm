@@ -59,6 +59,7 @@ import { useCodeHighlight } from './CodeHighlight'
 import { assistantTurnEnds, chatAbsoluteTime, chatClockTime, dayDividers } from '../lib/chatThread'
 import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
 import { thinkingLabel } from '../lib/chatThinking'
+import { TODO_WRITE_TOOL, focusHides, latestTodoIndex, staleTodo } from '../lib/chatFocus'
 import { ChatToolGroup } from './ChatToolGroup'
 import { ChatImage } from './ChatImage'
 import { ChatToolDiff } from './ChatToolDiff'
@@ -995,6 +996,23 @@ export function ChatPanel({
   }, [])
   // A divider at the first message of each local day; the same `now`, so Today rolls to Yesterday.
   const days = useMemo(() => dayDividers(messages, now), [messages, now])
+  // Focus view (the bar toggle; lib/chatFocus.ts): tool chips and thinking are left out. Strict, as
+  // the setting is hand-editable. Only the latest todo list is a card, in both views.
+  const focusView = useSettings((s) => s.settings.chatFocusView === true)
+  const latestTodo = useMemo(() => latestTodoIndex(messages), [messages])
+  // Whether the part at (i, j) draws anything at its own place: not when an earlier tool block holds
+  // it, nor in Focus view when it is hidden — or, for a block's first member, when its every member is.
+  const drawsAt = (i: number, j: number): boolean => {
+    const at = partPosition(i, j)
+    if (toolGroups.absorbed.has(at)) return false
+    if (!focusView) return true
+    const group = toolGroups.groupAt.get(at)
+    if (!group) return !focusHides(messages[i].parts[j], i, latestTodo)
+    return group.members.some((mb) => {
+      const p = messages[mb.message]?.parts[mb.part]
+      return p !== undefined && !focusHides(p, mb.message, latestTodo)
+    })
+  }
 
   // One part of a message, as the thread draws it. Also used for the members of a folded tool block,
   // which are drawn inside the block instead of at their own place (lib/chatToolGroups.ts).
@@ -1013,10 +1031,11 @@ export function ChatPanel({
     ) : p.kind === 'image' ? (
       // An image the user attached to the prompt (the opt-in `rich` read): a thumbnail, click to enlarge.
       <ChatImage key={key} mediaType={p.mediaType} data={p.data} />
-    ) : p.body ? (
-      // A plan / question is the content itself, not plumbing: shown expanded, in full,
-      // flowing with the thread (no inner scroll box). The answer stays under it.
-      <div key={key} className="term-chat__tool-card">
+    ) : p.body && !staleTodo(p, i, latestTodo) ? (
+      // A plan / question / the latest todo list is the content itself, not plumbing: shown
+      // expanded, in full, flowing with the thread (no inner scroll box). The answer stays under it.
+      // A superseded todo list falls through to the plain chip.
+      <div key={key} className={`term-chat__tool-card${p.name === TODO_WRITE_TOOL ? ' term-chat__todo' : ''}`}>
         <div className="term-chat__tool-card-title">{toolCardTitle(p.name)}</div>
         <MarkdownText text={p.body} />
         {p.result && <pre className="term-chat__tool-result">{p.result}</pre>}
@@ -1076,6 +1095,15 @@ export function ChatPanel({
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">
           <button
+            type="button"
+            className="term-chat__focus"
+            aria-pressed={focusView}
+            onClick={() => useSettings.getState().update({ chatFocusView: !focusView })}
+            title="Focus view: hide tool calls and thinking"
+          >
+            Focus
+          </button>
+          <button
             className="term-chat__refresh"
             onClick={() => load()}
             title="Reload conversation"
@@ -1129,11 +1157,11 @@ export function ChatPanel({
             </div>
           )}
           {messages.map((m, i) => {
-            // A message whose every part is drawn inside an earlier message's tool block has nothing of
-            // its own to draw, unless it ends a turn: then it draws that turn's action row and nothing
-            // else — bar a day divider (below). (Only assistant parts fold, so a queued message — the
-            // user's — never does.)
-            const folded = m.parts.length > 0 && m.parts.every((_, j) => toolGroups.absorbed.has(partPosition(i, j)))
+            // A message whose every part is drawn inside an earlier message's tool block (or, in Focus
+            // view, hidden) has nothing of its own to draw, unless it ends a turn: then it draws that
+            // turn's action row and nothing else — bar a day divider (below). (Only assistant parts
+            // fold or hide, so a queued message — the user's — never does.)
+            const folded = m.parts.length > 0 && m.parts.every((_, j) => !drawsAt(i, j))
             const turnEnd = turnEnds.get(i)
             // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
             // not re-render) a single existing bubble. Unkeyed ones (grok, the optimistic sent
@@ -1170,10 +1198,9 @@ export function ChatPanel({
                   }`}
                 >
                   {m.parts.map((p, j) => {
-                    const at = partPosition(i, j)
-                    const group = toolGroups.groupAt.get(at)
+                    if (!drawsAt(i, j)) return null
+                    const group = toolGroups.groupAt.get(partPosition(i, j))
                     if (group) return <ChatToolGroup key={group.key} messages={messages} group={group} renderPart={renderPart} />
-                    if (toolGroups.absorbed.has(at)) return null
                     return renderPart(p, i, j)
                   })}
                   {m.role === 'user' && m.at !== undefined && (

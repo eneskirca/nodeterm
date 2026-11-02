@@ -603,6 +603,38 @@ describe('Edit / Write diffs (opt-in `rich`)', () => {
   })
 })
 
+describe('TodoWrite checklist (opt-in `rich`)', () => {
+  // The tool's schema (no TodoWrite record exists on this server to measure — chat-tool-body.ts).
+  const raw = jl({
+    type: 'assistant',
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id: 't1',
+          name: 'TodoWrite',
+          input: { todos: [{ content: 'a', status: 'completed', activeForm: 'A-ing' }, { content: 'b', status: 'pending' }] }
+        }
+      ]
+    }
+  })
+
+  it('rich: the call carries the checklist body; without rich it is the same chip as before', () => {
+    const part = (opts?: { rich?: boolean; thinking?: boolean }) => parseChatMessages(raw.split('\n'), opts)[0].parts
+    expect(part({ rich: true })).toEqual([{ kind: 'tool', name: 'TodoWrite', arg: '', body: '- [x] a\n- [ ] b' }])
+    expect(part()).toEqual([{ kind: 'tool', name: 'TodoWrite', arg: '' }])
+    expect(part({ thinking: true })).toEqual([{ kind: 'tool', name: 'TodoWrite', arg: '' }])
+  })
+
+  it('rich rides the paged parser too', () => {
+    const file = Buffer.from(raw)
+    expect(parseChatWindow(file, 0, claudeChatRecordParser({ rich: true })).messages[0].parts).toEqual([
+      { kind: 'tool', name: 'TodoWrite', arg: '', body: '- [x] a\n- [ ] b', id: 't1' }
+    ])
+    expect(parseChatWindow(file, 0).messages[0].parts).toEqual([{ kind: 'tool', name: 'TodoWrite', arg: '', id: 't1' }])
+  })
+})
+
 describe('Compaction chip (opt-in `rich`)', () => {
   // The measured records (CLI 2.1.314): the boundary is a `system` record, and the summary the model
   // continues from is a `user` record flagged `isCompactSummary` — the model's text, not the user's.

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage, ChatTranscriptResult } from '@shared/types'
 import type { AnswerPermissionPayload, ChatQuestion, HeldPermission } from '@shared/agents/permission-answer'
 import { useAgentStatus } from '../state/agentStatus'
+import { useSettings } from '../state/settings'
 
 /**
  * Answer controls on the ⌘M Plan / Question card (pure mapping: `lib/chatAnswer.test.ts`). Pins the
@@ -318,6 +319,28 @@ describe('question card', () => {
     await mount([askMsg(0, [SINGLE], 'User answered: B')])
     expect(host.querySelector('.term-chat__answer')).toBeNull()
     expect(cards()[0].textContent).toContain('User answered: B')
+  })
+
+  it('Focus view hides the tool calls around a held question, never the card or its controls', async () => {
+    useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: true } }))
+    try {
+      await hold('waiting', held(['Pick one?']))
+      await mount([
+        { role: 'assistant', key: 0, parts: [{ kind: 'tool', name: 'Bash', arg: 'ls' }] },
+        askMsg(10, [SINGLE])
+      ])
+      expect(host.querySelector('details.term-chat__tool')).toBeNull()
+      expect(cards()).toHaveLength(1)
+      await click(radio('B'))
+      await click(button(cards()[0], 'Submit'))
+      expect(sent()).toEqual({
+        nodeId: NODE,
+        pendingId: 'n-q-1',
+        answer: { kind: 'question', answers: { 'Pick one?': 'B' } }
+      })
+    } finally {
+      useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: false } }))
+    }
   })
 
   it('a read-only transcript (closed node) never shows controls', async () => {

@@ -68,9 +68,10 @@ describe('chatAgentLabel', () => {
 })
 
 describe('toolCardTitle', () => {
-  it('names a plan and a question for what they are, anything else by its tool name', () => {
+  it('names a plan, a question and a todo list for what they are, anything else by its tool name', () => {
     expect(toolCardTitle('ExitPlanMode')).toBe('Plan')
     expect(toolCardTitle('AskUserQuestion')).toBe('Question')
+    expect(toolCardTitle('TodoWrite')).toBe('Todo list')
     expect(toolCardTitle('SomeFutureTool')).toBe('SomeFutureTool')
   })
 })

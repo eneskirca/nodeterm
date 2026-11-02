@@ -111,6 +111,8 @@ nothing above changes. What it adds:
   `"<preTokens> → <postTokens> tokens"` (plain digits, U+2192) only when both are finite numbers. It
   is a system record (a turn boundary, never folded). The `type:"user"` record with
   `isCompactSummary: true` (the summary the model continues from) is skipped.
+- A `body` on a `TodoWrite` tool part: one line per `todos` item with a non-blank `content` (`- [x] …`
+  completed, `- [ ] **…** _(in progress)_` in progress, else `- [ ] …`), capped like any tool `body`.
 
 Decision cases: plan `restore` / `acceptEdits` / `manual` / `revise` (the revise text is trimmed),
 question single / multi (labels joined with `, `) / free text (trimmed), and three refusals: a
