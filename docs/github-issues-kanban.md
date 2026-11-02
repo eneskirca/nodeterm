@@ -29,6 +29,14 @@ For a fine-grained personal access token, grant access only to the selected repo
 - Metadata – read
 - Issues – read and write
 
+The pull request node (see below) needs more. Add these repository permissions to a fine-grained token:
+
+- Pull requests – read and write (read the pull request, its conversation and files; post a comment or a review)
+- Contents – read (the file text for the Files tab diff). Grant read and write to merge from the node: GitHub lists the merge endpoint under Contents write, and it sends the allowed merge methods only to a token that may push. With read only, the node offers no merge method.
+- Metadata – read
+
+A classic personal access token needs the `repo` scope. GitHub CLI uses the scopes of its own sign-in, which include `repo` by default.
+
 The token field is write only. The renderer cannot read the saved value. Electron uses encrypted system storage when a secure backend is available. If it is unavailable, nodeterm shows a warning and stores the token in a local mode `0600` file. Server Edition always uses the restricted local file and shows the same warning.
 
 ## Mapping and movement
@@ -69,6 +77,22 @@ nodeterm supports up to 10,000 issues and a 64 MiB cache document per repository
 Approval is tied to the local workspace identity, project, and repository. Changing the repository requires a new approval. Revoke this machine in Settings to stop credential use, cache access, and GitHub network access for that project.
 
 GitHub HTTP requests and avatar downloads run only on the trusted project host. Relay tabs send issue queries and movements to that host, but GitHub control remains local and cannot be invoked by a relay peer. Configure a relayed project on the computer that hosts it.
+
+## Pull request node
+
+A pull request opens as a canvas node. It has three tabs: Overview (description, checks, merge state, Merge), Files (changed files with a side-by-side diff) and Conversation (comments and reviews, plus a composer for a comment, an approval or a change request). Open it in one of three ways:
+
+- Choose **Open as node** in a pull request's summary on the board.
+- Choose **Pull request…** in the canvas add menu (pane right-click, **New view**) or in the Dock. Pick one of the open pull requests the board already knows, or type the number of a closed or merged one.
+- An agent runs `nodeterm open-pr --pr <n>` after `gh pr create`. The node opens beside the agent with a context link.
+
+The node only opens pull requests of the project's approved repository. It stores the repository, the number, the tab and the selected file in `project.json`, and no pull request text.
+
+Surfaces:
+
+- **Desktop and Server Edition**: the full node. Every read and write goes through the core, over IPC or the Server Edition WebSocket bridge.
+- **Relay tabs**: reads work. Comment, review and merge are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all three.
+- **Mobile**: no pull request node. The phone shows the rest of the canvas as before.
 
 ## Current scope
 

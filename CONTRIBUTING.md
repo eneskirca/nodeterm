@@ -746,6 +746,14 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   credentials, license or pairing belongs in `src/shared/host-control.ts` instead — refused to every
   relay peer.
 
+- **A GitHub write made with the host's token is owner-only.** The pull request node's comment,
+  review and merge channels (`githubIssues:pull-comment`, `githubIssues:pull-review`,
+  `githubIssues:pull-merge`) are in `OWNER_ONLY` (`src/core/relay/access-policy.ts`): every relay
+  peer but the host's owner is refused, hosted Editors included, because the write posts as the host
+  owner on GitHub. Editor is shell access, not identity. All three are also in `SCOPED_REFUSED`. The
+  `open-pr` canvas-control verb only opens or links a node and has no path to a GitHub write. A new
+  channel that writes to GitHub as the host owner goes in both sets.
+
 - **Live links: a new broadcast channel needs nothing, a new per-session pty channel needs a
   decision.** Live-link viewers are quiet clients, so no broadcast ever reaches them. A per-session pty
   event reaches a viewer only once it is added to `watcherEventAllowed`
