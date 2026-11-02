@@ -422,6 +422,9 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.gitRemoteCommitUrl,
   IPC.gitMerge,
   IPC.gitRebase,
+  // Also HOST_ONLY (host-control.ts): the behind-main fetch and update are the host user's own.
+  IPC.gitMainDrift,
+  IPC.gitUpdateFromMain,
   IPC.gitDeleteBranch,
   IPC.gitRenameBranch,
   IPC.gitFetch,

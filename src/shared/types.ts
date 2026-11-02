@@ -2905,6 +2905,23 @@ export interface GitStatus {
   changes: GitFileChange[]
 }
 
+/** How far a checkout's branch sits from `origin/<default>` (`GitApi.mainDrift`). `fetch` says
+ *  whether this read fetched origin (`skipped` = inside the 2-min window or a failure backoff). */
+export type MainDrift =
+  | { ok: true; base: string; branch: string; behind: number; ahead: number; fetch: 'ok' | 'failed' | 'skipped' }
+  | { ok: false; reason: 'no-repo' | 'no-origin' | 'no-default' | 'detached' | 'remote' }
+
+export type MainUpdateMode = 'merge' | 'rebase'
+
+/** `GitApi.updateFromMain`. A refusal or a conflict changes nothing in the tree. */
+export type MainUpdateResult =
+  | { ok: true; message: string }
+  | {
+      ok: false
+      reason: 'invalid' | 'no-base' | 'up-to-date' | 'dirty' | 'in-progress' | 'conflict' | 'failed'
+      message: string
+    }
+
 export interface GitResult {
   ok: boolean
   message: string
@@ -2961,6 +2978,12 @@ export interface GitApi {
   merge(cwd: string, ref: string): Promise<GitResult>
   /** Rebase the current branch onto another. */
   rebase(cwd: string, onto: string): Promise<GitResult>
+  /** Quiet fetch of origin (at most once per 2 min per repository, backed off on failure), then
+   *  behind/ahead of the branch vs `origin/<default>`. */
+  mainDrift(cwd: string): Promise<MainDrift>
+  /** Merge `origin/<default>` into the branch, or rebase onto it. Refuses a dirty tree; a conflict
+   *  is aborted, never resolved. */
+  updateFromMain(cwd: string, mode: MainUpdateMode): Promise<MainUpdateResult>
   /** Delete a branch (force = -D, for unmerged). */
   deleteBranch(cwd: string, name: string, force: boolean): Promise<GitResult>
   /** Rename the current branch. */

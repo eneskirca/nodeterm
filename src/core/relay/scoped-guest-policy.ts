@@ -528,6 +528,9 @@ export const SCOPED_REFUSED: ReadonlySet<string> = new Set<string>([
   IPC.ptyExecuteLaunch,
   // Types into a pane by node id; HOST_ONLY, and relay-api.ts stubs it.
   IPC.ptySendPaneKeys,
+  // The behind-main fetch and update: HOST_ONLY for every relay peer.
+  IPC.gitMainDrift,
+  IPC.gitUpdateFromMain,
   // Project settings / setup / trust: relay-api.ts keeps these LOCAL; the setup ones are host-only.
   IPC.projectSettingsRead,
   IPC.projectSettingsWriteShared,

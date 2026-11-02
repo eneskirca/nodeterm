@@ -693,6 +693,8 @@ export const IPC = {
   gitRemoteCommitUrl: 'git:remote-commit-url',
   gitMerge: 'git:merge',
   gitRebase: 'git:rebase',
+  gitMainDrift: 'git:main-drift',
+  gitUpdateFromMain: 'git:update-from-main',
   gitDeleteBranch: 'git:delete-branch',
   gitRenameBranch: 'git:rename-branch',
   gitFetch: 'git:fetch',

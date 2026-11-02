@@ -686,6 +686,9 @@ export function buildFilesApi(
       client.request(IPC.gitRemoteCommitUrl, cwd, sha) as Promise<string | null>,
     merge: (cwd, ref) => client.request(IPC.gitMerge, cwd, ref) as ReturnType<GitApi['merge']>,
     rebase: (cwd, onto) => client.request(IPC.gitRebase, cwd, onto) as ReturnType<GitApi['rebase']>,
+    mainDrift: (cwd) => client.request(IPC.gitMainDrift, cwd) as ReturnType<GitApi['mainDrift']>,
+    updateFromMain: (cwd, mode) =>
+      client.request(IPC.gitUpdateFromMain, cwd, mode) as ReturnType<GitApi['updateFromMain']>,
     deleteBranch: (cwd, name, force) =>
       client.request(IPC.gitDeleteBranch, cwd, name, force) as ReturnType<GitApi['deleteBranch']>,
     renameBranch: (cwd, newName) =>

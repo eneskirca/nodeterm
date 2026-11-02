@@ -101,6 +101,10 @@ export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   IPC.ptyExecuteLaunch,
   // Types into a pane of THIS machine (or its SSH host); a relay peer must never reach it.
   IPC.ptySendPaneKeys,
+  // The behind-main badge (ticket 14): a background fetch with the host's credentials and a
+  // merge/rebase in the host's checkout. A relay tab shows no badge.
+  IPC.gitMainDrift,
+  IPC.gitUpdateFromMain,
   // Prepare-for-update ends EVERY session on this machine's session host and quits the app. Only
   // the host's own user may do that. Raw ipcMain handlers (no peer reaches them); listed here too
   // so moving them onto the platform table later cannot quietly open them.
