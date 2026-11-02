@@ -50,6 +50,8 @@ describe('registerGitHubIssueHandlers', () => {
       },
       requestPullReviewer: async (...args: unknown[]) => { calls.push(['reviewer', ...args]); return { ok: true as const } },
       commentOnPullLine: async (...args: unknown[]) => { calls.push(['line', ...args]); return { ok: true as const } },
+      disablePullAutoMerge: async (...args: unknown[]) => { calls.push(['disablePullAutoMerge', ...args]); return { ok: true as const } },
+      enablePullAutoMerge: async (...args: unknown[]) => { calls.push(['enablePullAutoMerge', ...args]); return { ok: true as const } },
       updatePullBranch: async (...args: unknown[]) => { calls.push(['updatePullBranch', ...args]); return { ok: true as const } },
       pullForBranch: async (...args: unknown[]) => { calls.push(['branch', ...args]); return { status: 'ok' as const, defaultBranch: 'main' } },
       createPull: async (...args: unknown[]) => { calls.push(['create', ...args]); return { ok: true as const, pullNumber: 3 } },
@@ -77,6 +79,8 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullRequestReviewer]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, reviewer: 'ana' })
     await platform.handlers[IPC.githubIssuesPullLineComment]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, inReplyTo: 4, body: 'b' })
     await platform.handlers[IPC.githubIssuesPullUpdateBranch]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40) })
+    await platform.handlers[IPC.githubIssuesPullAutoMerge]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'c'.repeat(40) })
+    await platform.handlers[IPC.githubIssuesPullAutoMergeOff]({ projectId: 'p1', repository: 'o/r', pullNumber: 12 })
     await platform.handlers[IPC.githubIssuesPullForBranch]('p1', 'o/r', 'feat/x')
     await platform.handlers[IPC.githubIssuesPullCreate]({ projectId: 'p1', repository: 'o/r', head: 'feat/x', base: 'main', title: 't', body: '', draft: true })
     await platform.handlers[IPC.githubIssuesClaimPullAutoMove]({ projectId: 'p1', cardId: 'n', pulls: [3] })
@@ -100,6 +104,8 @@ describe('registerGitHubIssueHandlers', () => {
       ['reviewer', { projectId: 'p1', repository: 'o/r', pullNumber: 12, reviewer: 'ana' }],
       ['line', { projectId: 'p1', repository: 'o/r', pullNumber: 12, inReplyTo: 4, body: 'b' }],
       ['updatePullBranch', { projectId: 'p1', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40) }],
+      ['enablePullAutoMerge', { projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'c'.repeat(40) }],
+      ['disablePullAutoMerge', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
       ['branch', { projectId: 'p1', repository: 'o/r', head: 'feat/x' }],
       ['create', { projectId: 'p1', repository: 'o/r', head: 'feat/x', base: 'main', title: 't', body: '', draft: true }],
       ['claim', { projectId: 'p1', cardId: 'n', pulls: [3] }],

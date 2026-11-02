@@ -586,6 +586,10 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullCreate, request) as ReturnType<GitHubIssuesApi['createPull']>,
     updatePullBranch: (request) =>
       client.request(IPC.githubIssuesPullUpdateBranch, request) as ReturnType<GitHubIssuesApi['updatePullBranch']>,
+    enablePullAutoMerge: (request) =>
+      client.request(IPC.githubIssuesPullAutoMerge, request) as ReturnType<GitHubIssuesApi['enablePullAutoMerge']>,
+    disablePullAutoMerge: (request) =>
+      client.request(IPC.githubIssuesPullAutoMergeOff, request) as ReturnType<GitHubIssuesApi['disablePullAutoMerge']>,
     commentOnPullLine: (request) =>
       client.request(IPC.githubIssuesPullLineComment, request) as ReturnType<GitHubIssuesApi['commentOnPullLine']>,
     claimPullAutoMove: (request) =>

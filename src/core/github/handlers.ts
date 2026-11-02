@@ -58,6 +58,8 @@ export interface GitHubIssueHandlerService {
     comments?: PullLineDraft[]
   }): Promise<PullWriteResult>
   commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
+  disablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
+  enablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string }): Promise<PullWriteResult>
   updatePullBranch(request: { projectId: string; repository: string; pullNumber: number; headSha: string }): Promise<PullWriteResult>
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
@@ -111,6 +113,8 @@ export function registerGitHubIssueHandlers(
     service.repoMergeMethods({ projectId, repository }))
   platform.handle(IPC.githubIssuesPullRequestReviewer, (request) => service.requestPullReviewer(request))
   platform.handle(IPC.githubIssuesPullLineComment, (request) => service.commentOnPullLine(request))
+  platform.handle(IPC.githubIssuesPullAutoMergeOff, (request) => service.disablePullAutoMerge(request))
+  platform.handle(IPC.githubIssuesPullAutoMerge, (request) => service.enablePullAutoMerge(request))
   platform.handle(IPC.githubIssuesPullUpdateBranch, (request) => service.updatePullBranch(request))
   platform.handle(IPC.githubIssuesRepoCollaborators, (projectId: string, repository: string) =>
     service.repoCollaborators({ projectId, repository }))

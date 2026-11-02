@@ -586,6 +586,8 @@ export const IPC = {
   githubIssuesPullCreate: 'githubIssues:pull-create',
   githubIssuesPullForBranch: 'githubIssues:pull-for-branch',
   githubIssuesPullLineComment: 'githubIssues:pull-line-comment',
+  githubIssuesPullAutoMergeOff: 'githubIssues:pull-auto-merge-off',
+  githubIssuesPullAutoMerge: 'githubIssues:pull-auto-merge',
   githubIssuesPullUpdateBranch: 'githubIssues:pull-update-branch',
   // The merge confirmation's allowed methods: a read, classified like the pull reads above.
   githubIssuesRepoMergeMethods: 'githubIssues:repo-merge-methods',

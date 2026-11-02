@@ -523,7 +523,9 @@ export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullRequestReviewer,
   IPC.githubIssuesPullLineComment,
   IPC.githubIssuesPullCreate,
-  IPC.githubIssuesPullUpdateBranch
+  IPC.githubIssuesPullUpdateBranch,
+  IPC.githubIssuesPullAutoMerge,
+  IPC.githubIssuesPullAutoMergeOff
 ])
 
 const ROLE_NAME: Readonly<Record<string, string>> = { owner: 'Owners', editor: 'Editors', commenter: 'Commenters', viewer: 'Viewers' }

@@ -1,4 +1,4 @@
-// The pull node's GitHub writes (comment, line comment, review, merge, request reviewer, update branch) and "New pull
+// The pull node's GitHub writes (comment, line comment, review, merge, request reviewer, update branch, auto-merge on and off) and "New pull
 // request"'s create happen only on a user's click.
 // No canvas-control path may reach them: an agent's verb must never post to GitHub (spec: "no
 // canvas-control command calls a write"). This pins it at the source of every control shell.
@@ -20,7 +20,7 @@ const CONTROL_SOURCES = [
   'src/renderer/canvas/Canvas.tsx'
 ]
 const WRITES =
-  /commentOnPull|reviewPull|mergePull|githubIssuesPullComment|githubIssuesPullReview|githubIssuesPullMerge|pull-comment|pull-review|pull-merge|createIssueComment|requestPullReviewer|githubIssuesPullRequestReviewer|pull-request-reviewer|commentOnPullLine|createPullLineComment|githubIssuesPullLineComment|pull-line-comment|\bcreatePull\b|githubIssuesPullCreate|pull-create|updatePullBranch|githubIssuesPullUpdateBranch|pull-update-branch/
+  /commentOnPull|reviewPull|mergePull|githubIssuesPullComment|githubIssuesPullReview|githubIssuesPullMerge|pull-comment|pull-review|pull-merge|createIssueComment|requestPullReviewer|githubIssuesPullRequestReviewer|pull-request-reviewer|commentOnPullLine|createPullLineComment|githubIssuesPullLineComment|pull-line-comment|\bcreatePull\b|githubIssuesPullCreate|pull-create|updatePullBranch|githubIssuesPullUpdateBranch|pull-update-branch|PullAutoMerge|pull-auto-merge/
 
 describe('pull writes guard', () => {
   it.each(CONTROL_SOURCES)('%s names no pull write', (file) => {

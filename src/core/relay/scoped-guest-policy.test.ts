@@ -187,6 +187,8 @@ describe('scoped guest — canvas, board and GitHub', () => {
     expect(allowed(IPC.githubIssuesPullLineComment, { ...write, inReplyTo: 9 })).toBe(false)
     expect(allowed(IPC.githubIssuesPullCreate, { projectId: 'alpha', repository: 'o/r', head: 'x', base: 'main', title: 't', body: '', draft: false })).toBe(false)
     expect(allowed(IPC.githubIssuesPullUpdateBranch, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40) })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullAutoMerge, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'c'.repeat(40) })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullAutoMergeOff, { projectId: 'alpha', repository: 'o/r', pullNumber: 12 })).toBe(false)
     expect(allowed(IPC.githubIssuesPullForBranch, 'alpha', 'o/r', 'x')).toBe(true)
     expect(allowed(IPC.githubIssuesPullForBranch, 'beta', 'o/r', 'x')).toBe(false)
     expect(allowed(IPC.githubIssuesRepoCollaborators, 'alpha', 'o/r')).toBe(true)
