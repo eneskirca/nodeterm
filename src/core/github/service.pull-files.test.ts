@@ -11,6 +11,7 @@ const config: NormalisedProjectKanbanGitHub = {
 }
 const BASE = 'b'.repeat(40)
 const HEAD = 'c'.repeat(40)
+const MERGE_BASE = 'd'.repeat(40)
 
 const detail = (): GitHubPullDetail => ({
   number: 7, title: 'T', body: '', lifecycle: 'open', author: null,
@@ -44,6 +45,10 @@ class Client implements GitHubIssuesClientLike {
   async getPull(): Promise<GitHubPullDetail> { this.reads.push('detail'); return detail() }
   async listPullFiles(_r: string, _n: number, page: number): Promise<PullFilesPage> {
     this.reads.push(`files ${page}`); return this.pages(page)
+  }
+  base: () => Promise<string> = async () => MERGE_BASE
+  async mergeBase(_r: string, base: string, head: string): Promise<string> {
+    this.reads.push(`compare ${base[0]}...${head[0]}`); return this.base()
   }
   async getFileAt(_r: string, path: string, ref: string): Promise<PullFileRead> {
     this.reads.push(`file ${path}@${ref[0]}`); return this.contents(path, ref)
@@ -120,21 +125,41 @@ describe('GitHubIssueService.pullFiles', () => {
 })
 
 describe('GitHubIssueService.pullFileContents', () => {
-  it('reads base and head at the SHAs of the latest detail read', async () => {
-    const { service } = harness()
+  it('reads the base side at the merge base of base and head, not at base.sha', async () => {
+    const { client, service } = harness()
     expect(await service.pullFileContents(contents('src/a.ts'))).toEqual({
       status: 'ok', observedAt: 1_000_000,
-      contents: { kind: 'diff', base: { kind: 'text', text: 'src/a.ts@b' }, head: { kind: 'text', text: 'src/a.ts@c' } }
+      contents: { kind: 'diff', base: { kind: 'text', text: 'src/a.ts@d' }, head: { kind: 'text', text: 'src/a.ts@c' } }
     })
+    expect(client.reads).toContain('compare b...c')
+    expect(client.reads).not.toContain('file src/a.ts@b')
+  })
+
+  it('reads the merge base once per base and head, so a later file click does not re-read it', async () => {
+    const { client, service, advance } = harness()
+    await service.pullFileContents(contents('src/a.ts'))
+    advance(60_000)
+    await service.pullFileContents(contents('src/new.ts'))
+    expect(client.reads.filter((read) => read.startsWith('compare '))).toEqual(['compare b...c'])
+  })
+
+  it('classifies a failed compare read like the other reads, and reads no file', async () => {
+    const { client, service } = harness()
+    client.base = async () => { throw new GitHubClientError('request-failed', 401) }
+    expect(await service.pullFileContents(contents('src/a.ts'))).toEqual({ status: 'failed', reason: 'signed-out' })
+    client.base = async () => { throw new GitHubClientError('rate-limited', 403, 2_000_000) }
+    expect(await service.pullFileContents(contents('src/a.ts')))
+      .toEqual({ status: 'failed', reason: 'throttled', retryAt: 2_000_000 })
+    expect(client.reads.some((read) => read.startsWith('file '))).toBe(false)
   })
 
   it('reads the base side of a rename from its previous path', async () => {
     const { client, service } = harness()
     const result = await service.pullFileContents(contents('src/new.ts'))
     expect(result.status === 'ok' && result.contents).toEqual({
-      kind: 'diff', base: { kind: 'text', text: 'src/old.ts@b' }, head: { kind: 'text', text: 'src/new.ts@c' }
+      kind: 'diff', base: { kind: 'text', text: 'src/old.ts@d' }, head: { kind: 'text', text: 'src/new.ts@c' }
     })
-    expect(client.reads).toContain('file src/old.ts@b')
+    expect(client.reads).toContain('file src/old.ts@d')
   })
 
   it('answers empty for the missing side of an added or removed file, with no read for it', async () => {
@@ -144,8 +169,8 @@ describe('GitHubIssueService.pullFileContents', () => {
       .toEqual({ kind: 'diff', base: { kind: 'empty' }, head: { kind: 'text', text: 'src/added.ts@c' } })
     const removed = await service.pullFileContents(contents('src/gone.ts'))
     expect(removed.status === 'ok' && removed.contents)
-      .toEqual({ kind: 'diff', base: { kind: 'text', text: 'src/gone.ts@b' }, head: { kind: 'empty' } })
-    expect(client.reads.filter((read) => read.startsWith('file '))).toEqual(['file src/added.ts@c', 'file src/gone.ts@b'])
+      .toEqual({ kind: 'diff', base: { kind: 'text', text: 'src/gone.ts@d' }, head: { kind: 'empty' } })
+    expect(client.reads.filter((read) => read.startsWith('file '))).toEqual(['file src/added.ts@c', 'file src/gone.ts@d'])
   })
 
   it('answers unavailable for a binary file and a file over 1 MB', async () => {
@@ -173,7 +198,7 @@ describe('GitHubIssueService.pullFileContents', () => {
     await service.pullFileContents(contents('src/a.ts'))
     advance(10_000)
     await service.pullFileContents(contents('src/a.ts'))
-    expect(client.reads).toEqual(['detail', 'files 1', 'file src/a.ts@b', 'file src/a.ts@c'])
+    expect(client.reads).toEqual(['detail', 'files 1', 'compare b...c', 'file src/a.ts@d', 'file src/a.ts@c'])
   })
 
   it('goes through the request coordinator: a held budget sends nothing and says throttled', async () => {

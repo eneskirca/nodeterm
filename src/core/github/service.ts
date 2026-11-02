@@ -107,6 +107,8 @@ export interface GitHubIssuesClientLike {
   /** One page of a PR's changed files, and one file at one commit (the Files tab). Optional, as above. */
   listPullFiles?(repository: string, pullNumber: number, page: number): Promise<PullFilesPage>
   getFileAt?(repository: string, path: string, ref: string): Promise<PullFileRead>
+  /** The merge base of two commits, the base side GitHub diffs a PR against. Optional, as above. */
+  mergeBase?(repository: string, base: string, head: string): Promise<string>
   /** The repository's allowed merge methods, and a merge tied to the head `sha`. Optional, as above. */
   repoMergeMethods?(repository: string): Promise<PullMergeMethod[]>
   mergePull?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
@@ -360,6 +362,8 @@ export class GitHubIssueService {
   /** Allowed merge methods per identity and repository, held for this core's run (GitHub's repo
    *  settings rarely change, and a merge GitHub refuses still says why). Successful reads only. */
   private readonly mergeMethods = new Map<string, PullMergeMethod[]>()
+  /** Merge base per `base\0head` SHA pair. Commits are immutable, so an answer never ages. */
+  private readonly mergeBases = new Map<string, string>()
   private readonly pullReads = new Map<string, {
     last?: PullOk
     floorUntil: number
@@ -1056,8 +1060,8 @@ export class GitHubIssueService {
   }
 
   /**
-   * The base and head versions of one changed file, at the SHAs of the latest `pullDetail` read. A
-   * rename's base is read from its previous path; the missing side of an added or removed file is
+   * The base and head versions of one changed file: head at the latest `pullDetail` head, base at
+   * the merge base of that base and head (what GitHub's diff is against). A rename's base is read from its previous path; the missing side of an added or removed file is
    * `empty` (no read). A binary file or one over 1 MB answers `unavailable`. The SHAs are part of the
    * key, so a moved head reads again; the floor and stale rules are `pullRead`'s.
    */
@@ -1071,6 +1075,8 @@ export class GitHubIssueService {
     if (listed.status !== 'ok') return listed
     const file = listed.files.find((item) => item.path === request.path)
     const { base, head } = detail.detail
+    const mergeBase = await this.pullMergeBase(request, base.sha, head.sha)
+    if (mergeBase.status !== 'ok') return mergeBase
     return this.pullRead(`contents\0${base.sha}\0${head.sha}\0${request.path}`, request, async (captured, repository) => {
       const { client } = captured
       if (!client.getFileAt) return null
@@ -1078,7 +1084,7 @@ export class GitHubIssueService {
       const side = async (path: string, sha: string): Promise<PullFileRead | PullFileSide> =>
         this.readWithEpoch(captured, () => client.getFileAt!(repository, path, sha))
       const [before, after] = await Promise.all([
-        file.status === 'added' ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, base.sha),
+        file.status === 'added' ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, mergeBase.sha),
         file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, head.sha)
       ])
       const unavailable = [before, after].find((item) => item.kind === 'unavailable')
@@ -1089,6 +1095,24 @@ export class GitHubIssueService {
           : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
         observedAt: this.now()
       }
+    })
+  }
+
+  /** The merge base of `base` and `head`, read once per pair through `pullRead`. */
+  private async pullMergeBase(
+    request: { projectId: string; repository: string; pullNumber: number }, base: string, head: string
+  ): Promise<PullResult<PullOk & { sha: string }>> {
+    const key = `${base}\0${head}`
+    return this.pullRead(`merge-base\0${key}`, request, async (captured, repository) => {
+      const { client } = captured
+      let sha = this.mergeBases.get(key)
+      if (!sha) {
+        if (!client.mergeBase) return null
+        sha = await this.readWithEpoch(captured, () => client.mergeBase!(repository, base, head))
+        this.mergeBases.set(key, sha)
+        if (this.mergeBases.size > MAX_PULL_READS) this.mergeBases.delete(this.mergeBases.keys().next().value!)
+      }
+      return { status: 'ok', sha, observedAt: this.now() }
     })
   }
 
@@ -1230,7 +1254,7 @@ export class GitHubIssueService {
    */
   private async pullRead<O extends PullOk>(
     // `contents\0…` carries the file and SHAs, so a held entry is one file at one head.
-    kind: 'detail' | 'conversation' | 'files' | `contents\0${string}`,
+    kind: 'detail' | 'conversation' | 'files' | `contents\0${string}` | `merge-base\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {
