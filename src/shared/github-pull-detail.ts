@@ -52,3 +52,13 @@ export type GitHubPullConversationResult =
   | { status: 'ok'; items: PullConversationItem[]; truncated: boolean; observedAt: number; stale?: PullReadFailure; retryAt?: number }
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
+
+/** What a review from the node says. REQUEST_CHANGES and COMMENT need a message; APPROVE does not. */
+export type PullReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
+
+/** Why a write from the node did not land. Each has one sentence in the node (PullNodeView). */
+export type PullWriteReason =
+  | 'own-pull' | 'forbidden' | 'throttled' | 'signed-out' | 'not-approved' | 'validation' | 'network'
+
+/** The one answer every pull node write gives (comment, review; merge reuses it). */
+export type PullWriteResult = { ok: true } | { ok: false; reason: PullWriteReason }

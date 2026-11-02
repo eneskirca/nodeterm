@@ -518,3 +518,60 @@ describe('GitHubIssuesClient pull conversation pages', () => {
     await expect(client([]).listPullReviews('o/r', 0, 1)).rejects.toMatchObject({ code: 'invalid-request' })
   })
 })
+
+describe('pull request writes', () => {
+  const sha = 'c'.repeat(40)
+  it('posts a review with its event, body and the head commit it was made against', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ id: 91 }) }
+    })
+    expect(await client.reviewPull('o/r', 7, { event: 'REQUEST_CHANGES', body: 'Fix the test', commitId: sha }))
+      .toEqual({ id: 91 })
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/7/reviews')
+    expect(calls[0].init.method).toBe('POST')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ event: 'REQUEST_CHANGES', body: 'Fix the test', commit_id: sha })
+  })
+
+  it('sends no body field for an approval without a message', async () => {
+    const bodies: unknown[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return response({ id: 1 }) }
+    })
+    await client.reviewPull('o/r', 7, { event: 'APPROVE', body: '', commitId: sha })
+    expect(bodies).toEqual([{ event: 'APPROVE', commit_id: sha }])
+  })
+
+  it('refuses a bad event, commit or number before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({ id: 1 }) } })
+    await expect(client.reviewPull('o/r', 7, { event: 'DISMISS' as 'APPROVE', body: '', commitId: sha }))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.reviewPull('o/r', 7, { event: 'APPROVE', body: '', commitId: 'main' }))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.reviewPull('o/r', 0, { event: 'APPROVE', body: '', commitId: sha }))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+
+  it('names GitHub\'s refusal to review your own pull request', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response({ message: 'Unprocessable Entity', errors: ['Can not approve your own pull request'] }, { status: 422 })
+    })
+    await expect(client.reviewPull('o/r', 7, { event: 'APPROVE', body: '', commitId: sha }))
+      .rejects.toMatchObject({ code: 'own-pull', status: 422 })
+  })
+
+  it('keeps any other 422, a 403 and a 401 as their statuses', async () => {
+    const failing = (status: number, body: unknown = { message: 'x' }) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(body, { status })
+    }).reviewPull('o/r', 7, { event: 'COMMENT', body: 'x', commitId: sha })
+    await expect(failing(422, { message: 'Validation Failed', errors: ['commit_id is not part of the pull request'] }))
+      .rejects.toMatchObject({ code: 'request-failed', status: 422 })
+    await expect(failing(403)).rejects.toMatchObject({ code: 'insufficient-permission', status: 403 })
+    await expect(failing(401)).rejects.toMatchObject({ code: 'request-failed', status: 401 })
+  })
+})

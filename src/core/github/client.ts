@@ -17,6 +17,7 @@ import type {
   GitHubPullDetail,
   PullConversationItem,
   PullConversationPage,
+  PullReviewEvent,
   PullReviewVerdict
 } from '../../shared/github-pull-detail'
 import {
@@ -31,6 +32,7 @@ import {
 } from './graphql-pulls'
 
 const API_ORIGIN = 'https://api.github.com'
+const REVIEW_EVENTS: ReadonlySet<unknown> = new Set<PullReviewEvent>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT'])
 const API_VERSION = '2022-11-28'
 const DEFAULT_MAX_RESPONSE = 8 * 1024 * 1024
 const MAX_ERROR_METADATA_BYTES = 4 * 1024
@@ -38,7 +40,7 @@ const MAX_ERROR_METADATA_BYTES = 4 * 1024
 export class GitHubClientError extends Error {
   constructor(
     readonly code: 'invalid-request' | 'malformed-response' | 'response-too-large' |
-      'request-failed' | 'rate-limited' | 'insufficient-permission',
+      'request-failed' | 'rate-limited' | 'insufficient-permission' | 'own-pull',
     readonly status?: number,
     readonly retryAt?: number,
     /** Which rate budget a PRIMARY limit belongs to (`x-ratelimit-resource`). `graphql` and `core`
@@ -322,7 +324,12 @@ async function boundedErrorMetadata(response: Response): Promise<string> {
     const documentation = value && string(value.documentation_url, 2_048)
       ? value.documentation_url
       : ''
-    return `${message}\n${documentation}`.toLocaleLowerCase('en-US')
+    // A 422 names its cause in `errors` (strings, or objects with a `message`).
+    const errors = value && Array.isArray(value.errors)
+      ? value.errors.slice(0, 10).map((item) => typeof item === 'string' ? item : object(item)?.message)
+        .filter((item): item is string => typeof item === 'string')
+      : []
+    return [message, documentation, ...errors].join('\n').toLocaleLowerCase('en-US')
   } catch {
     return ''
   }
@@ -552,6 +559,32 @@ export class GitHubIssuesClient {
     return decoded
   }
 
+  /** Submit one review (`POST /pulls/{n}/reviews`) against `commitId`, the head the user saw, so
+   *  GitHub ties it to that commit. An empty body is left out (an approval needs none). */
+  async reviewPull(
+    repository: string,
+    pullNumber: number,
+    review: { event: PullReviewEvent; body: string; commitId: string }
+  ): Promise<{ id: number }> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !REVIEW_EVENTS.has(review?.event) ||
+        typeof review.commitId !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(review.commitId) ||
+        typeof review.body !== 'string' || review.body.length > 60_000) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`/repos/${repository}/pulls/${pullNumber}/reviews`, {
+      method: 'POST',
+      body: JSON.stringify({
+        event: review.event, ...(review.body.trim() ? { body: review.body } : {}), commit_id: review.commitId
+      })
+    })
+    const value = object(await this.json(response))
+    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) {
+      throw new GitHubClientError('malformed-response')
+    }
+    return { id: Number(value.id) }
+  }
+
   /** One page of a PR's issue comments (`GET /issues/{n}/comments`), for the Conversation tab. */
   async listPullComments(repository: string, pullNumber: number, page: number): Promise<PullConversationPage> {
     return this.conversationPage(`/repos/${safeRepository(repository)}/issues/${pullNumber}/comments`, pullNumber, page, 'comment')
@@ -728,6 +761,10 @@ export class GitHubIssuesClient {
       const resource = primary ? response.headers.get('x-ratelimit-resource') ?? undefined : undefined
       throw new GitHubClientError('rate-limited', response.status, retryAt,
         resource && /^[a-z_]{1,32}$/.test(resource) ? resource : undefined)
+    }
+    // GitHub refuses a review of your own pull request with a 422 that says so (no status of its own).
+    if (response.status === 422 && /your own pull request/.test(await boundedErrorMetadata(response))) {
+      throw new GitHubClientError('own-pull', 422)
     }
     if (!response.ok) throw new GitHubClientError('request-failed', response.status)
     return response
