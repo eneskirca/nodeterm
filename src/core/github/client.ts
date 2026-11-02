@@ -13,7 +13,12 @@ import type {
 } from '../../shared/github-issues'
 import { parseGitHubRepository } from './config'
 import { mergeState, type GitHubPullChecksResult, type PullLifecycle } from '../../shared/github-pull-status'
-import type { GitHubPullDetail } from '../../shared/github-pull-detail'
+import type {
+  GitHubPullDetail,
+  PullConversationItem,
+  PullConversationPage,
+  PullReviewVerdict
+} from '../../shared/github-pull-detail'
 import {
   GraphQLShapeError,
   PULL_CHECKS_QUERY,
@@ -184,6 +189,30 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
     changedFiles: counts[2],
     url: url.toString()
   }
+}
+
+const REVIEW_VERDICTS: Record<string, PullReviewVerdict> = {
+  APPROVED: 'approved', CHANGES_REQUESTED: 'changes-requested', COMMENTED: 'commented', DISMISSED: 'dismissed'
+}
+
+/** An issue comment or a submitted review. `undefined` = a PENDING review (skipped), `null` = malformed. */
+function conversationItemFrom(value: unknown, kind: 'comment' | 'review'): PullConversationItem | null | undefined {
+  const item = object(value)
+  if (!item) return null
+  if (kind === 'review' && item.state === 'PENDING') return undefined
+  const at = kind === 'comment' ? item.created_at : item.submitted_at
+  if (!positiveInteger(Number(item.id), Number.MAX_SAFE_INTEGER) || !isoDate(at) ||
+      !(item.body === null || item.body === undefined || string(item.body, 262_144)) ||
+      !string(item.html_url, 2_048)) return null
+  let url: URL
+  try { url = new URL(item.html_url) } catch { return null }
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') return null
+  const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
+  if (item.user && !author) return null
+  const base = { id: Number(item.id), author, body: item.body ?? '', at, url: url.toString() }
+  if (kind === 'comment') return { kind, ...base }
+  const verdict = typeof item.state === 'string' ? REVIEW_VERDICTS[item.state] : undefined
+  return verdict ? { kind, ...base, verdict } : null
 }
 
 /** GitHub grows this enum (`duplicate` arrived after the decoder was written, and one such issue
@@ -521,6 +550,35 @@ export class GitHubIssuesClient {
     const decoded = pullDetailFrom(value)
     if (!decoded) throw new GitHubClientError('malformed-response')
     return decoded
+  }
+
+  /** One page of a PR's issue comments (`GET /issues/{n}/comments`), for the Conversation tab. */
+  async listPullComments(repository: string, pullNumber: number, page: number): Promise<PullConversationPage> {
+    return this.conversationPage(`/repos/${safeRepository(repository)}/issues/${pullNumber}/comments`, pullNumber, page, 'comment')
+  }
+
+  /** One page of a PR's submitted reviews (`GET /pulls/{n}/reviews`), each with its verdict. */
+  async listPullReviews(repository: string, pullNumber: number, page: number): Promise<PullConversationPage> {
+    return this.conversationPage(`/repos/${safeRepository(repository)}/pulls/${pullNumber}/reviews`, pullNumber, page, 'review')
+  }
+
+  private async conversationPage(
+    path: string, pullNumber: number, page: number, kind: 'comment' | 'review'
+  ): Promise<PullConversationPage> {
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !positiveInteger(page, 100_000)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`${path}?per_page=100&page=${page}`, { method: 'GET' })
+    const value = await this.json(response)
+    if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
+    const items: PullConversationItem[] = []
+    for (const candidate of value) {
+      const decoded = conversationItemFrom(candidate, kind)
+      if (decoded === null) throw new GitHubClientError('malformed-response')
+      if (decoded) items.push(decoded)
+    }
+    const next = nextPage(response.headers.get('link'))
+    return { items, ...(next ? { nextPage: next } : {}) }
   }
 
   /** Per-check detail for one PR — read only when someone opens that PR. */

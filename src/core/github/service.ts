@@ -29,8 +29,11 @@ import type { PullStatusRead } from './graphql-pulls'
 import { GitHubPullStatusTracker } from './pull-status-tracker'
 import type { GitHubPullBoard, GitHubPullChecksResult, PullLifecycle } from '../../shared/github-pull-status'
 import type {
+  GitHubPullConversationResult,
   GitHubPullDetail,
   GitHubPullDetailResult,
+  PullConversationItem,
+  PullConversationPage,
   PullReadFailure,
   PullRefusal
 } from '../../shared/github-pull-detail'
@@ -87,6 +90,9 @@ export interface GitHubIssuesClientLike {
   pullRequestChecks?(repository: string, pullNumber: number): Promise<GitHubPullChecksResult>
   /** One PR's overview for the pull request node. Optional for the same reason as the two above. */
   getPull?(repository: string, pullNumber: number): Promise<GitHubPullDetail>
+  /** One page each of a PR's issue comments and reviews (the Conversation tab). Optional, as above. */
+  listPullComments?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
+  listPullReviews?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
 }
 
 export interface GitHubIssueProjectContext {
@@ -187,18 +193,27 @@ function pullReadFailure(error: unknown): { reason: PullReadFailure; retryAt?: n
   return { reason: 'unreachable' }
 }
 
-type PullDetailOk = Extract<GitHubPullDetailResult, { status: 'ok' }>
+/** What every pull node read answers: fresh (or the last good answer, marked stale), a refusal
+ *  made before any request, or a failure. `GitHubPullDetailResult` and the conversation's share it. */
+type PullOk = { status: 'ok'; observedAt: number; stale?: PullReadFailure; retryAt?: number }
+type PullResult<O extends PullOk> =
+  | O
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
 
-/** A read that produced no fresh answer: the last good detail marked stale, else the failure. */
-function stalePullDetail(last: PullDetailOk | undefined, error: unknown): GitHubPullDetailResult {
+/** A read that produced no fresh answer: the last good answer marked stale, else the failure. */
+function stalePull<O extends PullOk>(last: O | undefined, error: unknown): PullResult<O> {
   const failure = pullReadFailure(error)
   return last
     ? { ...last, stale: failure.reason, ...(failure.retryAt !== undefined ? { retryAt: failure.retryAt } : {}) }
     : { status: 'failed', ...failure }
 }
 
-/** Pull detail entries kept for the stale fallback and the refresh floor. Oldest go first. */
+/** Pull read entries kept for the stale fallback and the refresh floor. Oldest go first. */
 const MAX_PULL_DETAILS = 100
+
+/** Pages of 100 read per list for the Conversation tab; past it the node says the rest is on GitHub. */
+const MAX_CONVERSATION_PAGES = 10
 
 function repositoryKey(context: GitHubIssueServiceContext): string {
   return `${context.userId}\0${context.repository}`
@@ -292,10 +307,10 @@ export class GitHubIssueService {
   private readonly pulls: GitHubPullStatusTracker
   private readonly checkReads = new Map<string, { at: number; result: Promise<GitHubPullChecksResult> }>()
   private readonly checkStarts = new Map<string, number[]>()
-  private readonly pullDetails = new Map<string, {
-    last?: PullDetailOk
+  private readonly pullReads = new Map<string, {
+    last?: PullOk
     floorUntil: number
-    reading?: Promise<GitHubPullDetailResult>
+    reading?: Promise<PullResult<PullOk>>
   }>()
   private operationSequence = 0
   private readonly now: () => number
@@ -924,14 +939,59 @@ export class GitHubIssueService {
     }
   }
 
+  /** One PR's overview for the pull request node (`pullRead` holds the refusal, floor and stale rules). */
+  async pullDetail(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullDetailResult> {
+    return this.pullRead('detail', request, async (captured, repository, pullNumber) => {
+      if (!captured.client.getPull) return null
+      const detail = await this.readWithEpoch(captured, () => captured.client.getPull!(repository, pullNumber))
+      return { status: 'ok', detail, observedAt: this.now() }
+    })
+  }
+
   /**
-   * One PR's overview for the pull request node, read on mount and on Refresh. The node names the
+   * One PR's issue comments and submitted reviews, merged into one list oldest first, for the
+   * Conversation tab. Same refusals, floor and stale rules as `pullDetail`. Each page is its own
+   * coordinated read; at most `MAX_CONVERSATION_PAGES` per list, past which `truncated` is set.
+   */
+  async pullConversation(
+    request: { projectId: string; repository: string; pullNumber: number }
+  ): Promise<GitHubPullConversationResult> {
+    return this.pullRead('conversation', request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.listPullComments || !client.listPullReviews) return null
+      const pages = async (list: (page: number) => Promise<PullConversationPage>) => {
+        const items: PullConversationItem[] = []
+        let page = 1
+        for (let read = 0; read < MAX_CONVERSATION_PAGES; read += 1) {
+          const result = await this.readWithEpoch(captured, () => list(page))
+          items.push(...result.items)
+          if (!result.nextPage) return { items, truncated: false }
+          page = result.nextPage
+        }
+        return { items, truncated: true }
+      }
+      const [comments, reviews] = await Promise.all([
+        pages((page) => client.listPullComments!(repository, pullNumber, page)),
+        pages((page) => client.listPullReviews!(repository, pullNumber, page))
+      ])
+      const items = [...comments.items, ...reviews.items].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+      return { status: 'ok', items, truncated: comments.truncated || reviews.truncated, observedAt: this.now() }
+    })
+  }
+
+  /**
+   * The shared path of every pull node read, run on mount and on Refresh. The node names the
    * repository it was opened for; anything but the project's approved repository is refused before
    * a credential is resolved, so a shared project file cannot point this token at another repo. A
    * read inside `REFRESH_MIN_INTERVAL_MS` of the last good one answers from memory; a failed read
-   * keeps the last good detail, marks it stale, and does not hold the floor. Never throws.
+   * keeps the last good answer, marks it stale, and does not hold the floor. Never throws.
+   * `read` answers null when this client cannot make the read at all.
    */
-  async pullDetail(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullDetailResult> {
+  private async pullRead<O extends PullOk>(
+    kind: string,
+    request: { projectId: string; repository: string; pullNumber: number },
+    read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
+  ): Promise<PullResult<O>> {
     const repository = parseGitHubRepository(request?.repository)
     if (typeof request?.projectId !== 'string' || !repository || !Number.isSafeInteger(request.pullNumber) ||
         request.pullNumber < 1) return { status: 'refused', reason: 'not-configured' }
@@ -939,23 +999,24 @@ export class GitHubIssueService {
     try {
       projectRepository = (await this.cacheContext(request.projectId)).repository
     } catch (error) {
-      return this.pullContextFailure(error)
+      return this.pullContextFailure<O>(error)
     }
     if (repository.toLowerCase() !== projectRepository.toLowerCase()) {
       return { status: 'refused', reason: 'repository-mismatch' }
     }
-    const key = `${request.projectId}\0${projectRepository}\0${request.pullNumber}`
-    let entry = this.pullDetails.get(key)
+    const key = `${kind}\0${request.projectId}\0${projectRepository}\0${request.pullNumber}`
+    let entry = this.pullReads.get(key)
     if (!entry) {
       entry = { floorUntil: 0 }
-      this.pullDetails.set(key, entry)
-      if (this.pullDetails.size > MAX_PULL_DETAILS) this.pullDetails.delete(this.pullDetails.keys().next().value!)
+      this.pullReads.set(key, entry)
+      if (this.pullReads.size > MAX_PULL_DETAILS) this.pullReads.delete(this.pullReads.keys().next().value!)
     }
-    if (entry.reading) return entry.reading
+    // ponytail: one map for every kind; the key carries the kind, so an entry only ever holds its own O.
+    const held = entry as { last?: O; floorUntil: number; reading?: Promise<PullResult<O>> }
+    if (held.reading) return held.reading
     const startedAt = this.now()
-    if (entry.last && startedAt < entry.floorUntil) return entry.last
-    const held = entry
-    const reading = this.readPullDetail(request.projectId, projectRepository, request.pullNumber, held.last)
+    if (held.last && startedAt < held.floorUntil) return held.last
+    const reading = this.readPull(request.projectId, projectRepository, request.pullNumber, held.last, read)
       .then((result) => {
         if (result.status === 'ok' && !result.stale) {
           held.last = result
@@ -968,12 +1029,13 @@ export class GitHubIssueService {
     return reading
   }
 
-  private async readPullDetail(
+  private async readPull<O extends PullOk>(
     projectId: string,
     repository: string,
     pullNumber: number,
-    last: PullDetailOk | undefined
-  ): Promise<GitHubPullDetailResult> {
+    last: O | undefined,
+    read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
+  ): Promise<PullResult<O>> {
     let captured: GitHubIssueServiceContext
     try {
       captured = await this.options.contextForProject(projectId)
@@ -981,24 +1043,19 @@ export class GitHubIssueService {
       return this.pullContextFailure(error, last)
     }
     if (captured.repository !== repository) return { status: 'refused', reason: 'repository-mismatch' }
-    if (!captured.client.getPull) return { status: 'failed', reason: 'unreachable' }
     try {
-      const detail = await this.readWithEpoch(captured, () => captured.client.getPull!(repository, pullNumber))
-      return { status: 'ok', detail, observedAt: this.now() }
+      return await read(captured, repository, pullNumber) ?? { status: 'failed', reason: 'unreachable' }
     } catch (error) {
-      return stalePullDetail(last, error)
+      return stalePull(last, error)
     }
   }
 
   /** A context that could not be resolved: a coded host refusal, else a failure to reach GitHub. */
-  private pullContextFailure(
-    error: unknown,
-    last?: PullDetailOk
-  ): GitHubPullDetailResult {
+  private pullContextFailure<O extends PullOk>(error: unknown, last?: O): PullResult<O> {
     const code = (error as { code?: unknown } | null)?.code
     const refusal = typeof code === 'string' ? PULL_REFUSALS[code as GitHubHostError['code']] : undefined
     if (refusal) return { status: 'refused', reason: refusal }
-    return stalePullDetail(last, error)
+    return stalePull(last, error)
   }
 
   private readPullStatusAfterHeartbeat(

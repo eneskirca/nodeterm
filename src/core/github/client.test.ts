@@ -461,3 +461,60 @@ describe('GitHubIssuesClient.getPull', () => {
     await expect(client(401).getPull('nodeterm/nodeterm', 7)).rejects.toMatchObject({ code: 'request-failed', status: 401 })
   })
 })
+
+const user = { id: 2, login: 'octocat', avatar_url: 'https://avatars.githubusercontent.com/u/2?v=4' }
+const author = { id: 2, login: 'octocat', avatarUrl: 'https://avatars.githubusercontent.com/u/2?v=4' }
+
+describe('GitHubIssuesClient pull conversation pages', () => {
+  it('reads one page of issue comments with its next page', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        calls.push(String(url))
+        return response([{
+          id: 11, user, body: 'Looks good', created_at: '2026-10-01T10:00:00Z',
+          html_url: 'https://github.com/o/r/pull/7#issuecomment-11'
+        }], { headers: { link: '<https://api.github.com/repos/o/r/issues/7/comments?per_page=100&page=2>; rel="next"' } })
+      }
+    })
+    expect(await client.listPullComments('o/r', 7, 1)).toEqual({
+      items: [{
+        kind: 'comment', id: 11, author, body: 'Looks good', at: '2026-10-01T10:00:00Z',
+        url: 'https://github.com/o/r/pull/7#issuecomment-11'
+      }],
+      nextPage: 2
+    })
+    expect(calls).toEqual(['https://api.github.com/repos/o/r/issues/7/comments?per_page=100&page=1'])
+  })
+
+  it('reads reviews with their verdict and skips an unsubmitted draft', async () => {
+    const calls: string[] = []
+    const review = (id: number, state: string) => ({
+      id, user, body: '', state, submitted_at: '2026-10-01T11:00:00Z',
+      html_url: `https://github.com/o/r/pull/7#pullrequestreview-${id}`
+    })
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        calls.push(String(url))
+        return response([review(1, 'APPROVED'), review(2, 'CHANGES_REQUESTED'), review(3, 'COMMENTED'),
+          review(4, 'DISMISSED'), { ...review(5, 'PENDING'), submitted_at: undefined }])
+      }
+    })
+    const page = await client.listPullReviews('o/r', 7, 3)
+    expect(page.nextPage).toBeUndefined()
+    expect(page.items.map((item) => item.kind === 'review' && item.verdict))
+      .toEqual(['approved', 'changes-requested', 'commented', 'dismissed'])
+    expect(calls).toEqual(['https://api.github.com/repos/o/r/pulls/7/reviews?per_page=100&page=3'])
+  })
+
+  it('refuses a malformed item and a link off github.com', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    await expect(client([{ id: 1, user, body: 'x', created_at: 'nope', html_url: 'https://github.com/o/r/pull/7' }])
+      .listPullComments('o/r', 7, 1)).rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([{ id: 1, user, body: 'x', created_at: '2026-10-01T10:00:00Z', html_url: 'https://evil.example/x' }])
+      .listPullComments('o/r', 7, 1)).rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([]).listPullReviews('o/r', 0, 1)).rejects.toMatchObject({ code: 'invalid-request' })
+  })
+})

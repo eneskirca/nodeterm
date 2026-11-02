@@ -32,3 +32,23 @@ export type GitHubPullDetailResult =
   | { status: 'ok'; detail: GitHubPullDetail; observedAt: number; stale?: PullReadFailure; retryAt?: number }
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
+
+/** A review's verdict. GitHub's PENDING (an unsubmitted draft) is never shown. */
+export type PullReviewVerdict = 'approved' | 'changes-requested' | 'commented' | 'dismissed'
+
+/** One entry of the Conversation tab: an issue comment or a submitted review. */
+export type PullConversationItem =
+  | { kind: 'comment'; id: number; author: GitHubIssueUser | null; body: string; at: string; url: string }
+  | { kind: 'review'; id: number; author: GitHubIssueUser | null; body: string; at: string; url: string; verdict: PullReviewVerdict }
+
+/** One page of either list, as the client reads it. */
+export interface PullConversationPage {
+  items: PullConversationItem[]
+  nextPage?: number
+}
+
+export type GitHubPullConversationResult =
+  /** `items` oldest first. `truncated` = more pages than the node reads; the rest is on GitHub. */
+  | { status: 'ok'; items: PullConversationItem[]; truncated: boolean; observedAt: number; stale?: PullReadFailure; retryAt?: number }
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
