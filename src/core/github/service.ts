@@ -35,6 +35,8 @@ import type {
   PullConversationItem,
   PullConversationPage,
   PullReadFailure,
+  GitHubRepoMergeMethodsResult,
+  PullMergeMethod,
   PullRefusal,
   PullReviewEvent,
   PullWriteReason,
@@ -96,6 +98,9 @@ export interface GitHubIssuesClientLike {
   /** One page each of a PR's issue comments and reviews (the Conversation tab). Optional, as above. */
   listPullComments?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
   listPullReviews?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
+  /** The repository's allowed merge methods, and a merge tied to the head `sha`. Optional, as above. */
+  repoMergeMethods?(repository: string): Promise<PullMergeMethod[]>
+  mergePull?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
   /** Submit one review on a PR (the node's Approve / Request changes). Optional, as above. */
   reviewPull?(
     repository: string, pullNumber: number, review: { event: PullReviewEvent; body: string; commitId: string }
@@ -217,6 +222,9 @@ function pullWriteFailure(error: unknown): PullWriteReason {
     return 'forbidden'
   }
   if (code === 'request-failed' && status === 422) return 'validation'
+  // A merge: 409 = the head is no longer the sha the node sent; 405 = GitHub will not merge it now.
+  if (code === 'request-failed' && status === 409) return 'head-moved'
+  if (code === 'request-failed' && status === 405) return 'not-mergeable'
   const failure = classifyGitHubFailure(error)
   if (failure.kind === 'unauthorized') return 'signed-out'
   if (failure.kind === 'rate-limited') return 'throttled'
@@ -1037,7 +1045,52 @@ export class GitHubIssueService {
   }
 
   /**
-   * The shared path of every pull node write (merge reuses it). Only a user's click reaches it, so it
+   * Merge from the node's confirmation, tied to `headSha` (the head the Overview showed), so GitHub
+   * refuses it with 409 (`head-moved`) if the PR moved since.
+   */
+  async mergePull(request: {
+    projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
+  }): Promise<PullWriteResult> {
+    const { method, headSha } = request ?? {}
+    if (typeof headSha !== 'string' || !headSha || (method !== 'merge' && method !== 'squash' && method !== 'rebase')) {
+      return { ok: false, reason: 'validation' }
+    }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot merge reads as network; the real client always can.
+      if (!client.mergePull) throw new Error('unsupported')
+      return client.mergePull(repository, pullNumber, { method, sha: headSha })
+    })
+  }
+
+  /**
+   * The merge methods the project's repository allows, for the merge confirmation. Refused like a
+   * pull read (another repository is refused before a credential is resolved). Not held here: the
+   * node keeps the answer for its lifetime.
+   */
+  async repoMergeMethods(request: { projectId: string; repository: string }): Promise<GitHubRepoMergeMethodsResult> {
+    const repository = parseGitHubRepository(request?.repository)
+    if (typeof request?.projectId !== 'string' || !repository) return { status: 'refused', reason: 'not-configured' }
+    let captured: GitHubIssueServiceContext
+    try {
+      if ((await this.cacheContext(request.projectId)).repository.toLowerCase() !== repository.toLowerCase()) {
+        return { status: 'refused', reason: 'repository-mismatch' }
+      }
+      captured = await this.options.contextForProject(request.projectId)
+    } catch (error) {
+      const refusal = pullRefusalOf(error)
+      return refusal ? { status: 'refused', reason: refusal } : { status: 'failed', ...pullReadFailure(error) }
+    }
+    const { client } = captured
+    if (!client.repoMergeMethods) return { status: 'failed', reason: 'unreachable' }
+    try {
+      return { status: 'ok', methods: await this.readWithEpoch(captured, () => client.repoMergeMethods!(captured.repository)) }
+    } catch (error) {
+      return { status: 'failed', ...pullReadFailure(error) }
+    }
+  }
+
+  /**
+   * The shared path of every pull node write (comment, review, merge). Only a user's click reaches it, so it
    * needs the approved repository but not the label-mapping approval. The node's repository must be
    * the project's; the write runs on the coordinator's mutation path. A landed write drops this PR's
    * held reads (so the node's next read is fresh) and refreshes the board. Never throws.
@@ -1068,17 +1121,22 @@ export class GitHubIssueService {
         return write(captured.client, captured.repository, pullNumber)
       })
     } catch (error) {
-      return { ok: false, reason: pullWriteFailure(error) }
+      const reason = pullWriteFailure(error)
+      // The head moved: the node reloads, and that read must not answer from the held one.
+      if (reason === 'head-moved') this.dropPullReads(projectId, captured.repository, pullNumber)
+      return { ok: false, reason }
     }
-    for (const kind of ['detail', 'conversation']) {
-      this.pullReads.delete(`${kind}\0${projectId}\0${captured.repository}\0${pullNumber}`)
-    }
+    this.dropPullReads(projectId, captured.repository, pullNumber)
     // A write is a reason to look again: the board's incremental refresh skips its caller floor once
     // (the full-reconcile floor stays).
     const floor = this.refreshFloors.get(projectId)
     if (floor) this.refreshFloors.set(projectId, { ...floor, any: 0 })
     void this.refresh({ projectId }).catch(() => undefined)
     return { ok: true }
+  }
+
+  private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
+    for (const kind of ['detail', 'conversation']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
   }
 
   /**

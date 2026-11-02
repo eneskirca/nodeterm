@@ -4,7 +4,9 @@ import { GitHubClientError } from './client'
 import { GitHubIssueService, type GitHubIssueServiceContext, type GitHubIssuesClientLike } from './service'
 import { GitHubRequestCoordinator } from './request-coordinator'
 import type { NormalisedProjectKanbanGitHub } from '../../shared/github-issues'
-import type { PullConversationPage, PullReviewEvent } from '../../shared/github-pull-detail'
+import type {
+  GitHubPullDetail, PullConversationPage, PullMergeMethod, PullReviewEvent
+} from '../../shared/github-pull-detail'
 
 const config: NormalisedProjectKanbanGitHub = {
   repository: 'o/r', columnMappings: [], completionColumnId: undefined, revision: 'mapping-1'
@@ -34,6 +36,19 @@ class Client implements GitHubIssuesClientLike {
     if (this.fail) throw this.fail
     return { id: 2 }
   }
+  async mergePull(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void> {
+    this.writes.push(['merge', repository, pullNumber, merge])
+    if (this.fail) throw this.fail
+  }
+  methods: PullMergeMethod[] = ['squash']
+  methodReads: string[] = []
+  async repoMergeMethods(repository: string): Promise<PullMergeMethod[]> {
+    this.methodReads.push(repository)
+    if (this.fail) throw this.fail
+    return this.methods
+  }
+  detailReads = 0
+  async getPull(): Promise<GitHubPullDetail> { this.detailReads += 1; return {} as GitHubPullDetail }
   async listPullComments(): Promise<PullConversationPage> { this.reads += 1; return { items: [] } }
   async listPullReviews(): Promise<PullConversationPage> { return { items: [] } }
 }
@@ -131,5 +146,64 @@ describe('GitHubIssueService pull writes', () => {
     expect(refresh).toHaveBeenCalledWith({ projectId: 'p' })
     await service.pullConversation(at)
     expect(client.reads).toBe(2)
+  })
+})
+
+describe('GitHubIssueService merge', () => {
+  it('merges with the chosen method and the head the node showed', async () => {
+    const { client, service, refresh } = harness()
+    expect(await service.mergePull({ ...at, method: 'squash', headSha: sha })).toEqual({ ok: true })
+    expect(client.writes).toEqual([['merge', 'o/r', 7, { method: 'squash', sha }]])
+    expect(refresh).toHaveBeenCalledWith({ projectId: 'p' })
+  })
+
+  it('refuses a missing head or an unknown method before anything is resolved', async () => {
+    const { client, service, contexts } = harness()
+    expect(await service.mergePull({ ...at, method: 'squash', headSha: '' })).toEqual({ ok: false, reason: 'validation' })
+    expect(await service.mergePull({ ...at, method: 'octopus' as PullMergeMethod, headSha: sha }))
+      .toEqual({ ok: false, reason: 'validation' })
+    expect(client.writes).toEqual([])
+    expect(contexts()).toBe(0)
+  })
+
+  it('refuses another repository with no request', async () => {
+    const { client, service } = harness()
+    expect(await service.mergePull({ ...at, repository: 'evil/other', method: 'merge', headSha: sha }))
+      .toEqual({ ok: false, reason: 'not-approved' })
+    expect(client.writes).toEqual([])
+  })
+
+  it('a 409 is head-moved, and the reload that follows reads fresh past the floor', async () => {
+    const { client, service, refresh } = harness()
+    await service.pullDetail(at)
+    client.fail = new GitHubClientError('request-failed', 409)
+    expect(await service.mergePull({ ...at, method: 'merge', headSha: sha })).toEqual({ ok: false, reason: 'head-moved' })
+    expect(refresh).not.toHaveBeenCalled()
+    await service.pullDetail(at)
+    expect(client.detailReads).toBe(2)
+  })
+
+  it('a 405 is not-mergeable', async () => {
+    const { client, service } = harness()
+    client.fail = new GitHubClientError('request-failed', 405)
+    expect(await service.mergePull({ ...at, method: 'merge', headSha: sha })).toEqual({ ok: false, reason: 'not-mergeable' })
+  })
+
+  it('reads the allowed methods of the project\'s repository only', async () => {
+    const { client, service } = harness()
+    expect(await service.repoMergeMethods({ projectId: 'p', repository: 'o/r' })).toEqual({ status: 'ok', methods: ['squash'] })
+    expect(await service.repoMergeMethods({ projectId: 'p', repository: 'evil/other' }))
+      .toEqual({ status: 'refused', reason: 'repository-mismatch' })
+    expect(client.methodReads).toEqual(['o/r'])
+  })
+
+  it('names a refusal and a failure of the methods read like a pull read', async () => {
+    const unapproved = harness({ code: 'not-approved' })
+    expect(await unapproved.service.repoMergeMethods({ projectId: 'p', repository: 'o/r' }))
+      .toEqual({ status: 'refused', reason: 'not-approved' })
+    const { client, service } = harness()
+    client.fail = new GitHubClientError('request-failed', 502)
+    expect(await service.repoMergeMethods({ projectId: 'p', repository: 'o/r' }))
+      .toEqual({ status: 'failed', reason: 'unreachable' })
   })
 })
