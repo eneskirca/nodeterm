@@ -192,6 +192,15 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
   // ponytail: display only, as above; a method this build does not know claims nothing.
   const autoMethod = object(item.auto_merge)?.merge_method
   const autoMerge = MERGE_METHODS.find(([method]) => method === autoMethod)?.[0]
+  // A head in another repository (or in a fork since deleted, `repo: null`) is only on origin as pull/<n>/head.
+  const repoName = (side: unknown): unknown => {
+    const repo = object(side)?.repo
+    return repo === null ? null : object(repo)?.full_name
+  }
+  const headRepo = repoName(item.head)
+  const baseRepo = repoName(item.base)
+  const fromFork = headRepo === null ||
+    (typeof headRepo === 'string' && typeof baseRepo === 'string' && headRepo.toLowerCase() !== baseRepo.toLowerCase())
   const lifecycle: PullLifecycle = item.state === 'closed'
     ? item.merged ? 'merged' : 'closed'
     : item.draft ? 'draft' : 'open'
@@ -214,7 +223,8 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
     changedFiles: counts[2],
     url: url.toString(),
     ...(requested.length ? { requestedReviewers: requested } : {}),
-    ...(autoMerge ? { autoMerge: { method: autoMerge } } : {})
+    ...(autoMerge ? { autoMerge: { method: autoMerge } } : {}),
+    ...(fromFork ? { fromFork: true as const } : {})
   }
 }
 

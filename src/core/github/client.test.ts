@@ -444,6 +444,19 @@ describe('GitHubIssuesClient.getPull', () => {
     expect((await read({ body: null })).body).toBe('')
   })
 
+  it('marks a head in another repository (or in a deleted fork) as fromFork', async () => {
+    const read = async (over: Record<string, unknown>) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(pull(over))
+    }).getPull('nodeterm/nodeterm', 7)
+    const repo = (fullName: string) => ({ full_name: fullName })
+    expect((await read({ base: { ref: 'main', sha: SHA_BASE, repo: repo('o/r') }, head: { ref: 'x', sha: SHA_HEAD, repo: repo('O/R') } })).fromFork)
+      .toBeUndefined()
+    expect((await read({ base: { ref: 'main', sha: SHA_BASE, repo: repo('o/r') }, head: { ref: 'x', sha: SHA_HEAD, repo: repo('mate/r') } })).fromFork)
+      .toBe(true)
+    expect((await read({ base: { ref: 'main', sha: SHA_BASE, repo: repo('o/r') }, head: { ref: 'x', sha: SHA_HEAD, repo: null } })).fromFork)
+      .toBe(true)
+  })
+
   it('refuses a malformed answer and an invalid pull number', async () => {
     const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
     await expect(client(pull({ head: { ref: 'x', sha: 'nope' } })).getPull('nodeterm/nodeterm', 7))

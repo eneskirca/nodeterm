@@ -23,6 +23,8 @@ export interface GitHubPullDetail {
   requestedReviewers?: GitHubIssueUser[]
   /** GitHub's auto-merge is on ("Merge when ready"), with this method. Absent = off. */
   autoMerge?: { method: PullMergeMethod }
+  /** The head branch lives in another repository (a fork): origin has it only as `pull/<n>/head`. */
+  fromFork?: true
 }
 
 /** A GitHub login: letters, digits and single hyphens, at most 39 characters. */
