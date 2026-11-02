@@ -842,6 +842,8 @@ export async function startServer(
         // answer the issue lane gets from the GitHub host controller.
         issueRepository: (projectId) =>
           github.controller.status(projectId).then((view) => view.project?.repository ?? null),
+        // `open-pr`: the same host answer, with this machine's approval.
+        pullRepository: (projectId) => github.controller.status(projectId).then((view) => view.project),
         // `issues` / `prs`: the board's GitHub lane from the service's cache (no GitHub request).
         githubRead: {
           snapshot: (projectId) => github.service.controlSnapshot(projectId),

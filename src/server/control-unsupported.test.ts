@@ -216,6 +216,7 @@ describe('the enabled Server Edition handler parses and dispatches the v1 surfac
     run: vi.fn(async () => ({ ok: true as const })),
     reportOutcome: vi.fn(async () => ({ ok: true as const, message: 'recorded' })),
     githubRead: vi.fn(async () => ({ ok: true as const, message: 'lane' })),
+    openPr: vi.fn(async () => ({ ok: true as const, message: 'pr' })),
     deliver: vi.fn(async () => ({ ok: true as const, message: 'queued' }))
   })
 
@@ -549,6 +550,7 @@ describe('the enabled Server Edition handler, behind the request ledger', () => 
       run: vi.fn(),
       reportOutcome: vi.fn(),
       githubRead: vi.fn(),
+      openPr: vi.fn(),
       deliver: vi.fn()
     })
     hookServer.setControlHandler(handler)

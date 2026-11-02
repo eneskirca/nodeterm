@@ -70,6 +70,8 @@ export interface ServerCanvasControlDeps {
    *  what `open-agent --issue #N` resolves against. Absent = only an explicitly configured
    *  repository counts. See HeadlessNodeFactoryDeps.issueRepository. */
   issueRepository?: (projectId: string) => Promise<string | null>
+  /** `open-pr`: see HeadlessNodeFactoryDeps.pullRepository. */
+  pullRepository?: (projectId: string) => Promise<{ repository?: string; approved: boolean } | undefined>
   /** The GitHub service's cache reads behind `issues` / `prs` (core/github/control-read.ts).
    *  Absent = those verbs answer that the GitHub lane is unavailable here. */
   githubRead?: Pick<GitHubReadDeps, 'snapshot' | 'dispatch'>
@@ -210,6 +212,7 @@ export async function initServerCanvasControl(
     // reflector). On a project the canvas authority governs, only what it heard as ops is written.
     publishProject: (project: Project) => platform().broadcast(IPC.workspaceServerChange, project),
     issueRepository: deps.issueRepository,
+    pullRepository: deps.pullRepository,
     // An issue card's run history lives in the same board log the messaging trace writes to.
     appendBoardLog: (projectId, entry) => deps.boardLog.append(projectId, entry)
   })
@@ -287,6 +290,7 @@ export async function initServerCanvasControl(
     openAgent: (sourceNodeId, args, verified) => factory.openAgent(sourceNodeId, args, verified),
     close: (sourceNodeId, args, verified) => factory.close(sourceNodeId, args, verified),
     link: (sourceNodeId, args, verified) => factory.link(sourceNodeId, args, verified),
+    openPr: (sourceNodeId, args, verified) => factory.openPr(sourceNodeId, args, verified),
     group: (sourceNodeId, args) => factory.group(sourceNodeId, args),
     rename: (sourceNodeId, args) => factory.rename(sourceNodeId, args),
     color: (sourceNodeId, args) => factory.color(sourceNodeId, args),
