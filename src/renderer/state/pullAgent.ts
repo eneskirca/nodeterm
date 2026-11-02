@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { PullProposal } from '@shared/pull-agent-verbs'
+import type { PullHighlight, PullProposal, ShownProposal } from '@shared/pull-agent-verbs'
 
 /**
  * What a linked agent asked a pull node to show or do (`pr-show`, `pr-propose`). Transient on
@@ -7,11 +7,11 @@ import type { PullProposal } from '@shared/pull-agent-verbs'
  * only the user's Confirm in the node turns it into a GitHub write.
  */
 export interface PullAgentState {
-  /** The lines to highlight in one file of the Files tab. `seq` makes a repeat show re-reveal. */
-  highlight: Record<string, { file: string; start: number; end: number; seq: number }>
-  proposal: Record<string, PullProposal & { from: string }>
-  show(nodeId: string, highlight: { file: string; start: number; end: number } | null): void
-  propose(nodeId: string, proposal: PullProposal & { from: string }): void
+  highlight: Record<string, PullHighlight>
+  /** `seq` grows on every propose, so a replaced proposal remounts the bar and disarms Confirm. */
+  proposal: Record<string, ShownProposal>
+  show(nodeId: string, highlight: Omit<PullHighlight, 'seq'> | null): void
+  propose(nodeId: string, proposal: PullProposal): void
   dismiss(nodeId: string): void
 }
 
@@ -26,7 +26,7 @@ export const usePullAgent = create<PullAgentState>((set) => ({
     else delete next[nodeId]
     return { highlight: next }
   }),
-  propose: (nodeId, proposal) => set((s) => ({ proposal: { ...s.proposal, [nodeId]: proposal } })),
+  propose: (nodeId, proposal) => set((s) => ({ proposal: { ...s.proposal, [nodeId]: { ...proposal, seq: ++seq } } })),
   dismiss: (nodeId) => set((s) => {
     const next = { ...s.proposal }
     delete next[nodeId]

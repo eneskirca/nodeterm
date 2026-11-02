@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   GitHubPullConversationResult, GitHubPullDetail, GitHubPullDetailResult, GitHubPullFileContentsResult, GitHubPullFilesResult
 } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
 import type { PullNodeTab } from '@shared/pull-node'
-import type { PullProposal } from '@shared/pull-agent-verbs'
+import type { PullProposal, ShownProposal } from '@shared/pull-agent-verbs'
 import { PullNodeView, type PullNodeApi } from './PullNodeView'
 
 // Monaco does not run in jsdom: the diff shows its two texts and its path instead.
@@ -537,17 +537,23 @@ describe('PullNodeView reviewers', () => {
 
 describe('PullNodeView agent proposal', () => {
   const bar = () => host.querySelector('.pull-proposal')
-  async function renderProposal(proposal: PullProposal, api = fakeApi({ status: 'ok', detail, observedAt: 1 })) {
+  const confirmButton = () => button(host, 'Confirm') as HTMLButtonElement
+  // Real time keeps running (lazy chunks, resolved reads); `arm` jumps past the Confirm delay.
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
+  afterEach(() => { vi.useRealTimers() })
+  const arm = () => act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+  const view = (api: PullNodeApi, proposal: ShownProposal, tab: PullNodeTab, onWritten = vi.fn(), onDismiss = vi.fn()) => (
+    <PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab }}
+      refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()}
+      proposal={proposal} onDismiss={onDismiss} />
+  )
+  async function renderProposal(proposal: PullProposal, api = fakeApi({ status: 'ok', detail, observedAt: 1 }), tab: PullNodeTab = 'overview') {
     const onWritten = vi.fn()
     const onDismiss = vi.fn()
     host = document.createElement('div')
     document.body.append(host)
     root = createRoot(host)
-    await act(async () => {
-      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
-        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()}
-        proposal={proposal} onDismiss={onDismiss} />)
-    })
+    await act(async () => { root.render(view(api, { ...proposal, seq: 1 }, tab, onWritten, onDismiss)) })
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
     return { api, onWritten, onDismiss }
   }
@@ -557,12 +563,31 @@ describe('PullNodeView agent proposal', () => {
     expect(bar()?.textContent).toContain('Approve')
     expect(bar()?.textContent).toContain('LGTM')
     expect(api.reviewPull).not.toHaveBeenCalled()
-    await act(async () => { button(host, 'Confirm').click() })
+    await arm()
+    await act(async () => { confirmButton().click() })
     expect(api.reviewPull).toHaveBeenCalledWith({
       projectId: 'p', repository: 'o/r', pullNumber: 7, event: 'APPROVE', body: 'LGTM', headSha: 'c'.repeat(40)
     })
     expect(onWritten).toHaveBeenCalledTimes(1)
     expect(onDismiss).toHaveBeenCalledTimes(1)
+  })
+
+  it('arms Confirm only a second after a proposal is shown or replaced', async () => {
+    const { api } = await renderProposal({ action: 'comment', message: 'Nice' })
+    expect(confirmButton().disabled).toBe(true)
+    await act(async () => { confirmButton().click() })
+    expect(api.commentOnPull).not.toHaveBeenCalled()
+    await arm()
+    expect(confirmButton().disabled).toBe(false)
+    // The agent swaps the proposal right before the click: the new one starts disarmed.
+    await act(async () => { root.render(view(api, { action: 'merge', seq: 2 }, 'overview')) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    expect(bar()?.textContent).toContain('Merge')
+    expect(confirmButton().disabled).toBe(true)
+    await act(async () => { confirmButton().click() })
+    expect(api.mergePull).not.toHaveBeenCalled()
+    await arm()
+    expect(confirmButton().disabled).toBe(false)
   })
 
   it('Dismiss sends nothing', async () => {
@@ -572,25 +597,71 @@ describe('PullNodeView agent proposal', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
+  it('a comment needs no head: it is sent before the Overview was ever opened', async () => {
+    const { api } = await renderProposal({ action: 'comment', message: 'Nice' }, undefined, 'files')
+    await arm()
+    await act(async () => { confirmButton().click() })
+    expect(api.commentOnPull).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, body: 'Nice' })
+  })
+
   it('merges with the proposed method, or the first one the repository allows, at the head the node shows', async () => {
     const squash = await renderProposal({ action: 'merge', method: 'rebase' })
     expect(bar()?.textContent).toContain('Rebase and merge')
-    await act(async () => { button(host, 'Confirm').click() })
+    await arm()
+    await act(async () => { confirmButton().click() })
     expect(squash.api.mergePull).toHaveBeenCalledWith({
       projectId: 'p', repository: 'o/r', pullNumber: 7, method: 'rebase', headSha: 'c'.repeat(40)
     })
     act(() => root.unmount()); host.remove()
     const first = await renderProposal({ action: 'merge' })
     expect(bar()?.textContent).toContain('Squash and merge')
-    await act(async () => { button(host, 'Confirm').click() })
+    await arm()
+    await act(async () => { confirmButton().click() })
     expect(first.api.mergePull).toHaveBeenCalledWith(expect.objectContaining({ method: 'squash' }))
+    expect(first.api.repoMergeMethods).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the PR number, title and target branch of a merge', async () => {
+    await renderProposal({ action: 'merge' })
+    expect(bar()?.textContent).toContain('#7 Add the pull node')
+    expect(bar()?.querySelector('code')?.textContent).toBe('main')
+  })
+
+  it('refuses a merge method the repository does not allow, with no Confirm', async () => {
+    const { api } = await renderProposal({ action: 'merge', method: 'merge' })
+    expect(bar()?.textContent).toContain('does not allow Create a merge commit')
+    await arm()
+    expect([...host.querySelectorAll('button')].some((el) => el.textContent === 'Confirm')).toBe(false)
+    expect(api.mergePull).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [{ lifecycle: 'draft' as const }, 'draft pull request cannot be merged'],
+    [{ lifecycle: 'merged' as const }, 'already merged'],
+    [{ merge: 'conflict' as const }, 'conflict with main'],
+    [{ merge: 'blocked' as const }, 'Branch protection blocked']
+  ])('disables a merge proposal the node would not merge (%o)', async (change, why) => {
+    const { api } = await renderProposal({ action: 'merge' }, fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 }))
+    await arm()
+    expect(bar()?.textContent).toContain(why)
+    expect(confirmButton().disabled).toBe(true)
+    expect(api.mergePull).not.toHaveBeenCalled()
+  })
+
+  it.each(['approve', 'request-changes'] as const)('blocks %s on your own pull request, as the node does', async (action) => {
+    const { api } = await renderProposal({ action, message: 'x' }, fakeApi({ status: 'ok', detail, observedAt: 1, ownPull: true }))
+    await arm()
+    expect(bar()?.textContent).toContain('your own pull request')
+    expect(confirmButton().disabled).toBe(true)
+    expect(api.reviewPull).not.toHaveBeenCalled()
   })
 
   it('names a refused write, keeps the proposal and does not reload', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     api.commentOnPull.mockResolvedValue({ ok: false, reason: 'forbidden' })
     const { onWritten, onDismiss } = await renderProposal({ action: 'comment', message: 'x' }, api)
-    await act(async () => { button(host, 'Confirm').click() })
+    await arm()
+    await act(async () => { confirmButton().click() })
     expect(bar()?.querySelector('[role="alert"]')?.textContent).toContain('may not write')
     expect(onWritten).not.toHaveBeenCalled()
     expect(onDismiss).not.toHaveBeenCalled()

@@ -12,7 +12,11 @@ const CONTROL_SOURCES = [
   'src/main/canvas-control.ts',
   'src/main/control-forward.ts',
   'src/main/github-control.ts',
-  'src/server/canvas-control.ts'
+  'src/server/canvas-control.ts',
+  // The agent's pull node verbs (#19): parse, store and the renderer dispatch only stage or move the view.
+  'src/shared/pull-agent-verbs.ts',
+  'src/renderer/state/pullAgent.ts',
+  'src/renderer/canvas/Canvas.tsx'
 ]
 const WRITES =
   /commentOnPull|reviewPull|mergePull|githubIssuesPullComment|githubIssuesPullReview|githubIssuesPullMerge|pull-comment|pull-review|pull-merge|createIssueComment|requestPullReviewer|githubIssuesPullRequestReviewer|pull-request-reviewer/

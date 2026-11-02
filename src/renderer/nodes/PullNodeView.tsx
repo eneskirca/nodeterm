@@ -22,7 +22,7 @@ import type {
 } from '@shared/github-pull-detail'
 import type { PullLifecycle } from '@shared/github-pull-status'
 import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-node'
-import type { PullProposal } from '@shared/pull-agent-verbs'
+import type { PullHighlight, PullProposal, ShownProposal } from '@shared/pull-agent-verbs'
 import { NoteMarkdown } from '../components/NoteMarkdown'
 import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
 import { mergeLabel } from '../components/kanban/PullStatusBadges'
@@ -156,13 +156,11 @@ type TabsProps = ViewProps & {
   /** The Files tab picked a file; the frame persists it as `selectedFile`. */
   onSelectFile: (path: string) => void
   /** The linked agent's pending action (`pr-propose`). Only Confirm here sends it. */
-  proposal?: PullProposal
+  proposal?: ShownProposal
   onDismiss?: () => void
   /** Lines the linked agent pointed at (`pr-show --lines`), in one file of the Files tab. */
   highlight?: PullHighlight
 }
-
-type PullHighlight = { file: string; start: number; end: number; seq: number }
 
 /**
  * The pull request node's body (nodes/PullNode.tsx is the canvas frame around it). Takes the bridge
@@ -189,13 +187,14 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   const shownTab = pull.tab
   const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
   if (!opened.includes(shownTab)) setOpened([...opened, shownTab])
-  // The head commit the Overview last showed: the one a review is tied to.
-  const [seenHead, setSeenHead] = useState<string | undefined>()
+  // The pull request the Overview last showed: its head is the one a review is tied to.
+  const [seen, setSeen] = useState<GitHubPullDetail | undefined>()
+  const seenHead = seen?.head.sha
   const [ownPull, setOwnPull] = useState(false)
   return (
     <>
       {proposal && (
-        <PullProposalBar key={JSON.stringify(proposal)} {...props} proposal={proposal} seenHead={seenHead}
+        <PullProposalBar key={proposal.seq} {...props} proposal={proposal} seen={seen} ownPull={ownPull}
           onDismiss={() => onDismiss?.()} />
       )}
       <div className="pull-node__tabs" role="tablist">
@@ -209,7 +208,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
         </button>
       </div>
       {opened.includes('overview') && (
-        <div hidden={shownTab !== 'overview'}><PullOverview {...props} onHead={setSeenHead} onOwnPull={setOwnPull} /></div>
+        <div hidden={shownTab !== 'overview'}><PullOverview {...props} onDetail={setSeen} onOwnPull={setOwnPull} /></div>
       )}
       {opened.includes('files') && (
         <div hidden={shownTab !== 'files'}><PullFiles {...props} onSelectFile={onSelectFile} highlight={highlight} /></div>
@@ -221,12 +220,11 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   )
 }
 
-function PullOverview(props: ViewProps & { onHead: (sha: string) => void; onOwnPull: (own: boolean) => void }): React.JSX.Element {
-  const { api, projectId, pull, onOpenExternal, onHead, onOwnPull } = props
+function PullOverview(props: ViewProps & { onDetail: (detail: GitHubPullDetail) => void; onOwnPull: (own: boolean) => void }): React.JSX.Element {
+  const { api, projectId, pull, onOpenExternal, onDetail, onOwnPull } = props
   const result = usePullRead(api.pullDetail, props)
   const detail = result !== 'loading' && result.status === 'ok' ? result.detail : undefined
-  const head = detail?.head.sha
-  useEffect(() => { if (head) onHead(head) }, [head, onHead])
+  useEffect(() => { if (detail) onDetail(detail) }, [detail, onDetail])
   const ownPull = result !== 'loading' && result.status === 'ok' && result.ownPull === true
   useEffect(() => { onOwnPull(ownPull) }, [ownPull, onOwnPull])
   const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
@@ -338,40 +336,57 @@ const PROPOSAL_TEXT: Record<PullProposal['action'], string> = {
   approve: 'Approve', 'request-changes': 'Request changes on', comment: 'Comment on', merge: 'Merge'
 }
 
+/** Confirm stays off this long after a proposal is shown or replaced, so an agent cannot swap the
+ *  action under a click already on its way (security review of #19). */
+const PROPOSAL_ARM_MS = 1_000
+
+const OWN_PULL_TEXT = 'This is your own pull request, so you can comment but not approve or request changes.'
+
 /**
  * The linked agent's proposed action (`pr-propose`), shown above the tabs. It names exactly what will
- * be sent; nothing is sent until Confirm, which runs the same write as the node's own buttons. A
- * review and a merge are tied to the head the Overview showed, as there.
+ * be sent; nothing is sent until Confirm, which runs the same write, behind the same guards, as the
+ * node's own buttons. A review and a merge are tied to the head the Overview showed, as there.
  */
 function PullProposalBar(props: ViewProps & {
-  proposal: PullProposal; seenHead: string | undefined; onDismiss: () => void
+  proposal: PullProposal; seen: GitHubPullDetail | undefined; ownPull: boolean; onDismiss: () => void
 }): React.JSX.Element {
-  const { api, projectId, pull, proposal, seenHead, onDismiss, onWritten } = props
+  const { api, projectId, pull, proposal, seen, ownPull, onDismiss, onWritten } = props
   const [busy, setBusy] = useState(false)
+  const [armed, setArmed] = useState(false)
   const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
-  const [allowed, setAllowed] = useState<PullMergeMethod | null | 'loading'>(
-    proposal.action === 'merge' && !proposal.method ? 'loading' : null)
-  const needsMethod = proposal.action === 'merge' && !proposal.method
+  const [methods, setMethods] = useState<GitHubRepoMergeMethodsResult | 'loading'>('loading')
+  const isMerge = proposal.action === 'merge'
+  // The bar remounts per proposal (keyed by its seq), so this runs once per shown proposal.
   useEffect(() => {
-    if (!needsMethod) return
+    const timer = setTimeout(() => setArmed(true), PROPOSAL_ARM_MS)
+    return () => clearTimeout(timer)
+  }, [])
+  // One read of the allowed methods serves both a proposal that names one and one that does not.
+  useEffect(() => {
+    if (!isMerge) return
     let live = true
     void api.repoMergeMethods(projectId, pull.repository)
       .catch((): GitHubRepoMergeMethodsResult => ({ status: 'failed', reason: 'unreachable' }))
-      .then((result) => { if (live) setAllowed(result.status === 'ok' ? result.methods[0] ?? null : null) })
+      .then((result) => { if (live) setMethods(result) })
     return () => { live = false }
-  }, [needsMethod, api, projectId, pull.repository])
-  const method = proposal.action === 'merge' ? proposal.method ?? (allowed === 'loading' ? null : allowed) : null
+  }, [isMerge, api, projectId, pull.repository])
+  const allowed = methods !== 'loading' && methods.status === 'ok' ? methods.methods : null
+  const method = proposal.action !== 'merge' || !allowed
+    ? null
+    : proposal.method ? (allowed.includes(proposal.method) ? proposal.method : null) : allowed[0] ?? null
+  const seenHead = seen?.head.sha
   const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
 
   const confirm = async () => {
-    if (busy || !seenHead) return
+    if (busy || !armed) return
     let write: Promise<PullWriteResult>
     if (proposal.action === 'merge') {
-      if (!method) return
+      if (!method || !seenHead) return
       write = api.mergePull({ ...at, method, headSha: seenHead })
     } else if (proposal.action === 'comment') {
       write = api.commentOnPull({ ...at, body: proposal.message })
     } else {
+      if (!seenHead || ownPull) return
       write = api.reviewPull({
         ...at, event: proposal.action === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES', body: proposal.message, headSha: seenHead
       })
@@ -389,25 +404,43 @@ function PullProposalBar(props: ViewProps & {
     onWritten()
   }
 
-  const blocked = !seenHead
-    ? 'Open the Overview tab first: the action is tied to the commit it shows.'
-    : proposal.action === 'merge' && allowed !== 'loading' && !method
-      ? 'This repository allows no merge method for your GitHub token. Merge on GitHub instead.'
-      : null
+  // Why Confirm is off, in the same words the node's own buttons use. `refused` = no Confirm at all.
+  const needsOverview = 'Open the Overview tab first: the action is tied to the commit it shows.'
+  let blocked: string | null = null
+  let refused: string | null = null
+  if (proposal.action === 'merge') {
+    const why = seen ? mergeBlock(seen) : needsOverview
+    if (why) blocked = why
+    else if (methods === 'loading') blocked = null
+    else if (methods.status === 'refused') refused = REFUSAL_TEXT[methods.reason](pull.repository)
+    else if (methods.status === 'failed') refused = FAILURE_TEXT[methods.reason]
+    else if (proposal.method && !methods.methods.includes(proposal.method)) {
+      refused = `This repository does not allow ${METHOD_TEXT[proposal.method]}. Merge with another method, or on GitHub.`
+    } else if (!method) refused = 'This repository allows no merge method for your GitHub token. Merge on GitHub instead.'
+  } else if (proposal.action !== 'comment') {
+    // A comment is not tied to a head, as in the Conversation tab; a review is.
+    blocked = ownPull ? OWN_PULL_TEXT : !seenHead ? needsOverview : null
+  }
+  const waiting = isMerge && methods === 'loading'
   return (
     <div className="pull-proposal" role="region" aria-label="Agent proposal">
       <p className="pull-proposal__what">
-        Your agent proposes: <strong>{PROPOSAL_TEXT[proposal.action]} #{pull.pullNumber}</strong>
-        {proposal.action === 'merge' && method && <> ({METHOD_TEXT[method]})</>}
+        Your agent proposes:{' '}
+        {isMerge && seen
+          ? <>Merge <strong>#{seen.number} {seen.title}</strong> into <code>{seen.base.ref}</code></>
+          : <strong>{PROPOSAL_TEXT[proposal.action]} #{pull.pullNumber}</strong>}
+        {method && <> ({METHOD_TEXT[method]})</>}
       </p>
       {proposal.action !== 'merge' && proposal.message.trim() && (
         <blockquote className="pull-proposal__message">{proposal.message}</blockquote>
       )}
-      {blocked && <p className="pull-node__empty">{blocked}</p>}
+      {(blocked ?? refused) && <p className="pull-node__empty">{blocked ?? refused}</p>}
       {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
       <div className="pull-compose__actions">
-        <button className="pull-compose__button pull-merge__confirm" disabled={busy || !!blocked || allowed === 'loading'}
-          onClick={() => void confirm()}>Confirm</button>
+        {!refused && (
+          <button className="pull-compose__button pull-merge__confirm" disabled={busy || !armed || !!blocked || waiting}
+            onClick={() => void confirm()}>Confirm</button>
+        )}
         <button className="pull-compose__button" disabled={busy} onClick={onDismiss}>Dismiss</button>
       </div>
     </div>
@@ -636,7 +669,7 @@ function PullConversation(props: ViewProps & { seenHead: string | undefined; own
             </>
           )}
         </div>
-        {ownPull && <p className="pull-node__empty">This is your own pull request, so you can comment but not approve or request changes.</p>}
+        {ownPull && <p className="pull-node__empty">{OWN_PULL_TEXT}</p>}
         {!seenHead && !ownPull && <p className="pull-node__empty">Open the Overview tab to review: a review is tied to the commit it shows.</p>}
       </div>
     </div>

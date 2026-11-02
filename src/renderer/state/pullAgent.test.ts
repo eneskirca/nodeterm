@@ -13,9 +13,11 @@ describe('nodesJoined', () => {
 describe('usePullAgent', () => {
   it('holds one proposal per node, replaced by a newer one, and drops it on dismiss', () => {
     const store = usePullAgent.getState()
-    store.propose('n', { action: 'approve', message: '', from: 'a' })
-    store.propose('n', { action: 'merge', method: 'squash', from: 'a' })
-    expect(usePullAgent.getState().proposal.n).toEqual({ action: 'merge', method: 'squash', from: 'a' })
+    store.propose('n', { action: 'approve', message: '' })
+    const first = usePullAgent.getState().proposal.n.seq
+    store.propose('n', { action: 'merge', method: 'squash' })
+    expect(usePullAgent.getState().proposal.n).toMatchObject({ action: 'merge', method: 'squash' })
+    expect(usePullAgent.getState().proposal.n.seq).toBeGreaterThan(first)
     usePullAgent.getState().dismiss('n')
     expect(usePullAgent.getState().proposal.n).toBeUndefined()
   })

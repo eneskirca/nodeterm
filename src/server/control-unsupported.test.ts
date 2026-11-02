@@ -220,6 +220,14 @@ describe('the enabled Server Edition handler parses and dispatches the v1 surfac
     deliver: vi.fn(async () => ({ ok: true as const, message: 'queued' }))
   })
 
+  it('refuses pr-show and pr-propose by edition: the bar and the highlight live in the desktop renderer', async () => {
+    const handler = createServerEditionControlHandler(actions())
+    for (const verb of ['pr-show', 'pr-propose']) {
+      const reply = await handler({ verb, nodeId: 'src', args: { node: 'p', tab: 'files' }, verified: true })
+      expect(reply, verb).toMatchObject({ ok: false, error: CONTROL_UNSUPPORTED_ERROR })
+    }
+  })
+
   it('routes report-outcome to its action, after the shared parse', async () => {
     const a = actions()
     const handler = createServerEditionControlHandler(a)

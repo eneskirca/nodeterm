@@ -15455,7 +15455,7 @@ export function Canvas() {
               markDirty()
               usePullAgent.getState().show(prNode.id, show.file && show.lines ? { file: show.file, ...show.lines } : null)
             } else {
-              usePullAgent.getState().propose(prNode.id, { ...prArgs.proposal, from: sourceNodeId })
+              usePullAgent.getState().propose(prNode.id, prArgs.proposal)
             }
             travelToNodeRef.current(prNode.id)
             reply({

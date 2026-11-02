@@ -3,6 +3,7 @@ import { monaco } from './monaco-setup'
 import { monacoTheme, type ResolvedAppTheme } from '../lib/appTheme'
 import { useAppTheme } from '../state/useAppTheme'
 import { useSettings } from '../state/settings'
+import type { PullHighlight } from '@shared/pull-agent-verbs'
 
 /** The read-only side-by-side diff editor the Diff node and the pull node's Files tab share. */
 export function createReadOnlyDiffEditor(
@@ -33,7 +34,7 @@ export function TextDiff({ path, original, modified, className, highlight }: {
   modified: string
   className?: string
   /** Lines of the modified side to scroll to and mark (a pull node's `pr-show --lines`). */
-  highlight?: { start: number; end: number; seq?: number }
+  highlight?: PullHighlight
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   const editorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null)
