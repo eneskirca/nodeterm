@@ -10,6 +10,8 @@ import type {
   GitHubRepoMergeMethodsResult,
   PullFile,
   PullFileSide,
+  PullLineComment,
+  PullLineDraft,
   PullFileStatus,
   PullFileUnavailable,
   PullMergeMethod,
@@ -26,12 +28,13 @@ import type { PullHighlight, PullProposal, ShownProposal } from '@shared/pull-ag
 import { NoteMarkdown } from '../components/NoteMarkdown'
 import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
 import { mergeLabel } from '../components/kanban/PullStatusBadges'
-import { TextDiff } from '../editor/TextDiff'
+import { TextDiff, type DiffZone } from '../editor/TextDiff'
+import { pullLineThreads, type PullLineThread } from '../lib/pullLineThreads'
 
 export type PullNodeApi = Pick<
   GitHubIssuesApi,
   'pullDetail' | 'pullChecks' | 'pullConversation' | 'pullFiles' | 'pullFileContents' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods' |
-  'repoCollaborators' | 'requestPullReviewer'
+  'repoCollaborators' | 'requestPullReviewer' | 'commentOnPullLine'
 >
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
@@ -191,6 +194,11 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   const [seen, setSeen] = useState<GitHubPullDetail | undefined>()
   const seenHead = seen?.head.sha
   const [ownPull, setOwnPull] = useState(false)
+  // New line comments waiting for the next review submit. ponytail: kept in memory only; closing
+  // the node drops them (nothing was sent).
+  const [pending, setPending] = useState<readonly PullLineDraft[]>([])
+  const addPending = useCallback((draft: PullLineDraft) => setPending((list) => [...list, draft]), [])
+  const clearPending = useCallback(() => setPending([]), [])
   return (
     <>
       {proposal && (
@@ -211,10 +219,14 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
         <div hidden={shownTab !== 'overview'}><PullOverview {...props} onDetail={setSeen} onOwnPull={setOwnPull} /></div>
       )}
       {opened.includes('files') && (
-        <div hidden={shownTab !== 'files'}><PullFiles {...props} onSelectFile={onSelectFile} highlight={highlight} /></div>
+        <div hidden={shownTab !== 'files'}>
+          <PullFiles {...props} onSelectFile={onSelectFile} highlight={highlight} pending={pending} onAddPending={addPending} />
+        </div>
       )}
       {opened.includes('conversation') && (
-        <div hidden={shownTab !== 'conversation'}><PullConversation {...props} seenHead={seenHead} ownPull={ownPull} /></div>
+        <div hidden={shownTab !== 'conversation'}>
+          <PullConversation {...props} seenHead={seenHead} ownPull={ownPull} pending={pending} onClearPending={clearPending} />
+        </div>
       )}
     </>
   )
@@ -260,10 +272,21 @@ function PullOverview(props: ViewProps & { onDetail: (detail: GitHubPullDetail) 
   )
 }
 
-/** The Files tab: the changed files, then the selected one as a side-by-side diff. */
-function PullFiles(props: ViewProps & { onSelectFile: (path: string) => void; highlight?: PullHighlight }): React.JSX.Element {
+type LineProps = {
+  pending: readonly PullLineDraft[]
+  onAddPending: (draft: PullLineDraft) => void
+}
+
+/** The Files tab: the changed files, then the selected one as a side-by-side diff with its line
+ *  comments. The detail read gives the head a new line comment is tied to; the conversation read
+ *  gives the comments. Both answer from the core's memory inside its floor. */
+function PullFiles(props: ViewProps & LineProps & { onSelectFile: (path: string) => void; highlight?: PullHighlight }): React.JSX.Element {
   const { api, pull, onOpenExternal, onSelectFile, highlight } = props
   const result = usePullRead(api.pullFiles, props)
+  const detail = usePullRead(api.pullDetail, props)
+  const conversation = usePullRead(api.pullConversation, props)
+  const head = detail !== 'loading' && detail.status === 'ok' ? detail.detail.head.sha : undefined
+  const lineComments = conversation !== 'loading' && conversation.status === 'ok' ? conversation.lineComments : []
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   const filesUrl = `${pullWebUrl(pull.repository, pull.pullNumber)}/files`
   const selected = result.files.find((file) => file.path === pull.selectedFile)
@@ -297,7 +320,7 @@ function PullFiles(props: ViewProps & { onSelectFile: (path: string) => void; hi
       )}
       {selected
         ? <PullFileDiff key={selected.path} {...props} file={selected} filesUrl={filesUrl}
-            highlight={highlight?.file === selected.path ? highlight : undefined} />
+            highlight={highlight?.file === selected.path ? highlight : undefined} head={head} lineComments={lineComments} />
         : result.files.length > 0 && <p className="pull-node__empty">Select a file to see its diff.</p>}
     </div>
   )
@@ -305,9 +328,15 @@ function PullFiles(props: ViewProps & { onSelectFile: (path: string) => void; hi
 
 const sideText = (side: PullFileSide): string => side.kind === 'text' ? side.text : ''
 
-function PullFileDiff(props: ViewProps & { file: PullFile; filesUrl: string; highlight?: PullHighlight }): React.JSX.Element {
-  const { api, pull, file, filesUrl, onOpenExternal, highlight } = props
+const SIDE_OF = { LEFT: 'original', RIGHT: 'modified' } as const
+
+function PullFileDiff(props: ViewProps & LineProps & {
+  file: PullFile; filesUrl: string; highlight?: PullHighlight; head: string | undefined; lineComments: readonly PullLineComment[]
+}): React.JSX.Element {
+  const { api, pull, file, filesUrl, onOpenExternal, highlight, head, lineComments, pending, onAddPending } = props
   const path = file.path
+  // The line the user clicked, where the new-comment box opens.
+  const [composing, setComposing] = useState<{ side: 'LEFT' | 'RIGHT'; line: number } | null>(null)
   const read = useCallback(
     (projectId: string, repository: string, pullNumber: number) => api.pullFileContents(projectId, repository, pullNumber, path),
     [api, path]
@@ -315,6 +344,23 @@ function PullFileDiff(props: ViewProps & { file: PullFile; filesUrl: string; hig
   const result = usePullRead(read, props)
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   const { contents } = result
+  const threads = pullLineThreads(lineComments, path)
+  const zones: DiffZone[] = [
+    ...threads.flatMap((thread) => thread.line === null ? [] : [{
+      key: `thread-${thread.id}`, side: SIDE_OF[thread.side], line: thread.line,
+      content: <PullLineThreadView {...props} thread={thread} />
+    }]),
+    ...pending.flatMap((draft, index) => draft.path !== path ? [] : [{
+      key: `pending-${index}`, side: SIDE_OF[draft.side], line: draft.line,
+      content: <p className="pull-line__pending"><strong>Pending</strong> (sent with your review): {draft.body}</p>
+    }]),
+    ...(composing ? [{
+      key: `new-${composing.side}-${composing.line}`, side: SIDE_OF[composing.side], line: composing.line,
+      content: <PullLineComposer {...props} head={head} draft={{ path, ...composing }}
+        onAdd={(draft) => { onAddPending(draft); setComposing(null) }} onClose={() => setComposing(null)} />
+    }] : [])
+  ]
+  const offLine = threads.filter((thread) => thread.line === null)
   if (contents.kind === 'unavailable') {
     return (
       <p className="pull-files__unavailable" role="status">
@@ -326,9 +372,92 @@ function PullFileDiff(props: ViewProps & { file: PullFile; filesUrl: string; hig
   return (
     <>
       {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
+      <p className="pull-node__empty">
+        Click a line number to comment on that line. GitHub takes comments only on changed lines and the lines next to them.
+      </p>
       <TextDiff className="pull-files__diff" path={path} original={sideText(contents.base)} modified={sideText(contents.head)}
-        highlight={highlight} />
+        highlight={highlight} zones={zones}
+        onLineClick={(side, line) => setComposing({ side: side === 'original' ? 'LEFT' : 'RIGHT', line })} />
+      {offLine.length > 0 && (
+        <div className="pull-line__off">
+          <p className="pull-node__empty">Not on a current line of this diff:</p>
+          {offLine.map((thread) => <PullLineThreadView key={thread.id} {...props} thread={thread} />)}
+        </div>
+      )}
     </>
+  )
+}
+
+/** A write's busy flag and refusal sentence; `run` sends it and calls `done` when it landed. */
+function useWrite(done: () => void): {
+  busy: boolean; refusal: PullWriteReason | null; run: (write: () => Promise<PullWriteResult>) => Promise<void>
+} {
+  const [busy, setBusy] = useState(false)
+  const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
+  const run = async (write: () => Promise<PullWriteResult>) => {
+    if (busy) return
+    setBusy(true)
+    setRefusal(null)
+    const outcome = await write().catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
+    setBusy(false)
+    if (outcome.ok) done()
+    else setRefusal(outcome.reason)
+  }
+  return { busy, refusal, run }
+}
+
+/** One thread under its line (or below the diff when it is not on a current line), with a reply box. */
+function PullLineThreadView(props: ViewProps & { thread: PullLineThread }): React.JSX.Element {
+  const { api, projectId, pull, thread, onWritten } = props
+  const [reply, setReply] = useState('')
+  const { busy, refusal, run } = useWrite(() => { setReply(''); onWritten() })
+  return (
+    <div className="pull-line">
+      {thread.outdated && <span className="pull-line__outdated">Outdated</span>}
+      {thread.comments.map((comment) => (
+        <div key={comment.id} className="pull-line__comment">
+          <div className="pull-convo__head">
+            <span className="pull-node__author">{comment.author?.login ?? 'ghost'}</span>
+            <time className="pull-convo__time" dateTime={comment.at}>{new Date(comment.at).toLocaleString()}</time>
+          </div>
+          <NoteMarkdown text={comment.body} className="sticky-node__md pull-node__md" />
+        </div>
+      ))}
+      <textarea className="pull-compose__box pull-line__box" aria-label="Reply" placeholder="Reply"
+        value={reply} onChange={(event) => setReply(event.target.value)} />
+      {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
+      <div className="pull-compose__actions">
+        <button className="pull-compose__button" disabled={busy || !reply.trim()} onClick={() => void run(() =>
+          api.commentOnPullLine({ projectId, repository: pull.repository, pullNumber: pull.pullNumber, inReplyTo: thread.id, body: reply }))}>
+          Reply
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** The new-comment box under a clicked line: send it now, or keep it for the next review. */
+function PullLineComposer(props: ViewProps & {
+  head: string | undefined; draft: Omit<PullLineDraft, 'body'>; onAdd: (draft: PullLineDraft) => void; onClose: () => void
+}): React.JSX.Element {
+  const { api, projectId, pull, head, draft, onAdd, onClose, onWritten } = props
+  const [body, setBody] = useState('')
+  const { busy, refusal, run } = useWrite(() => { onClose(); onWritten() })
+  const comment = { ...draft, body }
+  return (
+    <div className="pull-line pull-line--new">
+      <textarea className="pull-compose__box pull-line__box" aria-label="Line comment" autoFocus
+        placeholder={`Comment on line ${draft.line}`} value={body} onChange={(event) => setBody(event.target.value)} />
+      {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
+      <div className="pull-compose__actions">
+        <button className="pull-compose__button" disabled={busy || !body.trim() || !head} onClick={() => void run(() =>
+          api.commentOnPullLine({ projectId, repository: pull.repository, pullNumber: pull.pullNumber, headSha: head!, comment }))}>
+          Comment
+        </button>
+        <button className="pull-compose__button" disabled={busy || !body.trim()} onClick={() => onAdd(comment)}>Add to review</button>
+        <button className="pull-compose__button" disabled={busy} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
   )
 }
 
@@ -607,8 +736,10 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail }): React.JSX.E
 
 /** The Conversation tab: comments and reviews, oldest first, then the composer. The draft lives here
  *  (the tab stays mounted), so it survives a tab switch; it is never persisted. */
-function PullConversation(props: ViewProps & { seenHead: string | undefined; ownPull: boolean }): React.JSX.Element {
-  const { api, projectId, pull, onWritten, seenHead, ownPull } = props
+function PullConversation(props: ViewProps & {
+  seenHead: string | undefined; ownPull: boolean; pending: readonly PullLineDraft[]; onClearPending: () => void
+}): React.JSX.Element {
+  const { api, projectId, pull, onWritten, seenHead, ownPull, pending, onClearPending } = props
   const result = usePullRead(api.pullConversation, props)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -623,12 +754,14 @@ function PullConversation(props: ViewProps & { seenHead: string | undefined; own
     setBusy(false)
     if (!outcome.ok) { setRefusal(outcome.reason); return }
     setDraft('')
+    onClearPending()
     onWritten()
   }
   // A review is tied to the head the Overview showed, so GitHub refuses it if the PR moved since.
   // ponytail: no head seen yet (Overview never opened) disables review rather than reading one here.
+  // The pending line comments ride the review.
   const review = (event: PullReviewEvent) => seenHead && run(() =>
-    api.reviewPull({ ...at, event, body: draft, headSha: seenHead }))
+    api.reviewPull({ ...at, event, body: draft, headSha: seenHead, ...(pending.length ? { comments: [...pending] } : {}) }))
 
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   return (
@@ -649,6 +782,17 @@ function PullConversation(props: ViewProps & { seenHead: string | undefined; own
                   <time className="pull-convo__time" dateTime={item.at}>{new Date(item.at).toLocaleString()}</time>
                 </div>
                 {item.body.trim() && <NoteMarkdown text={item.body} className="sticky-node__md pull-node__md" />}
+                {item.kind === 'review' && (
+                  <ul className="pull-convo__lines">
+                    {result.lineComments.filter((line) => line.reviewId === item.id).map((line) => (
+                      <li key={line.id}>
+                        <code>{line.path}{line.line !== null && `:${line.line}`}</code>
+                        {line.outdated && <span className="pull-line__outdated">Outdated</span>}
+                        <NoteMarkdown text={line.body} className="sticky-node__md pull-node__md" />
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </li>
             ))}
           </ol>
@@ -658,8 +802,9 @@ function PullConversation(props: ViewProps & { seenHead: string | undefined; own
           value={draft} onChange={(event) => setDraft(event.target.value)} />
         {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
         <div className="pull-compose__actions">
-          <button className="pull-compose__button" disabled={busy || !draft.trim()}
-            onClick={() => void run(() => api.commentOnPull({ ...at, body: draft }))}>Comment</button>
+          {/* With pending line comments, Comment submits them as a comment review. */}
+          <button className="pull-compose__button" disabled={busy || (pending.length ? !seenHead : !draft.trim())}
+            onClick={() => void (pending.length ? review('COMMENT') : run(() => api.commentOnPull({ ...at, body: draft })))}>Comment</button>
           {!ownPull && (
             <>
               <button className="pull-compose__button" disabled={busy || !seenHead}
@@ -669,6 +814,13 @@ function PullConversation(props: ViewProps & { seenHead: string | undefined; own
             </>
           )}
         </div>
+        {pending.length > 0 && (
+          <p className="pull-node__empty">
+            {pending.length === 1 ? '1 line comment waits' : `${pending.length} line comments wait`} for your review: Comment,
+            Approve or Request changes sends {pending.length === 1 ? 'it' : 'them'}.{' '}
+            <button className="pull-compose__button" disabled={busy} onClick={onClearPending}>Discard</button>
+          </p>
+        )}
         {ownPull && <p className="pull-node__empty">{OWN_PULL_TEXT}</p>}
         {!seenHead && !ownPull && <p className="pull-node__empty">Open the Overview tab to review: a review is tied to the commit it shows.</p>}
       </div>

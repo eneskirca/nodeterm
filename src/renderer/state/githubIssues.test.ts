@@ -47,6 +47,7 @@ function api(): GitHubIssuesApi {
     repoMergeMethods: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     repoCollaborators: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     requestPullReviewer: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
+    commentOnPullLine: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     claimPullAutoMove: vi.fn(async () => false),
     notePullWaits: vi.fn(async () => 0),
     projectAvatar: vi.fn(async () => null),

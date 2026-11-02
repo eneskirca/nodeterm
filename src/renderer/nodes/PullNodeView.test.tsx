@@ -3,20 +3,28 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
-  GitHubPullConversationResult, GitHubPullDetail, GitHubPullDetailResult, GitHubPullFileContentsResult, GitHubPullFilesResult
+  GitHubPullConversationResult, GitHubPullDetail, GitHubPullDetailResult, GitHubPullFileContentsResult, GitHubPullFilesResult,
+  PullLineComment
 } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
 import type { PullNodeTab } from '@shared/pull-node'
 import type { PullProposal, ShownProposal } from '@shared/pull-agent-verbs'
 import { PullNodeView, type PullNodeApi } from './PullNodeView'
 
-// Monaco does not run in jsdom: the diff shows its two texts and its path instead.
+// Monaco does not run in jsdom: the diff shows its two texts and its path instead, its zones in
+// place, and one button per side that stands for a click on line 3's number.
 vi.mock('../editor/TextDiff', () => ({
-  TextDiff: ({ path, original, modified, highlight }: {
+  TextDiff: ({ path, original, modified, highlight, zones = [], onLineClick }: {
     path: string; original: string; modified: string; highlight?: { start: number; end: number }
+    zones?: Array<{ key: string; side: string; line: number; content: React.ReactNode }>
+    onLineClick?: (side: 'original' | 'modified', line: number) => void
   }) => (
     <div className="text-diff" data-path={path} data-original={original} data-modified={modified}
-      data-highlight={highlight ? `${highlight.start}-${highlight.end}` : undefined} />
+      data-highlight={highlight ? `${highlight.start}-${highlight.end}` : undefined}>
+      {zones.map((zone) => <div key={zone.key} className="zone" data-at={`${zone.side}:${zone.line}`}>{zone.content}</div>)}
+      <button onClick={() => onLineClick?.('original', 3)}>line original 3</button>
+      <button onClick={() => onLineClick?.('modified', 3)}>line modified 3</button>
+    </div>
   )
 }))
 
@@ -31,13 +39,14 @@ const detail: GitHubPullDetail = {
 
 function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult = {
   status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [{ name: 'test', state: 'passed' }]
-}, conversation: GitHubPullConversationResult = { status: 'ok', items: [], truncated: false, observedAt: 1 }):
+}, conversation: GitHubPullConversationResult = { status: 'ok', items: [], lineComments: [], truncated: false, observedAt: 1 }):
   PullNodeApi & {
     pullDetail: ReturnType<typeof vi.fn>; pullChecks: ReturnType<typeof vi.fn>; pullConversation: ReturnType<typeof vi.fn>
     pullFiles: ReturnType<typeof vi.fn>; pullFileContents: ReturnType<typeof vi.fn>
     commentOnPull: ReturnType<typeof vi.fn>; reviewPull: ReturnType<typeof vi.fn>
     mergePull: ReturnType<typeof vi.fn>; repoMergeMethods: ReturnType<typeof vi.fn>
     repoCollaborators: ReturnType<typeof vi.fn>; requestPullReviewer: ReturnType<typeof vi.fn>
+    commentOnPullLine: ReturnType<typeof vi.fn>
   } {
   return {
     pullDetail: vi.fn(async () => result),
@@ -53,7 +62,8 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
       status: 'ok' as const,
       users: ['octocat', 'ana', 'bo'].map((login, id) => ({ id, login, avatarUrl: 'https://avatars.githubusercontent.com/u/1' }))
     })),
-    requestPullReviewer: vi.fn(async () => ({ ok: true as const }))
+    requestPullReviewer: vi.fn(async () => ({ ok: true as const })),
+    commentOnPullLine: vi.fn(async () => ({ ok: true as const }))
   }
 }
 
@@ -137,7 +147,7 @@ const url = 'https://github.com/o/r/pull/7'
 describe('PullNodeView conversation', () => {
   it('lists comments and reviews in the order read, each review with its verdict', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, {
-      status: 'ok', truncated: false, observedAt: 1, items: [
+      status: 'ok', truncated: false, observedAt: 1, lineComments: [], items: [
         { kind: 'comment', id: 1, author, body: 'First **comment**', at: at(10), url },
         { kind: 'review', id: 2, author, body: '', at: at(11), url, verdict: 'approved' },
         { kind: 'review', id: 3, author: null, body: 'Fix the test', at: at(12), url, verdict: 'changes-requested' },
@@ -159,7 +169,7 @@ describe('PullNodeView conversation', () => {
 
   it('never runs script from a comment', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, {
-      status: 'ok', truncated: false, observedAt: 1,
+      status: 'ok', truncated: false, observedAt: 1, lineComments: [],
       items: [{ kind: 'comment', id: 1, author, body: '<img src=x onerror="alert(1)"><script>alert(2)</script>', at: at(10), url }]
     })
     const view = await render(api, 'o/r', 'conversation')
@@ -489,6 +499,128 @@ describe('PullNodeView files', () => {
     api.pullFiles.mockResolvedValue({ ...files, truncated: true })
     const view = await render(api, 'o/r', 'files')
     expect(view.querySelector('.pull-files__truncated')?.textContent).toContain('first 300 files')
+  })
+})
+
+describe('PullNodeView line comments', () => {
+  const line = (id: number, over: Partial<PullLineComment> = {}): PullLineComment => ({
+    id, reviewId: 40, author, body: `line comment ${id}`, at: at(10 + id), url: `${url}#discussion_r${id}`,
+    path: 'src/a.ts', side: 'RIGHT', line: 2, outdated: false, ...over
+  })
+  const lineComments = [
+    line(1), line(2, { inReplyTo: 1 }), line(3, { side: 'LEFT', line: 5 }),
+    line(4, { line: null, outdated: true, body: 'old **news**' }), line(5, { path: 'src/b.ts' })
+  ]
+  const setup = () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, {
+      status: 'ok', truncated: false, observedAt: 1, lineComments,
+      items: [{ kind: 'review', id: 40, author, body: '', at: at(10), url, verdict: 'commented' }]
+    })
+    api.pullFiles.mockResolvedValue({
+      status: 'ok', truncated: false, observedAt: 1, files: [{ path: 'src/a.ts', status: 'modified', additions: 1, deletions: 1 }]
+    })
+    api.pullFileContents.mockResolvedValue({
+      status: 'ok', observedAt: 1, contents: { kind: 'diff', base: { kind: 'text', text: 'a' }, head: { kind: 'text', text: 'b' } }
+    })
+    return api
+  }
+  const showTab = async (api: PullNodeApi, tab: PullNodeTab, onWritten = vi.fn()) => {
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab, selectedFile: 'src/a.ts' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()} />)
+    })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+  }
+
+  it('shows each thread under its side and line, and an outdated one below the diff', async () => {
+    const view = await render(setup(), 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
+    const zones = [...view.querySelectorAll('.zone')]
+    expect(zones.map((zone) => zone.getAttribute('data-at'))).toEqual(['modified:2', 'original:5'])
+    expect(zones[0].textContent).toContain('line comment 1')
+    expect(zones[0].textContent).toContain('line comment 2')
+    expect(zones[0].textContent).not.toContain('line comment 5')
+    const off = view.querySelector('.pull-line__off')!
+    expect(off.textContent).toContain('Outdated')
+    expect(off.textContent).toContain('old news')
+  })
+
+  it('replies to a thread by its first comment and refreshes the node', async () => {
+    const api = setup()
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), onWritten, 'src/a.ts')
+    const thread = view.querySelector('.zone')!
+    await act(async () => { type(thread.querySelector('textarea')!, 'Done.') })
+    await act(async () => { button(thread as HTMLElement, 'Reply').click() })
+    expect(api.commentOnPullLine).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, inReplyTo: 1, body: 'Done.' })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('posts a new line comment on the clicked line, tied to the head the node read', async () => {
+    const api = setup()
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
+    await act(async () => { button(view, 'line original 3').click() })
+    const box = view.querySelector<HTMLTextAreaElement>('textarea[aria-label="Line comment"]')!
+    expect(box.closest('.zone')?.getAttribute('data-at')).toBe('original:3')
+    await act(async () => { type(box, 'Why remove this?') })
+    await act(async () => { button(box.closest('.zone') as HTMLElement, 'Comment').click() })
+    expect(api.commentOnPullLine).toHaveBeenCalledWith({
+      projectId: 'p', repository: 'o/r', pullNumber: 7, headSha: 'c'.repeat(40),
+      comment: { path: 'src/a.ts', side: 'LEFT', line: 3, body: 'Why remove this?' }
+    })
+    expect(view.querySelector('textarea[aria-label="Line comment"]')).toBeNull()
+  })
+
+  it('keeps a line comment for the review, then sends it with Approve', async () => {
+    const api = setup()
+    await render(api, 'o/r', 'overview')
+    await showTab(api, 'files')
+    await act(async () => { button(host, 'line modified 3').click() })
+    await act(async () => { type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Line comment"]')!, 'Rename.') })
+    await act(async () => { button(host, 'Add to review').click() })
+    expect(api.commentOnPullLine).not.toHaveBeenCalled()
+    expect(host.querySelector('.zone[data-at="modified:3"]')?.textContent).toContain('Pending')
+    await showTab(api, 'conversation')
+    expect(host.textContent).toContain('1 line comment waits for your review')
+    await act(async () => { button(host, 'Approve').click() })
+    expect(api.reviewPull).toHaveBeenCalledWith({
+      projectId: 'p', repository: 'o/r', pullNumber: 7, event: 'APPROVE', body: '', headSha: 'c'.repeat(40),
+      comments: [{ path: 'src/a.ts', side: 'RIGHT', line: 3, body: 'Rename.' }]
+    })
+    expect(host.textContent).not.toContain('waits for your review')
+  })
+
+  it('sends pending line comments alone as a comment review', async () => {
+    const api = setup()
+    await render(api, 'o/r', 'overview')
+    await showTab(api, 'files')
+    await act(async () => { button(host, 'line modified 3').click() })
+    await act(async () => { type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Line comment"]')!, 'Nit.') })
+    await act(async () => { button(host, 'Add to review').click() })
+    await showTab(api, 'conversation')
+    await act(async () => { button(host, 'Comment').click() })
+    expect(api.commentOnPull).not.toHaveBeenCalled()
+    expect(api.reviewPull).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'COMMENT', body: '', comments: [{ path: 'src/a.ts', side: 'RIGHT', line: 3, body: 'Nit.' }]
+    }))
+  })
+
+  it('lists line comments under their review in the Conversation tab', async () => {
+    const view = await render(setup(), 'o/r', 'conversation')
+    const review = view.querySelector('.pull-convo__item')!
+    expect(review.textContent).toContain('src/a.ts:2')
+    expect(review.textContent).toContain('line comment 1')
+    expect(review.textContent).toContain('Outdated')
+  })
+
+  it('never runs script from a line comment', async () => {
+    const api = setup()
+    api.pullConversation.mockResolvedValue({
+      status: 'ok', truncated: false, observedAt: 1, items: [],
+      lineComments: [line(1, { body: '<img src=x onerror="alert(1)"><script>alert(2)</script>' })]
+    })
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
+    expect(view.querySelector('.zone script')).toBeNull()
+    expect(view.querySelector('.zone img')?.getAttribute('onerror')).toBeNull()
   })
 })
 

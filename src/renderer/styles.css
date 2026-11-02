@@ -19025,6 +19025,42 @@ body.focus-mode .dock:hover {
 /* pr-show --lines: the lines the agent pointed at, in the diff's modified side. */
 .text-diff__highlight { background: rgba(250, 204, 21, 0.18); }
 .text-diff__highlight-gutter { border-left: 3px solid rgb(250, 204, 21); }
+/* Line comments (#11): a thread, a pending comment or the new-comment box under its diff line (a
+   Monaco view zone; TextDiff sizes the zone to .text-diff__zone-body). Monaco's own font is reset. */
+.text-diff__zone-body {
+  padding: 6px 12px 8px;
+  font: 13px/1.45 var(--md-font-family, system-ui, sans-serif);
+  white-space: normal;
+}
+.pull-line {
+  max-width: 640px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pull-line--new { border-color: var(--accent); }
+.pull-line__comment + .pull-line__comment { padding-top: 6px; border-top: 1px solid var(--border); }
+.pull-line__comment .pull-node__md { margin: 4px 0 0; padding: 0; border: 0; }
+.pull-line__box { min-height: 44px; }
+.pull-line__outdated {
+  align-self: flex-start;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--warn) 30%, transparent);
+  font-size: 11px;
+}
+.pull-line__pending { margin: 0; color: var(--muted); }
+.pull-line__off { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.pull-convo__lines { margin: 6px 0 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border); }
+.pull-convo__lines li { margin: 4px 0; }
+.pull-convo__lines .pull-line__outdated { margin-left: 6px; }
+.pull-convo__lines .pull-node__md { margin: 2px 0 0; padding: 0; border: 0; }
 .pull-merge { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0; }
 .pull-merge__reason { margin: 0; color: var(--muted); line-height: 1.5; }
 /* Absolute against the node (React Flow's node box), so it covers the whole node whatever the body's scroll. */
