@@ -710,6 +710,19 @@ describe('parseControlRequest', () => {
     }
   })
 
+  it('both agent-facing texts say a `reply` may reach the node that opened the caller (#1357)', () => {
+    for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
+      // The Server Edition's creator gate refused every station → orchestrator reply, so the
+      // squad pattern had to be woken by hand. The exception is `reply`-only; the text must say
+      // the reply reaches the OPENER, and must not promise the same for `send`. A doc line with no
+      // test is a plan, not a fact (CLAUDE.md, canvas control).
+      const flat = body.replace(/\s+/g, ' ')
+      // Each body phrases it once, and both name `reply` right before the exception.
+      expect(flat).toMatch(/for `reply` the node that opened the caller|`reply --node[^`]*`[^`]*reach the node that opened you/)
+      expect(flat).not.toMatch(/`send --node[^`]*`[^`]*reach the node that opened you/)
+    }
+  })
+
   it('both agent-facing texts say a busy target is QUEUED, not refused (deliver-on-idle, PR 7)', () => {
     for (const body of [buildCanvasSkillBody('/x/shim.sh'), buildCanvasControlInstructions('/tmp/nodeterm.sh')]) {
       // PR 7 replaced "busy target is refused with targetBusy" with a bounded deliver-on-idle
