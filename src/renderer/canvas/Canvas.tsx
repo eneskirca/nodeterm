@@ -11684,14 +11684,43 @@ export function Canvas() {
         window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
       }
       const { api } = sessionForProject(projectId)
-      const [repo, board] = await Promise.all([
-        api.githubControl.status(projectId).then((v) => v.project, () => undefined),
-        api.githubIssues.pullStatus(projectId).catch(() => undefined)
-      ])
-      if (!repo?.approved || !repo.repository) {
-        toast('This project has no approved GitHub repository. Connect its board first.')
+      const view = await api.githubControl.status(projectId).catch(() => undefined)
+      let repo = view?.project
+      if (!repo?.repository) {
+        toast('This folder has no GitHub remote. Add one with git remote add origin <url>.')
         return
       }
+      // Repository access comes from the folder's git origin, never from the board. The one click
+      // stays: it is the machine-local consent that lets this token (and agents' verbs) touch it.
+      if (!repo.approved) {
+        const repository = repo.repository
+        const allowed = await new Promise<boolean>((resolve) =>
+          setConfirm({
+            message: `Allow nodeterm to use ${repository} on this computer? It is this folder's git origin. Pull request nodes and agents on this canvas can then read and act on its pull requests.`,
+            confirmLabel: 'Allow',
+            onConfirm: () => {
+              setConfirm(null)
+              resolve(true)
+            },
+            onCancel: () => resolve(false)
+          })
+        )
+        if (!allowed) return
+        try {
+          repo = (await api.githubControl.approve({
+            projectId,
+            repository,
+            expectedRevision: view!.control.revision
+          })).project
+        } catch {
+          toast(`Could not allow ${repository}. Try again.`)
+          return
+        }
+        // ponytail: the first refresh fills the open-PR list for the picker (it also reads issues).
+        await api.githubIssues.refresh(projectId).catch(() => undefined)
+      }
+      if (!repo?.approved || !repo.repository) return
+      const board = await api.githubIssues.pullStatus(projectId).catch(() => undefined)
       const input = await promptDialog({
         message: `Open a pull request of ${repo.repository}. Pick an open one, or type a number:`,
         placeholder: '#123',
@@ -11718,7 +11747,7 @@ export function Canvas() {
       setNodes((ns) => [...ns, createPullNode(ns.length, plan.ref.repository, plan.ref.pullNumber, at ?? emptyNodePos())])
       markDirty()
     },
-    [setNodes, markDirty, emptyNodePos]
+    [setNodes, markDirty, emptyNodePos, setConfirm]
   )
 
   // The shared bag of creation callbacks + project context that every "add" menu derives its

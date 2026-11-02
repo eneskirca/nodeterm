@@ -41,7 +41,7 @@ export function planOpenPr(input: {
   if (shape) return refuse(shape)
   const ref = normalizePullRef({ repository: input.repo?.repository, pullNumber: pullNumberArg(input.args.pr), tab: 'overview' })
   if (!input.repo?.approved || !ref) {
-    return refuse('open-pr-no-repo: this project has no approved GitHub repository; ask the user to connect its board')
+    return refuse('open-pr-no-repo: the GitHub repository of this project is not allowed on this computer; ask the user to open a pull request from the add menu once (it asks to allow the folder origin)')
   }
   const key = ref.repository.toLowerCase()
   const existing = input.pullNodes.find((n) =>

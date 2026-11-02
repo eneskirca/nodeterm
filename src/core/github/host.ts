@@ -91,7 +91,13 @@ type ResolvedProject = ProjectRecord & {
   repository: string
   detectedRepository?: string
   config: GitHubIssueServiceContext['config']
+  /** False for a project with no board GitHub config: repository access only, never board writes. */
+  hasBoard: boolean
 }
+
+// A project with no board still reads its folder's repository (pull nodes, `open-pr`). Its config
+// maps no columns and names no completion column, so every issue write refuses on its own.
+const NO_BOARD_CONFIG: GitHubIssueServiceContext['config'] = { columnMappings: [], revision: 'no-board' }
 
 export class GitHubHostController {
   private credentialGeneration = 0
@@ -168,7 +174,7 @@ export class GitHubHostController {
       ...input,
       localApprovalId: project.localApprovalId,
       repository: project.repository,
-      mappingDigest: githubMappingDigest(project.repository, project.config)
+      ...(project.hasBoard ? { mappingDigest: githubMappingDigest(project.repository, project.config) } : {})
     })
     this.dependencies.onApprovalChanged?.(input.projectId)
     return this.status(input.projectId)
@@ -268,7 +274,7 @@ export class GitHubHostController {
       projectId,
       repository: project.repository
     })) throw new GitHubHostError('not-approved')
-    return this.cacheProjectContext(project, state.revision, this.dependencies.controls.isMappingApproved(state, {
+    return this.cacheProjectContext(project, state.revision, project.hasBoard && this.dependencies.controls.isMappingApproved(state, {
       localApprovalId: project.localApprovalId,
       projectId,
       repository: project.repository,
@@ -306,17 +312,17 @@ export class GitHubHostController {
     const record = await this.dependencies.project(projectId)
     if (!record) throw new GitHubHostError('project-not-found')
     const board = record.project.kanban
-    if (!board?.github) throw new GitHubHostError('invalid-configuration')
-    const config = normaliseProjectKanbanGitHub(board.github, board.columns)
-    if (!config.ok) throw new GitHubHostError('invalid-configuration')
+    const config = board?.github ? normaliseProjectKanbanGitHub(board.github, board.columns) : null
+    if (config && !config.ok) throw new GitHubHostError('invalid-configuration')
     const detected = parseGitHubRepository(await this.dependencies.detectRepository(record.project)) ?? undefined
-    const repository = config.value.repository ?? detected
+    const repository = config?.value.repository ?? detected
     if (!repository) throw new GitHubHostError('repository-not-found')
     return {
       ...record,
       repository,
       ...(detected ? { detectedRepository: detected } : {}),
-      config: config.value
+      config: config?.value ?? NO_BOARD_CONFIG,
+      hasBoard: !!config
     }
   }
 }
