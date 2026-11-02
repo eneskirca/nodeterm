@@ -881,6 +881,7 @@ describe('create a pull request', () => {
     ['a head with a range', { head: 'a..b' }],
     ['a base with a space', { base: 'ma in' }],
     ['a base that is a reflog', { base: 'main@{1}' }],
+    ['a head with a .lock component', { head: 'a.lock/b' }],
     ['a blank title', { title: '  ' }],
     ['a title over 256', { title: 'x'.repeat(257) }],
     ['a body over the limit', { body: 'x'.repeat(60_001) }],

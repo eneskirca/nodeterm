@@ -1,7 +1,8 @@
 // "New pull request": the form's prefill from the branch's commits, and the sentence for each
 // reason a create did not land. The dialog is components/CreatePullDialog.tsx.
 import type { GitHistoryItem } from '@shared/git-history'
-import { MAX_PULL_TITLE, type PullWriteReason } from '@shared/github-pull-detail'
+import { MAX_PULL_TITLE, type PullReadFailure, type PullRefusal, type PullWriteReason } from '@shared/github-pull-detail'
+import { thisMachine } from './machineName'
 
 /**
  * Title and body from the commits on the branch since `base`, as GitHub's own form fills them: one
@@ -23,14 +24,27 @@ export function pullDraftFromCommits(items: readonly GitHistoryItem[], base: str
 }
 
 /** One sentence per reason a create did not land. */
-export const CREATE_PULL_TEXT: Record<PullWriteReason, string> = {
+export function createPullText(reason: PullWriteReason): string {
+  return reason === 'not-approved'
+    ? `This repository is not allowed on ${thisMachine()}. Open "Pull request…" once to allow it.`
+    : CREATE_PULL_TEXT[reason]
+}
+
+const CREATE_PULL_TEXT: Record<Exclude<PullWriteReason, 'not-approved'>, string> = {
   validation: 'GitHub refused it. Check that the base exists, the branch has commits it lacks, and no pull request for the branch is open.',
   forbidden: 'This GitHub token may not open pull requests here. It needs Pull requests write access.',
   'signed-out': 'Sign in to GitHub again, then retry.',
-  'not-approved': 'This repository is not allowed on this computer. Open "Pull request…" once to allow it.',
   throttled: 'GitHub is rate limiting this token. Try again in a minute.',
   network: 'GitHub could not be reached. Try again.',
   'head-moved': 'The branch moved. Try again.',
   'not-mergeable': 'GitHub refused it. Try again on GitHub.',
   'own-pull': 'GitHub refused it. Try again on GitHub.'
+}
+
+/** Why the form could not start: the core's own reason for the read, never a guess. */
+export function pullStartText(reason: PullRefusal | PullReadFailure): string {
+  if (reason === 'throttled') return CREATE_PULL_TEXT.throttled
+  if (reason === 'signed-out') return CREATE_PULL_TEXT['signed-out']
+  if (reason === 'not-approved' || reason === 'repository-mismatch' || reason === 'not-configured') return createPullText('not-approved')
+  return CREATE_PULL_TEXT.network
 }

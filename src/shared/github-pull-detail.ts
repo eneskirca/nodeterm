@@ -103,11 +103,11 @@ export const MAX_PULL_REVIEW_COMMENTS = 50
 export const MAX_PULL_TITLE = 256
 
 /** A branch name git would accept as a ref and no CLI could read as a flag (`git check-ref-format`
- *  rules: no leading `-`, space, control, `~^:?*[` or backslash, `..`, `@{`, `//`, or a `/`, `.`, `.lock` end). */
+ *  rules: no leading `-`, space, control, `~^:?*[` or backslash, `..`, `@{`, `//`, or a component ending in `.` or `.lock`). */
 export function isPullBranchName(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 255 && !value.startsWith('-') &&
     // eslint-disable-next-line no-control-regex
-    !/[\x00-\x20\x7f~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.$|\.lock$|^@$|(^|\/)\./.test(value)
+    !/[\x00-\x20\x7f~^:?*[\\]|\.\.|@\{|\/\/|^\/|\/$|\.(\/|$)|\.lock(\/|$)|^@$|(^|\/)\./.test(value)
 }
 
 /** One pull request to open: the branch to merge, where into, and what it says. */

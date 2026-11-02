@@ -11676,9 +11676,6 @@ export function Canvas() {
     ]
   }, [])
 
-  // The add menu's "Pull request…": one of the open PRs the board's poll already holds (no new
-  // read), or a typed number for a closed or merged one. The repository is the host's approved one,
-  // as for `open-pr`. An existing node for that PR is framed instead of a second one.
   // The project's approved GitHub repository, asking once to allow the folder's git origin.
   // Repository access comes from the folder's git origin, never from the board. The one click
   // stays: it is the machine-local consent that lets this token (and agents' verbs) touch it.

@@ -31,7 +31,7 @@ For a fine-grained personal access token, grant access only to the selected repo
 
 The pull request node (see below) needs more. Add these repository permissions to a fine-grained token:
 
-- Pull requests – read and write (read the pull request, its conversation and files; post a comment or a review)
+- Pull requests – read and write (read the pull request, its conversation and files; post a comment or a review; open a new pull request)
 - Contents – read (the file text for the Files tab diff). Grant read and write to merge from the node: GitHub lists the merge endpoint under Contents write, and it sends the allowed merge methods only to a token that may push. With read only, the node offers no merge method.
 - Metadata – read
 
@@ -86,6 +86,8 @@ A pull request opens as a canvas node. It has three tabs: Overview (description,
 - Choose **Pull request…** in the canvas add menu (pane right-click, **New view**) or in the Dock. Pick one of the open pull requests the board already knows, or type the number of a closed or merged one.
 - An agent runs `nodeterm open-pr --pr <n>` after `gh pr create`. The node opens beside the agent with a context link.
 
+New pull requests: choose **New pull request…** in the add menu (**New view**) or the Dock for the project folder's current branch, or **Create PR** in Source Control for the checkout it shows (a worktree too). The form starts with the repository's default branch as the base, and the title and description from the branch's commits. A branch that is not pushed, or has unpushed commits, shows **Push and create**: it pushes as Source Control's Push does, then creates. If the branch already has an open pull request, that one opens instead. The new pull request opens as a node. Agents keep `gh pr create` and `open-pr`; they cannot create one through nodeterm.
+
 Line comments: in the Files tab, each review thread shows under its line, on its side of the diff. Outdated threads show below the diff. Click a line number to comment on that line. **Comment** posts it at once. **Add to review** keeps it until your next Comment, Approve or Request changes in the Conversation tab, which sends it in that review. Pending line comments are kept only while the node is open. Each thread has a Reply box. GitHub takes line comments only on changed lines and the lines next to them.
 
 The linked agent can drive the node, when the user asks it to:
@@ -100,7 +102,7 @@ The node only opens pull requests of the project's approved repository. It store
 Surfaces:
 
 - **Desktop and Server Edition**: the full node. Every read and write goes through the core, over IPC or the Server Edition WebSocket bridge.
-- **Relay tabs**: a node already on the canvas reads. **Pull request…** is disabled there, because the GitHub approval lives on the host. Comment, line comment, review and merge are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all of them.
+- **Relay tabs**: a node already on the canvas reads. **Pull request…** is disabled there, because the GitHub approval lives on the host. **New pull request…** is disabled there too. Comment, line comment, review, merge and create are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all of them.
 - **Mobile**: no pull request node. The phone shows the rest of the canvas as before.
 
 ## Current scope

@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import type { GitApi } from '@shared/types'
 import type { GitHubIssuesApi } from '@shared/github-issues'
 import { MAX_PULL_COMMENT_BODY, MAX_PULL_TITLE, isPullBranchName } from '@shared/github-pull-detail'
-import { CREATE_PULL_TEXT, pullDraftFromCommits } from '../lib/newPull'
+import { errorText } from '@shared/error-text'
+import { createPullText, pullDraftFromCommits, pullStartText } from '../lib/newPull'
 
 interface CreatePullDialogProps {
   api: { git: GitApi; githubIssues: GitHubIssuesApi }
@@ -46,7 +47,7 @@ export function CreatePullDialog({ api, projectId, repository, cwd, onOpen, onCl
         .catch(() => ({ status: 'failed' as const, reason: 'unreachable' as const }))
       if (!live) return
       if (start.status !== 'ok') {
-        setError('GitHub could not be read for this repository. Try again.')
+        setError(pullStartText(start.reason))
         return
       }
       // The branch already has an open PR: open that one instead of a form.
@@ -75,7 +76,7 @@ export function CreatePullDialog({ api, projectId, repository, cwd, onOpen, onCl
     setBusy(true)
     setError(null)
     if (ready.needsPush) {
-      const pushed = await api.git.push(cwd).catch((e: unknown) => ({ ok: false, message: String(e) }))
+      const pushed = await api.git.push(cwd).catch((e: unknown) => ({ ok: false, message: errorText(e) }))
       if (!pushed.ok) {
         setBusy(false)
         setError(`Push failed: ${pushed.message}`)
@@ -88,7 +89,7 @@ export function CreatePullDialog({ api, projectId, repository, cwd, onOpen, onCl
     }).catch(() => ({ ok: false as const, reason: 'network' as const }))
     setBusy(false)
     if (result.ok) onOpen(result.pullNumber)
-    else setError(CREATE_PULL_TEXT[result.reason])
+    else setError(createPullText(result.reason))
   }
 
   return createPortal(
