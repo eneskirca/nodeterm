@@ -59,7 +59,7 @@ import { useCodeHighlight } from './CodeHighlight'
 import { assistantTurnEnds, chatAbsoluteTime, chatClockTime, dayDividers } from '../lib/chatThread'
 import { groupToolCalls, partPosition } from '../lib/chatToolGroups'
 import { thinkingLabel } from '../lib/chatThinking'
-import { TODO_WRITE_TOOL, focusHides, latestTodoIndex, staleTodo } from '../lib/chatFocus'
+import { TODO_WRITE_TOOL, latestTodoIndex, staleTodo } from '../lib/chatTodo'
 import { ChatToolGroup } from './ChatToolGroup'
 import { ChatImage } from './ChatImage'
 import { ChatToolDiff } from './ChatToolDiff'
@@ -273,10 +273,6 @@ export function ChatPanel({
   // the same object across same-ticket events, so this selector re-renders only on a new hold.
   const held = useAgentStatus((s) => s.byId[nodeId]?.held)
   const customAgents = useSettings((s) => s.settings.customAgents)
-  // Focus view (the bar toggle; lib/chatFocus.ts): tool chips and thinking are left out. Strict, as
-  // the setting is hand-editable. Flipping it changes the thread's height with no new message, so
-  // the follow and older-page checks below re-run on it.
-  const focusView = useSettings((s) => s.settings.chatFocusView === true)
   // Not just `working`: a TUI dialog (`waiting`/`blocked`) would be ANSWERED by sendText's Enter,
   // and a pane whose CLI is gone (hibernated/paused/dropped/exited) is a SHELL that would execute it.
   const refusal = chatSendRefusal(agentId, { state, hibernated, paused, dropped, sessionEnded })
@@ -784,9 +780,7 @@ export function ChatPanel({
     }
     justSentRef.current = false
     // `activity` / `screenBlock`: a row appearing at the end grows the thread like a message does.
-    // `focusView`: the Focus toggle shows or hides whole messages — a user following the bottom
-    // stays there (turned off, it would leave them mid-thread); a reader scrolled up is left alone.
-  }, [messages, olderState, activity, screenBlock, focusView, markFollowing])
+  }, [messages, olderState, activity, screenBlock, markFollowing])
 
   const maybeLoadOlder = useCallback(() => {
     const el = msgsRef.current
@@ -807,11 +801,10 @@ export function ChatPanel({
   }, [thread.identity, thread.olderCursor, identity, olderState, loadState, tailLoading, loadOlder])
 
   // After every thread change too, not only on scroll: a thread shorter than the viewport cannot
-  // scroll, so without this its older history would be unreachable. The Focus toggle is such a
-  // change: turned on, a thread can shrink below the viewport with no scroll event to page it.
+  // scroll, so without this its older history would be unreachable.
   useEffect(() => {
     maybeLoadOlder()
-  }, [maybeLoadOlder, focusView])
+  }, [maybeLoadOlder])
 
   // The panel's box changing size — above all a collapsed node being EXPANDED (display:none → a
   // real box). Nothing else re-runs the checks then: while hidden, follow and anchor had zero
@@ -1008,21 +1001,10 @@ export function ChatPanel({
   }, [])
   // A divider at the first message of each local day; the same `now`, so Today rolls to Yesterday.
   const days = useMemo(() => dayDividers(messages, now), [messages, now])
-  // Only the latest todo list is a card, in both views (Focus: `focusView`, above).
+  // Only the latest todo list is a card (lib/chatTodo.ts).
   const latestTodo = useMemo(() => latestTodoIndex(messages), [messages])
-  // Whether the part at (i, j) draws anything at its own place: not when an earlier tool block holds
-  // it, nor in Focus view when it is hidden — or, for a block's first member, when its every member is.
-  const drawsAt = (i: number, j: number): boolean => {
-    const at = partPosition(i, j)
-    if (toolGroups.absorbed.has(at)) return false
-    if (!focusView) return true
-    const group = toolGroups.groupAt.get(at)
-    if (!group) return !focusHides(messages[i].parts[j], i, latestTodo)
-    return group.members.some((mb) => {
-      const p = messages[mb.message]?.parts[mb.part]
-      return p !== undefined && !focusHides(p, mb.message, latestTodo)
-    })
-  }
+  // Whether the part at (i, j) draws anything at its own place: not when an earlier tool block holds it.
+  const drawsAt = (i: number, j: number): boolean => !toolGroups.absorbed.has(partPosition(i, j))
 
   // One part of a message, as the thread draws it. Also used for the members of a folded tool block,
   // which are drawn inside the block instead of at their own place (lib/chatToolGroups.ts).
@@ -1106,15 +1088,6 @@ export function ChatPanel({
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">
           <button
-            type="button"
-            className="term-chat__focus"
-            aria-pressed={focusView}
-            onClick={() => useSettings.getState().update({ chatFocusView: !focusView })}
-            title="Focus view: hide tool calls and thinking"
-          >
-            Focus
-          </button>
-          <button
             className="term-chat__refresh"
             onClick={() => load()}
             title="Reload conversation"
@@ -1168,10 +1141,10 @@ export function ChatPanel({
             </div>
           )}
           {messages.map((m, i) => {
-            // A message whose every part is drawn inside an earlier message's tool block (or, in Focus
-            // view, hidden) has nothing of its own to draw, unless it ends a turn: then it draws that
-            // turn's action row and nothing else — bar a day divider (below). (Only assistant parts
-            // fold or hide, so a queued message — the user's — never does.)
+            // A message whose every part is drawn inside an earlier message's tool block has nothing
+            // of its own to draw, unless it ends a turn: then it draws that turn's action row and
+            // nothing else — bar a day divider (below). (Only assistant parts fold, so a queued
+            // message — the user's — never does.)
             const folded = m.parts.length > 0 && m.parts.every((_, j) => !drawsAt(i, j))
             const turnEnd = turnEnds.get(i)
             // Keyed by the source line's byte offset: a prepended page does not re-key (and so does
