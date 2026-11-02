@@ -25,7 +25,7 @@
 
 import { oneLine } from './one-line'
 import { parseWaitDeadlineArg } from './pr-wait'
-import { runNowRequested } from './control-verbs'
+import { flagRequested, runNowRequested } from './control-verbs'
 import { isSafeNodeId } from './safe-id'
 
 export type StationOutcome = 'succeeded' | 'failed'
@@ -110,9 +110,7 @@ export function parseReportOutcome(
     }
   }
   const note = sanitizeOutcomeNote(args.note)
-  // Read like `--run-now`: present and not false/no/0.
-  const notify = args['notify-opener']
-  const notifyOpener = notify !== undefined && !/^(false|no|0)$/i.test(notify.trim())
+  const notifyOpener = flagRequested(args, 'notify-opener')
   return { ok: true, outcome, ...(note ? { note } : {}), ...(notifyOpener ? { notifyOpener } : {}) }
 }
 

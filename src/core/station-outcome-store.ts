@@ -141,6 +141,11 @@ export class StationOutcomeStore {
   private readonly pending = new Map<string, number>()
   /** Which conversation each report was made in (persisted beside it, never published). */
   private readonly bindings = new Map<string, OutcomeBinding>()
+  /** The outcome the station's OPENER last heard through `--notify-opener` (#1356), kept while the
+   *  report it was about stands. Not the report itself: a report made without the flag, or whose
+   *  notice could not be sent, told the opener nothing — so "already told" is read from here, never
+   *  from `byId`. Process-local like the Server Edition's creator ledger (never persisted). */
+  private readonly openerHeard = new Map<string, StationOutcome>()
   private readonly durable: StationOutcomeStoreOptions['durable']
   private readonly sessionOf: StationOutcomeStoreOptions['sessionOf']
 
@@ -199,10 +204,29 @@ export class StationOutcomeStore {
 
   /** Withdraw a station's report. `true` when there was one. */
   clear(nodeId: string): boolean {
-    if (!this.byId.delete(nodeId)) return false
-    this.bindings.delete(nodeId)
+    if (!this.drop(nodeId)) return false
     this.changed()
     return true
+  }
+
+  /** Every way a report leaves the store goes through here, so what the opener heard about it
+   *  leaves with it: the next report after new work is a new task, and it notifies again. */
+  private drop(nodeId: string): boolean {
+    this.openerHeard.delete(nodeId)
+    this.bindings.delete(nodeId)
+    return this.byId.delete(nodeId)
+  }
+
+  /** `--notify-opener`: the outcome the opener last heard about this station's standing report, or
+   *  `undefined` when it heard nothing (no flag yet, notice not sent, report withdrawn since). */
+  openerHeardOutcome(nodeId: string): StationOutcome | undefined {
+    return this.openerHeard.get(nodeId)
+  }
+
+  /** The opener was told (delivered, or queued for its next idle) this outcome. Only for a station
+   *  whose report stands — a notice about a withdrawn report is not knowledge of the next one. */
+  markOpenerHeard(nodeId: string, outcome: StationOutcome): void {
+    if (this.byId.has(nodeId)) this.openerHeard.set(nodeId, outcome)
   }
 
   /**
@@ -233,8 +257,7 @@ export class StationOutcomeStore {
     while (this.byId.size > STATION_OUTCOME_MAX_RECORDS) {
       const oldest = this.byId.keys().next().value
       if (oldest === undefined) break
-      this.byId.delete(oldest)
-      this.bindings.delete(oldest)
+      this.drop(oldest)
     }
   }
 
@@ -290,10 +313,7 @@ export class StationOutcomeStore {
     const left = (this.pending.get(id) ?? 1) - 1
     if (left > 0) this.pending.set(id, left)
     else this.pending.delete(id)
-    if (!ev.landed && this.byId.delete(id)) {
-      this.bindings.delete(id)
-      this.persist()
-    }
+    if (!ev.landed && this.drop(id)) this.persist()
     this.publish(this.list())
   }
 
@@ -406,9 +426,12 @@ export async function handleReportOutcome(
     at,
     ...(parsed.note ? { note: parsed.note } : {})
   }
-  // `--notify-opener` speaks only when the outcome CHANGES: repeating the same report cannot keep
-  // waking the opener. New work reaching the station withdraws its report, so a new task notifies.
-  const repeated = deps.store.get(req.nodeId)?.outcome === parsed.outcome
+  // `--notify-opener` speaks only when the outcome the opener HEARD changes: repeating the same
+  // report cannot keep waking it. Read before the record lands, and from what was actually told —
+  // not from the previous record: a report made without the flag, or whose notice was not sent, told
+  // the opener nothing, and a flagged repeat of it must still speak. New work reaching the station
+  // withdraws its report (and what was heard about it), so the next task notifies again.
+  const heard = deps.store.openerHeardOutcome(req.nodeId)
   deps.store.record(record)
   const projectId = deps.projectIdOfNode(req.nodeId)
   let logged = false
@@ -433,9 +456,9 @@ export async function handleReportOutcome(
   // `done` if openers start reading half-finished transcripts.
   const told = !parsed.notifyOpener || !deps.opener
     ? undefined
-    : repeated
+    : heard === parsed.outcome
       ? 'Your opener was already told this outcome; it is not told again.'
-      : await tellOpener(record, deps.opener)
+      : await tellOpener(record, deps.store, deps.opener)
   const message = [
     `recorded: your task ${parsed.outcome}${parsed.note ? ` — "${parsed.note}"` : ''}.`,
     RELEASE_TEXT[parsed.outcome],
@@ -451,9 +474,12 @@ export async function handleReportOutcome(
 }
 
 /** `--notify-opener`: one notice to the node that opened the station. Returns the line the station
- *  is told, so it knows whether its opener heard. */
+ *  is told, so it knows whether its opener heard — and records in the store what it heard, which
+ *  is what silences a flagged repeat of the same outcome. A notice that was not sent records
+ *  nothing, so the next flagged report tries again (the switch may have been turned on since). */
 async function tellOpener(
   record: StationOutcomeRecord,
+  store: Pick<StationOutcomeStore, 'markOpenerHeard'>,
   opener: NonNullable<ReportOutcomeDeps['opener']>
 ): Promise<string> {
   const recipient = opener.recipientFor(record.nodeId)
@@ -463,6 +489,9 @@ async function tellOpener(
     .deliver({ stationNodeId: record.nodeId, recipientNodeId: recipient.recipientNodeId, body })
     .catch(() => null)
   const { pane, paneDetail } = outcome ? paneResult(outcome) : { pane: 'not-sent', paneDetail: 'error' }
+  // Queued counts as heard: the queue delivers it on the opener's next idle. A queued notice that
+  // then expires is the one case this cannot see — the opener reads `list` as it always could.
+  if (pane === 'told' || pane === 'queued') store.markOpenerHeard(record.nodeId, record.outcome)
   if (pane === 'told') return `Your opener ${recipient.recipientNodeId} was told.`
   if (pane === 'queued') return `Your opener ${recipient.recipientNodeId} is told when it next goes idle.`
   return `Your opener could not be told (${paneDetail ?? 'not sent'}).`

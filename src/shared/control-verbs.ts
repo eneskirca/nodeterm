@@ -112,7 +112,16 @@ export function dryRunRequested(args: Record<string, string | undefined>): boole
  * valueless flag as an empty string, and only an explicit false|no|0 turns it off.
  */
 export function runNowRequested(args: Record<string, string | undefined>): boolean {
-  const v = args['run-now']
+  return flagRequested(args, 'run-now')
+}
+
+/**
+ * Is a presence flag (`--run-now`, `--notify-opener`) on? The shim encodes a valueless flag as an
+ * empty string, so presence means yes; only an explicit `false|no|0` turns it off. ONE reader for
+ * every such flag, so two verbs cannot disagree about what `--flag no` means.
+ */
+export function flagRequested(args: Record<string, string | undefined>, name: string): boolean {
+  const v = args[name]
   if (v === undefined) return false
   return !/^(false|no|0)$/i.test(v.trim())
 }
