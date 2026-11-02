@@ -181,6 +181,7 @@ function PullTabs({ onTab, onSelectFile, ...props }: TabsProps): React.JSX.Eleme
   if (!opened.includes(shownTab)) setOpened([...opened, shownTab])
   // The head commit the Overview last showed: the one a review is tied to.
   const [seenHead, setSeenHead] = useState<string | undefined>()
+  const [ownPull, setOwnPull] = useState(false)
   return (
     <>
       <div className="pull-node__tabs" role="tablist">
@@ -194,24 +195,26 @@ function PullTabs({ onTab, onSelectFile, ...props }: TabsProps): React.JSX.Eleme
         </button>
       </div>
       {opened.includes('overview') && (
-        <div hidden={shownTab !== 'overview'}><PullOverview {...props} onHead={setSeenHead} /></div>
+        <div hidden={shownTab !== 'overview'}><PullOverview {...props} onHead={setSeenHead} onOwnPull={setOwnPull} /></div>
       )}
       {opened.includes('files') && (
         <div hidden={shownTab !== 'files'}><PullFiles {...props} onSelectFile={onSelectFile} /></div>
       )}
       {opened.includes('conversation') && (
-        <div hidden={shownTab !== 'conversation'}><PullConversation {...props} seenHead={seenHead} /></div>
+        <div hidden={shownTab !== 'conversation'}><PullConversation {...props} seenHead={seenHead} ownPull={ownPull} /></div>
       )}
     </>
   )
 }
 
-function PullOverview(props: ViewProps & { onHead: (sha: string) => void }): React.JSX.Element {
-  const { api, projectId, pull, onOpenExternal, onHead } = props
+function PullOverview(props: ViewProps & { onHead: (sha: string) => void; onOwnPull: (own: boolean) => void }): React.JSX.Element {
+  const { api, projectId, pull, onOpenExternal, onHead, onOwnPull } = props
   const result = usePullRead(api.pullDetail, props)
   const detail = result !== 'loading' && result.status === 'ok' ? result.detail : undefined
   const head = detail?.head.sha
   useEffect(() => { if (head) onHead(head) }, [head, onHead])
+  const ownPull = result !== 'loading' && result.status === 'ok' && result.ownPull === true
+  useEffect(() => { onOwnPull(ownPull) }, [ownPull, onOwnPull])
   const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
   const checks = usePullChecks(api, readsChecks ? projectId : undefined, pull.pullNumber, detail?.head.sha)
 
@@ -405,8 +408,8 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail }): React.JSX.E
 
 /** The Conversation tab: comments and reviews, oldest first, then the composer. The draft lives here
  *  (the tab stays mounted), so it survives a tab switch; it is never persisted. */
-function PullConversation(props: ViewProps & { seenHead: string | undefined }): React.JSX.Element {
-  const { api, projectId, pull, onWritten, seenHead } = props
+function PullConversation(props: ViewProps & { seenHead: string | undefined; ownPull: boolean }): React.JSX.Element {
+  const { api, projectId, pull, onWritten, seenHead, ownPull } = props
   const result = usePullRead(api.pullConversation, props)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -458,12 +461,17 @@ function PullConversation(props: ViewProps & { seenHead: string | undefined }): 
         <div className="pull-compose__actions">
           <button className="pull-compose__button" disabled={busy || !draft.trim()}
             onClick={() => void run(() => api.commentOnPull({ ...at, body: draft }))}>Comment</button>
-          <button className="pull-compose__button" disabled={busy || !seenHead}
-            onClick={() => void review('APPROVE')}>Approve</button>
-          <button className="pull-compose__button" disabled={busy || !seenHead || !draft.trim()}
-            onClick={() => void review('REQUEST_CHANGES')}>Request changes</button>
+          {!ownPull && (
+            <>
+              <button className="pull-compose__button" disabled={busy || !seenHead}
+                onClick={() => void review('APPROVE')}>Approve</button>
+              <button className="pull-compose__button" disabled={busy || !seenHead || !draft.trim()}
+                onClick={() => void review('REQUEST_CHANGES')}>Request changes</button>
+            </>
+          )}
         </div>
-        {!seenHead && <p className="pull-node__empty">Open the Overview tab to review: a review is tied to the commit it shows.</p>}
+        {ownPull && <p className="pull-node__empty">This is your own pull request, so you can comment but not approve or request changes.</p>}
+        {!seenHead && !ownPull && <p className="pull-node__empty">Open the Overview tab to review: a review is tied to the commit it shows.</p>}
       </div>
     </div>
   )

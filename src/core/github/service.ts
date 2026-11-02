@@ -1001,7 +1001,9 @@ export class GitHubIssueService {
     return this.pullRead('detail', request, async (captured, repository, pullNumber) => {
       if (!captured.client.getPull) return null
       const detail = await this.readWithEpoch(captured, () => captured.client.getPull!(repository, pullNumber))
-      return { status: 'ok', detail, observedAt: this.now() }
+      // The numeric id, not the login: a login can be renamed.
+      const ownPull = detail.author !== null && String(detail.author.id) === captured.userId
+      return { status: 'ok', detail, observedAt: this.now(), ...(ownPull ? { ownPull: true as const } : {}) }
     })
   }
 

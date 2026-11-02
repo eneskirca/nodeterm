@@ -249,6 +249,14 @@ describe('PullNodeView composer', () => {
     expect(api.pullDetail).not.toHaveBeenCalled()
   })
 
+  it('offers only Comment on the viewer\'s own pull request', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1, ownPull: true })
+    const view = await renderSeen(api)
+    const labels = [...view.querySelectorAll('.pull-compose__actions button')].map((b) => b.textContent)
+    expect(labels).toEqual(['Comment'])
+    expect(view.textContent).toContain('your own pull request')
+  })
+
   it('needs a message to request changes', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     const view = await renderSeen(api)

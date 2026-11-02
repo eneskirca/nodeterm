@@ -30,13 +30,13 @@ class Client implements GitHubIssuesClientLike {
   async getPull(): Promise<GitHubPullDetail> { this.reads += 1; return this.next() }
 }
 
-function harness(contextError?: { code: string }) {
+function harness(contextError?: { code: string }, userId = 'user-1') {
   let now = 1_000_000
   const client = new Client()
   const coordinator = new GitHubRequestCoordinator({ now: () => now })
   const context = (): GitHubIssueServiceContext => ({
     localApprovalId: 'local-1', projectId: 'p', repository: 'o/r', config, controlRevision: 1,
-    credentialGeneration: 1, userId: 'user-1', client, columnColors: {}, mappingApproved: false
+    credentialGeneration: 1, userId, client, columnColors: {}, mappingApproved: false
   })
   const service = new GitHubIssueService({
     cache: {} as GitHubIssueCache,
@@ -54,6 +54,13 @@ describe('GitHubIssueService.pullDetail', () => {
     const { client, service } = harness()
     expect(await service.pullDetail(request)).toEqual({ status: 'ok', detail: detail(), observedAt: 1_000_000 })
     expect(client.reads).toBe(1)
+  })
+
+  it('marks the pull request as the viewer\'s own when the author is the signed-in user', async () => {
+    const { client, service } = harness(undefined, '42')
+    const mine = { ...detail(), author: { id: 42, login: 'me', avatarUrl: 'https://avatars.githubusercontent.com/u/42' } }
+    client.next = async () => mine
+    expect(await service.pullDetail(request)).toEqual({ status: 'ok', detail: mine, observedAt: 1_000_000, ownPull: true })
   })
 
   it('refuses an unapproved repository and a signed-out user with no request', async () => {

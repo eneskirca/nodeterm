@@ -29,7 +29,8 @@ export type PullRefusal = 'not-approved' | 'signed-out' | 'repository-mismatch' 
 
 export type GitHubPullDetailResult =
   /** `stale` = the latest read failed; `detail` is the last one that succeeded, kept on purpose. */
-  | { status: 'ok'; detail: GitHubPullDetail; observedAt: number; stale?: PullReadFailure; retryAt?: number }
+  /** `ownPull` = the signed-in user wrote it, so GitHub refuses Approve and Request changes. */
+  | { status: 'ok'; detail: GitHubPullDetail; observedAt: number; ownPull?: true; stale?: PullReadFailure; retryAt?: number }
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
 
