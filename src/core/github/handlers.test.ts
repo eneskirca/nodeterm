@@ -35,6 +35,10 @@ describe('registerGitHubIssueHandlers', () => {
       },
       commentOnPull: async (...args: unknown[]) => { calls.push(['comment', ...args]); return { ok: true as const } },
       reviewPull: async (...args: unknown[]) => { calls.push(['review', ...args]); return { ok: true as const } },
+      mergePull: async (...args: unknown[]) => { calls.push(['merge', ...args]); return { ok: true as const } },
+      repoMergeMethods: async (...args: unknown[]) => {
+        calls.push(['methods', ...args]); return { status: 'ok' as const, methods: [] }
+      },
       claimPullAutoMove: async (...args: unknown[]) => { calls.push(['claim', ...args]); return true },
       notePullWaits: async (...args: unknown[]) => { calls.push(['wait', ...args]); return 1 }
     }
@@ -51,6 +55,8 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullConversation]('p1', 'o/r', 12)
     await platform.handlers[IPC.githubIssuesPullComment]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, body: 'b' })
     await platform.handlers[IPC.githubIssuesPullReview]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' })
+    await platform.handlers[IPC.githubIssuesPullMerge]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'h' })
+    await platform.handlers[IPC.githubIssuesRepoMergeMethods]('p1', 'o/r')
     await platform.handlers[IPC.githubIssuesClaimPullAutoMove]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     await platform.handlers[IPC.githubIssuesNotePullWaits]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     expect(calls).toEqual([
@@ -64,6 +70,8 @@ describe('registerGitHubIssueHandlers', () => {
       ['conversation', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
       ['comment', { projectId: 'p1', repository: 'o/r', pullNumber: 12, body: 'b' }],
       ['review', { projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' }],
+      ['merge', { projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'h' }],
+      ['methods', { projectId: 'p1', repository: 'o/r' }],
       ['claim', { projectId: 'p1', cardId: 'n', pulls: [3] }],
       ['wait', { projectId: 'p1', cardId: 'n', pulls: [3] }]
     ])

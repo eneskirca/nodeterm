@@ -456,6 +456,7 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullChecks,
   IPC.githubIssuesPullDetail,
   IPC.githubIssuesPullConversation,
+  IPC.githubIssuesRepoMergeMethods,
   IPC.githubIssuesClaimPullAutoMove,
   IPC.githubIssuesNotePullWaits,
   IPC.githubProjectAvatar,
@@ -509,11 +510,12 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
 /**
  * Channels only an OWNER may send: writes made with the host owner's own GitHub token (a comment or
  * review posts as that person). Editors are refused too; Editor is shell access, not identity. The
- * guard test counts these as decided. Ticket 05's merge joins this set.
+ * guard test counts these as decided.
  */
 export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullComment,
-  IPC.githubIssuesPullReview
+  IPC.githubIssuesPullReview,
+  IPC.githubIssuesPullMerge
 ])
 
 const ROLE_NAME: Readonly<Record<string, string>> = { owner: 'Owners', editor: 'Editors', commenter: 'Commenters', viewer: 'Viewers' }

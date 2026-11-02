@@ -2,6 +2,8 @@ import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-stat
 import type {
   GitHubPullConversationResult,
   GitHubPullDetailResult,
+  GitHubRepoMergeMethodsResult,
+  PullMergeMethod,
   PullReviewEvent,
   PullWriteResult
 } from './github-pull-detail'
@@ -307,6 +309,12 @@ export interface GitHubIssuesApi {
   reviewPull(request: {
     projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
   }): Promise<PullWriteResult>
+  /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */
+  mergePull(request: {
+    projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
+  }): Promise<PullWriteResult>
+  /** The merge methods the project's repository allows. Same refusals as `pullDetail`. */
+  repoMergeMethods(projectId: string, repository: string): Promise<GitHubRepoMergeMethodsResult>
   /** The one-time permission to move a session card because its linked PRs merged. The first ask
    *  across every window wins; the host remembers it. */
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>

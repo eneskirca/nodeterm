@@ -577,6 +577,9 @@ export const IPC = {
   // Pull node WRITES: a user click only. Owner-only for relay peers; no canvas-control verb calls them.
   githubIssuesPullComment: 'githubIssues:pull-comment',
   githubIssuesPullReview: 'githubIssues:pull-review',
+  githubIssuesPullMerge: 'githubIssues:pull-merge',
+  // The merge confirmation's allowed methods: a read, classified like the pull reads above.
+  githubIssuesRepoMergeMethods: 'githubIssues:repo-merge-methods',
   githubIssuesClaimPullAutoMove: 'githubIssues:claim-pull-auto-move',
   githubIssuesNotePullWaits: 'githubIssues:note-pull-waits',
   githubIssuesChanged: (projectId: string) => `githubIssues:changed:${projectId}`,

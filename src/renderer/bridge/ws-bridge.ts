@@ -560,6 +560,12 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullComment, request) as ReturnType<GitHubIssuesApi['commentOnPull']>,
     reviewPull: (request) =>
       client.request(IPC.githubIssuesPullReview, request) as ReturnType<GitHubIssuesApi['reviewPull']>,
+    mergePull: (request) =>
+      client.request(IPC.githubIssuesPullMerge, request) as ReturnType<GitHubIssuesApi['mergePull']>,
+    repoMergeMethods: (projectId, repository) =>
+      client.request(IPC.githubIssuesRepoMergeMethods, projectId, repository) as ReturnType<
+        GitHubIssuesApi['repoMergeMethods']
+      >,
     claimPullAutoMove: (request) =>
       client.request(IPC.githubIssuesClaimPullAutoMove, request) as Promise<boolean>,
     notePullWaits: (request) =>

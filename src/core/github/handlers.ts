@@ -11,6 +11,8 @@ import type { GitHubPullBoard, GitHubPullChecksResult } from '../../shared/githu
 import type {
   GitHubPullConversationResult,
   GitHubPullDetailResult,
+  GitHubRepoMergeMethodsResult,
+  PullMergeMethod,
   PullReviewEvent,
   PullWriteResult
 } from '../../shared/github-pull-detail'
@@ -42,6 +44,10 @@ export interface GitHubIssueHandlerService {
   reviewPull(request: {
     projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
   }): Promise<PullWriteResult>
+  mergePull(request: {
+    projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
+  }): Promise<PullWriteResult>
+  repoMergeMethods(request: { projectId: string; repository: string }): Promise<GitHubRepoMergeMethodsResult>
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>
   notePullWaits(request: { projectId: string; cardId: string; pulls: number[] }): Promise<number>
 }
@@ -74,6 +80,9 @@ export function registerGitHubIssueHandlers(
     service.pullConversation({ projectId, repository, pullNumber }))
   platform.handle(IPC.githubIssuesPullComment, (request) => service.commentOnPull(request))
   platform.handle(IPC.githubIssuesPullReview, (request) => service.reviewPull(request))
+  platform.handle(IPC.githubIssuesPullMerge, (request) => service.mergePull(request))
+  platform.handle(IPC.githubIssuesRepoMergeMethods, (projectId: string, repository: string) =>
+    service.repoMergeMethods({ projectId, repository }))
   platform.handle(IPC.githubIssuesClaimPullAutoMove,
     (request: { projectId: string; cardId: string; pulls: number[] }) => service.claimPullAutoMove(request))
   platform.handle(IPC.githubIssuesNotePullWaits,
