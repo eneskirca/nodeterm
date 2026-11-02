@@ -1061,9 +1061,10 @@ export class GitHubIssueService {
 
   /**
    * The base and head versions of one changed file: head at the latest `pullDetail` head, base at
-   * the merge base of that base and head (what GitHub's diff is against). A rename's base is read from its previous path; the missing side of an added or removed file is
-   * `empty` (no read). A binary file or one over 1 MB answers `unavailable`. The SHAs are part of the
-   * key, so a moved head reads again; the floor and stale rules are `pullRead`'s.
+   * the merge base of that base and head (what GitHub's diff is against). A rename's base is read
+   * from its previous path; the missing side of an added or removed file is `empty` (no read). A
+   * binary file or one over 1 MB answers `unavailable`. The SHAs are part of the key, so a moved
+   * head reads again; the floor and stale rules are `pullRead`'s.
    */
   async pullFileContents(
     request: { projectId: string; repository: string; pullNumber: number; path: string }
@@ -1253,7 +1254,8 @@ export class GitHubIssueService {
    * `read` answers null when this client cannot make the read at all.
    */
   private async pullRead<O extends PullOk>(
-    // `contents\0…` carries the file and SHAs, so a held entry is one file at one head.
+    // `contents\0…` carries the file and SHAs, so a held entry is one file at one head;
+    // `merge-base\0…` carries the base and head SHAs.
     kind: 'detail' | 'conversation' | 'files' | `contents\0${string}` | `merge-base\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
