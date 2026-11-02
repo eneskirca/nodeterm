@@ -4,6 +4,7 @@ import { displayCommand, type ProjectSecretsView } from '@shared/project-secrets
 import { isTopDialog, nextDialogId, popDialog, pushDialog } from './dialog-stack'
 import {
   SECRETS_EXAMPLE,
+  SECRETS_GUIDE_URL,
   SECRETS_UNAVAILABLE_TEXT,
   SECRET_STATE_LABEL,
   authorizeSummary,
@@ -99,6 +100,16 @@ export function ProjectSecretsDialog({
       .finally(() => setBusy(false))
   }
 
+  const guideLink = (text: string) => (
+    <button
+      type="button"
+      className="secrets-dialog__guide"
+      onClick={() => window.nodeTerminal.shell.openExternal(SECRETS_GUIDE_URL)}
+    >
+      {text}
+    </button>
+  )
+
   return createPortal(
     <div className="confirm-overlay" onClick={onClose}>
       <div className="confirm secrets-dialog" role="dialog" aria-label={`Secrets of ${projectName}`} onClick={(e) => e.stopPropagation()}>
@@ -115,6 +126,9 @@ export function ProjectSecretsDialog({
               here) or the command whose output is the value.
             </p>
             <pre className="secrets-dialog__example">{SECRETS_EXAMPLE}</pre>
+            <p className="secrets-dialog__hint">
+              Reopen this dialog after saving the file. {guideLink('Step-by-step guide')}
+            </p>
           </>
         ) : (
           <>
@@ -148,7 +162,8 @@ export function ProjectSecretsDialog({
             <p className="secrets-dialog__hint">
               Fetched and pasted values stay in nodeterm’s memory until you quit, close this project or clear
               them, and are never written to disk. Agent nodes of this project that start afterwards receive them as environment
-              variables; agents already running keep what they started with — restart them to pick the values up.
+              variables; agents already running keep what they started with — restart them to pick the values up.{' '}
+              {guideLink('How to declare, paste and fetch')}
             </p>
           </>
         )}

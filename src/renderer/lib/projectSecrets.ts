@@ -11,12 +11,17 @@ import type {
   ProjectSecretsUnsupported,
   ProjectSecretsView
 } from '@shared/project-secrets'
+import { REPO_URL } from './bugReport'
+
+/** The user guide (docs/project-secrets.md): how to declare, paste and fetch. Linked from the
+ *  Secrets dialog, so a person who has never read it can find it where they need it. */
+export const SECRETS_GUIDE_URL = `${REPO_URL}/blob/main/docs/project-secrets.md`
 
 export const SECRET_STATE_LABEL: Record<ProjectSecretState, string> = {
   'not-fetched': 'Not fetched',
   available: 'In memory',
   failed: 'Fetch failed',
-  'declaration-changed': 'Declaration changed — fetch again'
+  'declaration-changed': 'Declaration changed — paste or fetch again'
 }
 
 export const SECRETS_UNAVAILABLE_TEXT: Record<ProjectSecretsUnsupported, string> = {
