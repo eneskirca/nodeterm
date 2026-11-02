@@ -116,6 +116,8 @@ import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
 import { pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
+import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
+import { nodesJoined, usePullAgent } from '../state/pullAgent'
 import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
@@ -15417,6 +15419,51 @@ export function Canvas() {
               message: `${prPlan.kind === 'create' ? 'opened' : 'linked existing'} pull request node ${prId}` +
                 (prSkip ? ` (not context-linked: ${prSkip.why})` : ''),
               result: { id: prId, created: prPlan.kind === 'create' }
+            })
+            return
+          }
+          case 'pr-show':
+          case 'pr-propose': {
+            // The linked agent drives its pull node on the user's word (@shared/pull-agent-verbs).
+            // `pr-show` moves the node's view; `pr-propose` only stages one action that the user's
+            // Confirm in the node runs. Neither reaches GitHub from here.
+            const prArgs = verb === 'pr-show' ? parsePrShow(args) : parsePrPropose(args)
+            if (!prArgs.ok) {
+              reply({ ok: false, error: prArgs.error })
+              return
+            }
+            if (ctlProject?.remote) {
+              reply({ ok: false, error: `${verb}-relay-refused: a relay guest cannot drive nodes on this canvas` })
+              return
+            }
+            const prNode = ctlNodes().find((n) => n.id === prArgs.node)
+            const prRef = prNode?.type === 'pull' ? prNode.data.pull : undefined
+            if (!prNode || !prRef) {
+              reply({ ok: false, error: `${verb}: ${prArgs.node} is not a pull request node on this canvas` })
+              return
+            }
+            // Only the agent joined to that node (open-pr's rope or context link) may drive it.
+            if (!nodesJoined([...linkEdgesRef.current, ...controlEdgesRef.current], sourceNodeId, prNode.id)) {
+              reply({ ok: false, error: `${verb}-not-linked: you are not linked to pull node ${prNode.id}; run open-pr --pr ${prRef.pullNumber} first` })
+              return
+            }
+            if ('show' in prArgs) {
+              const { show } = prArgs
+              setNodes((ns) => ns.map((n) => n.id === prNode.id && n.data.pull
+                ? { ...n, data: { ...n.data, pull: { ...n.data.pull, tab: show.tab, ...(show.file ? { selectedFile: show.file } : {}) } } }
+                : n))
+              markDirty()
+              usePullAgent.getState().show(prNode.id, show.file && show.lines ? { file: show.file, ...show.lines } : null)
+            } else {
+              usePullAgent.getState().propose(prNode.id, { ...prArgs.proposal, from: sourceNodeId })
+            }
+            travelToNodeRef.current(prNode.id)
+            reply({
+              ok: true,
+              message: 'show' in prArgs
+                ? `showing ${prArgs.show.file ?? prArgs.show.tab} on pull node ${prNode.id}`
+                : `proposed ${prArgs.proposal.action} on pull node ${prNode.id}; nothing is sent until the user clicks Confirm on the node`,
+              result: { id: prNode.id }
             })
             return
           }

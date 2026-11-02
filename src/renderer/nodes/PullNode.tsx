@@ -10,6 +10,7 @@ import { useOwningProjectId } from '../session/owning-project'
 import { MaximizeButton } from './MaximizeButton'
 import { PullNodeView } from './PullNodeView'
 import { PULL_REFRESH_EVENT, pullWebUrl } from '@shared/pull-node'
+import { usePullAgent } from '../state/pullAgent'
 
 /**
  * A pull request on the canvas: Overview, Files and Conversation tabs. Node data holds only the reference
@@ -24,6 +25,8 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const projectId = owner ?? activeProjectId
   const [refreshTick, setRefreshTick] = useState(0)
   const pull = data.pull
+  const proposal = usePullAgent((s) => s.proposal[id])
+  const highlight = usePullAgent((s) => s.highlight[id])
   // Lazy-loaded: React Flow measured the Suspense fallback, which has no handle, so its edges had no
   // anchor until the node resized. Re-measure once the real node (and its handle) is mounted.
   const updateNodeInternals = useUpdateNodeInternals()
@@ -108,6 +111,9 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           onSelectFile={(selectedFile) => { if (pull) updateNodeData(id, { pull: { ...pull, selectedFile } }) }}
           onOpenExternal={(url) => void api.shell.openExternal(url)}
           onWritten={() => setRefreshTick((tick) => tick + 1)}
+          proposal={proposal}
+          onDismiss={() => usePullAgent.getState().dismiss(id)}
+          highlight={highlight}
         />
       </div>
     </div>

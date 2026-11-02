@@ -22,6 +22,7 @@ import type {
 } from '@shared/github-pull-detail'
 import type { PullLifecycle } from '@shared/github-pull-status'
 import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-node'
+import type { PullProposal } from '@shared/pull-agent-verbs'
 import { NoteMarkdown } from '../components/NoteMarkdown'
 import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
 import { mergeLabel } from '../components/kanban/PullStatusBadges'
@@ -154,7 +155,14 @@ type TabsProps = ViewProps & {
   onTab: (tab: PullNodeTab) => void
   /** The Files tab picked a file; the frame persists it as `selectedFile`. */
   onSelectFile: (path: string) => void
+  /** The linked agent's pending action (`pr-propose`). Only Confirm here sends it. */
+  proposal?: PullProposal
+  onDismiss?: () => void
+  /** Lines the linked agent pointed at (`pr-show --lines`), in one file of the Files tab. */
+  highlight?: PullHighlight
 }
+
+type PullHighlight = { file: string; start: number; end: number; seq: number }
 
 /**
  * The pull request node's body (nodes/PullNode.tsx is the canvas frame around it). Takes the bridge
@@ -176,7 +184,7 @@ export function PullNodeView({
 
 /** A tab mounts the first time it is shown and then stays mounted (hidden when not shown), so a
  *  switch back costs no read and a draft typed in a tab survives the switch. */
-function PullTabs({ onTab, onSelectFile, ...props }: TabsProps): React.JSX.Element {
+function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...props }: TabsProps): React.JSX.Element {
   const { pull, onOpenExternal } = props
   const shownTab = pull.tab
   const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
@@ -186,6 +194,10 @@ function PullTabs({ onTab, onSelectFile, ...props }: TabsProps): React.JSX.Eleme
   const [ownPull, setOwnPull] = useState(false)
   return (
     <>
+      {proposal && (
+        <PullProposalBar key={JSON.stringify(proposal)} {...props} proposal={proposal} seenHead={seenHead}
+          onDismiss={() => onDismiss?.()} />
+      )}
       <div className="pull-node__tabs" role="tablist">
         {TABS.map(([tab, label]) => (
           <button key={tab} role="tab" aria-selected={tab === shownTab} className="pull-node__tab"
@@ -200,7 +212,7 @@ function PullTabs({ onTab, onSelectFile, ...props }: TabsProps): React.JSX.Eleme
         <div hidden={shownTab !== 'overview'}><PullOverview {...props} onHead={setSeenHead} onOwnPull={setOwnPull} /></div>
       )}
       {opened.includes('files') && (
-        <div hidden={shownTab !== 'files'}><PullFiles {...props} onSelectFile={onSelectFile} /></div>
+        <div hidden={shownTab !== 'files'}><PullFiles {...props} onSelectFile={onSelectFile} highlight={highlight} /></div>
       )}
       {opened.includes('conversation') && (
         <div hidden={shownTab !== 'conversation'}><PullConversation {...props} seenHead={seenHead} ownPull={ownPull} /></div>
@@ -251,8 +263,8 @@ function PullOverview(props: ViewProps & { onHead: (sha: string) => void; onOwnP
 }
 
 /** The Files tab: the changed files, then the selected one as a side-by-side diff. */
-function PullFiles(props: ViewProps & { onSelectFile: (path: string) => void }): React.JSX.Element {
-  const { api, pull, onOpenExternal, onSelectFile } = props
+function PullFiles(props: ViewProps & { onSelectFile: (path: string) => void; highlight?: PullHighlight }): React.JSX.Element {
+  const { api, pull, onOpenExternal, onSelectFile, highlight } = props
   const result = usePullRead(api.pullFiles, props)
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   const filesUrl = `${pullWebUrl(pull.repository, pull.pullNumber)}/files`
@@ -286,7 +298,8 @@ function PullFiles(props: ViewProps & { onSelectFile: (path: string) => void }):
         </p>
       )}
       {selected
-        ? <PullFileDiff key={selected.path} {...props} file={selected} filesUrl={filesUrl} />
+        ? <PullFileDiff key={selected.path} {...props} file={selected} filesUrl={filesUrl}
+            highlight={highlight?.file === selected.path ? highlight : undefined} />
         : result.files.length > 0 && <p className="pull-node__empty">Select a file to see its diff.</p>}
     </div>
   )
@@ -294,8 +307,8 @@ function PullFiles(props: ViewProps & { onSelectFile: (path: string) => void }):
 
 const sideText = (side: PullFileSide): string => side.kind === 'text' ? side.text : ''
 
-function PullFileDiff(props: ViewProps & { file: PullFile; filesUrl: string }): React.JSX.Element {
-  const { api, pull, file, filesUrl, onOpenExternal } = props
+function PullFileDiff(props: ViewProps & { file: PullFile; filesUrl: string; highlight?: PullHighlight }): React.JSX.Element {
+  const { api, pull, file, filesUrl, onOpenExternal, highlight } = props
   const path = file.path
   const read = useCallback(
     (projectId: string, repository: string, pullNumber: number) => api.pullFileContents(projectId, repository, pullNumber, path),
@@ -315,8 +328,89 @@ function PullFileDiff(props: ViewProps & { file: PullFile; filesUrl: string }): 
   return (
     <>
       {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
-      <TextDiff className="pull-files__diff" path={path} original={sideText(contents.base)} modified={sideText(contents.head)} />
+      <TextDiff className="pull-files__diff" path={path} original={sideText(contents.base)} modified={sideText(contents.head)}
+        highlight={highlight} />
     </>
+  )
+}
+
+const PROPOSAL_TEXT: Record<PullProposal['action'], string> = {
+  approve: 'Approve', 'request-changes': 'Request changes on', comment: 'Comment on', merge: 'Merge'
+}
+
+/**
+ * The linked agent's proposed action (`pr-propose`), shown above the tabs. It names exactly what will
+ * be sent; nothing is sent until Confirm, which runs the same write as the node's own buttons. A
+ * review and a merge are tied to the head the Overview showed, as there.
+ */
+function PullProposalBar(props: ViewProps & {
+  proposal: PullProposal; seenHead: string | undefined; onDismiss: () => void
+}): React.JSX.Element {
+  const { api, projectId, pull, proposal, seenHead, onDismiss, onWritten } = props
+  const [busy, setBusy] = useState(false)
+  const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
+  const [allowed, setAllowed] = useState<PullMergeMethod | null | 'loading'>(
+    proposal.action === 'merge' && !proposal.method ? 'loading' : null)
+  const needsMethod = proposal.action === 'merge' && !proposal.method
+  useEffect(() => {
+    if (!needsMethod) return
+    let live = true
+    void api.repoMergeMethods(projectId, pull.repository)
+      .catch((): GitHubRepoMergeMethodsResult => ({ status: 'failed', reason: 'unreachable' }))
+      .then((result) => { if (live) setAllowed(result.status === 'ok' ? result.methods[0] ?? null : null) })
+    return () => { live = false }
+  }, [needsMethod, api, projectId, pull.repository])
+  const method = proposal.action === 'merge' ? proposal.method ?? (allowed === 'loading' ? null : allowed) : null
+  const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
+
+  const confirm = async () => {
+    if (busy || !seenHead) return
+    let write: Promise<PullWriteResult>
+    if (proposal.action === 'merge') {
+      if (!method) return
+      write = api.mergePull({ ...at, method, headSha: seenHead })
+    } else if (proposal.action === 'comment') {
+      write = api.commentOnPull({ ...at, body: proposal.message })
+    } else {
+      write = api.reviewPull({
+        ...at, event: proposal.action === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES', body: proposal.message, headSha: seenHead
+      })
+    }
+    setBusy(true)
+    setRefusal(null)
+    const outcome = await write.catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
+    setBusy(false)
+    if (!outcome.ok) {
+      setRefusal(outcome.reason)
+      if (outcome.reason === 'head-moved') onWritten()
+      return
+    }
+    onDismiss()
+    onWritten()
+  }
+
+  const blocked = !seenHead
+    ? 'Open the Overview tab first: the action is tied to the commit it shows.'
+    : proposal.action === 'merge' && allowed !== 'loading' && !method
+      ? 'This repository allows no merge method for your GitHub token. Merge on GitHub instead.'
+      : null
+  return (
+    <div className="pull-proposal" role="region" aria-label="Agent proposal">
+      <p className="pull-proposal__what">
+        Your agent proposes: <strong>{PROPOSAL_TEXT[proposal.action]} #{pull.pullNumber}</strong>
+        {proposal.action === 'merge' && method && <> ({METHOD_TEXT[method]})</>}
+      </p>
+      {proposal.action !== 'merge' && proposal.message.trim() && (
+        <blockquote className="pull-proposal__message">{proposal.message}</blockquote>
+      )}
+      {blocked && <p className="pull-node__empty">{blocked}</p>}
+      {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
+      <div className="pull-compose__actions">
+        <button className="pull-compose__button pull-merge__confirm" disabled={busy || !!blocked || allowed === 'loading'}
+          onClick={() => void confirm()}>Confirm</button>
+        <button className="pull-compose__button" disabled={busy} onClick={onDismiss}>Dismiss</button>
+      </div>
+    </div>
   )
 }
 

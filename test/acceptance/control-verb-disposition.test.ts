@@ -116,5 +116,8 @@ const REFUSERS = new Set([
   'open-worktree',
   'close-worktree',
   // Needs a mounted <webview> guest to drive.
-  'browser'
+  'browser',
+  // The highlight and the Confirm bar live on a mounted pull node the user is looking at.
+  'pr-show',
+  'pr-propose'
 ])

@@ -7,12 +7,16 @@ import type {
 } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
 import type { PullNodeTab } from '@shared/pull-node'
+import type { PullProposal } from '@shared/pull-agent-verbs'
 import { PullNodeView, type PullNodeApi } from './PullNodeView'
 
 // Monaco does not run in jsdom: the diff shows its two texts and its path instead.
 vi.mock('../editor/TextDiff', () => ({
-  TextDiff: ({ path, original, modified }: { path: string; original: string; modified: string }) => (
-    <div className="text-diff" data-path={path} data-original={original} data-modified={modified} />
+  TextDiff: ({ path, original, modified, highlight }: {
+    path: string; original: string; modified: string; highlight?: { start: number; end: number }
+  }) => (
+    <div className="text-diff" data-path={path} data-original={original} data-modified={modified}
+      data-highlight={highlight ? `${highlight.start}-${highlight.end}` : undefined} />
   )
 }))
 
@@ -528,5 +532,85 @@ describe('PullNodeView reviewers', () => {
   it('offers no request on a closed or merged pull request', async () => {
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, lifecycle: 'merged', merge: undefined }, observedAt: 1 }))
     expect([...view.querySelectorAll('button')].some((el) => el.textContent === 'Request review…')).toBe(false)
+  })
+})
+
+describe('PullNodeView agent proposal', () => {
+  const bar = () => host.querySelector('.pull-proposal')
+  async function renderProposal(proposal: PullProposal, api = fakeApi({ status: 'ok', detail, observedAt: 1 })) {
+    const onWritten = vi.fn()
+    const onDismiss = vi.fn()
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()}
+        proposal={proposal} onDismiss={onDismiss} />)
+    })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    return { api, onWritten, onDismiss }
+  }
+
+  it('shows the exact action and sends nothing until Confirm', async () => {
+    const { api, onWritten, onDismiss } = await renderProposal({ action: 'approve', message: 'LGTM' })
+    expect(bar()?.textContent).toContain('Approve')
+    expect(bar()?.textContent).toContain('LGTM')
+    expect(api.reviewPull).not.toHaveBeenCalled()
+    await act(async () => { button(host, 'Confirm').click() })
+    expect(api.reviewPull).toHaveBeenCalledWith({
+      projectId: 'p', repository: 'o/r', pullNumber: 7, event: 'APPROVE', body: 'LGTM', headSha: 'c'.repeat(40)
+    })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+  })
+
+  it('Dismiss sends nothing', async () => {
+    const { api, onDismiss } = await renderProposal({ action: 'comment', message: 'Nice' })
+    await act(async () => { button(host, 'Dismiss').click() })
+    expect(api.commentOnPull).not.toHaveBeenCalled()
+    expect(onDismiss).toHaveBeenCalledTimes(1)
+  })
+
+  it('merges with the proposed method, or the first one the repository allows, at the head the node shows', async () => {
+    const squash = await renderProposal({ action: 'merge', method: 'rebase' })
+    expect(bar()?.textContent).toContain('Rebase and merge')
+    await act(async () => { button(host, 'Confirm').click() })
+    expect(squash.api.mergePull).toHaveBeenCalledWith({
+      projectId: 'p', repository: 'o/r', pullNumber: 7, method: 'rebase', headSha: 'c'.repeat(40)
+    })
+    act(() => root.unmount()); host.remove()
+    const first = await renderProposal({ action: 'merge' })
+    expect(bar()?.textContent).toContain('Squash and merge')
+    await act(async () => { button(host, 'Confirm').click() })
+    expect(first.api.mergePull).toHaveBeenCalledWith(expect.objectContaining({ method: 'squash' }))
+  })
+
+  it('names a refused write, keeps the proposal and does not reload', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.commentOnPull.mockResolvedValue({ ok: false, reason: 'forbidden' })
+    const { onWritten, onDismiss } = await renderProposal({ action: 'comment', message: 'x' }, api)
+    await act(async () => { button(host, 'Confirm').click() })
+    expect(bar()?.querySelector('[role="alert"]')?.textContent).toContain('may not write')
+    expect(onWritten).not.toHaveBeenCalled()
+    expect(onDismiss).not.toHaveBeenCalled()
+  })
+})
+
+describe('PullNodeView agent highlight', () => {
+  it('passes the highlighted lines to the diff of that file only', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.pullFiles.mockResolvedValue({ status: 'ok', files: [{ path: 'src/a.ts', status: 'modified', additions: 1, deletions: 0 }], truncated: false, observedAt: 1 })
+    api.pullFileContents.mockResolvedValue({ status: 'ok', contents: { kind: 'diff', base: { kind: 'text', text: 'a' }, head: { kind: 'text', text: 'b' } }, observedAt: 1 })
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'files', selectedFile: 'src/a.ts' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()}
+        highlight={{ file: 'src/a.ts', start: 12, end: 30, seq: 1 }} />)
+    })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    expect(host.querySelector('.text-diff')?.getAttribute('data-highlight')).toBe('12-30')
   })
 })

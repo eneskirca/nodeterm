@@ -27,11 +27,13 @@ export function createReadOnlyDiffEditor(
  * A read-only diff of two texts. The language comes from `path`'s extension, as in the Diff node.
  * A new text pair builds a new editor (one file per mount in the Files tab).
  */
-export function TextDiff({ path, original, modified, className }: {
+export function TextDiff({ path, original, modified, className, highlight }: {
   path: string
   original: string
   modified: string
   className?: string
+  /** Lines of the modified side to scroll to and mark (a pull node's `pr-show --lines`). */
+  highlight?: { start: number; end: number; seq?: number }
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   const editorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null)
@@ -58,6 +60,17 @@ export function TextDiff({ path, original, modified, className }: {
       editorRef.current = null
     }
   }, [path, original, modified, key])
+  const { start, end, seq } = highlight ?? {}
+  useEffect(() => {
+    const editor = editorRef.current?.getModifiedEditor()
+    if (!editor || start === undefined || end === undefined) return
+    const marks = editor.createDecorationsCollection([{
+      range: new monaco.Range(start, 1, end, 1),
+      options: { isWholeLine: true, className: 'text-diff__highlight', linesDecorationsClassName: 'text-diff__highlight-gutter' }
+    }])
+    editor.revealLinesInCenter(start, end)
+    return () => marks.clear()
+  }, [path, original, modified, start, end, seq])
   // `nokey`: keeps React Flow's key handling out of Monaco (#930), as in the Diff node.
   return <div className={`${className ?? ''} nodrag nowheel nokey`} ref={ref} />
 }

@@ -19003,6 +19003,28 @@ body.focus-mode .dock:hover {
   font: inherit;
 }
 .pull-reviewers .pull-compose__error { flex-basis: 100%; margin: 0; }
+/* A linked agent's proposed action (pr-propose): above the tabs until Confirm or Dismiss. */
+.pull-proposal {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent, rgba(var(--tint-rgb), 0.4));
+  border-radius: 8px;
+  background: rgba(var(--tint-rgb), 0.08);
+}
+.pull-proposal__what { margin: 0 0 6px; color: var(--text); }
+.pull-proposal__message {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow: auto;
+}
+.pull-proposal .pull-node__empty, .pull-proposal .pull-compose__error { margin: 0 0 6px; }
+/* pr-show --lines: the lines the agent pointed at, in the diff's modified side. */
+.text-diff__highlight { background: rgba(250, 204, 21, 0.18); }
+.text-diff__highlight-gutter { border-left: 3px solid rgb(250, 204, 21); }
 .pull-merge { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0; }
 .pull-merge__reason { margin: 0; color: var(--muted); line-height: 1.5; }
 /* Absolute against the node (React Flow's node box), so it covers the whole node whatever the body's scroll. */

@@ -277,7 +277,11 @@ const OFF_SCREEN_REFUSALS: Readonly<Record<string, string>> = {
   'close-worktree': 'the worktree store only answers for the project on screen',
   // The CDP driving in main needs a mounted <webview> guest. Placing a browser node
   // (`open-browser`) does not and is in OFF_CANVAS_VERBS; navigating one does.
-  browser: 'driving a browser node needs its webview mounted'
+  browser: 'driving a browser node needs its webview mounted',
+  // The user asked the agent to show or line up an action while LOOKING at the pull node; the
+  // highlight and the Confirm bar are transient and live only on a mounted node.
+  'pr-show': 'a pull node shows what you point at only while it is on screen',
+  'pr-propose': 'a proposed action waits for the user on a pull node that is on screen'
 }
 
 /**

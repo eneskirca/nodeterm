@@ -199,10 +199,14 @@ describe('where the verbs sit in the routing tables', () => {
     // `--after-success`: only a verified caller is provably the station the report is about.
     // `issues` / `prs` resolve the project to read from the CALLER's node, so a forgeable caller
     // could read any project's GitHub lane (bound sessions, dispatch state); new verbs.
+    // `pr-show` / `pr-propose` are allowed only on a pull node linked to the CALLER, and a propose
+    // puts an action in front of the user in that caller's name; new verbs.
     expect([...requiresVerified].sort()).toEqual([
       'issues',
       'notify',
       'open-project',
+      'pr-propose',
+      'pr-show',
       'prs',
       'reply',
       'report-issue',

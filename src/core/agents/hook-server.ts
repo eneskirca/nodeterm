@@ -312,7 +312,11 @@ export const requiresVerified: ReadonlySet<string> = new Set([
   // CALLER's node, so a caller nobody can verify could name any node and read another project's
   // lane — bound sessions and dispatch state included. NEW verbs: fail-closed strands nobody.
   'issues',
-  'prs'
+  'prs',
+  // The linked agent drives a pull node (@shared/pull-agent-verbs). The link check is the caller's
+  // node id, which only a verified caller provably is; a propose puts an action before the user.
+  'pr-show',
+  'pr-propose'
 ])
 
 /**
