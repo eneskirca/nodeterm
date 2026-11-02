@@ -104,7 +104,14 @@ export function glassTrapProbe(SCRIMS, midAnim) {
       /filter|opacity|mask|clip-path|mix-blend/.test(cs.willChange)
     )
   }
-  const hasBlur = (el) => blurs(getComputedStyle(el)) || blurs(pseudoOf(el, '::before'))
+  // Static frost (src/renderer/lib/glassFrost.ts): a glass terminal paints an opaque, blurred copy
+  // of the wallpaper on a `.term-node__frost` child under its content instead of carrying a
+  // backdrop-filter of its own. That layer is what shows behind the node's header and body.
+  const frosted = (el) => {
+    const f = el.querySelector(':scope > .term-node__frost')
+    return !!f && getComputedStyle(f).display !== 'none' && /blur\(/.test(getComputedStyle(f, '::before').filter || '')
+  }
+  const hasBlur = (el) => blurs(getComputedStyle(el)) || blurs(pseudoOf(el, '::before')) || frosted(el)
   const floats = (el) => /absolute|fixed|sticky/.test(getComputedStyle(el).position)
   const opaque = (e) => alphaOf(getComputedStyle(e).backgroundColor) >= 0.9
   const inside = (a, b) => a.left >= b.left - 1 && a.top >= b.top - 1 && a.right <= b.right + 1 && a.bottom <= b.bottom + 1

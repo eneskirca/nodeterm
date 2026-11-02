@@ -7740,9 +7740,17 @@ glass never sits over plain black; a wallpaper the user chose is never replaced.
   same 24.4px at the tick, `16 + 12t − 12·max(0, 1 − t/0.7)`, picked by eye so Clear reads through; saturation
   `--glass-sat` 180% at Clear → 150% from the Readable tick to Tinted, text surfaces a flat 150% —
   round 2 N9: 1.6–2.0 turned glass olive or pink over bright wallpapers). **Refraction** is ONE shared SVG filter
-  (`components/GlassRefraction.tsx`, `#nt-refract`: a 256² edge-lens displacement map generated once,
+  (`components/GlassRefraction.tsx`, `#nt-refract`: a 32² edge-lens displacement map generated once,
   `primitiveUnits="objectBoundingBox"` so one filter fits every element), referenced from
-  `--glass-blur` as `url(#nt-refract)` — no per-node filters. **It runs after the blur**
+  `--glass-blur` as `var(--glass-refract,)` — no per-node filters. **It runs only LEFT of the
+  Readable tick** (`glassRefractionOn`): App.tsx sets `--glass-refract: url(#nt-refract)` inline and
+  mounts the filter only there; the stylesheet never declares it (`styles.palette.test.ts`). From the
+  tick to Tinted it bent an already ~20px-blurred backdrop by ≤3px (0 at Tinted) and was the costliest
+  filter in the chain: MEASURED (M2, six glass terminals, one streaming) 74% → 42% GPU without it. Its
+  `feImage` source makes Chromium treat a refracting surface as damaged across its whole rect, so one
+  changing pixel re-ran the blur of the glass around it. The map was 256²: that bitmap cost the
+  renderer ~10% CPU per streaming terminal (paid per frame per refracting surface); 16–32² costs
+  nothing measurable and draws the same lens (32 vs 256 at Clear: mean 0.02/255, max 7). **It runs after the blur**
   (`blur() saturate() url()`; only the colour-matrix squeeze may follow it, since it moves no pixels) and composites over its SourceGraphic so its output is opaque: first in
   the chain (plus an in-filter soft blur with default edgeMode) it let Chromium show a 20–40px band of
   SHARP backdrop inside every glass rim at every slider value (visual QA C1). Measured on an empty
@@ -7761,7 +7769,42 @@ glass never sits over plain black; a wallpaper the user chose is never replaced.
   default ON, read through `keepGlassBlurWhileMoving` — only a literal `false` pauses): on, Canvas
   never adds the class, so the glass stays live through a pan at a GPU cost; chrome keeps both always. MEASURED on the live dev build (CDP computed style):
   Chromium keeps `url("#nt-refract") blur(…) saturate(…)` on the tab bar, dock, sessions sidebar,
-  minimap, zoom controls and terminal nodes.
+  minimap, zoom controls and terminal nodes (that was measured before refraction became Clear-side
+  only; at Readable and right of it the chain now ends at the colour filters).
+- **Glass terminal nodes frost with a STATIC copy of the wallpaper, not a live backdrop-filter**
+  (`lib/glassFrost.ts`, `canvas/GlassFrostSync.tsx`, the `.term-node__frost` rules). Chromium re-runs
+  a backdrop filter every time its surface is redrawn, and a terminal is redrawn for every line an
+  agent prints, so each streaming terminal re-blurred itself (and, through damage expansion, the
+  glass around it) at frame rate; idle cost nothing. MEASURED (M2, six glass terminals, Sonoma still,
+  CDP + `ioreg` GPU utilisation, 3 interleaved rounds, medians): six streaming 92% → 42% GPU, 100% →
+  50% CPU; one streaming 71% → 20% GPU, 32% → 20% CPU (with the refraction change above); no glass at
+  all is 27% / 9%. A node's `.term-node__frost` child paints the wallpaper behind it with the SAME
+  chain as an ordinary `filter` (`var(--glass-term-blur) var(--term-glass-backdrop,)`) and the tint
+  on its `::after`; that content does not change while the camera is still, so Chromium draws it once
+  and reuses it. Rules a refactor must keep:
+  - **Alignment is in flow units.** `frostBox` maps `.canvas-root`'s wallpaper (cover, centred; a
+    gradient fills the root box) into flow coordinates from React Flow's transform and the pane's
+    offset; each node subtracts its own `positionAbsoluteX/Y` (`--node-x/y`). Measured against the
+    live backdrop at zoom 1, 0.78 after a pan, and after a drag: node interiors mean ≤0.8/255, max 5.
+  - **The alignment vars are written onto each frost layer, never onto React Flow's root**: a custom
+    property change restyles every element under it (`lib/canvasZoomVar.ts`), and a pan is a change
+    per frame. Layers register through `useFrostLayer`.
+  - **The picture is ONE stylesheet rule** GlassFrostSync renders, a ≤1280px WebP copy as a data: URL
+    (the CSP allows data: images, not blob:), never a custom property (Chromium drops a var() value
+    past ~2 MB).
+  - **No stacking context on the node** (no `isolation`): the frost's `z-index: -1` must land in the
+    React Flow wrapper's context, under the node's border; inside the node it painted over the 1px
+    glass edge.
+  - It reaches `FROST_PAD` (80px) past the node so the blur samples the wallpaper beside it: the
+    live backdrop clamped at the node's edge instead, so the outermost 1–2px are a touch lighter.
+  - **Live backdrop stays** for a focused node (focus mode moves it out of the canvas), an aerial
+    video wallpaper (cannot be copied), Reduce Transparency, and until the copy is ready. Canvas cards
+    (files/subagent/loop/trigger/dino) still frost live.
+  - **What it cannot show**: anything behind the node but the wallpaper — the dot grid, edges, and
+    above all another node a glass node overlaps (visible at Clear, where the live glass was thin).
+  - Pan cost: the frost re-renders per camera frame like the live blur did (measured 44% vs 38% GPU
+    during a continuous pan, CPU equal); with Keep blur while moving off it drops to the squeeze.
+  `scripts/glass-trap-probe.mjs` counts a displayed frost layer as the blurred backdrop of its node.
 - **Needs-you on glass is an INNER light** (the user's pick, "variant B"): the outer red `::after`
   halo is hidden and a `::before` on the React Flow wrapper paints an inset rim light in
   `--state-attention` (orange) that breathes 0.35 → 1 over 2.4 s — `pointer-events: none`, above the
@@ -9624,6 +9667,14 @@ script (`fetch('http://localhost:9333/json')`, then a WebSocket to the page):
   46-node canvas: idle renderer+GPU ~120% → ~25% (#1050).
 - **Never promote the React Flow viewport** (`will-change: transform`) — it is a canvas-sized
   layer; on a real canvas it overran the tile budget (flicker) with no CPU gain (#1047).
+- **A `backdrop-filter` is re-run every time its surface is drawn, and nothing caches it** — not
+  for the surface's own content changes, not when moved to a sibling layer under the content (both
+  measured). Glass on anything that updates often (a terminal) costs a full blur per update, and
+  pixel-moving filters spread the damage to neighbouring glass. A plain `filter` on content that
+  does not change IS reused. Liquid Glass terminals therefore frost a static wallpaper copy (see
+  **Glass terminal nodes frost with a STATIC copy**): six streaming terminals 92% → 42% GPU. And an
+  SVG `feImage` in a filter chain marks its whole surface damaged: keep reference filters off
+  surfaces that redraw.
 - **An all-filtered node-change batch must not reach `onNodesChange`** (`handleNodesChange` returns
   early). `applyNodeChanges([])` returns a NEW array; a new `nodes` rebuilds the ephemeral
   subagent/loop cards without `measured`, React Flow re-observes them and its ResizeObserver

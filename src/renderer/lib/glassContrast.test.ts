@@ -25,6 +25,7 @@ import {
   GLASS_READABLE_TICK,
   GLASS_TINTED_ALPHA,
   glassRefraction,
+  glassRefractionOn,
   glassSliderAlpha,
   glassTint,
   resolveGlassSlider,
@@ -298,6 +299,15 @@ describe('Glass slider (Clear ↔ Tinted)', () => {
     expect(glassRefraction(0)).toBe(0.025)
     expect(glassRefraction(0)).toBeGreaterThan(glassRefraction(GLASS_READABLE_TICK))
     expect(glassRefraction(1)).toBe(0)
+  })
+
+  // The filter was invisible from the Readable tick to Tinted (a 3px bend under a ~20px blur, 0 at
+  // Tinted) and cost as much GPU as every terminal blur together, so it runs only left of the tick.
+  it('refraction runs only left of the Readable tick', () => {
+    expect(glassRefractionOn(0)).toBe(true)
+    expect(glassRefractionOn(GLASS_READABLE_TICK - 0.01)).toBe(true)
+    expect(glassRefractionOn(GLASS_READABLE_TICK)).toBe(false)
+    expect(glassRefractionOn(1)).toBe(false)
   })
 
   it('a terminal tint follows the slider', () => {

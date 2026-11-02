@@ -39,6 +39,8 @@ const GATE = /^:root\[data-nt-glass='on'\](?:\[[^\]]*\])*\s*/
 const IN_FLOW: Record<string, string> = {
   '.kanban-modal__termwrap--glass': 'the card-modal terminal fills the blurred .kanban-modal',
   '.term-node--glass .term-node__header': 'the header row of its own blurred glass node',
+  '.term-node__frost::after':
+    'the static-frost tint: it stacks on its ::before sibling, an opaque blurred copy of the wallpaper behind the node',
 }
 
 interface Rule {

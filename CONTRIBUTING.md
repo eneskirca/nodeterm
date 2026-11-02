@@ -1492,6 +1492,11 @@ bite most often:
 - `handleNodesChange` must not call `onNodesChange` with an empty batch (it re-renders the canvas
   every frame through React Flow's ResizeObserver).
 - Work done per terminal on a project switch must be coalesced and on-screen-first.
+- Don't put a `backdrop-filter` on a surface whose content changes often. Chromium re-runs it
+  every time the surface is drawn, and the damage spreads to the glass next to it. Liquid Glass
+  terminals frost a static wallpaper copy instead (`.term-node__frost`, `lib/glassFrost.ts`): six
+  streaming terminals went from 92% to 42% GPU. The SVG refraction filter (`url(#nt-refract)`)
+  runs only left of the Readable tick, for the same reason.
 - macOS memory pressure comes from the kernel's level (`onKernelPressure` in
   `core/memory-pressure.ts`), fired on escalations only, and at the same severity at most once per
   `KERNEL_LEVER_GAP_MS` (a level flapping normal/warn re-arms it every fall). Never re-fire it on a

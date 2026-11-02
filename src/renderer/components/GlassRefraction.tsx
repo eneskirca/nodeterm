@@ -17,10 +17,15 @@ import { glassRefraction } from '../lib/glassContrast'
  */
 let mapUrl: string | null = null
 
-/** The displacement map, generated once per renderer (R = x push, G = y push, 128 = none). */
+/** The displacement map, generated once per renderer (R = x push, G = y push, 128 = none).
+ *  32px, not 256: the filter scales it to each surface (`preserveAspectRatio="none"`) and the lens
+ *  is a smooth ramp, so 32 samples draw the same picture (MEASURED at Clear over the Sonoma still:
+ *  mean difference 0.02/255, max 7). The bitmap's size was what the renderer paid for every frame
+ *  a refracting surface was drawn: 256px cost a 6-terminal canvas 10% renderer CPU per streaming
+ *  terminal, a 16px map nothing measurable. */
 function displacementMap(): string {
   if (mapUrl) return mapUrl
-  const size = 256
+  const size = 32
   const edge = 0.12
   const canvas = document.createElement('canvas')
   canvas.width = canvas.height = size

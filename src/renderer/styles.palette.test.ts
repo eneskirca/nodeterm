@@ -265,7 +265,15 @@ describe('terminal glass blur', () => {
     expect(chain.indexOf('blur(')).toBe(0)
     // Only the colour-matrix squeeze may follow it: it moves no pixels, so it cannot bring back the
     // sharp rim band a reference filter ahead of blur() caused (visual QA C1).
-    expect(chain.trim().replace(/ var\(--glass-frost,\)$/, '').endsWith('var(--glass-refract)')).toBe(true)
+    expect(chain.trim().replace(/ var\(--glass-frost,\)$/, '').endsWith('var(--glass-refract,)')).toBe(true)
+  })
+
+  // Refraction is opt-in: App.tsx sets `--glass-refract` inline only left of the Readable tick
+  // (glassRefractionOn). A stylesheet default would switch the costliest filter back on at every
+  // slider position, Tinted included, where it bends nothing.
+  it('the stylesheet never turns refraction on by itself', () => {
+    expect(CSS).not.toMatch(/--glass-refract\s*:/)
+    expect(CSS).not.toMatch(/var\(--glass-refract\)/)
   })
 
   it('terminal glass flattens the backdrop luminance toward Tinted, and not at Clear', () => {

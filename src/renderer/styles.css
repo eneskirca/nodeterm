@@ -17255,7 +17255,12 @@ body.focus-mode .dock:hover {
      2, N9: 1.6–2.0 turned dark glass over a yellow wallpaper olive and light Clear glass pink;
      HIG liquid-glass › Tauri and Electron suggests about 1.2–1.5). */
   --glass-sat: calc(150% + 30% * max(0, 1 - var(--glass-t) / 0.7));
-  --glass-refract: url(#nt-refract);
+  /* `--glass-refract` is NOT declared here: App.tsx sets it to `url(#nt-refract)` inline only left
+     of the Readable tick (lib/glassContrast.ts `glassRefractionOn`), and every chain reads it with
+     an empty fallback. From the tick to Tinted the bend was 3px or less under a ~20px blur, while
+     the filter cost as much GPU as all terminal blurs together (M2, one streaming terminal among
+     six glass ones: 74% → 42%): its feImage source damages a refracting surface's whole rect, so
+     one changing pixel re-ran the blur of every glass surface around it. */
   /* `--glass-frost` (light only, below) is the backdrop squeeze of lib/glassContrast.ts: last in
      the text and control chains, a colour matrix that moves no pixels. Unset in dark. */
   /* Canvas cards and terminal nodes frost far less toward Clear: 4px at Clear (picked by eye, the
@@ -17263,18 +17268,18 @@ body.focus-mode .dock:hover {
      `--glass-frost` here: the cards' own squeeze (`--glass-node-squeeze`) already carries the frost
      floor for their slider position, and stacking both washed them out twice. */
   --glass-blur: blur(calc(16px + 12px * var(--glass-t) - 12px * max(0, 1 - var(--glass-t) / 0.7)))
-    saturate(var(--glass-sat)) var(--glass-refract);
+    saturate(var(--glass-sat)) var(--glass-refract,);
   /* Small controls left of the tick: the backdrop under them is DIMMED (dark theme) or brightened
      (light theme) as the fill thins, toward Apple's "dark dimming layer" for bright content
      (materials.md). 1 at the tick and right of it; `--glass-control-dim` at Clear. The fill alone
      (0.35) left the tab label at 1.98:1 over the Sunrise gradient. It moves backdrop pixels only. */
   --glass-control-dim: 0.7;
   --glass-control-blur: blur(calc(16px + 12px * var(--glass-t))) saturate(var(--glass-sat))
-    brightness(calc(1 - (1 - var(--glass-control-dim)) * max(0, 1 - var(--glass-t) / 0.7))) var(--glass-refract)
+    brightness(calc(1 - (1 - var(--glass-control-dim)) * max(0, 1 - var(--glass-t) / 0.7))) var(--glass-refract,)
     var(--glass-frost,);
   /* Text surfaces never frost less than at the Readable tick (0.7), whatever the slider says. */
   --glass-text-blur: blur(calc(16px + 12px * max(var(--glass-t), 0.7)))
-    saturate(150%) var(--glass-refract) var(--glass-frost,);
+    saturate(150%) var(--glass-refract,) var(--glass-frost,);
   /* Terminal nodes frost 15% less than the chrome (the user asked for less blur under the terminal
      windows): same curve, radius × 0.85, same saturation and refraction. They also FLATTEN the
      backdrop's luminance (HIG: regular glass "blurs and adjusts the luminosity"): a blurred photo
@@ -17284,7 +17289,7 @@ body.focus-mode .dock:hover {
      at Readable, empty glass over the lake photo's snow/water edge: brightness swing 2.2:1 → 1.28:1
      (0.51 still left 1.53:1). */
   --glass-term-blur: blur(calc((16px + 12px * var(--glass-t) - 12px * max(0, 1 - var(--glass-t) / 0.7)) * 0.85))
-    saturate(var(--glass-sat)) contrast(calc(1 - var(--glass-t))) var(--glass-refract);
+    saturate(var(--glass-sat)) contrast(calc(1 - var(--glass-t))) var(--glass-refract,);
 }
 
 /* Outermost chrome: fill + blur, in two groups (Phase 4 slider scope, lib/glassContrast.ts
@@ -17963,6 +17968,63 @@ body.focus-mode .dock:hover {
   border-color: var(--glass-edge);
   border-top-width: 1px;
   border-top-color: var(--glass-edge) !important;
+}
+/* Static frost (performance — lib/glassFrost.ts, canvas/GlassFrostSync.tsx). While
+   `data-nt-frost` is on, a terminal node does NOT frost with a live backdrop-filter: Chromium re-ran
+   that filter every time the node was redrawn, i.e. for every line a streaming agent printed, and
+   the damage spread to the glass around it (MEASURED, M2, six glass terminals streaming: 75% →
+   43% GPU). Instead `.term-node__frost` paints a COPY of the wallpaper behind the node, aligned to
+   the real one by custom properties, with the same chain as an ordinary `filter`, and the tint over
+   it. Nothing in it changes while the camera is still, so Chromium draws it once and reuses it.
+   It frosts the wallpaper only (not the dot grid, edges or other nodes behind the node). Focus mode
+   moves the node out of the canvas, so a focused node keeps the live backdrop. The frost layer is
+   opaque (the wallpaper copy over the canvas colour), so nothing behind it can read sharp through
+   the tint. */
+.term-node__frost {
+  display: none;
+}
+:root[data-nt-glass='on'][data-nt-frost='on'] .term-node.term-node--glass:not(.term-node--focused) {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  /* NOT a stacking context of its own (no isolation): the frost's z-index -1 then lands in the
+     React Flow wrapper's stacking context, painted BEFORE this node's border, header and body —
+     the order the live backdrop and the tint had. Inside the node it painted over the 1px glass
+     edge. */
+}
+:root[data-nt-glass='on'][data-nt-frost='on'] .term-node--glass:not(.term-node--focused) > .term-node__frost {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+/* The wallpaper copy. It reaches FROST_PAD (80px) past the node so the blur at the rim samples the
+   wallpaper beside the node, not transparency; the layer's own overflow clips it back. The picture
+   itself is one rule GlassFrostSync renders (a data: URL can exceed what a custom property holds). */
+.term-node__frost::before {
+  content: '';
+  position: absolute;
+  inset: -80px;
+  background-color: var(--canvas-bg);
+  background-repeat: no-repeat;
+  background-size: calc(var(--frost-w) * 1px) calc(var(--frost-h) * 1px);
+  background-position: calc((var(--frost-x) - var(--node-x)) * 1px + 80px) calc((var(--frost-y) - var(--node-y)) * 1px + 80px);
+  filter: var(--glass-term-blur) var(--term-glass-backdrop,);
+}
+/* The node's tint, over the frost — what used to be the node's own background. */
+.term-node__frost::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--term-glass-bg);
+}
+/* Keep blur while moving OFF: the frost drops its blur through a camera move like the live
+   backdrop did, and keeps the squeeze that holds the text at 4.5:1 left of the Readable tick. */
+:root[data-nt-glass='on'] .canvas-moving .term-node__frost::before {
+  filter: var(--term-glass-backdrop, none);
 }
 :root[data-nt-glass='on'] .term-node__color {
   background: transparent !important;
