@@ -44,7 +44,7 @@ const msg = (id: string, type: string, content: unknown, extra: Rec = {}): Rec =
 })
 const jsonl = (...recs: unknown[]): string => recs.map((r) => (typeof r === 'string' ? r : JSON.stringify(r))).join('\n') + '\n'
 const texts = (ms: ChatMessage[]): string[] =>
-  ms.map((m) => `${m.role}:${m.parts.map((p) => (p.kind === 'tool' ? `[${p.name}|${p.arg}|${p.result ?? ''}]` : p.text)).join('+')}`)
+  ms.map((m) => `${m.role}:${m.parts.map((p) => (p.kind === 'tool' ? `[${p.name}|${p.arg}|${p.result ?? ''}]` : p.kind === 'image' ? '[image]' : p.text)).join('+')}`)
 
 describe('chatFromGemini — the fold', () => {
   it('renders a typed prompt and the model answer, stamped with their own timestamps', () => {

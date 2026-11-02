@@ -191,10 +191,17 @@ async function readChatPage(
   page: ChatTranscriptPage,
   deps: TranscriptIpcDeps
 ): Promise<ChatTranscriptResult> {
-  // Thinking summaries only when asked (the ⌘M panel asks; the phone does not), on BOTH legs.
-  const parse = page.thinking
-    ? (buf: Buffer, bufStart: number) => parseChatWindow(buf, bufStart, claudeChatRecordParser({ thinking: true }))
-    : parseChatWindow
+  // Thinking summaries and rich parts only when asked (the ⌘M panel asks; the phone does not), on
+  // BOTH legs. Neither flag set = the bare parser, so the phone's page is byte-for-byte unchanged.
+  const parse =
+    page.thinking || page.rich
+      ? (buf: Buffer, bufStart: number) =>
+          parseChatWindow(
+            buf,
+            bufStart,
+            claudeChatRecordParser({ thinking: page.thinking === true, rich: page.rich === true })
+          )
+      : parseChatWindow
   const readRemotePage = deps.readRemotePage
   if (readRemotePage) {
     const remote = await readRemotePage(q, page)

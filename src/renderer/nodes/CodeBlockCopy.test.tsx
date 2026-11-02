@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../session/session', () => ({ useSession: () => ({ api: {} }) }))
 
 import { MarkdownText } from './ChatPanel'
+import { setColorizerLoaderForTests } from './CodeHighlight'
 
 let host: HTMLDivElement
 let root: Root
@@ -21,6 +22,9 @@ const writeText = vi.fn()
 
 beforeEach(() => {
   writeText.mockClear()
+  // The sh/js fences below would load the real Monaco to color them; it never arrives here (the
+  // coloring has its own test, CodeHighlight.test.tsx), so these blocks stay plain.
+  setColorizerLoaderForTests(() => new Promise(() => {}))
   ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = { clipboard: { writeText } }
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -29,6 +33,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
+  setColorizerLoaderForTests(null)
 })
 
 const TWO_BLOCKS = 'Run `npm test`, then:\n\n```sh\nnpm run build\n```\n\nand\n\n```js\nif (a < b) {}\n```\n'

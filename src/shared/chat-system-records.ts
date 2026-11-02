@@ -8,10 +8,12 @@ import type { ChatMessage } from './types'
 export const BACKGROUND_TASK_TOOL = 'Background task'
 export const AGENT_MESSAGE_TOOL = 'Agent message'
 export const SYSTEM_TOOL = 'System'
-const SYSTEM_RECORD_TOOLS: ReadonlySet<string> = new Set([BACKGROUND_TASK_TOOL, AGENT_MESSAGE_TOOL, SYSTEM_TOOL])
+/** A context compaction (the `compact_boundary` system record, read under `ChatParseOptions.rich`). */
+export const COMPACTION_TOOL = 'Compaction'
+const SYSTEM_RECORD_TOOLS: ReadonlySet<string> = new Set([BACKGROUND_TASK_TOOL, AGENT_MESSAGE_TOOL, SYSTEM_TOOL, COMPACTION_TOOL])
 
 /** A message the reader made from a system-injected record: an assistant message holding exactly
- *  ONE tool part named Background task / Agent message / System. */
+ *  ONE tool part named Background task / Agent message / System / Compaction. */
 export function isSystemRecordMessage(m: ChatMessage): boolean {
   if (m.role !== 'assistant' || m.parts.length !== 1) return false
   const p = m.parts[0]

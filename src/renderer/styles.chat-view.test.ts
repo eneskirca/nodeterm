@@ -76,6 +76,42 @@ describe('⌘M thread: claude.ai look', () => {
     expect(ruleBody('.term-chat__actions')).toMatch(/opacity:\s*0;/)
     expect(CSS).toMatch(/\.term-chat__msg:hover \.term-chat__actions,\s*\n?\s*\.term-chat__actions:focus-within,\s*\n?\s*\.term-chat__actions--latest\s*{[^}]*opacity:\s*1;/)
   })
+
+  it('a folded message collapses to its action row', () => {
+    const folded = ruleBody('.term-chat__msg--folded')
+    expect(folded).toMatch(/padding:\s*0;/)
+    expect(folded).toMatch(/min-height:\s*0;/)
+  })
+
+  it('a day divider is a centered caption, and the clock time under a user bubble is small', () => {
+    expect(ruleBody('.term-chat__day')).toMatch(/text-align:\s*center;/)
+    expect(ruleBody('.term-chat__time--user')).toMatch(/font-size:\s*11px;/)
+  })
+
+  it('a thinking fold is a dimmed, clickable summary line with a drawn chevron, not the native marker', () => {
+    const summary = ruleBody('.term-chat__thinking > summary')
+    expect(summary).toMatch(/color:\s*var\(--muted\);/)
+    expect(summary).toMatch(/cursor:\s*pointer;/)
+    expect(summary).toMatch(/list-style:\s*none;/)
+    expect(ruleBody('.term-chat__thinking > summary::-webkit-details-marker')).toMatch(/display:\s*none;/)
+    expect(ruleBody('.term-chat__thinking > summary::before')).toMatch(/transform:\s*rotate\(-45deg\);/)
+    expect(ruleBody('.term-chat__thinking[open] > summary::before')).toMatch(/transform:\s*rotate\(45deg\);/)
+  })
+
+  it('an attached image is a bounded thumbnail; enlarged, it drops the height cap', () => {
+    expect(ruleBody('.term-chat__image')).toMatch(/max-height:\s*240px;/)
+    expect(ruleBody('.term-chat__image--full')).toMatch(/max-height:\s*none;/)
+  })
+
+  it('an Edit/Write diff keeps its whitespace, and added and removed lines are tinted differently', () => {
+    expect(ruleBody('.term-chat__diff')).toMatch(/white-space:\s*pre;/)
+    const bg = (selector: string): string => {
+      const m = ruleBody(selector).match(/background:\s*([^;]+);/)
+      expect(m, `no background in ${selector}`).toBeTruthy()
+      return m![1].trim()
+    }
+    expect(bg('.term-chat__diff-line--add')).not.toBe(bg('.term-chat__diff-line--del'))
+  })
 })
 
 describe('the shared .term-chat__input (plan "Revise…", question "Other") keeps a visible field', () => {
@@ -100,5 +136,21 @@ describe('the shared .term-chat__input (plan "Revise…", question "Other") keep
 
   it('the last paragraph of an assistant message has no trailing margin (specificity over the generic rule)', () => {
     expect(ruleBody('.term-chat__msg--assistant .term-chat__text > p:last-child')).toMatch(/margin-bottom:\s*0;/)
+  })
+})
+
+describe('⌘M code block syntax colors', () => {
+  it('a colored block keeps its whitespace: the code is split across token spans', () => {
+    expect(ruleBody('.term-chat__text pre code[data-highlighted]')).toMatch(/white-space:\s*pre;/)
+  })
+})
+
+describe('⌘M Focus view toggle and the todo-list card', () => {
+  it('the pressed Focus toggle is filled, so the bar says the view is filtered', () => {
+    expect(ruleBody(".term-chat__focus[aria-pressed='true']")).toMatch(/background:\s*[^;]+;/)
+  })
+
+  it('a todo list drops the bullets: its checkboxes are the markers', () => {
+    expect(ruleBody('.term-chat__todo ul')).toMatch(/list-style:\s*none;/)
   })
 })

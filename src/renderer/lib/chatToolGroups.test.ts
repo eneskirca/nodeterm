@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatPart } from '@shared/types'
-import { BACKGROUND_TASK_TOOL } from '@shared/chat-system-records'
+import { BACKGROUND_TASK_TOOL, COMPACTION_TOOL } from '@shared/chat-system-records'
 import { COMMAND_OUTPUT_TOOL } from '@shared/chat-command'
-import { groupToolCalls, partPosition, toolGroupSummary } from './chatToolGroups'
+import { groupToolCalls, memberKey, partPosition, toolGroupSummary } from './chatToolGroups'
 
 const tool = (name: string, extra: Partial<Extract<ChatPart, { kind: 'tool' }>> = {}): ChatPart => ({
   kind: 'tool',
@@ -86,6 +86,34 @@ describe('groupToolCalls', () => {
     expect(layout.groupAt.size).toBe(0)
   })
 
+  it('folds a superseded todo list like any call; the latest one (a card) stays a boundary', () => {
+    const todo = (body: string): ChatMessage => ({ role: 'assistant', parts: [tool('TodoWrite', { body })] })
+    const messages = [call('Bash'), todo('- [ ] old'), call('Bash'), todo('- [x] latest'), call('Bash')]
+
+    const layout = groupToolCalls(messages)
+
+    expect(runs(messages)).toEqual([['0:0', '1:0', '2:0']])
+    expect(layout.absorbed.has('1:0')).toBe(true)
+    expect(layout.absorbed.has('3:0')).toBe(false)
+    expect(layout.absorbed.has('4:0')).toBe(false)
+  })
+
+  it('a Compaction chip between tool calls splits the run and is never folded (it is a system record)', () => {
+    const compaction: ChatMessage = {
+      role: 'assistant',
+      parts: [tool(COMPACTION_TOOL, { arg: 'auto', result: '274430 → 16889 tokens' })]
+    }
+    const messages = [call('Bash'), call('Bash'), compaction, call('Bash'), call('Bash')]
+
+    const layout = groupToolCalls(messages)
+
+    expect(runs(messages)).toEqual([
+      ['0:0', '1:0'],
+      ['3:0', '4:0']
+    ])
+    expect(layout.absorbed.has('2:0')).toBe(false)
+  })
+
   it('keys a group by its first line offset, so it keeps its key while the run grows', () => {
     const before = groupToolCalls([user('go'), call('Bash', 100), call('Read', 200)])
     const after = groupToolCalls([user('go'), call('Bash', 100), call('Read', 200), call('Edit', 300)])
@@ -101,6 +129,64 @@ describe('groupToolCalls', () => {
     const layout = groupToolCalls([user('go'), call('Bash'), call('Read')])
 
     expect(layout.groupAt.get('1:0')?.key).toBe('i1:0')
+  })
+
+  it('foldTail:false leaves the run that reaches the end of the thread as chips', () => {
+    const messages = [user('go'), call('Bash'), call('Read'), say('mid'), call('Bash'), call('Edit')]
+    const layout = groupToolCalls(messages, { foldTail: false })
+    expect(runs(messages)).toEqual([['1:0', '2:0'], ['4:0', '5:0']]) // default folds both
+    expect([...layout.groupAt.keys()]).toEqual(['1:0']) // tail run left alone
+    expect(layout.absorbed.has('2:0')).toBe(true) // the earlier run still folds
+    expect(layout.absorbed.has('5:0')).toBe(false)
+  })
+
+  it('foldTail:false still folds every run when the thread ends in something else', () => {
+    const messages = [user('go'), call('Bash'), call('Read'), say('mid'), call('Bash'), call('Edit'), say('done')]
+
+    const layout = groupToolCalls(messages, { foldTail: false })
+
+    expect([...layout.groupAt.keys()]).toEqual(['1:0', '4:0'])
+    expect([...layout.absorbed]).toEqual(['2:0', '5:0'])
+  })
+
+  it('foldTail:false measures the tail before the queued prompts at the end of the thread', () => {
+    // A prompt sent into the CLI's queue mid-turn is drawn at the END of the thread until the
+    // transcript has it. It is not the turn's output: the live run before it is still the tail.
+    const queued = [user('next, please'), user('and this')]
+    const messages = [user('go'), call('Bash'), call('Read'), say('mid'), call('Bash'), call('Edit'), ...queued]
+    const isQueued = (m: ChatMessage): boolean => queued.includes(m)
+
+    const layout = groupToolCalls(messages, { foldTail: false, isQueued })
+
+    expect([...layout.groupAt.keys()]).toEqual(['1:0']) // the run before the queued bubbles stays chips
+    expect(layout.absorbed.has('5:0')).toBe(false)
+    // Without the predicate the user bubble ends the run, and each new call would land folded.
+    expect([...groupToolCalls(messages, { foldTail: false }).groupAt.keys()]).toEqual(['1:0', '4:0'])
+  })
+
+  it('a queued prompt does not keep an earlier run open once the thread has moved past it', () => {
+    // Only TRAILING queued bubbles are skipped: a run that a non-queued message ends folds as before.
+    const queued = user('queued')
+    const messages = [user('go'), call('Bash'), call('Read'), say('done'), queued]
+
+    const layout = groupToolCalls(messages, { foldTail: false, isQueued: (m) => m === queued })
+
+    expect([...layout.groupAt.keys()]).toEqual(['1:0'])
+    expect(layout.absorbed.has('2:0')).toBe(true)
+  })
+
+  it('a turn that is not live folds the run before the queued prompts too (foldTail default)', () => {
+    const queued = user('queued')
+    const messages = [user('go'), call('Bash'), call('Read'), queued]
+
+    const layout = groupToolCalls(messages, { isQueued: (m) => m === queued })
+
+    expect([...layout.groupAt.keys()]).toEqual(['1:0'])
+  })
+
+  it('memberKey uses the transcript line key, so a prepended page does not re-key a member', () => {
+    expect(memberKey([call('Bash', 120)], { message: 0, part: 0 })).toBe('k120:0')
+    expect(memberKey([call('Bash')], { message: 0, part: 0 })).toBe('i0:0')
   })
 })
 

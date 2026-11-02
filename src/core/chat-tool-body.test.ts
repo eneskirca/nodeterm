@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TOOL_BODY_CAP, TOOL_BODY_TRUNCATED, toolBody } from './chat-tool-body'
+import { TOOL_BODY_CAP, TOOL_BODY_TRUNCATED, capText, toolBody } from './chat-tool-body'
 
 // Input shapes measured on this server's transcripts (2026-09-26):
 //   ExitPlanMode    → {"plan": "<full markdown plan>"}
@@ -37,6 +37,25 @@ describe('toolBody — ExitPlanMode', () => {
   it('leaves a plan exactly at the cap untouched', () => {
     const plan = 'y'.repeat(TOOL_BODY_CAP)
     expect(toolBody('ExitPlanMode', { plan })).toBe(plan)
+  })
+})
+
+// A side of an Edit/Write diff is file content, not markdown: the cap keeps it as the file had it.
+describe('capText', () => {
+  it('leaves a text at the cap untouched', () => {
+    const s = 'z'.repeat(TOOL_BODY_CAP)
+    expect(capText(s)).toBe(s)
+  })
+
+  it('cuts an over-cap text and appends the marker — no fence a file never had', () => {
+    // A balanced markdown file whose cut lands inside a code block: `capBody` would close the fence.
+    const s = '# Doc\n```ts\n' + 'x'.repeat(TOOL_BODY_CAP) + '\n```\n'
+    expect(capText(s)).toBe(s.slice(0, TOOL_BODY_CAP) + TOOL_BODY_TRUNCATED)
+  })
+
+  it('never splits a surrogate pair at the cap', () => {
+    const s = 'a'.repeat(TOOL_BODY_CAP - 1) + '😀' + 'tail'
+    expect(capText(s)).toBe('a'.repeat(TOOL_BODY_CAP - 1) + TOOL_BODY_TRUNCATED)
   })
 })
 
@@ -134,5 +153,61 @@ describe('toolBody — hardening', () => {
     const plan = '```\ncode\n```\n' + 'y'.repeat(TOOL_BODY_CAP)
     const body = toolBody('ExitPlanMode', { plan })!
     expect(body.endsWith('y' + TOOL_BODY_TRUNCATED)).toBe(true)
+  })
+})
+
+// The TodoWrite input as the tool's schema states it: `{todos: [{content, status, activeForm?}]}`,
+// status one of pending / in_progress / completed. No TodoWrite record exists on this server to
+// measure (its CLIs, 2.1.209–2.1.316, write TaskCreate / TaskUpdate instead), so anything else
+// degrades to no body — the plain chip.
+describe('toolBody — TodoWrite (rich only)', () => {
+  const input = {
+    todos: [
+      { content: 'Read the parser', status: 'completed', activeForm: 'Reading the parser' },
+      { content: 'Write the card', status: 'in_progress', activeForm: 'Writing the card' },
+      { content: 'Ship it', status: 'pending', activeForm: 'Shipping it' }
+    ]
+  }
+
+  it('renders one checklist line per todo, the one in progress in bold', () => {
+    expect(toolBody('TodoWrite', input, { rich: true })).toBe(
+      '- [x] Read the parser\n- [ ] **Write the card** _(in progress)_\n- [ ] Ship it'
+    )
+  })
+
+  it('has no body without rich (the golden fixtures and the phone stay the chip)', () => {
+    expect(toolBody('TodoWrite', input)).toBeUndefined()
+    expect(toolBody('TodoWrite', input, {})).toBeUndefined()
+    expect(toolBody('TodoWrite', input, { rich: false })).toBeUndefined()
+  })
+
+  it('degrades to no body for missing or non-array todos, and skips malformed items', () => {
+    expect(toolBody('TodoWrite', {}, { rich: true })).toBeUndefined()
+    expect(toolBody('TodoWrite', { todos: 'x' }, { rich: true })).toBeUndefined()
+    expect(toolBody('TodoWrite', { todos: {} }, { rich: true })).toBeUndefined()
+    expect(toolBody('TodoWrite', { todos: [] }, { rich: true })).toBeUndefined()
+    expect(toolBody('TodoWrite', { todos: [null, 3, { status: 'pending' }, { content: '  ' }] }, { rich: true })).toBeUndefined()
+    expect(toolBody('TodoWrite', { todos: [null, { content: 'Only me', status: 'blocked' }] }, { rich: true })).toBe(
+      '- [ ] Only me'
+    )
+  })
+
+  it('keeps each todo on its own line and escapes emphasis inside it', () => {
+    const tricky = { todos: [{ content: 'fix *ptr\n- [x] injected', status: 'in_progress' }, { content: 'a_b', status: 'completed' }] }
+    expect(toolBody('TodoWrite', tricky, { rich: true })).toBe(
+      '- [ ] **fix \\*ptr - [x] injected** _(in progress)_\n- [x] a\\_b'
+    )
+  })
+
+  it('caps an oversized list', () => {
+    const big = { todos: Array.from({ length: 4000 }, (_, k) => ({ content: `task ${k} ${'x'.repeat(20)}`, status: 'pending' })) }
+    const body = toolBody('TodoWrite', big, { rich: true })!
+    expect(body.endsWith(TOOL_BODY_TRUNCATED)).toBe(true)
+    expect(body.length).toBe(TOOL_BODY_CAP + TOOL_BODY_TRUNCATED.length)
+  })
+
+  it('rich changes nothing for the other tools', () => {
+    expect(toolBody('ExitPlanMode', { plan: 'p' }, { rich: true })).toBe('p')
+    expect(toolBody('Bash', { command: 'ls' }, { rich: true })).toBeUndefined()
   })
 })

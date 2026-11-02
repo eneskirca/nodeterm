@@ -8,6 +8,7 @@
 import type { ChatMessage, ChatPart } from '@shared/types'
 import { isSystemRecordMessage } from '@shared/chat-system-records'
 import { isLocalCommandTool } from '@shared/chat-command'
+import { latestTodoIndex, staleTodo } from './chatFocus'
 
 /** Fewer calls than this stay as plain chips: a block holding one chip only adds a click. */
 export const TOOL_GROUP_MIN = 2
@@ -36,49 +37,82 @@ export interface ToolGroupLayout {
 export const partPosition = (message: number, part: number): string => `${message}:${part}`
 
 /**
+ * A React key for one member: the transcript line's byte offset when the message has one (paged
+ * reads), so a prepended older page does not re-key it; else its position (grok, the optimistic
+ * bubble). The group's own key is its first member's.
+ */
+export function memberKey(messages: readonly ChatMessage[], m: ToolGroupMember): string {
+  const key = messages[m.message]?.key
+  return key !== undefined ? `k${key}:${m.part}` : `i${m.message}:${m.part}`
+}
+
+export interface GroupToolCallsOptions {
+  /**
+   * `false` leaves the run that reaches the END of the thread as chips: while the agent is still
+   * working that run is its live turn, and folding it would close each new call as it lands.
+   * Default `true`.
+   */
+  foldTail?: boolean
+  /**
+   * The optimistic bubbles of prompts sent into the CLI's queue mid-turn (ChatPanel's "Queued"). They
+   * sit at the END of the thread until the transcript has them, so the run they follow is still the
+   * live tail: `foldTail` measures the end against the last message that is NOT queued. Absent = none.
+   */
+  isQueued?: (m: ChatMessage) => boolean
+}
+
+/**
  * A tool call the agent made, shown as a chip. Not one:
- * - a plan / question card (`body`): that IS the content, never folded away;
+ * - a plan / question / latest todo-list card (`body`): that IS the content, never folded away —
+ *   but a SUPERSEDED todo list (lib/chatFocus.ts) is drawn as its chip, so it folds like one;
  * - the user's own `/command`, `!` line or command output: the person did that, not the agent;
  * - a system record (a background task finishing, another agent's message): it is not the agent's
  *   work either, and the thread already treats it as a turn boundary.
  */
-function isFoldableTool(p: ChatPart): boolean {
-  return p.kind === 'tool' && p.body === undefined && !isLocalCommandTool(p.name)
+function isFoldableTool(p: ChatPart, message: number, latestTodo: number): boolean {
+  return (
+    p.kind === 'tool' &&
+    (p.body === undefined || staleTodo(p, message, latestTodo)) &&
+    !isLocalCommandTool(p.name)
+  )
 }
 
 /**
  * The runs of consecutive tool calls, across message boundaries: a transcript writes each call as
  * its own line, so the thread holds one message per call. A run ends at anything else in the thread
  * — text, a thinking summary, a card, a user message, a system record — exactly where the TUI starts
- * a new line. Runs shorter than `TOOL_GROUP_MIN` stay as chips.
+ * a new line. Runs shorter than `TOOL_GROUP_MIN` stay as chips, and so does the trailing run when
+ * `opts.foldTail` is `false` (trailing = before any queued prompts at the very end, `opts.isQueued`).
  */
-export function groupToolCalls(messages: readonly ChatMessage[]): ToolGroupLayout {
+export function groupToolCalls(messages: readonly ChatMessage[], opts: GroupToolCallsOptions = {}): ToolGroupLayout {
   const groupAt = new Map<string, ToolGroup>()
   const absorbed = new Set<string>()
+  const latestTodo = latestTodoIndex(messages)
+  // The thread's end for `foldTail`: queued prompts after the last real message are not part of it.
+  let end = messages.length
+  if (opts.isQueued) while (end > 0 && opts.isQueued(messages[end - 1])) end--
   let run: ToolGroupMember[] = []
   const flush = (): void => {
     if (run.length >= TOOL_GROUP_MIN) {
       const first = run[0]
-      const key = messages[first.message].key
-      groupAt.set(partPosition(first.message, first.part), {
-        key: key !== undefined ? `k${key}:${first.part}` : `i${first.message}:${first.part}`,
-        members: run
-      })
+      groupAt.set(partPosition(first.message, first.part), { key: memberKey(messages, first), members: run })
       for (const m of run.slice(1)) absorbed.add(partPosition(m.message, m.part))
     }
     run = []
   }
-  messages.forEach((m, i) => {
+  messages.slice(0, end).forEach((m, i) => {
     if (m.role !== 'assistant' || isSystemRecordMessage(m)) {
       flush()
       return
     }
     m.parts.forEach((p, j) => {
-      if (isFoldableTool(p)) run.push({ message: i, part: j })
+      if (isFoldableTool(p, i, latestTodo)) run.push({ message: i, part: j })
       else flush()
     })
   })
-  flush()
+  // Whatever run is still open here reaches the end of the thread (the queued prompts after `end`
+  // hold no tool call to fold — they are the user's).
+  if (opts.foldTail !== false) flush()
   return { groupAt, absorbed }
 }
 

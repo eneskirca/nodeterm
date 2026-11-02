@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/types'
-import { assistantTurnEnds, chatRelativeTime } from './chatThread'
+import { assistantTurnEnds, chatRelativeTime, dayDividers } from './chatThread'
 
 const NOW = Date.parse('2026-09-26T12:00:00Z')
 const MIN = 60_000
@@ -66,13 +66,13 @@ describe('assistantTurnEnds (one action row per assistant turn)', () => {
     expect(ends.get(0)).toEqual({ copyText: '', at: undefined })
   })
 
-  it('a system chip (Background task / Agent message / System) stands alone and splits the turns around it', () => {
+  it('a system chip (Background task / Agent message / System / Compaction) stands alone and splits the turns around it', () => {
     const chip = (name: string, at?: number): ChatMessage => ({
       role: 'assistant',
       parts: [{ kind: 'tool', name, arg: 'x', result: 'y' }],
       ...(at === undefined ? {} : { at })
     })
-    for (const name of ['Background task', 'Agent message', 'System']) {
+    for (const name of ['Background task', 'Agent message', 'System', 'Compaction']) {
       const msgs = [say('user', 'q'), say('assistant', 'first answer', 10), chip(name, 20), say('assistant', 'reply', 30)]
       const ends = assistantTurnEnds(msgs)
       expect([...ends.keys()]).toEqual([1, 3])
@@ -99,4 +99,30 @@ describe('assistantTurnEnds (one action row per assistant turn)', () => {
   it('a user message is never a turn end', () => {
     expect(assistantTurnEnds([say('user', 'q', 1)]).size).toBe(0)
   })
+})
+
+describe('dayDividers', () => {
+  // Local wall-clock values (new Date(y, m - 1, d, h)), so these hold in every timezone.
+  const at = (y: number, m: number, d: number, h = 12) => new Date(y, m - 1, d, h).getTime()
+  const u = (t?: number) => say('user', 'q', t)
+  const a = (t?: number) => say('assistant', 'a', t)
+
+  it('labels the first stamped message of each local day; Today / Yesterday by the viewer clock', () => {
+    const now = at(2026, 11, 2, 15)
+    const msgs = [u(at(2026, 11, 1)), a(at(2026, 11, 1, 13)), u(at(2026, 11, 2, 9)), a(undefined), a(at(2026, 11, 2, 10))]
+    expect([...dayDividers(msgs, now)]).toEqual([[0, 'Yesterday'], [2, 'Today']])
+  })
+
+  it('divides two messages a minute apart across local midnight', () => {
+    const now = at(2026, 11, 2, 15)
+    const msgs = [u(new Date(2026, 10, 1, 23, 59, 30).getTime()), a(new Date(2026, 10, 2, 0, 0, 30).getTime())]
+    expect([...dayDividers(msgs, now).keys()]).toEqual([0, 1])
+  })
+
+  it('adds the year only for another year', () => {
+    expect(dayDividers([u(at(2025, 3, 4))], at(2026, 11, 2)).get(0)).toMatch(/2025/)
+    expect(dayDividers([u(at(2026, 3, 4))], at(2026, 11, 2)).get(0)).not.toMatch(/2026/)
+  })
+
+  it('no stamps, no dividers', () => expect(dayDividers([u(undefined)], 0).size).toBe(0))
 })

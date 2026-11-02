@@ -76,5 +76,6 @@ export function chatAgentLabel(
 export function toolCardTitle(name: string): string {
   if (name === 'ExitPlanMode') return 'Plan'
   if (name === 'AskUserQuestion') return 'Question'
+  if (name === 'TodoWrite') return 'Todo list'
   return name
 }
