@@ -104,6 +104,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           projectId={projectId}
           pull={pull}
           refreshTick={refreshTick}
+          onTab={(tab) => { if (pull) updateNodeData(id, { pull: { ...pull, tab } }) }}
           onOpenExternal={(url) => void api.shell.openExternal(url)}
         />
       </div>

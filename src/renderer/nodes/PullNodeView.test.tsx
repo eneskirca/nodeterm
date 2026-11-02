@@ -2,8 +2,9 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GitHubPullDetail, GitHubPullDetailResult } from '@shared/github-pull-detail'
+import type { GitHubPullConversationResult, GitHubPullDetail, GitHubPullDetailResult } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
+import type { PullNodeTab } from '@shared/pull-node'
 import { PullNodeView, type PullNodeApi } from './PullNodeView'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -17,10 +18,12 @@ const detail: GitHubPullDetail = {
 
 function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult = {
   status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [{ name: 'test', state: 'passed' }]
-}): PullNodeApi & { pullDetail: ReturnType<typeof vi.fn>; pullChecks: ReturnType<typeof vi.fn> } {
+}, conversation: GitHubPullConversationResult = { status: 'ok', items: [], truncated: false, observedAt: 1 }):
+  PullNodeApi & { pullDetail: ReturnType<typeof vi.fn>; pullChecks: ReturnType<typeof vi.fn>; pullConversation: ReturnType<typeof vi.fn> } {
   return {
     pullDetail: vi.fn(async () => result),
-    pullChecks: vi.fn(async () => checks)
+    pullChecks: vi.fn(async () => checks),
+    pullConversation: vi.fn(async () => conversation)
   }
 }
 
@@ -28,13 +31,15 @@ let host: HTMLDivElement
 let root: ReturnType<typeof createRoot>
 afterEach(() => { act(() => root.unmount()); host.remove() })
 
-async function render(api: PullNodeApi, repository = 'o/r'): Promise<HTMLDivElement> {
+async function render(
+  api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'overview', onTab = vi.fn(), onOpenExternal = vi.fn()
+): Promise<HTMLDivElement> {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
   await act(async () => {
-    root.render(<PullNodeView api={api} projectId="p" pull={{ repository, pullNumber: 7, tab: 'overview' }}
-      refreshTick={0} onOpenExternal={vi.fn()} />)
+    root.render(<PullNodeView api={api} projectId="p" pull={{ repository, pullNumber: 7, tab }}
+      refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} />)
   })
   // The markdown renderer is a lazy chunk; let it land.
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
@@ -88,8 +93,67 @@ describe('PullNodeView overview', () => {
     await render(api)
     await act(async () => {
       root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
-        refreshTick={1} onOpenExternal={vi.fn()} />)
+        refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} />)
     })
     expect(api.pullDetail).toHaveBeenCalledTimes(2)
+  })
+})
+
+const author = { id: 2, login: 'octocat', avatarUrl: 'https://avatars.githubusercontent.com/u/2' }
+const at = (hour: number) => `2026-10-01T${hour}:00:00Z`
+const url = 'https://github.com/o/r/pull/7'
+
+describe('PullNodeView conversation', () => {
+  it('lists comments and reviews in the order read, each review with its verdict', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, {
+      status: 'ok', truncated: false, observedAt: 1, items: [
+        { kind: 'comment', id: 1, author, body: 'First **comment**', at: at(10), url },
+        { kind: 'review', id: 2, author, body: '', at: at(11), url, verdict: 'approved' },
+        { kind: 'review', id: 3, author: null, body: 'Fix the test', at: at(12), url, verdict: 'changes-requested' },
+        { kind: 'review', id: 4, author, body: 'Note', at: at(13), url, verdict: 'commented' }
+      ]
+    })
+    const view = await render(api, 'o/r', 'conversation')
+    expect(api.pullConversation).toHaveBeenCalledWith('p', 'o/r', 7)
+    expect(api.pullDetail).not.toHaveBeenCalled()
+    const items = [...view.querySelectorAll('.pull-convo__item')].map((item) => item.textContent)
+    expect(items).toHaveLength(4)
+    expect(items[0]).toContain('First comment')
+    expect(view.querySelector('.pull-convo__item strong')?.textContent).toBe('comment')
+    expect(items[1]).toContain('Approved')
+    expect(items[2]).toContain('Changes requested')
+    expect(items[2]).toContain('Fix the test')
+    expect(items[3]).toContain('Commented')
+  })
+
+  it('never runs script from a comment', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, {
+      status: 'ok', truncated: false, observedAt: 1,
+      items: [{ kind: 'comment', id: 1, author, body: '<img src=x onerror="alert(1)"><script>alert(2)</script>', at: at(10), url }]
+    })
+    const view = await render(api, 'o/r', 'conversation')
+    expect(view.querySelector('script')).toBeNull()
+    expect(view.querySelector('img')?.getAttribute('onerror')).toBeNull()
+  })
+
+  it('says when there is nothing yet, and names a refusal with its fix', async () => {
+    expect((await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'conversation')).textContent)
+      .toContain('No comments or reviews yet.')
+    act(() => root.unmount()); host.remove()
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined,
+      { status: 'refused', reason: 'not-approved' }), 'o/r', 'conversation')
+    expect(view.querySelector('[role="status"]')?.textContent?.toLowerCase()).toContain('approve')
+  })
+
+  it('switches tab through onTab and opens the PR on GitHub from every tab', async () => {
+    const onTab = vi.fn()
+    const onOpen = vi.fn()
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'overview', onTab, onOpen)
+    const tab = [...view.querySelectorAll('[role="tab"]')].find((el) => el.textContent === 'Conversation')!
+    await act(async () => { (tab as HTMLElement).click() })
+    expect(onTab).toHaveBeenCalledWith('conversation')
+    const link = [...view.querySelectorAll('button')].find((el) => el.textContent === 'Open on GitHub')!
+    await act(async () => { link.click() })
+    expect(onOpen).toHaveBeenCalledWith('https://github.com/o/r/pull/7')
   })
 })

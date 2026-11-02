@@ -1,13 +1,19 @@
 import { useEffect, useState } from 'react'
 import type { GitHubIssuesApi } from '@shared/github-issues'
-import type { GitHubPullDetailResult, PullReadFailure, PullRefusal } from '@shared/github-pull-detail'
+import type {
+  GitHubPullConversationResult,
+  GitHubPullDetailResult,
+  PullReadFailure,
+  PullRefusal,
+  PullReviewVerdict
+} from '@shared/github-pull-detail'
 import type { PullLifecycle } from '@shared/github-pull-status'
-import type { PullNodeRef } from '@shared/pull-node'
+import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-node'
 import { NoteMarkdown } from '../components/NoteMarkdown'
 import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
 import { mergeLabel } from '../components/kanban/PullStatusBadges'
 
-export type PullNodeApi = Pick<GitHubIssuesApi, 'pullDetail' | 'pullChecks'>
+export type PullNodeApi = Pick<GitHubIssuesApi, 'pullDetail' | 'pullChecks' | 'pullConversation'>
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
 const REFUSAL_TEXT: Record<PullRefusal, (repository: string) => string> = {
@@ -36,50 +42,96 @@ const LIFECYCLE_TEXT: Record<PullLifecycle, string> = {
   open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed'
 }
 
-/**
- * The pull request node's body (nodes/PullNode.tsx is the canvas frame around it). Takes the bridge
- * as a prop so a test can hand it a fake. Reads on mount and whenever `refreshTick` moves; the core
- * answers from memory inside its 30 s floor, so a fast Refresh costs no request.
- */
-export function PullNodeView({
-  api,
-  projectId,
-  pull,
-  refreshTick,
-  onOpenExternal
-}: {
+const VERDICT_TEXT: Record<PullReviewVerdict, string> = {
+  approved: 'Approved', 'changes-requested': 'Changes requested', commented: 'Commented', dismissed: 'Dismissed'
+}
+
+// ponytail: Files is ticket 03; until it lands a persisted 'files' tab shows Overview.
+const TABS: ReadonlyArray<[PullNodeTab, string]> = [['overview', 'Overview'], ['conversation', 'Conversation']]
+
+type ViewProps = {
   api: PullNodeApi
-  projectId: string | null
-  pull: PullNodeRef | undefined
+  projectId: string
+  pull: PullNodeRef
   refreshTick: number
   onOpenExternal: (url: string) => void
-}): React.JSX.Element {
-  const [result, setResult] = useState<GitHubPullDetailResult | 'loading'>('loading')
-  const repository = pull?.repository
-  const pullNumber = pull?.pullNumber
+}
+
+type Read<R> = R | 'loading'
+
+/** Reads on mount and whenever `refreshTick` moves; the core answers from memory inside its 30 s
+ *  floor, so a fast Refresh or a tab switch costs no request. */
+function usePullRead<R extends { status: string }>(
+  read: (projectId: string, repository: string, pullNumber: number) => Promise<R>,
+  { projectId, pull, refreshTick }: ViewProps
+): Read<R> {
+  const [result, setResult] = useState<Read<R>>('loading')
+  const { repository, pullNumber } = pull
   useEffect(() => {
-    if (!projectId || !repository || !pullNumber) return
     let live = true
-    api.pullDetail(projectId, repository, pullNumber)
+    read(projectId, repository, pullNumber)
       .then((value) => { if (live) setResult(value) })
-      .catch(() => { if (live) setResult({ status: 'failed', reason: 'unreachable' }) })
+      .catch(() => { if (live) setResult({ status: 'failed', reason: 'unreachable' } as unknown as R) })
     return () => { live = false }
-  }, [api, projectId, repository, pullNumber, refreshTick])
+  }, [read, projectId, repository, pullNumber, refreshTick])
+  return result
+}
 
-  const detail = result !== 'loading' && result.status === 'ok' ? result.detail : undefined
-  const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
-  const checks = usePullChecks(api, readsChecks ? projectId ?? undefined : undefined, pullNumber ?? 0, detail?.head.sha)
+/** The loading, refused and failed states every tab shows the same way. */
+function readState(
+  result: Read<Exclude<GitHubPullDetailResult | GitHubPullConversationResult, { status: 'ok' }>>,
+  repository: string
+): React.JSX.Element {
+  if (result === 'loading') return <p className="pull-node__state">Loading pull request…</p>
+  if (result.status === 'refused') {
+    return <p className="pull-node__state" role="status">{REFUSAL_TEXT[result.reason](repository)}</p>
+  }
+  return <p className="pull-node__state" role="status">{FAILURE_TEXT[result.reason]}</p>
+}
 
+/**
+ * The pull request node's body (nodes/PullNode.tsx is the canvas frame around it). Takes the bridge
+ * as a prop so a test can hand it a fake. Each tab reads its own data when it is shown.
+ */
+export function PullNodeView({
+  pull,
+  projectId,
+  onTab,
+  ...rest
+}: Omit<ViewProps, 'pull' | 'projectId'> & {
+  projectId: string | null
+  pull: PullNodeRef | undefined
+  onTab: (tab: PullNodeTab) => void
+}): React.JSX.Element {
   if (!pull || !projectId) {
     return <p className="pull-node__state" role="status">This node has no valid pull request reference.</p>
   }
-  if (result === 'loading') return <p className="pull-node__state">Loading pull request…</p>
-  if (result.status === 'refused') {
-    return <p className="pull-node__state" role="status">{REFUSAL_TEXT[result.reason](pull.repository)}</p>
-  }
-  if (result.status === 'failed') {
-    return <p className="pull-node__state" role="status">{FAILURE_TEXT[result.reason]}</p>
-  }
+  const props = { ...rest, pull, projectId }
+  return (
+    <>
+      <div className="pull-node__tabs" role="tablist">
+        {TABS.map(([tab, label]) => (
+          <button key={tab} role="tab" aria-selected={(pull.tab === 'conversation') === (tab === 'conversation')}
+            className="pull-node__tab" onClick={() => onTab(tab)}>{label}</button>
+        ))}
+        <span className="term-node__spacer" />
+        <button className="pull-node__web" onClick={() => rest.onOpenExternal(pullWebUrl(pull.repository, pull.pullNumber))}>
+          Open on GitHub
+        </button>
+      </div>
+      {pull.tab === 'conversation' ? <PullConversation {...props} /> : <PullOverview {...props} />}
+    </>
+  )
+}
+
+function PullOverview(props: ViewProps): React.JSX.Element {
+  const { api, projectId, pull, onOpenExternal } = props
+  const result = usePullRead(api.pullDetail, props)
+  const detail = result !== 'loading' && result.status === 'ok' ? result.detail : undefined
+  const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
+  const checks = usePullChecks(api, readsChecks ? projectId : undefined, pull.pullNumber, detail?.head.sha)
+
+  if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   const { detail: d } = result
   const merge = d.lifecycle === 'open' || d.lifecycle === 'draft' ? mergeLabel(d.merge) : null
   return (
@@ -103,6 +155,36 @@ export function PullNodeView({
         ? <NoteMarkdown text={d.body} className="sticky-node__md pull-node__md" />
         : <p className="pull-node__empty">No description provided.</p>}
       <PullChecks result={checks} expectedHead={d.head.sha} onOpen={onOpenExternal} />
+    </div>
+  )
+}
+
+/** The Conversation tab: comments and reviews, oldest first. Ticket 04's composer goes below the list. */
+function PullConversation(props: ViewProps): React.JSX.Element {
+  const result = usePullRead(props.api.pullConversation, props)
+  if (result === 'loading' || result.status !== 'ok') return readState(result, props.pull.repository)
+  return (
+    <div className="pull-node__conversation">
+      {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
+      {result.truncated && <p className="pull-node__empty">Showing the first items only. Open on GitHub for the rest.</p>}
+      {result.items.length === 0
+        ? <p className="pull-node__empty">No comments or reviews yet.</p>
+        : (
+          <ol className="pull-convo">
+            {result.items.map((item) => (
+              <li key={`${item.kind}-${item.id}`} className={`pull-convo__item pull-convo__item--${item.kind}`}>
+                <div className="pull-convo__head">
+                  <span className="pull-node__author">{item.author?.login ?? 'ghost'}</span>
+                  {item.kind === 'review' && (
+                    <span className={`pull-convo__verdict pull-convo__verdict--${item.verdict}`}>{VERDICT_TEXT[item.verdict]}</span>
+                  )}
+                  <time className="pull-convo__time" dateTime={item.at}>{new Date(item.at).toLocaleString()}</time>
+                </div>
+                {item.body.trim() && <NoteMarkdown text={item.body} className="sticky-node__md pull-node__md" />}
+              </li>
+            ))}
+          </ol>
+        )}
     </div>
   )
 }
