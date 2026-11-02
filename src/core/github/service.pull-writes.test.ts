@@ -52,6 +52,14 @@ class Client implements GitHubIssuesClientLike {
     this.writes.push(['update', repository, pullNumber, sha])
     if (this.fail) throw this.fail
   }
+  async enablePullAutoMerge(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void> {
+    this.writes.push(['auto-on', repository, pullNumber, merge])
+    if (this.fail) throw this.fail
+  }
+  async disablePullAutoMerge(repository: string, pullNumber: number): Promise<void> {
+    this.writes.push(['auto-off', repository, pullNumber])
+    if (this.fail) throw this.fail
+  }
   methods: PullMergeMethod[] = ['squash']
   methodReads: string[] = []
   async repoMergeMethods(repository: string): Promise<PullMergeMethod[]> {
@@ -320,6 +328,34 @@ describe('GitHubIssueService update branch', () => {
     expect(await service.updatePullBranch({ ...at, headSha: sha })).toEqual({ ok: false, reason: 'head-moved' })
     await service.pullDetail(at)
     expect(client.detailReads).toBe(2)
+  })
+})
+
+describe('GitHubIssueService auto-merge', () => {
+  it('turns auto-merge on with the method and the head the node showed, and off, each refreshing', async () => {
+    const { client, service, refresh } = harness()
+    expect(await service.enablePullAutoMerge({ ...at, method: 'squash', headSha: sha })).toEqual({ ok: true })
+    expect(await service.disablePullAutoMerge(at)).toEqual({ ok: true })
+    expect(client.writes).toEqual([['auto-on', 'o/r', 7, { method: 'squash', sha }], ['auto-off', 'o/r', 7]])
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a missing head, an unknown method or a bad number before anything is resolved', async () => {
+    const { client, service, contexts } = harness()
+    expect(await service.enablePullAutoMerge({ ...at, method: 'squash', headSha: '' })).toEqual({ ok: false, reason: 'validation' })
+    expect(await service.enablePullAutoMerge({ ...at, method: 'octopus' as PullMergeMethod, headSha: sha }))
+      .toEqual({ ok: false, reason: 'validation' })
+    expect(await service.disablePullAutoMerge({ ...at, pullNumber: 0 })).toEqual({ ok: false, reason: 'validation' })
+    expect(contexts()).toBe(0)
+    expect(client.writes).toEqual([])
+  })
+
+  it('refuses another repository with no request', async () => {
+    const { client, service } = harness()
+    expect(await service.enablePullAutoMerge({ ...at, repository: 'evil/other', method: 'merge', headSha: sha }))
+      .toEqual({ ok: false, reason: 'not-approved' })
+    expect(await service.disablePullAutoMerge({ ...at, repository: 'evil/other' })).toEqual({ ok: false, reason: 'not-approved' })
+    expect(client.writes).toEqual([])
   })
 })
 

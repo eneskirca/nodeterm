@@ -127,6 +127,9 @@ export interface GitHubIssuesClientLike {
   mergePull?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
   /** "Update branch": merge the base into the head, tied to the head `sha`. Optional, as above. */
   updatePullBranch?(repository: string, pullNumber: number, sha: string): Promise<void>
+  /** "Merge when ready": GitHub's auto-merge on (tied to the head `sha`) and off. Optional, as above. */
+  enablePullAutoMerge?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
+  disablePullAutoMerge?(repository: string, pullNumber: number): Promise<void>
   /** Submit one review on a PR (the node's Approve / Request changes). Optional, as above. */
   reviewPull?(
     repository: string, pullNumber: number,
@@ -1250,6 +1253,32 @@ export class GitHubIssueService {
         if (code === 'request-failed' && status === 422) throw Object.assign(new Error('head-moved'), { code, status: 409 })
         throw error
       }
+    })
+  }
+
+  /** "Merge when ready" from the node's confirmation (a user click only): GitHub's auto-merge with
+   *  `method`, tied to `headSha` (the head the Overview showed), so GitHub refuses it if the PR moved. */
+  async enablePullAutoMerge(request: {
+    projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
+  }): Promise<PullWriteResult> {
+    const { method, headSha } = request ?? {}
+    if (typeof headSha !== 'string' || !headSha || (method !== 'merge' && method !== 'squash' && method !== 'rebase')) {
+      return { ok: false, reason: 'validation' }
+    }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot arm auto-merge reads as network; the real client always can.
+      if (!client.enablePullAutoMerge) throw new Error('unsupported')
+      return client.enablePullAutoMerge(repository, pullNumber, { method, sha: headSha })
+    })
+  }
+
+  /** Cancel "Merge when ready" from the node (a user click only). */
+  async disablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult> {
+    if (!request) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.disablePullAutoMerge) throw new Error('unsupported')
+      return client.disablePullAutoMerge(repository, pullNumber)
     })
   }
 

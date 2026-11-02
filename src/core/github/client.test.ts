@@ -741,6 +741,57 @@ describe('GitHubIssuesClient update branch', () => {
   })
 })
 
+describe('GitHubIssuesClient auto-merge', () => {
+  const sha = 'c'.repeat(40)
+  const graphql = (answers: unknown[]) => {
+    const calls: Array<{ query: string; variables: Record<string, unknown> }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => {
+        expect(String(url)).toBe('https://api.github.com/graphql')
+        calls.push(JSON.parse(String(init?.body)))
+        return response(answers[calls.length - 1])
+      }
+    })
+    return { client, calls }
+  }
+  const pullId = { data: { repository: { pullRequest: { id: 'PR_node' } } } }
+
+  it('enables auto-merge on the PR named by repository and number, with the method and the head the user saw', async () => {
+    const { client, calls } = graphql([pullId, { data: { enablePullRequestAutoMerge: { clientMutationId: null } } }])
+    await client.enablePullAutoMerge('o/r', 7, { method: 'squash', sha })
+    expect(calls[0].variables).toEqual({ owner: 'o', name: 'r', number: 7 })
+    expect(calls[1].query).toContain('enablePullRequestAutoMerge')
+    expect(calls[1].variables).toEqual({ id: 'PR_node', method: 'SQUASH', sha })
+  })
+
+  it('disables auto-merge on the PR named by repository and number', async () => {
+    const { client, calls } = graphql([pullId, { data: { disablePullRequestAutoMerge: { clientMutationId: null } } }])
+    await client.disablePullAutoMerge('o/r', 7)
+    expect(calls[1].query).toContain('disablePullRequestAutoMerge')
+    expect(calls[1].variables).toEqual({ id: 'PR_node' })
+  })
+
+  it('refuses a bad method, commit or number before any request', async () => {
+    const { client, calls } = graphql([])
+    await expect(client.enablePullAutoMerge('o/r', 7, { method: 'octopus' as 'merge', sha })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.enablePullAutoMerge('o/r', 7, { method: 'merge', sha: 'main' })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.enablePullAutoMerge('o/r', 0, { method: 'merge', sha })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.disablePullAutoMerge('o/r', 0)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(calls).toEqual([])
+  })
+
+  it('a refusal GitHub answers in the body is a 403 for permission, else a 422; a missing PR is a 404', async () => {
+    const forbidden = graphql([pullId, { data: null, errors: [{ type: 'FORBIDDEN', message: 'x' }] }])
+    await expect(forbidden.client.enablePullAutoMerge('o/r', 7, { method: 'merge', sha })).rejects.toMatchObject({ code: 'request-failed', status: 403 })
+    const refused = graphql([pullId, { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is in clean status' }] }])
+    await expect(refused.client.enablePullAutoMerge('o/r', 7, { method: 'merge', sha })).rejects.toMatchObject({ code: 'request-failed', status: 422 })
+    const missing = graphql([{ data: { repository: { pullRequest: null } }, errors: [{ type: 'NOT_FOUND' }] }])
+    await expect(missing.client.disablePullAutoMerge('o/r', 7)).rejects.toMatchObject({ code: 'request-failed', status: 404 })
+    expect(missing.calls).toHaveLength(1)
+  })
+})
+
 describe('GitHubIssuesClient pull files', () => {
   it('reads one page of changed files with its next page, a rename with its previous path', async () => {
     const calls: string[] = []
@@ -850,6 +901,15 @@ describe('pull request reviewers', () => {
     })
     expect((await client.getPull('nodeterm/nodeterm', 7)).requestedReviewers)
       .toEqual([{ id: 5, login: 'ana', avatarUrl: 'https://avatars.githubusercontent.com/u/5?v=4' }])
+  })
+
+  it('reads the armed auto-merge and its method with the overview; none, or an unknown method, is absent', async () => {
+    const read = async (autoMerge: unknown) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(pull({ auto_merge: autoMerge }))
+    }).getPull('nodeterm/nodeterm', 7)
+    expect((await read({ merge_method: 'squash', enabled_by: user(5, 'ana') })).autoMerge).toEqual({ method: 'squash' })
+    expect((await read(null)).autoMerge).toBeUndefined()
+    expect((await read({ merge_method: 'octopus' })).autoMerge).toBeUndefined()
   })
 
   it('reads the repository collaborators (one page of 100)', async () => {

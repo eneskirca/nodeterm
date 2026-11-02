@@ -189,6 +189,9 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
   const requested = Array.isArray(item.requested_reviewers)
     ? item.requested_reviewers.slice(0, 100).flatMap((user) => issueUser(user) ?? [])
     : []
+  // ponytail: display only, as above; a method this build does not know claims nothing.
+  const autoMethod = object(item.auto_merge)?.merge_method
+  const autoMerge = MERGE_METHODS.find(([method]) => method === autoMethod)?.[0]
   const lifecycle: PullLifecycle = item.state === 'closed'
     ? item.merged ? 'merged' : 'closed'
     : item.draft ? 'draft' : 'open'
@@ -210,7 +213,8 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
     deletions: counts[1],
     changedFiles: counts[2],
     url: url.toString(),
-    ...(requested.length ? { requestedReviewers: requested } : {})
+    ...(requested.length ? { requestedReviewers: requested } : {}),
+    ...(autoMerge ? { autoMerge: { method: autoMerge } } : {})
   }
 }
 
@@ -746,6 +750,52 @@ export class GitHubIssuesClient {
     await this.request(`/repos/${repository}/pulls/${pullNumber}/update-branch`, {
       method: 'PUT', body: JSON.stringify({ expected_head_sha: sha })
     })
+  }
+
+  /** "Merge when ready": GitHub's auto-merge (GraphQL `enablePullRequestAutoMerge`) with `method`,
+   *  only if the head is still `sha` (`expectedHeadOid`), the commit the user saw. */
+  async enablePullAutoMerge(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void> {
+    if (!MERGE_METHODS.some(([method]) => method === merge?.method) ||
+        typeof merge.sha !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(merge.sha)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const id = await this.pullNodeId(repository, pullNumber)
+    await this.graphqlWrite(
+      'mutation($id:ID!,$method:PullRequestMergeMethod!,$sha:GitObjectID!){ enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method,expectedHeadOid:$sha}){ clientMutationId } }',
+      { id, method: merge.method.toUpperCase(), sha: merge.sha })
+  }
+
+  /** Cancel "Merge when ready" (GraphQL `disablePullRequestAutoMerge`). */
+  async disablePullAutoMerge(repository: string, pullNumber: number): Promise<void> {
+    const id = await this.pullNodeId(repository, pullNumber)
+    await this.graphqlWrite(
+      'mutation($id:ID!){ disablePullRequestAutoMerge(input:{pullRequestId:$id}){ clientMutationId } }', { id })
+  }
+
+  /** The PR's GraphQL id, looked up here from the repository and number (never taken from a caller). */
+  private async pullNodeId(repository: string, pullNumber: number): Promise<string> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const body = await this.graphqlWrite(
+      'query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ id } } }',
+      { owner, name, number: pullNumber })
+    const id = object(object(object(object(body)?.data)?.repository)?.pullRequest)?.id
+    if (!string(id, 256) || !id) throw new GitHubClientError('malformed-response')
+    return id
+  }
+
+  /** A GraphQL call whose refusal arrives as `errors` in a 200: a permission refusal reads as a 403,
+   *  a missing object as a 404 and anything else as a 422, so the write maps it like a REST one.
+   *  ponytail: GitHub's message (auto-merge not allowed, PR already clean) is not kept. */
+  private async graphqlWrite(query: string, variables: Record<string, string | number>): Promise<unknown> {
+    const body = await this.graphql(query, variables)
+    const errors = graphQLErrors(body)
+    if (errors.some((error) => error.type === 'FORBIDDEN' || error.type === 'INSUFFICIENT_SCOPES')) {
+      throw new GitHubClientError('request-failed', 403)
+    }
+    if (errors.some((error) => error.type === 'NOT_FOUND')) throw new GitHubClientError('request-failed', 404)
+    if (errors.length) throw new GitHubClientError('request-failed', 422)
+    return body
   }
 
   /** One page of a PR's changed files (`GET /pulls/{n}/files`), for the Files tab. */

@@ -21,6 +21,8 @@ export interface GitHubPullDetail {
   url: string
   /** Users asked to review and who have not reviewed yet. Absent = none. Teams are not listed. */
   requestedReviewers?: GitHubIssueUser[]
+  /** GitHub's auto-merge is on ("Merge when ready"), with this method. Absent = off. */
+  autoMerge?: { method: PullMergeMethod }
 }
 
 /** A GitHub login: letters, digits and single hyphens, at most 39 characters. */
