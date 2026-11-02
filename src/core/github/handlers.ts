@@ -11,6 +11,8 @@ import type { GitHubPullBoard, GitHubPullChecksResult } from '../../shared/githu
 import type {
   GitHubPullConversationResult,
   GitHubPullDetailResult,
+  GitHubPullFileContentsResult,
+  GitHubPullFilesResult,
   GitHubRepoMergeMethodsResult,
   PullMergeMethod,
   PullReviewEvent,
@@ -38,6 +40,10 @@ export interface GitHubIssueHandlerService {
   pullConversation(
     request: { projectId: string; repository: string; pullNumber: number }
   ): Promise<GitHubPullConversationResult>
+  pullFiles(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullFilesResult>
+  pullFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; path: string }
+  ): Promise<GitHubPullFileContentsResult>
   commentOnPull(
     request: { projectId: string; repository: string; pullNumber: number; body: string }
   ): Promise<PullWriteResult>
@@ -78,6 +84,11 @@ export function registerGitHubIssueHandlers(
     service.pullDetail({ projectId, repository, pullNumber }))
   platform.handle(IPC.githubIssuesPullConversation, (projectId: string, repository: string, pullNumber: number) =>
     service.pullConversation({ projectId, repository, pullNumber }))
+  platform.handle(IPC.githubIssuesPullFiles, (projectId: string, repository: string, pullNumber: number) =>
+    service.pullFiles({ projectId, repository, pullNumber }))
+  platform.handle(IPC.githubIssuesPullFileContents,
+    (projectId: string, repository: string, pullNumber: number, path: string) =>
+      service.pullFileContents({ projectId, repository, pullNumber, path }))
   platform.handle(IPC.githubIssuesPullComment, (request) => service.commentOnPull(request))
   platform.handle(IPC.githubIssuesPullReview, (request) => service.reviewPull(request))
   platform.handle(IPC.githubIssuesPullMerge, (request) => service.mergePull(request))

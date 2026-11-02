@@ -456,6 +456,8 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullChecks,
   IPC.githubIssuesPullDetail,
   IPC.githubIssuesPullConversation,
+  IPC.githubIssuesPullFiles,
+  IPC.githubIssuesPullFileContents,
   IPC.githubIssuesRepoMergeMethods,
   IPC.githubIssuesClaimPullAutoMove,
   IPC.githubIssuesNotePullWaits,

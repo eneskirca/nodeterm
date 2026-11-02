@@ -2,6 +2,8 @@ import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-stat
 import type {
   GitHubPullConversationResult,
   GitHubPullDetailResult,
+  GitHubPullFileContentsResult,
+  GitHubPullFilesResult,
   GitHubRepoMergeMethodsResult,
   PullMergeMethod,
   PullReviewEvent,
@@ -301,6 +303,12 @@ export interface GitHubIssuesApi {
   /** One PR's comments and reviews, oldest first, for the node's Conversation tab. Same refusals
    *  and refresh floor as `pullDetail`. */
   pullConversation(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullConversationResult>
+  /** One PR's changed files (at most 300) for the node's Files tab. Same refusals and floor as `pullDetail`. */
+  pullFiles(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullFilesResult>
+  /** Base and head of one changed file, at the SHAs of the latest `pullDetail`, for the Files tab's diff. */
+  pullFileContents(
+    projectId: string, repository: string, pullNumber: number, path: string
+  ): Promise<GitHubPullFileContentsResult>
   /** Post a comment on the PR. A user click only; needs the approved repository, not the mapping. */
   commentOnPull(
     request: { projectId: string; repository: string; pullNumber: number; body: string }
