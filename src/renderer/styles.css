@@ -18990,6 +18990,19 @@ body.focus-mode .dock:hover {
 }
 .pull-compose__button:hover:not(:disabled) { background: rgba(var(--tint-rgb), 0.14); }
 .pull-compose__button:disabled { opacity: 0.5; cursor: default; }
+/* Requested reviewers and "Request review…" (one wrapping row above Merge). */
+.pull-reviewers { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 10px 0; color: var(--muted); }
+.pull-reviewers .pull-node__empty, .pull-reviewers .pull-node__state { margin: 0; }
+.pull-reviewers__pick { display: inline-flex; align-items: center; gap: 6px; }
+.pull-reviewers__pick select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-sunken);
+  font: inherit;
+}
+.pull-reviewers .pull-compose__error { flex-basis: 100%; margin: 0; }
 .pull-merge { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 10px 0; }
 .pull-merge__reason { margin: 0; color: var(--muted); line-height: 1.5; }
 /* Absolute against the node (React Flow's node box), so it covers the whole node whatever the body's scroll. */

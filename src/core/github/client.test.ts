@@ -724,3 +724,47 @@ describe('GitHubIssuesClient.mergeBase', () => {
       .rejects.toMatchObject({ code: 'malformed-response' })
   })
 })
+
+describe('pull request reviewers', () => {
+  const user = (id: number, login: string) => ({ id, login, avatar_url: `https://avatars.githubusercontent.com/u/${id}?v=4` })
+
+  it('reads the requested reviewers with the overview, skipping a malformed one', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response(pull({ requested_reviewers: [user(5, 'ana'), { login: 'no-id' }] }))
+    })
+    expect((await client.getPull('nodeterm/nodeterm', 7)).requestedReviewers)
+      .toEqual([{ id: 5, login: 'ana', avatarUrl: 'https://avatars.githubusercontent.com/u/5?v=4' }])
+  })
+
+  it('reads the repository collaborators (one page of 100)', async () => {
+    const urls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => { urls.push(String(url)); return response([user(5, 'ana'), user(6, 'bo')]) }
+    })
+    expect((await client.listCollaborators('o/r')).map((u) => u.login)).toEqual(['ana', 'bo'])
+    expect(urls).toEqual(['https://api.github.com/repos/o/r/collaborators?per_page=100'])
+  })
+
+  it('requests one reviewer by login', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response(pull()) }
+    })
+    await client.requestPullReviewer('o/r', 7, 'ana')
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/7/requested_reviewers')
+    expect(calls[0].init.method).toBe('POST')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ reviewers: ['ana'] })
+  })
+
+  it('refuses a login GitHub could not have issued, before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({}) } })
+    await expect(client.requestPullReviewer('o/r', 7, '../x')).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.requestPullReviewer('o/r', 7, '')).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.requestPullReviewer('o/r', 0, 'ana')).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+})

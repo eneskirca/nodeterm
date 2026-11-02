@@ -45,6 +45,10 @@ describe('registerGitHubIssueHandlers', () => {
       repoMergeMethods: async (...args: unknown[]) => {
         calls.push(['methods', ...args]); return { status: 'ok' as const, methods: [] }
       },
+      repoCollaborators: async (...args: unknown[]) => {
+        calls.push(['collaborators', ...args]); return { status: 'ok' as const, users: [] }
+      },
+      requestPullReviewer: async (...args: unknown[]) => { calls.push(['reviewer', ...args]); return { ok: true as const } },
       claimPullAutoMove: async (...args: unknown[]) => { calls.push(['claim', ...args]); return true },
       notePullWaits: async (...args: unknown[]) => { calls.push(['wait', ...args]); return 1 }
     }
@@ -65,6 +69,8 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullReview]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' })
     await platform.handlers[IPC.githubIssuesPullMerge]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'h' })
     await platform.handlers[IPC.githubIssuesRepoMergeMethods]('p1', 'o/r')
+    await platform.handlers[IPC.githubIssuesRepoCollaborators]('p1', 'o/r')
+    await platform.handlers[IPC.githubIssuesPullRequestReviewer]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, reviewer: 'ana' })
     await platform.handlers[IPC.githubIssuesClaimPullAutoMove]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     await platform.handlers[IPC.githubIssuesNotePullWaits]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     expect(calls).toEqual([
@@ -82,6 +88,8 @@ describe('registerGitHubIssueHandlers', () => {
       ['review', { projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' }],
       ['merge', { projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'h' }],
       ['methods', { projectId: 'p1', repository: 'o/r' }],
+      ['collaborators', { projectId: 'p1', repository: 'o/r' }],
+      ['reviewer', { projectId: 'p1', repository: 'o/r', pullNumber: 12, reviewer: 'ana' }],
       ['claim', { projectId: 'p1', cardId: 'n', pulls: [3] }],
       ['wait', { projectId: 'p1', cardId: 'n', pulls: [3] }]
     ])

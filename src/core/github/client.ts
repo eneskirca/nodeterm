@@ -25,6 +25,7 @@ import type {
   PullReviewEvent,
   PullReviewVerdict
 } from '../../shared/github-pull-detail'
+import { GITHUB_LOGIN } from '../../shared/github-pull-detail'
 import {
   GraphQLShapeError,
   PULL_CHECKS_QUERY,
@@ -177,6 +178,10 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
   if (!base || !head) return null
   const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
   if (item.user && !author) return null
+  // ponytail: display only, so a malformed entry is skipped rather than failing the overview.
+  const requested = Array.isArray(item.requested_reviewers)
+    ? item.requested_reviewers.slice(0, 100).flatMap((user) => issueUser(user) ?? [])
+    : []
   const lifecycle: PullLifecycle = item.state === 'closed'
     ? item.merged ? 'merged' : 'closed'
     : item.draft ? 'draft' : 'open'
@@ -197,7 +202,8 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
     additions: counts[0],
     deletions: counts[1],
     changedFiles: counts[2],
-    url: url.toString()
+    url: url.toString(),
+    ...(requested.length ? { requestedReviewers: requested } : {})
   }
 }
 
@@ -632,6 +638,24 @@ export class GitHubIssuesClient {
     const value = object(await this.json(await this.request(`/repos/${safeRepository(repository)}`, { method: 'GET' })))
     if (!value) throw new GitHubClientError('malformed-response')
     return MERGE_METHODS.filter(([, flag]) => value[flag] === true).map(([method]) => method)
+  }
+
+  /** The people with access to the repository (`GET /collaborators`), first page of 100. */
+  async listCollaborators(repository: string): Promise<GitHubIssueUser[]> {
+    const value = await this.json(await this.request(`/repos/${safeRepository(repository)}/collaborators?per_page=100`, { method: 'GET' }))
+    if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
+    return value.flatMap((user) => issueUser(user) ?? [])
+  }
+
+  /** Ask one user to review a PR (`POST /pulls/{n}/requested_reviewers`). */
+  async requestPullReviewer(repository: string, pullNumber: number, login: string): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !GITHUB_LOGIN.test(login)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    await this.request(`/repos/${repository}/pulls/${pullNumber}/requested_reviewers`, {
+      method: 'POST', body: JSON.stringify({ reviewers: [login] })
+    })
   }
 
   /** Merge a PR (`PUT /pulls/{n}/merge`) only if its head is still `sha`, the commit the user saw:

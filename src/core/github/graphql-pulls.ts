@@ -19,6 +19,7 @@ import {
   type GitHubPullCheck,
   type GitHubPullChecksResult,
   type GitHubRollupState,
+  type PullReviewDecision,
   type PullStatusFacts
 } from '../../shared/github-pull-status'
 
@@ -26,14 +27,39 @@ export const OPEN_PULLS_PER_READ = 50
 export const RECENT_PULLS_PER_READ = 30
 const MAX_CLOSING_ISSUES = 10
 const MAX_CHECKS = 100
+const MAX_REVIEW_REQUESTS = 10
+
+const REVIEW_DECISIONS: Record<string, PullReviewDecision> = {
+  APPROVED: 'approved', CHANGES_REQUESTED: 'changes-requested', REVIEW_REQUIRED: 'required'
+}
+
+/** The review queue facts, decoded LENIENTLY: they only label the picker, so a value this build does
+ *  not understand claims nothing instead of failing the read. Logins compare case-insensitively. */
+function reviewFacts(node: Record<string, unknown>, viewer: string | undefined): Pick<PullStatusFacts, 'author' | 'review' | 'reviewRequested'> {
+  const author = object(node.author)?.login
+  const review = typeof node.reviewDecision === 'string' ? REVIEW_DECISIONS[node.reviewDecision] : undefined
+  const requests = object(node.reviewRequests)?.nodes
+  const asked = viewer !== undefined && Array.isArray(requests) && requests.some((request) => {
+    const login = object(object(request)?.requestedReviewer)?.login
+    return typeof login === 'string' && login.toLowerCase() === viewer
+  })
+  return {
+    ...(typeof author === 'string' && author ? { author } : {}),
+    ...(review ? { review } : {}),
+    ...(asked ? { reviewRequested: true as const } : {})
+  }
+}
 
 export const PULL_STATUS_QUERY = `query($owner:String!,$name:String!){
   rateLimit{ cost remaining limit resetAt }
+  viewer{ login }
   repository(owner:$owner,name:$name){
     open: pullRequests(states:OPEN, first:${OPEN_PULLS_PER_READ}, orderBy:{field:UPDATED_AT,direction:DESC}){
       totalCount
       nodes{
         number headRefName headRefOid isCrossRepository isDraft mergeable mergeStateStatus
+        author{ login } reviewDecision
+        reviewRequests(first:${MAX_REVIEW_REQUESTS}){ nodes{ requestedReviewer{ __typename ... on User{ login } } } }
         closingIssuesReferences(first:${MAX_CLOSING_ISSUES}){ nodes{ number repository{ nameWithOwner } } }
         commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state } } } }
       }
@@ -179,6 +205,8 @@ export function parsePullStatusResponse(body: unknown, repository: string): Pull
   const openConnection = object(repositoryValue.open)
   if (!openConnection || !nonNegative(openConnection.totalCount)) throw new GraphQLShapeError()
   const repositoryFolded = repository.toLocaleLowerCase('en-US')
+  const viewerLogin = object(object(object(body)?.data)?.viewer)?.login
+  const viewer = typeof viewerLogin === 'string' ? viewerLogin.toLowerCase() : undefined
   const open = list(openConnection, OPEN_PULLS_PER_READ).map((entry): PullStatusFacts => {
     const node = object(entry)
     if (!node || !positive(node.number) || !refName(node.headRefName) || !oid(node.headRefOid) ||
@@ -238,7 +266,8 @@ export function parsePullStatusResponse(body: unknown, repository: string): Pull
       mergeStateStatus,
       rollup,
       rollupOid,
-      closes: [...new Set(closes)]
+      closes: [...new Set(closes)],
+      ...reviewFacts(node, viewer)
     }
   })
   const recent = list(repositoryValue.recent, RECENT_PULLS_PER_READ).map((entry) => {

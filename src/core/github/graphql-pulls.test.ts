@@ -232,3 +232,50 @@ describe('GitHubIssuesClient GraphQL', () => {
     await expect(client.pullRequestStatuses(REPO)).rejects.toMatchObject({ code: 'malformed-response' })
   })
 })
+
+describe('review queue facts', () => {
+  const withViewer = (nodes: unknown[], login = 'me') => {
+    const value = body(nodes)
+    return { ...value, data: { ...value.data, viewer: { login } } }
+  }
+  const requests = (...logins: string[]) => ({
+    nodes: logins.map((login) => ({ requestedReviewer: { __typename: 'User', login } }))
+  })
+
+  it('reads the author, the review decision and whether the viewer is asked to review', () => {
+    const read = parsePullStatusResponse(withViewer([
+      node(1, { author: { login: 'bot' }, reviewDecision: 'REVIEW_REQUIRED', reviewRequests: requests('someone', 'Me') }),
+      node(2, { author: { login: 'me' }, reviewDecision: 'APPROVED', reviewRequests: requests('someone') })
+    ]), REPO)
+    expect(read.open[0]).toMatchObject({ author: 'bot', review: 'required', reviewRequested: true })
+    expect(read.open[1]).toMatchObject({ author: 'me', review: 'approved' })
+    expect(read.open[1].reviewRequested).toBeUndefined()
+  })
+
+  it('claims nothing for a deleted author, a team request or an unknown decision', () => {
+    const read = parsePullStatusResponse(withViewer([node(1, {
+      author: null,
+      reviewDecision: 'SOMETHING_NEW',
+      reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'Team', slug: 'me' } }] }
+    })]), REPO)
+    expect(read.open[0].author).toBeUndefined()
+    expect(read.open[0].review).toBeUndefined()
+    expect(read.open[0].reviewRequested).toBeUndefined()
+  })
+
+  it('asks GitHub for the viewer, the author, the decision and the review requests', () => {
+    expect(PULL_STATUS_QUERY).toMatch(/viewer\{\s*login\s*\}/)
+    expect(PULL_STATUS_QUERY).toContain('author{ login }')
+    expect(PULL_STATUS_QUERY).toContain('reviewDecision')
+    expect(PULL_STATUS_QUERY).toContain('reviewRequests(first:')
+  })
+
+  it('carries the review facts onto the board status', () => {
+    const [facts] = parsePullStatusResponse(withViewer([
+      node(1, { author: { login: 'bot' }, reviewDecision: 'CHANGES_REQUESTED', reviewRequests: requests('me') })
+    ]), REPO).open
+    expect(pullStatusFrom(facts, { ci: true, merge: true })).toMatchObject({
+      author: 'bot', review: 'changes-requested', reviewRequested: true
+    })
+  })
+})

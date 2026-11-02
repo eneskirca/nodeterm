@@ -33,6 +33,7 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     pullFiles: ReturnType<typeof vi.fn>; pullFileContents: ReturnType<typeof vi.fn>
     commentOnPull: ReturnType<typeof vi.fn>; reviewPull: ReturnType<typeof vi.fn>
     mergePull: ReturnType<typeof vi.fn>; repoMergeMethods: ReturnType<typeof vi.fn>
+    repoCollaborators: ReturnType<typeof vi.fn>; requestPullReviewer: ReturnType<typeof vi.fn>
   } {
   return {
     pullDetail: vi.fn(async () => result),
@@ -43,7 +44,12 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     commentOnPull: vi.fn(async () => ({ ok: true as const })),
     reviewPull: vi.fn(async () => ({ ok: true as const })),
     mergePull: vi.fn(async () => ({ ok: true as const })),
-    repoMergeMethods: vi.fn(async () => ({ status: 'ok' as const, methods: ['squash' as const, 'rebase' as const] }))
+    repoMergeMethods: vi.fn(async () => ({ status: 'ok' as const, methods: ['squash' as const, 'rebase' as const] })),
+    repoCollaborators: vi.fn(async () => ({
+      status: 'ok' as const,
+      users: ['octocat', 'ana', 'bo'].map((login, id) => ({ id, login, avatarUrl: 'https://avatars.githubusercontent.com/u/1' }))
+    })),
+    requestPullReviewer: vi.fn(async () => ({ ok: true as const }))
   }
 }
 
@@ -479,5 +485,48 @@ describe('PullNodeView files', () => {
     api.pullFiles.mockResolvedValue({ ...files, truncated: true })
     const view = await render(api, 'o/r', 'files')
     expect(view.querySelector('.pull-files__truncated')?.textContent).toContain('first 300 files')
+  })
+})
+
+describe('PullNodeView reviewers', () => {
+  const ana = { id: 1, login: 'ana', avatarUrl: 'https://avatars.githubusercontent.com/u/1' }
+
+  it('lists the requested reviewers, or says there are none', async () => {
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, requestedReviewers: [ana] }, observedAt: 1 }))
+    expect(view.querySelector('.pull-reviewers')?.textContent).toContain('ana')
+    act(() => root.unmount()); host.remove()
+    const none = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }))
+    expect(none.querySelector('.pull-reviewers')?.textContent).toContain('No reviewers requested')
+  })
+
+  it('offers the collaborators who are neither the author nor already asked, and requests one on click', async () => {
+    const api = fakeApi({ status: 'ok', detail: { ...detail, requestedReviewers: [ana] }, observedAt: 1 })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    expect(api.repoCollaborators).not.toHaveBeenCalled()
+    await act(async () => { button(view, 'Request review…').click() })
+    expect(api.repoCollaborators).toHaveBeenCalledWith('p', 'o/r')
+    const select = view.querySelector('select[aria-label="Reviewer"]') as HTMLSelectElement
+    expect([...select.options].map((option) => option.value)).toEqual(['bo'])
+    expect(api.requestPullReviewer).not.toHaveBeenCalled()
+    await act(async () => { button(view, 'Request').click() })
+    expect(api.requestPullReviewer).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, reviewer: 'bo' })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('names a refused request and does not reload', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.requestPullReviewer.mockResolvedValue({ ok: false, reason: 'forbidden' })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    await act(async () => { button(view, 'Request review…').click() })
+    await act(async () => { button(view, 'Request').click() })
+    expect(view.querySelector('.pull-reviewers [role="alert"]')?.textContent).toContain('may not write')
+    expect(onWritten).not.toHaveBeenCalled()
+  })
+
+  it('offers no request on a closed or merged pull request', async () => {
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, lifecycle: 'merged', merge: undefined }, observedAt: 1 }))
+    expect([...view.querySelectorAll('button')].some((el) => el.textContent === 'Request review…')).toBe(false)
   })
 })

@@ -4,6 +4,7 @@ import type {
   GitHubPullDetailResult,
   GitHubPullFileContentsResult,
   GitHubPullFilesResult,
+  GitHubRepoCollaboratorsResult,
   GitHubRepoMergeMethodsResult,
   PullMergeMethod,
   PullReviewEvent,
@@ -323,6 +324,12 @@ export interface GitHubIssuesApi {
   }): Promise<PullWriteResult>
   /** The merge methods the project's repository allows. Same refusals as `pullDetail`. */
   repoMergeMethods(projectId: string, repository: string): Promise<GitHubRepoMergeMethodsResult>
+  /** The people a review can be requested from. Same refusals as `pullDetail`. */
+  repoCollaborators(projectId: string, repository: string): Promise<GitHubRepoCollaboratorsResult>
+  /** Ask one collaborator (by login) to review the PR. A user click only, never an agent verb. */
+  requestPullReviewer(
+    request: { projectId: string; repository: string; pullNumber: number; reviewer: string }
+  ): Promise<PullWriteResult>
   /** The one-time permission to move a session card because its linked PRs merged. The first ask
    *  across every window wins; the host remembers it. */
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>

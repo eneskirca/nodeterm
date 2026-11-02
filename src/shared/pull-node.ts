@@ -3,7 +3,7 @@
 // read from that hand-editable file, so every load re-validates it (`normalizePullRef`).
 
 import { parseRepository } from './github-issue-ref'
-import type { GitHubPullBoard } from './github-pull-status'
+import type { GitHubPullBoard, PullReviewDecision } from './github-pull-status'
 
 export type PullNodeTab = 'overview' | 'files' | 'conversation'
 
@@ -43,14 +43,27 @@ export function pullRefFromHtmlUrl(htmlUrl: unknown, expectedNumber: number): Pu
   return normalizePullRef({ repository: m[1], pullNumber: expectedNumber, tab: 'overview' })
 }
 
+const REVIEW_TEXT: Record<PullReviewDecision, string> = {
+  approved: 'Approved', 'changes-requested': 'Changes requested', required: 'Review required'
+}
+
 /** The add-menu picker's rows: the open and draft PRs the board's poll already holds (no new
  *  read), newest number first. The poll keeps only a few recent closed or merged PRs, so those are
  *  left out and the user types the number instead. */
+
 export function pullPickerChoices(board: GitHubPullBoard | undefined): { label: string; value: string }[] {
   return (board?.pulls ?? [])
     .filter((p) => p.lifecycle === 'open' || p.lifecycle === 'draft')
-    .sort((a, b) => b.number - a.number)
-    .map((p) => ({ label: `#${p.number} ${p.headRefName}${p.lifecycle === 'draft' ? ' (draft)' : ''}`, value: String(p.number) }))
+    // The PRs waiting for my review first, then newest number first.
+    .sort((a, b) => Number(!!b.reviewRequested) - Number(!!a.reviewRequested) || b.number - a.number)
+    .map((p) => ({
+      label: [
+        `#${p.number} ${p.headRefName}${p.lifecycle === 'draft' ? ' (draft)' : ''}`,
+        p.author,
+        p.reviewRequested ? 'Review requested' : p.review && REVIEW_TEXT[p.review]
+      ].filter(Boolean).join(' · '),
+      value: String(p.number)
+    }))
 }
 
 /** Where a PR lives on github.com, from the reference alone (no read needed). */

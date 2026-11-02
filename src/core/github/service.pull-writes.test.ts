@@ -47,6 +47,16 @@ class Client implements GitHubIssuesClientLike {
     if (this.fail) throw this.fail
     return this.methods
   }
+  async requestPullReviewer(repository: string, pullNumber: number, login: string): Promise<void> {
+    this.writes.push(['reviewer', repository, pullNumber, login])
+    if (this.fail) throw this.fail
+  }
+  collaboratorReads: string[] = []
+  async listCollaborators(repository: string) {
+    this.collaboratorReads.push(repository)
+    if (this.fail) throw this.fail
+    return [{ id: 5, login: 'ana', avatarUrl: 'https://avatars.githubusercontent.com/u/5' }]
+  }
   detailReads = 0
   async getPull(): Promise<GitHubPullDetail> { this.detailReads += 1; return {} as GitHubPullDetail }
   async listPullComments(): Promise<PullConversationPage> { this.reads += 1; return { items: [] } }
@@ -212,5 +222,33 @@ describe('GitHubIssueService merge', () => {
     client.fail = new GitHubClientError('request-failed', 502)
     expect(await service.repoMergeMethods({ projectId: 'p', repository: 'o/r' }))
       .toEqual({ status: 'failed', reason: 'unreachable' })
+  })
+})
+
+describe('GitHubIssueService request reviewer', () => {
+  it('requests a reviewer on the project\'s repository and refreshes', async () => {
+    const { client, service, refresh } = harness()
+    expect(await service.requestPullReviewer({ ...at, reviewer: 'ana' })).toEqual({ ok: true })
+    expect(client.writes).toEqual([['reviewer', 'o/r', 7, 'ana']])
+    expect(refresh).toHaveBeenCalledWith({ projectId: 'p' })
+  })
+
+  it('refuses a bad login before anything is resolved, and another repository with no request', async () => {
+    const { client, service, contexts } = harness()
+    expect(await service.requestPullReviewer({ ...at, reviewer: 'a/b' })).toEqual({ ok: false, reason: 'validation' })
+    expect(contexts()).toBe(0)
+    expect(await service.requestPullReviewer({ ...at, repository: 'evil/other', reviewer: 'ana' }))
+      .toEqual({ ok: false, reason: 'not-approved' })
+    expect(client.writes).toEqual([])
+  })
+
+  it('reads the collaborators of the project\'s repository once, refused like a pull read', async () => {
+    const { client, service } = harness()
+    const ok = await service.repoCollaborators({ projectId: 'p', repository: 'o/r' })
+    expect(ok).toMatchObject({ status: 'ok', users: [{ login: 'ana' }] })
+    await service.repoCollaborators({ projectId: 'p', repository: 'O/R' })
+    expect(await service.repoCollaborators({ projectId: 'p', repository: 'evil/other' }))
+      .toEqual({ status: 'refused', reason: 'repository-mismatch' })
+    expect(client.collaboratorReads).toEqual(['o/r'])
   })
 })

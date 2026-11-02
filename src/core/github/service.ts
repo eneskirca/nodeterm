@@ -14,6 +14,7 @@ import type {
   IssuePageResult,
   LabelPageResult,
   ListIssueOptions,
+  GitHubIssueUser,
   NormalisedProjectKanbanGitHub,
   UpdateIssueInput
 } from '../../shared/github-issues'
@@ -42,12 +43,14 @@ import type {
   PullConversationPage,
   PullReadFailure,
   GitHubRepoMergeMethodsResult,
+  GitHubRepoCollaboratorsResult,
   PullMergeMethod,
   PullRefusal,
   PullReviewEvent,
   PullWriteReason,
   PullWriteResult
 } from '../../shared/github-pull-detail'
+import { GITHUB_LOGIN } from '../../shared/github-pull-detail'
 import { parseGitHubRepository } from './config'
 import type { GitHubHostError } from './host'
 
@@ -116,6 +119,9 @@ export interface GitHubIssuesClientLike {
   reviewPull?(
     repository: string, pullNumber: number, review: { event: PullReviewEvent; body: string; commitId: string }
   ): Promise<{ id: number }>
+  /** The node's "Request review": the collaborators, and one reviewer request. Optional, as above. */
+  listCollaborators?(repository: string): Promise<GitHubIssueUser[]>
+  requestPullReviewer?(repository: string, pullNumber: number, login: string): Promise<void>
 }
 
 export interface GitHubIssueProjectContext {
@@ -362,6 +368,7 @@ export class GitHubIssueService {
   /** Allowed merge methods per identity and repository, held for this core's run (GitHub's repo
    *  settings rarely change, and a merge GitHub refuses still says why). Successful reads only. */
   private readonly mergeMethods = new Map<string, PullMergeMethod[]>()
+  private readonly collaborators = new Map<string, GitHubIssueUser[]>()
   /** Merge base per `base\0head` SHA pair. Commits are immutable, so an answer never ages. */
   private readonly mergeBases = new Map<string, string>()
   private readonly pullReads = new Map<string, {
@@ -1169,6 +1176,24 @@ export class GitHubIssueService {
    * pull read (another repository is refused before a credential is resolved). Held per repository.
    */
   async repoMergeMethods(request: { projectId: string; repository: string }): Promise<GitHubRepoMergeMethodsResult> {
+    const result = await this.heldRepoRead(this.mergeMethods, request, (client) => client.repoMergeMethods?.bind(client))
+    return result.status === 'ok' ? { status: 'ok', methods: result.value } : result
+  }
+
+  /** The repository's collaborators, for the node's "Request review". Held per repository like the
+   *  merge methods (ponytail: a new collaborator shows after an app restart). */
+  async repoCollaborators(request: { projectId: string; repository: string }): Promise<GitHubRepoCollaboratorsResult> {
+    const result = await this.heldRepoRead(this.collaborators, request, (client) => client.listCollaborators?.bind(client))
+    return result.status === 'ok' ? { status: 'ok', users: result.value } : result
+  }
+
+  /** One read per (user, repository), held for the app run. `read` answers undefined when this
+   *  client cannot make it at all. Never throws. */
+  private async heldRepoRead<T>(
+    held: Map<string, T>,
+    request: { projectId: string; repository: string },
+    read: (client: GitHubIssuesClientLike) => ((repository: string) => Promise<T>) | undefined
+  ): Promise<{ status: 'ok'; value: T } | { status: 'refused'; reason: PullRefusal } | { status: 'failed'; reason: PullReadFailure; retryAt?: number }> {
     const repository = parseGitHubRepository(request?.repository)
     if (typeof request?.projectId !== 'string' || !repository) return { status: 'refused', reason: 'not-configured' }
     let captured: GitHubIssueServiceContext
@@ -1184,17 +1209,29 @@ export class GitHubIssueService {
     // The project's repository may have changed between the two awaits, as in readPull.
     if (captured.repository.toLowerCase() !== repository.toLowerCase()) return { status: 'refused', reason: 'repository-mismatch' }
     const key = `${captured.userId}\0${captured.repository.toLowerCase()}`
-    const held = this.mergeMethods.get(key)
-    if (held) return { status: 'ok', methods: held }
-    const { client } = captured
-    if (!client.repoMergeMethods) return { status: 'failed', reason: 'unreachable' }
+    const hit = held.get(key)
+    if (hit !== undefined) return { status: 'ok', value: hit }
+    const readRepo = read(captured.client)
+    if (!readRepo) return { status: 'failed', reason: 'unreachable' }
     try {
-      const methods = await this.readWithEpoch(captured, () => client.repoMergeMethods!(captured.repository))
-      this.mergeMethods.set(key, methods)
-      return { status: 'ok', methods }
+      const value = await this.readWithEpoch(captured, () => readRepo(captured.repository))
+      held.set(key, value)
+      return { status: 'ok', value }
     } catch (error) {
       return { status: 'failed', ...pullReadFailure(error) }
     }
+  }
+
+  /** Ask one collaborator to review the PR, from the node's "Request review" (a user click only). */
+  async requestPullReviewer(
+    request: { projectId: string; repository: string; pullNumber: number; reviewer: string }
+  ): Promise<PullWriteResult> {
+    if (typeof request?.reviewer !== 'string' || !GITHUB_LOGIN.test(request.reviewer)) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot request reads as network; the real client always can.
+      if (!client.requestPullReviewer) throw new Error('unsupported')
+      return client.requestPullReviewer(repository, pullNumber, request.reviewer)
+    })
   }
 
   /**

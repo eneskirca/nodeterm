@@ -574,6 +574,12 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesRepoMergeMethods, projectId, repository) as ReturnType<
         GitHubIssuesApi['repoMergeMethods']
       >,
+    repoCollaborators: (projectId, repository) =>
+      client.request(IPC.githubIssuesRepoCollaborators, projectId, repository) as ReturnType<
+        GitHubIssuesApi['repoCollaborators']
+      >,
+    requestPullReviewer: (request) =>
+      client.request(IPC.githubIssuesPullRequestReviewer, request) as ReturnType<GitHubIssuesApi['requestPullReviewer']>,
     claimPullAutoMove: (request) =>
       client.request(IPC.githubIssuesClaimPullAutoMove, request) as Promise<boolean>,
     notePullWaits: (request) =>

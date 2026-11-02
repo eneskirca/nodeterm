@@ -13,6 +13,21 @@ describe('pullPickerChoices', () => {
       { label: '#3 fix-a', value: '3' }
     ])
   })
+  it('names the author and puts the PRs waiting for my review first', () => {
+    const board = {
+      ...EMPTY_PULL_BOARD,
+      pulls: [
+        { ...pull(8, 'open', 'mine'), author: 'me' },
+        { ...pull(4, 'open', 'bot-pr'), author: 'github-actions', reviewRequested: true as const },
+        { ...pull(6, 'open', 'ok'), author: 'ana', review: 'approved' as const }
+      ]
+    }
+    expect(pullPickerChoices(board)).toEqual([
+      { label: '#4 bot-pr · github-actions · Review requested', value: '4' },
+      { label: '#8 mine · me', value: '8' },
+      { label: '#6 ok · ana · Approved', value: '6' }
+    ])
+  })
   it('is empty without a board', () => {
     expect(pullPickerChoices(undefined)).toEqual([])
   })

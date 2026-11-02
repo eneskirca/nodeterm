@@ -580,8 +580,11 @@ export const IPC = {
   githubIssuesPullComment: 'githubIssues:pull-comment',
   githubIssuesPullReview: 'githubIssues:pull-review',
   githubIssuesPullMerge: 'githubIssues:pull-merge',
+  githubIssuesPullRequestReviewer: 'githubIssues:pull-request-reviewer',
   // The merge confirmation's allowed methods: a read, classified like the pull reads above.
   githubIssuesRepoMergeMethods: 'githubIssues:repo-merge-methods',
+  // "Request review"'s people list: a read, classified like the pull reads above.
+  githubIssuesRepoCollaborators: 'githubIssues:repo-collaborators',
   githubIssuesClaimPullAutoMove: 'githubIssues:claim-pull-auto-move',
   githubIssuesNotePullWaits: 'githubIssues:note-pull-waits',
   githubIssuesChanged: (projectId: string) => `githubIssues:changed:${projectId}`,

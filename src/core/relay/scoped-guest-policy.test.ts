@@ -183,6 +183,9 @@ describe('scoped guest — canvas, board and GitHub', () => {
     expect(allowed(IPC.githubIssuesPullFileContents, 'beta', 'o/r', 7, 'a.ts')).toBe(false)
     expect(allowed(IPC.githubIssuesRepoMergeMethods, 'alpha', 'o/r')).toBe(true)
     expect(allowed(IPC.githubIssuesRepoMergeMethods, 'beta', 'o/r')).toBe(false)
+    expect(allowed(IPC.githubIssuesPullRequestReviewer, { ...write, reviewer: 'ana' })).toBe(false)
+    expect(allowed(IPC.githubIssuesRepoCollaborators, 'alpha', 'o/r')).toBe(true)
+    expect(allowed(IPC.githubIssuesRepoCollaborators, 'beta', 'o/r')).toBe(false)
   })
   it('refuses a canvas mutation into another project, or adopting another project\'s node id', () => {
     const node = (id: string) => ({ op: 'upsert', node: { id, kind: 'terminal', position: { x: 0, y: 0 } } })

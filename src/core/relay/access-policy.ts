@@ -459,6 +459,7 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullFiles,
   IPC.githubIssuesPullFileContents,
   IPC.githubIssuesRepoMergeMethods,
+  IPC.githubIssuesRepoCollaborators,
   IPC.githubIssuesClaimPullAutoMove,
   IPC.githubIssuesNotePullWaits,
   IPC.githubProjectAvatar,
@@ -517,7 +518,8 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
 export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullComment,
   IPC.githubIssuesPullReview,
-  IPC.githubIssuesPullMerge
+  IPC.githubIssuesPullMerge,
+  IPC.githubIssuesPullRequestReviewer
 ])
 
 const ROLE_NAME: Readonly<Record<string, string>> = { owner: 'Owners', editor: 'Editors', commenter: 'Commenters', viewer: 'Viewers' }

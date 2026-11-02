@@ -19,7 +19,18 @@ export interface GitHubPullDetail {
   changedFiles: number
   /** https://github.com/… only. */
   url: string
+  /** Users asked to review and who have not reviewed yet. Absent = none. Teams are not listed. */
+  requestedReviewers?: GitHubIssueUser[]
 }
+
+/** A GitHub login: letters, digits and single hyphens, at most 39 characters. */
+export const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/
+
+/** The repository's collaborators, the people a review can be requested from. Read like a pull read. */
+export type GitHubRepoCollaboratorsResult =
+  | { status: 'ok'; users: GitHubIssueUser[] }
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
 
 /** Why a read produced no fresh answer. `signed-out` only for an answer GitHub gave about the token. */
 export type PullReadFailure = 'throttled' | 'unreachable' | 'signed-out'

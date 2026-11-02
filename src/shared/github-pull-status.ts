@@ -50,7 +50,15 @@ export interface PullStatusFacts {
   rollupOid: string | null
   /** Issues in the SAME repository this PR closes on merge (GitHub's own linking). */
   closes: number[]
+  /** The author's login. Absent for a deleted account. */
+  author?: string
+  /** GitHub's review decision. Absent when the repository needs no review or the value is new. */
+  review?: PullReviewDecision
+  /** The signed-in user is a requested reviewer (a team request does not count). */
+  reviewRequested?: true
 }
+
+export type PullReviewDecision = 'approved' | 'changes-requested' | 'required'
 
 /** One PR's state on the board. `ci`/`merge` are ABSENT when unknown — the token cannot read them,
  *  the PR is not open, or the only rollup we have belongs to another commit. Absent renders nothing. */
@@ -67,6 +75,10 @@ export interface GitHubPullStatus {
   merge?: PullMergeState
   /** Open PRs only. */
   closes: number[]
+  /** Open PRs only: the review facts of the last read (see `PullStatusFacts`). */
+  author?: string
+  review?: PullReviewDecision
+  reviewRequested?: true
   /** This machine has seen the PR open or as a draft (remembered across restarts, per repository). */
   openSeen?: true
   /** Epoch ms when this machine first saw the PR merged AFTER having seen it open — an OBSERVED
@@ -169,7 +181,10 @@ export function pullStatusFrom(
     headRefOid: facts.headRefOid,
     ...(ci !== undefined ? { ci } : {}),
     ...(merge !== undefined ? { merge } : {}),
-    closes: facts.closes
+    closes: facts.closes,
+    ...(facts.author ? { author: facts.author } : {}),
+    ...(facts.review ? { review: facts.review } : {}),
+    ...(facts.reviewRequested ? { reviewRequested: true as const } : {})
   }
 }
 
