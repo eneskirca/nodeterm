@@ -31,6 +31,9 @@ export interface ProjectWorktreeSettings {
   basePath?: string
   baseRef?: string
   sharedPaths?: string[]
+  /** The behind-main badge's remembered update: 'merge' or 'rebase' (any other string reads as
+   *  unset at the badge). Machine-local in practice: the badge writes the local overlay only. */
+  updateMode?: string
 }
 export interface ProjectAgentSettings {
   defaultAgentId?: string
@@ -111,7 +114,8 @@ const FAMILY_FIELDS: Record<ProjectSettingsFamily, Record<string, FieldSpec>> = 
   worktree: {
     basePath: { kind: 'string' },
     baseRef: { kind: 'string' },
-    sharedPaths: { kind: 'paths' }
+    sharedPaths: { kind: 'paths' },
+    updateMode: { kind: 'string' }
   },
   agents: {
     defaultAgentId: { kind: 'string' },
@@ -300,7 +304,7 @@ export interface ResolvedProjectSetting<T> {
 type R<T> = ResolvedProjectSetting<T>
 export interface ResolvedProjectSettings {
   setup: { setupScript?: R<string>; archiveScript?: R<string>; waitForSetup?: R<boolean> }
-  worktree: { basePath?: R<string>; baseRef?: R<string>; sharedPaths?: R<string[]> }
+  worktree: { basePath?: R<string>; baseRef?: R<string>; sharedPaths?: R<string[]>; updateMode?: R<string> }
   agents: { defaultAgentId?: R<string>; launchCmd?: R<string>; env?: R<Record<string, string>> }
   terminal: { shell?: R<string>; theme?: R<string>; fontFamily?: R<string> }
 }

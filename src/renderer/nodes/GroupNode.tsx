@@ -12,6 +12,7 @@ import { useGitBranch } from '../state/gitBranches'
 import { useProjectSetup } from '../state/projectSetup'
 import { useSettings } from '../state/settings'
 import { backedFillStyle } from '@shared/canvas-backing'
+import { MainDriftBadge } from '../components/MainDriftBadge'
 
 export type WorktreeAction = 'merge' | 'remove' | 'unbind' | 'rerun-setup'
 
@@ -35,7 +36,7 @@ export function setWorktreeActionHandler(
  * together. The frame renders behind its children (it appears first in the array).
  */
 export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
-  const { updateNodeData, setNodes } = useReactFlow()
+  const { updateNodeData, setNodes, getNodes } = useReactFlow()
   const [showColors, setShowColors] = useState(false)
   // Settings → Appearance → Group frame background (issue #1113); 0 = the old see-through look.
   const backing = useSettings((s) => s.settings.groupFrameBacking)
@@ -69,6 +70,7 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
   // which rewrites the children's cwds. Worktrees are unsupported in SSH projects (v1): the honest
   // behaviour is no facts at all, not local facts about a remote checkout.
   const sshProject = useProjects((s) => !!s.projects.find((p) => p.id === s.activeProjectId)?.ssh)
+  const activeProjectId = useProjects((s) => s.activeProjectId)
   const wtPath = sshProject ? undefined : wt?.path
   const { api } = useSession()
   const branch = useGitBranch(api.git, wtPath)
@@ -235,6 +237,23 @@ export function GroupNode({ id, data, selected }: NodeProps<CanvasNode>) {
                   </em>
                 )}
               </span>
+            )}
+            {!stale && activeProjectId && (
+              <MainDriftBadge
+                projectId={activeProjectId}
+                cwd={wtPath}
+                nodes={() =>
+                  (getNodes() as CanvasNode[]).map((n) => ({
+                    id: n.id,
+                    title: n.data.title,
+                    agentId: n.data.agentId,
+                    cwd: n.data.cwd
+                  }))
+                }
+                onUpdated={() => {
+                  if (wtPath) void useWorktrees.getState().refreshStatus(wtPath, id)
+                }}
+              />
             )}
             {setupRun &&
               // What the project's script is doing to this checkout. Status only — the OUTPUT lives

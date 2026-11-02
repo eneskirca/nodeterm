@@ -8113,6 +8113,34 @@ body,
   color: var(--muted);
 }
 
+/* Behind-main badge (MainDriftBadge): project header in the sidebar and worktree frames. */
+.main-drift {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.main-drift button {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 6px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+  color: var(--attention-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.main-drift button:disabled {
+  cursor: default;
+  color: var(--muted);
+}
+.main-drift__choose button {
+  color: var(--muted);
+}
+
 .group-node__wt-dirty {
   color: var(--warn);
 }

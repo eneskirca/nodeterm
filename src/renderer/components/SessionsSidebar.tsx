@@ -711,7 +711,10 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
                   className="ss-group__monogram"
                 />
                 <span className="ss-group__name" title={g.projectName}>{g.projectName}</span>
-                <ProjectBranch project={projects.find((p) => p.id === g.projectId)!} />
+                <ProjectBranch
+                  project={projects.find((p) => p.id === g.projectId)!}
+                  liveNodes={g.projectId === activeProjectId ? liveActiveNodes : null}
+                />
                 <SignalBadges counts={signals} scope="project" />
                 <span className="ss-group__count">{projectCount(g)}</span>
                 <button
