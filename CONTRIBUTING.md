@@ -747,11 +747,11 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   relay peer.
 
 - **A GitHub write made with the host's token is owner-only.** The pull request node's comment,
-  review, merge, request-reviewer and line-comment channels, and "New pull request"'s create (`githubIssues:pull-comment`,
+  review, merge, request-reviewer, line-comment and update-branch channels, and "New pull request"'s create (`githubIssues:pull-comment`,
   `githubIssues:pull-review`, `githubIssues:pull-merge`, `githubIssues:pull-request-reviewer`, `githubIssues:pull-line-comment`,
-  `githubIssues:pull-create`) are in `OWNER_ONLY` (`src/core/relay/access-policy.ts`): every relay
+  `githubIssues:pull-update-branch`, `githubIssues:pull-create`) are in `OWNER_ONLY` (`src/core/relay/access-policy.ts`): every relay
   peer but the host's owner is refused, hosted Editors included, because the write posts as the host
-  owner on GitHub. Editor is shell access, not identity. All six are also in `SCOPED_REFUSED`. The
+  owner on GitHub. Editor is shell access, not identity. All seven are also in `SCOPED_REFUSED`. The
   `open-pr` canvas-control verb only opens or links a node and has no path to a GitHub write.
   `pr-show` only moves a linked pull node's view. `pr-propose` only stages one write on the node, and
   only the user's Confirm there sends it (armed one second after the proposal appears, behind the

@@ -88,6 +88,8 @@ A pull request opens as a canvas node. It has three tabs: Overview (description,
 
 New pull requests: choose **New pull request…** in the add menu (**New view**) or the Dock for the project folder's current branch, or **Create PR** in Source Control for the checkout it shows (a worktree too). The form starts with the repository's default branch as the base, and the title and description from the branch's commits. A branch that is not pushed, or has unpushed commits, shows **Push and create**: it pushes as Source Control's Push does, then creates. If the branch already has an open pull request, that one opens instead. The new pull request opens as a node. Agents keep `gh pr create` and `open-pr`; they cannot create one through nodeterm.
 
+Merge state: when Merge is off, the Overview says why in one line: a draft, a conflict with the base, a branch behind its base that branch protection needs up to date, or a protected branch that still needs an approving review or has failing or running checks. A branch behind its base shows **Update branch**, which merges the base into the branch on GitHub (only if the head is still the commit the Overview shows). A conflict shows **Open terminal on this branch**, which opens a terminal in the project folder that runs `git fetch origin && git switch <branch>`. Resolve the conflict there, then push.
+
 Line comments: in the Files tab, each review thread shows under its line, on its side of the diff. Outdated threads show below the diff. Click a line number to comment on that line. **Comment** posts it at once. **Add to review** keeps it until your next Comment, Approve or Request changes in the Conversation tab, which sends it in that review. Pending line comments are kept only while the node is open. Each thread has a Reply box. GitHub takes line comments only on changed lines and the lines next to them.
 
 The linked agent can drive the node, when the user asks it to:
@@ -102,7 +104,7 @@ The node only opens pull requests of the project's approved repository. It store
 Surfaces:
 
 - **Desktop and Server Edition**: the full node. Every read and write goes through the core, over IPC or the Server Edition WebSocket bridge.
-- **Relay tabs**: a node already on the canvas reads. **Pull request…** is disabled there, because the GitHub approval lives on the host. **New pull request…** is disabled there too. Comment, line comment, review, merge and create are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all of them.
+- **Relay tabs**: a node already on the canvas reads. **Pull request…** is disabled there, because the GitHub approval lives on the host. **New pull request…** is disabled there too. Comment, line comment, review, merge, update branch and create are refused for every relay peer except the host's owner, because a write posts with the host owner's GitHub token. A scoped guest is refused all of them.
 - **Mobile**: no pull request node. The phone shows the rest of the canvas as before.
 
 ## Current scope
