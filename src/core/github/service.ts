@@ -43,6 +43,7 @@ import type {
   PullConversationPage,
   PullLineComment,
   PullLineCommentRequest,
+  PullLineCommentWrite,
   PullLineCommentsPage,
   PullLineDraft,
   PullReadFailure,
@@ -130,7 +131,7 @@ export interface GitHubIssuesClientLike {
   listPullLineComments?(repository: string, pullNumber: number, page: number): Promise<PullLineCommentsPage>
   createPullLineComment?(
     repository: string, pullNumber: number,
-    comment: { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
+    comment: PullLineCommentWrite
   ): Promise<{ id: number }>
   /** The node's "Request review": the collaborators, and one reviewer request. Optional, as above. */
   listCollaborators?(repository: string): Promise<GitHubIssueUser[]>
@@ -1160,7 +1161,7 @@ export class GitHubIssueService {
   /** Post one line comment from the Files tab: a new thread tied to `headSha` (the head the node
    *  read), or a reply to `inReplyTo`. A user click only; never an agent verb. */
   async commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult> {
-    let comment: { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
+    let comment: PullLineCommentWrite
     if (request && 'inReplyTo' in request) {
       if (!Number.isSafeInteger(request.inReplyTo) || request.inReplyTo < 1 || !isPullCommentBody(request.body)) {
         return { ok: false, reason: 'validation' }

@@ -5,7 +5,7 @@ import { GitHubIssueService, type GitHubIssueServiceContext, type GitHubIssuesCl
 import { GitHubRequestCoordinator } from './request-coordinator'
 import type { NormalisedProjectKanbanGitHub } from '../../shared/github-issues'
 import type {
-  GitHubPullDetail, PullConversationPage, PullLineDraft, PullMergeMethod, PullReviewEvent
+  GitHubPullDetail, PullConversationPage, PullLineCommentWrite, PullLineDraft, PullMergeMethod, PullReviewEvent
 } from '../../shared/github-pull-detail'
 
 const config: NormalisedProjectKanbanGitHub = {
@@ -30,7 +30,7 @@ class Client implements GitHubIssuesClientLike {
     return { id: 1 }
   }
   async createPullLineComment(
-    repository: string, pullNumber: number, comment: { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
+    repository: string, pullNumber: number, comment: PullLineCommentWrite
   ): Promise<{ id: number }> {
     this.writes.push(['line', repository, pullNumber, comment])
     if (this.fail) throw this.fail

@@ -118,6 +118,9 @@ export function isPullLineDraft(value: unknown): value is PullLineDraft {
     (draft.side === 'LEFT' || draft.side === 'RIGHT') && isPullCommentBody(draft.body)
 }
 
+/** One line comment as the client sends it: a new thread on a commit, or a reply to a thread. */
+export type PullLineCommentWrite = { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
+
 /** A line comment the node sends on its own: a new thread at the head the user saw, or a reply. */
 export type PullLineCommentRequest =
   | { projectId: string; repository: string; pullNumber: number; headSha: string; comment: PullLineDraft }

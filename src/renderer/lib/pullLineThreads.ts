@@ -2,7 +2,7 @@ import type { PullDiffSide, PullLineComment } from '@shared/github-pull-detail'
 
 /** One thread of line comments: the first comment and its replies, oldest first. */
 export interface PullLineThread {
-  /** The first comment's id: what a reply names as `inReplyTo`. */
+  /** The first comment's id: what a reply names as `inReplyTo` (GitHub refuses a reply to a reply). */
   id: number
   side: PullDiffSide
   /** Null = not on a current line (outdated, or on the whole file). */
@@ -11,7 +11,8 @@ export interface PullLineThread {
   comments: PullLineComment[]
 }
 
-/** The threads on one file, by line. A reply whose first comment is not in the list starts its own. */
+/** The threads on one file, by line. Replies whose first comment is not in the list (past the page
+ *  cap) form one thread under that comment's id. */
 export function pullLineThreads(comments: readonly PullLineComment[], path: string): PullLineThread[] {
   const byId = new Map(comments.map((comment) => [comment.id, comment]))
   const rootOf = (comment: PullLineComment): PullLineComment => {
@@ -27,10 +28,11 @@ export function pullLineThreads(comments: readonly PullLineComment[], path: stri
   for (const comment of comments) {
     if (comment.path !== path) continue
     const root = rootOf(comment)
-    let thread = threads.get(root.id)
+    const id = root.inReplyTo ?? root.id
+    let thread = threads.get(id)
     if (!thread) {
-      thread = { id: root.id, side: root.side, line: root.line, outdated: root.outdated, comments: [] }
-      threads.set(root.id, thread)
+      thread = { id, side: root.side, line: root.line, outdated: root.outdated, comments: [] }
+      threads.set(id, thread)
     }
     thread.comments.push(comment)
   }

@@ -22,6 +22,7 @@ import type {
   PullFilesPage,
   PullFileStatus,
   PullLineComment,
+  PullLineCommentWrite,
   PullLineCommentsPage,
   PullLineDraft,
   PullMergeMethod,
@@ -245,17 +246,18 @@ function lineCommentFrom(value: unknown): PullLineComment | null {
   if (url.protocol !== 'https:' || url.hostname !== 'github.com') return null
   const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
   if (item.user && !author) return null
-  const id = (key: string): number | null | undefined => item[key] === null || item[key] === undefined ? null
+  // null = absent, undefined = present but not a positive id (malformed).
+  const optionalId = (key: string): number | null | undefined => item[key] === null || item[key] === undefined ? null
     : positiveInteger(Number(item[key]), Number.MAX_SAFE_INTEGER) ? Number(item[key]) : undefined
-  const reviewId = id('pull_request_review_id')
-  const inReplyTo = id('in_reply_to_id')
-  const line = id('line')
+  const reviewId = optionalId('pull_request_review_id')
+  const inReplyTo = optionalId('in_reply_to_id')
+  const line = optionalId('line')
   if (reviewId === undefined || inReplyTo === undefined || line === undefined) return null
   // ponytail: a comment from before GitHub had `side` sits on the head side, as it did then.
   const side = item.side === 'LEFT' ? 'LEFT' : 'RIGHT'
   return {
     id: Number(item.id), reviewId, ...(inReplyTo !== null ? { inReplyTo } : {}), author, body: item.body, at: item.created_at,
-    url: url.toString(), path: item.path, side, line, outdated: item.position === null && item.subject_type !== 'file'
+    url: url.toString(), path: item.path, side, line, outdated: line === null && item.subject_type !== 'file'
   }
 }
 
@@ -782,7 +784,7 @@ export class GitHubIssuesClient {
   async createPullLineComment(
     repository: string,
     pullNumber: number,
-    comment: { commitId: string; draft: PullLineDraft } | { inReplyTo: number; body: string }
+    comment: PullLineCommentWrite
   ): Promise<{ id: number }> {
     safeRepository(repository)
     if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')

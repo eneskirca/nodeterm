@@ -10,6 +10,7 @@ import type {
   GitHubRepoMergeMethodsResult,
   PullFile,
   PullFileSide,
+  PullDiffSide,
   PullLineComment,
   PullLineDraft,
   PullFileStatus,
@@ -198,7 +199,9 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   // the node drops them (nothing was sent).
   const [pending, setPending] = useState<readonly PullLineDraft[]>([])
   const addPending = useCallback((draft: PullLineDraft) => setPending((list) => [...list, draft]), [])
-  const clearPending = useCallback(() => setPending([]), [])
+  // Drops only the drafts named: one added while a review was on its way stays for the next.
+  const dropPending = useCallback((sent: readonly PullLineDraft[]) =>
+    setPending((list) => list.filter((draft) => !sent.includes(draft))), [])
   return (
     <>
       {proposal && (
@@ -225,7 +228,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
       )}
       {opened.includes('conversation') && (
         <div hidden={shownTab !== 'conversation'}>
-          <PullConversation {...props} seenHead={seenHead} ownPull={ownPull} pending={pending} onClearPending={clearPending} />
+          <PullConversation {...props} seenHead={seenHead} ownPull={ownPull} pending={pending} onDropPending={dropPending} />
         </div>
       )}
     </>
@@ -336,7 +339,7 @@ function PullFileDiff(props: ViewProps & LineProps & {
   const { api, pull, file, filesUrl, onOpenExternal, highlight, head, lineComments, pending, onAddPending } = props
   const path = file.path
   // The line the user clicked, where the new-comment box opens.
-  const [composing, setComposing] = useState<{ side: 'LEFT' | 'RIGHT'; line: number } | null>(null)
+  const [composing, setComposing] = useState<{ side: PullDiffSide; line: number } | null>(null)
   const read = useCallback(
     (projectId: string, repository: string, pullNumber: number) => api.pullFileContents(projectId, repository, pullNumber, path),
     [api, path]
@@ -737,16 +740,16 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail }): React.JSX.E
 /** The Conversation tab: comments and reviews, oldest first, then the composer. The draft lives here
  *  (the tab stays mounted), so it survives a tab switch; it is never persisted. */
 function PullConversation(props: ViewProps & {
-  seenHead: string | undefined; ownPull: boolean; pending: readonly PullLineDraft[]; onClearPending: () => void
+  seenHead: string | undefined; ownPull: boolean; pending: readonly PullLineDraft[]; onDropPending: (sent: readonly PullLineDraft[]) => void
 }): React.JSX.Element {
-  const { api, projectId, pull, onWritten, seenHead, ownPull, pending, onClearPending } = props
+  const { api, projectId, pull, onWritten, seenHead, ownPull, pending, onDropPending } = props
   const result = usePullRead(api.pullConversation, props)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
   const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
 
-  const run = async (write: () => Promise<PullWriteResult>) => {
+  const run = async (write: () => Promise<PullWriteResult>, sent: readonly PullLineDraft[] = []) => {
     if (busy) return
     setBusy(true)
     setRefusal(null)
@@ -754,14 +757,17 @@ function PullConversation(props: ViewProps & {
     setBusy(false)
     if (!outcome.ok) { setRefusal(outcome.reason); return }
     setDraft('')
-    onClearPending()
+    onDropPending(sent)
     onWritten()
   }
   // A review is tied to the head the Overview showed, so GitHub refuses it if the PR moved since.
   // ponytail: no head seen yet (Overview never opened) disables review rather than reading one here.
   // The pending line comments ride the review.
-  const review = (event: PullReviewEvent) => seenHead && run(() =>
-    api.reviewPull({ ...at, event, body: draft, headSha: seenHead, ...(pending.length ? { comments: [...pending] } : {}) }))
+  const review = (event: PullReviewEvent) => {
+    const sent = [...pending]
+    return seenHead && run(() =>
+      api.reviewPull({ ...at, event, body: draft, headSha: seenHead, ...(sent.length ? { comments: sent } : {}) }), sent)
+  }
 
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   return (
@@ -818,7 +824,7 @@ function PullConversation(props: ViewProps & {
           <p className="pull-node__empty">
             {pending.length === 1 ? '1 line comment waits' : `${pending.length} line comments wait`} for your review: Comment,
             Approve or Request changes sends {pending.length === 1 ? 'it' : 'them'}.{' '}
-            <button className="pull-compose__button" disabled={busy} onClick={onClearPending}>Discard</button>
+            <button className="pull-compose__button" disabled={busy} onClick={() => onDropPending(pending)}>Discard</button>
           </p>
         )}
         {ownPull && <p className="pull-node__empty">{OWN_PULL_TEXT}</p>}

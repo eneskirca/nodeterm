@@ -21,15 +21,16 @@ describe('pullLineThreads', () => {
     ])
   })
 
-  it('keeps only the file asked for, puts threads off a current line last, and starts an orphan reply its own thread', () => {
+  it('keeps only the file asked for, puts threads off a current line last, and files orphan replies under their first comment', () => {
     const threads = pullLineThreads([
       comment(1, { path: 'b.ts' }),
       comment(2, { line: null, outdated: true }),
-      comment(3, { inReplyTo: 99, line: 1 })
+      comment(3, { inReplyTo: 99, line: 1 }),
+      comment(4, { inReplyTo: 99, line: 1 })
     ], 'a.ts')
-    expect(threads.map(({ id, line, outdated }) => ({ id, line, outdated }))).toEqual([
-      { id: 3, line: 1, outdated: false },
-      { id: 2, line: null, outdated: true }
+    expect(threads.map(({ id, line, outdated, comments }) => ({ id, line, outdated, n: comments.length }))).toEqual([
+      { id: 99, line: 1, outdated: false, n: 2 },
+      { id: 2, line: null, outdated: true, n: 1 }
     ])
   })
 
