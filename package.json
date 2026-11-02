@@ -190,7 +190,7 @@
     "dompurify": "^3.4.17",
     "electron-updater": "^6.8.11",
     "emoji-picker-react": "^4.22.2",
-    "lucide-react": "^1.62.0",
+    "lucide-react": "^1.65.0",
     "marked": "^12.0.2",
     "monaco-editor": "^0.57.0",
     "node-pty": "^1.0.0",
