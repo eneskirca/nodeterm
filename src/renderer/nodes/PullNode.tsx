@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { NodeResizer, useReactFlow, type NodeProps } from '@xyflow/react'
+import { Handle, NodeResizer, Position, useReactFlow, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { Tooltip } from '../components/Tooltip'
 import { IconClose, IconExternal, IconReload } from '../components/icons'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
@@ -24,6 +24,10 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const projectId = owner ?? activeProjectId
   const [refreshTick, setRefreshTick] = useState(0)
   const pull = data.pull
+  // Lazy-loaded: React Flow measured the Suspense fallback, which has no handle, so its edges had no
+  // anchor until the node resized. Re-measure once the real node (and its handle) is mounted.
+  const updateNodeInternals = useUpdateNodeInternals()
+  useEffect(() => updateNodeInternals(id), [id, updateNodeInternals])
 
   useEffect(() => {
     const onRefresh = (event: Event) => {
@@ -42,6 +46,15 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
         color={data.color}
         lineClassName="nt-resize-ghost"
         handleClassName="nt-resize-ghost"
+      />
+      {/* Invisible target handle so the opener's rope and context link (open-pr) can attach, as on
+          the web node. React Flow draws no edge to a node without a handle. */}
+      <Handle
+        id="flow-in"
+        type="target"
+        position={Position.Top}
+        isConnectable={false}
+        style={{ opacity: 0, pointerEvents: 'none', top: 0 }}
       />
       <div className="pull-node__header" style={{ background: `${data.color}33` }}>
         <span className="term-node__color" style={{ background: data.color }} />
