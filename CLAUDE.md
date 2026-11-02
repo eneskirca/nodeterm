@@ -5750,7 +5750,10 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   a reported success. Grammar, the persisted shape and the pure evaluation are ONE module,
   `@shared/station-outcome`, used by desktop main's shape gate, the Server Edition's parser AND
   headless factory, and the renderer's launch loop, so the two shells cannot disagree about when a
-  dependent starts. Rules a refactor must not undo:
+  dependent starts. `report-outcome --notify-opener` (#1356) also sends the opener one app-written
+  notice through `deliverStationNotice`, to the recipient the failure monitor uses (each shell passes
+  the same `opener` pair to both); a shell that passes none refuses the flag. Rules a refactor must
+  not undo:
   - **A success wait is `--after` plus the report.** Every `--after-success` id is FOLDED INTO
     `pendingLaunch.after` (renderer: once, right after `prWaitPre`; server: before `resolveAfter`),
     so the existing rules apply unchanged — the station must exist and report status, the wait rope

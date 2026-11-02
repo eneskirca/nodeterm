@@ -66,6 +66,9 @@ import {
 } from '../shared/station-outcome'
 import type { CorePlatform } from './platform'
 import type { MessageHandover } from './agents/agent-messaging'
+import type { AgentMessageOutcome } from './agents/agent-message-decide'
+import { paneResult } from './agents/station-notice'
+import { stationOutcomeNoticeBody, type StationRecipient } from '../shared/station-notice'
 import type { DurableFactFile, DurableFactSpec } from './durable-state'
 
 /** Which conversation a report was made in. */
@@ -350,6 +353,17 @@ export interface ReportOutcomeDeps {
   /** After a record lands. The Server Edition re-evaluates its armed launches here; the desktop's
    *  renderer hears the store's push instead. */
   onRecorded?(record: StationOutcomeRecord): void
+  /** `--notify-opener` (#1356): the pair the shell's station-failure monitor already uses, so a
+   *  completion notice goes to the same recipient through the same gates. Absent ⇒ the flag is
+   *  refused, never ignored. */
+  opener?: {
+    recipientFor(stationNodeId: string): StationRecipient | undefined
+    deliver(notice: {
+      stationNodeId: string
+      recipientNodeId: string
+      body: string
+    }): Promise<AgentMessageOutcome>
+  }
 }
 
 export interface ReportOutcomeReply {
@@ -382,6 +396,9 @@ export async function handleReportOutcome(
   if (!isSafeNodeId(req.nodeId)) return refuse(REPORT_OUTCOME_CONTROL_REFUSAL)
   const parsed = parseReportOutcome(req.args, req.nodeId)
   if (!parsed.ok) return refuse(parsed.error)
+  if (parsed.notifyOpener && !deps.opener) {
+    return refuse('report-outcome: --notify-opener is not available in this edition')
+  }
   const at = deps.now()
   const record: StationOutcomeRecord = {
     nodeId: req.nodeId,
@@ -389,6 +406,9 @@ export async function handleReportOutcome(
     at,
     ...(parsed.note ? { note: parsed.note } : {})
   }
+  // `--notify-opener` speaks only when the outcome CHANGES: repeating the same report cannot keep
+  // waking the opener. New work reaching the station withdraws its report, so a new task notifies.
+  const repeated = deps.store.get(req.nodeId)?.outcome === parsed.outcome
   deps.store.record(record)
   const projectId = deps.projectIdOfNode(req.nodeId)
   let logged = false
@@ -409,17 +429,43 @@ export async function handleReportOutcome(
     logged = await deps.appendBoardLog(projectId, entry).catch(() => false)
   }
   deps.onRecorded?.(record)
+  // shortcut: sent when the report lands, not when the station's turn ends; hold it for the turn's
+  // `done` if openers start reading half-finished transcripts.
+  const told = !parsed.notifyOpener || !deps.opener
+    ? undefined
+    : repeated
+      ? 'Your opener was already told this outcome; it is not told again.'
+      : await tellOpener(record, deps.opener)
   const message = [
     `recorded: your task ${parsed.outcome}${parsed.note ? ` — "${parsed.note}"` : ''}.`,
     RELEASE_TEXT[parsed.outcome],
     'It stands until you report again, or until new work handed to you through canvas control (a ' +
-      'send, reply, write or run aimed at you) reaches your session. A new turn does not change it.'
+      'send, reply, write or run aimed at you) reaches your session. A new turn does not change it.',
+    ...(told ? [told] : [])
   ].join(' ')
   return {
     ok: true,
     message,
     result: { nodeId: req.nodeId, outcome: parsed.outcome, at, boardLog: logged }
   }
+}
+
+/** `--notify-opener`: one notice to the node that opened the station. Returns the line the station
+ *  is told, so it knows whether its opener heard. */
+async function tellOpener(
+  record: StationOutcomeRecord,
+  opener: NonNullable<ReportOutcomeDeps['opener']>
+): Promise<string> {
+  const recipient = opener.recipientFor(record.nodeId)
+  if (!recipient) return 'No opener to tell: no agent opened you through canvas control.'
+  const body = stationOutcomeNoticeBody({ id: record.nodeId, title: recipient.stationTitle }, record.outcome)
+  const outcome = await opener
+    .deliver({ stationNodeId: record.nodeId, recipientNodeId: recipient.recipientNodeId, body })
+    .catch(() => null)
+  const { pane, paneDetail } = outcome ? paneResult(outcome) : { pane: 'not-sent', paneDetail: 'error' }
+  if (pane === 'told') return `Your opener ${recipient.recipientNodeId} was told.`
+  if (pane === 'queued') return `Your opener ${recipient.recipientNodeId} is told when it next goes idle.`
+  return `Your opener could not be told (${paneDetail ?? 'not sent'}).`
 }
 
 /** The read channel, registered by BOTH shells. `store` is a thunk for the same reason as the

@@ -329,7 +329,7 @@ function afterHandoverDocLines(): string[] {
 
 function reportOutcomeDocLines(): string[] {
   return [
-    `- \`${REPORT_OUTCOME_VERB} --outcome succeeded|failed [--note "<one line>"]\` — say how YOUR task went.`,
+    `- \`${REPORT_OUTCOME_VERB} --outcome succeeded|failed [--note "<one line>"] [--notify-opener]\` — say how YOUR task went.`,
     '  REPORT WHEN EVERY TASK YOU ARE GIVEN ENDS, including one handed to you later in a message: nodes',
     '  opened with `--after-success` on you start only on `succeeded`, and `failed` holds them. Be honest:',
     '  `succeeded` means the task is done and checked the way your brief asked (tests pass, the file',
@@ -337,8 +337,10 @@ function reportOutcomeDocLines(): string[] {
     '  are unsure: that is `failed`, with the reason in `--note`. Report last, when nothing is left to do.',
     '  You report only about yourself — `--node` naming another node is refused — and a later report',
     `  replaces the earlier one. The note (one line, at most ${OUTCOME_NOTE_MAX} characters) is shown in \`list\`, on your`,
-    "  card and on the waiting node; it is never typed into anyone's session. Reporting does not end your",
-    '  session or your turn, and it moves no kanban card.'
+    "  card and on the waiting node; it is never typed into anyone's session unless you pass",
+    '  `--notify-opener`, which also sends the agent that opened you one nodeterm-written notice with',
+    '  your outcome (not your note), once per outcome change. Reporting does not end your session or your turn,',
+    '  and it moves no kanban card.'
   ]
 }
 

@@ -55,6 +55,42 @@ describe('handleReportOutcome', () => {
     expect(onRecorded).toHaveBeenCalledWith(d.store.get('st1'))
   })
 
+  it('--notify-opener sends the opener one nodeterm-written notice, and only when asked (#1356)', async () => {
+    const deliver = vi.fn(async () => ({ kind: 'delivered' }) as never)
+    const opener = {
+      recipientFor: () => ({ projectId: 'p1', recipientNodeId: 'orch', stationTitle: 'Tests' }),
+      deliver
+    }
+    await handleReportOutcome({ nodeId: 'st1', args: { outcome: 'failed' }, verified: true }, deps({ opener }))
+    expect(deliver).not.toHaveBeenCalled()
+
+    const r = await handleReportOutcome(
+      { nodeId: 'st1', args: { outcome: 'failed', note: 'flaky', 'notify-opener': '' }, verified: true },
+      deps({ opener })
+    )
+    expect(r.ok).toBe(true)
+    expect(r.message).toContain('Your opener orch was told.')
+    expect(deliver).toHaveBeenCalledTimes(1)
+    const notice = (deliver.mock.calls[0] as unknown as [{ recipientNodeId: string; body: string }])[0]
+    expect(notice.recipientNodeId).toBe('orch')
+    expect(notice.body).toContain('reported its task failed')
+    expect(notice.body).not.toContain('flaky') // the station's words never ride the app's envelope
+
+    // The same outcome again does not wake the opener a second time.
+    const d = deps({ opener })
+    const args = { outcome: 'succeeded', 'notify-opener': '' }
+    await handleReportOutcome({ nodeId: 'st3', args, verified: true }, d)
+    const again = await handleReportOutcome({ nodeId: 'st3', args, verified: true }, d)
+    expect(again.message).toContain('already told')
+    expect(deliver).toHaveBeenCalledTimes(2)
+
+    const refused = await handleReportOutcome(
+      { nodeId: 'st2', args: { outcome: 'succeeded', 'notify-opener': '' }, verified: true },
+      deps()
+    )
+    expect(refused.ok).toBe(false)
+  })
+
   it('refuses an unverified caller and records nothing — a forgeable success is not evidence', async () => {
     const d = deps()
     const r = await handleReportOutcome({ nodeId: 'st1', args: { outcome: 'succeeded' }, verified: false }, d)

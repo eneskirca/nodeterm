@@ -91,7 +91,9 @@ export function sanitizeOutcomeNote(raw: unknown): string | undefined {
 export function parseReportOutcome(
   args: Record<string, string | undefined>,
   callerNodeId: string
-): { ok: true; outcome: StationOutcome; note?: string } | { ok: false; error: string } {
+):
+  | { ok: true; outcome: StationOutcome; note?: string; notifyOpener?: true }
+  | { ok: false; error: string } {
   if (args.node !== undefined && args.node !== callerNodeId) {
     return {
       ok: false,
@@ -108,7 +110,10 @@ export function parseReportOutcome(
     }
   }
   const note = sanitizeOutcomeNote(args.note)
-  return { ok: true, outcome, ...(note ? { note } : {}) }
+  // Read like `--run-now`: present and not false/no/0.
+  const notify = args['notify-opener']
+  const notifyOpener = notify !== undefined && !/^(false|no|0)$/i.test(notify.trim())
+  return { ok: true, outcome, ...(note ? { note } : {}), ...(notifyOpener ? { notifyOpener } : {}) }
 }
 
 /** One station's record out of a by-id map, read as an OWN property only — `__proto__` and
