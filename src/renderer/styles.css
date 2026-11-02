@@ -8132,6 +8132,9 @@ body,
   color: var(--attention-text);
   cursor: pointer;
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .main-drift button:disabled {
   cursor: default;
