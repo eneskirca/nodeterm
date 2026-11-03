@@ -1017,6 +1017,8 @@ describe('PullNodeView Send to agent', () => {
     expect(message).not.toContain('body 2')
     expect(message).not.toContain('build')
     expect(view.textContent).toContain('Sent to Fixer.')
+    // Sent: every item is unticked, so Send cannot repeat it.
+    expect((button(view, 'Send to Fixer') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('with several linked agents, the user picks one before Send', async () => {

@@ -628,20 +628,23 @@ function PullSendPanel(props: ViewProps & {
   const conversation = usePullRead(props.api.pullConversation, props)
   // The user's ticks over the defaults (outdated threads start unticked).
   const [ticks, setTicks] = useState<Record<string, boolean>>({})
-  const [target, setTarget] = useState(agents.length === 1 ? agents[0].id : '')
+  const [target, setTarget] = useState('')
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null)
   if (conversation === 'loading' || conversation.status !== 'ok') return readState(conversation, pull.repository)
   const items = pullFeedbackItems(conversation.lineComments, conversation.resolvedThreads, checks, d.head.sha)
     .map((item) => item.key in ticks ? { ...item, checked: ticks[item.key] } : item)
   const message = pullFeedbackMessage({ repository: pull.repository, number: pull.pullNumber }, items)
-  const to = agents.find((agent) => agent.id === target)
+  // One linked agent needs no pick; with several, only the one picked (still linked) counts.
+  const to = agents.length === 1 ? agents[0] : agents.find((agent) => agent.id === target)
   const send = async () => {
     if (busy || !message || !to || !onSendToAgent) return
     setBusy(true)
     const refused = await onSendToAgent(to.id, message).catch(() => 'The message could not be sent.')
     setBusy(false)
     setOutcome(refused ? { ok: false, text: refused } : { ok: true, text: `Sent to ${to.title}.` })
+    // Sent: untick everything, so a second click cannot send the same items again.
+    if (!refused) setTicks(Object.fromEntries(items.map((item) => [item.key, false])))
   }
   return (
     <div className="pull-send__panel">
