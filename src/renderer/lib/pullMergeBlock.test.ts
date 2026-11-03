@@ -24,7 +24,7 @@ describe('mergeBlock', () => {
     ['closed', { lifecycle: 'closed', merge: undefined }, undefined, 'closed', 'This pull request is closed.'],
     ['merged', { lifecycle: 'merged', merge: undefined }, undefined, 'merged', 'This pull request is already merged.'],
     ['conflict', { merge: 'conflict' }, undefined, 'conflict',
-      'This pull request has conflicts with main. Resolve them on its branch, then push.'],
+      'This pull request has conflicts with main. Resolve them on its branch before it can merge.'],
     ['behind with strict protection', { merge: 'behind' }, undefined, 'behind',
       'This branch is behind main, and branch protection needs it up to date. Update the branch first.'],
     ['blocked: review required', { merge: 'blocked' }, { status: 'no-checks', review: 'required' }, 'blocked',

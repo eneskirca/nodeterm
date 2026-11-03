@@ -25,7 +25,7 @@ export function mergeBlock(
   if (d.lifecycle === 'closed') return { kind: 'closed', text: 'This pull request is closed.' }
   if (d.lifecycle === 'merged') return { kind: 'merged', text: 'This pull request is already merged.' }
   if (d.merge === 'conflict') {
-    return { kind: 'conflict', text: `This pull request has conflicts with ${d.base.ref}. Resolve them on its branch, then push.` }
+    return { kind: 'conflict', text: `This pull request has conflicts with ${d.base.ref}. Resolve them on its branch before it can merge.` }
   }
   if (d.merge === 'behind') {
     return {
