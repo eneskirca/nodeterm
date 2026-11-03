@@ -121,6 +121,7 @@ import { ISSUE_WORK_EVENT, issueWorkPrompt, type IssueWorkRequest } from '@share
 import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
 import { nodesJoined, usePullAgent } from '../state/pullAgent'
 import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
+import { planPullCreated, type PullCreated } from '@shared/pull-created-hook'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -13589,7 +13590,12 @@ export function Canvas() {
   // reply on BOTH confirm and cancel. Every path replies EXACTLY ONCE so the awaiting CLI call in
   // main never hangs to its 120s timeout.
   useEffect(() => {
-    return api.onAgentControl(async ({ requestId, sourceNodeId, verb, args }) => {
+    const runControl = async (
+      { requestId, sourceNodeId, verb, args }: Parameters<Parameters<typeof api.onAgentControl>[0]>[0],
+      // Set only for the PR a verified agent's `gh pr create` made (@shared/pull-created-hook): the
+      // `open-pr` case runs as if that agent had called it, and no CLI waits for a reply.
+      fromHook?: PullCreated
+    ) => {
       // Set by the OFF-CANVAS branch below (`answersOffCanvas` / `answersFromStoredNodes`): the
       // verb runs against the owning project's SERIALIZED nodes because that project is not on
       // screen. It stays undefined on every other path, which is what makes the on-screen
@@ -13632,6 +13638,8 @@ export function Canvas() {
         // Say WHERE it went, once, in both voices. The verb bodies already say WHAT they made, so
         // none of them has to know about routing: the clause is appended here and the human strip
         // is raised here. A refusal decorates nothing — it created no node and moved no view.
+        // A hook-opened PR says so itself (the `open-pr` case), with no CLI to answer.
+        if (fromHook) return
         if (offCanvas && r.ok && offCanvas.created.length) {
           const { project, closed, created } = offCanvas
           r = {
@@ -15646,12 +15654,12 @@ export function Canvas() {
               reply({ ok: false, error: 'open-pr: the project changed while resolving its repository; run it again' })
               return
             }
-            const prPlan = planOpenPr({
-              args,
-              repo: prRepo,
-              relayGuest: !!ctlProject?.remote,
-              pullNodes: ctlNodes().filter((n) => n.type === 'pull').map((n) => ({ id: n.id, pull: n.data.pull }))
-            })
+            const prPullNodes = ctlNodes().filter((n) => n.type === 'pull').map((n) => ({ id: n.id, pull: n.data.pull }))
+            // From the hook: only the project's own repository, and it opens even when not allowed yet
+            // (the node then offers Allow).
+            const prPlan = fromHook
+              ? planPullCreated({ created: fromHook, repo: prRepo, relayGuest: !!ctlProject?.remote, pullNodes: prPullNodes })
+              : planOpenPr({ args, repo: prRepo, relayGuest: !!ctlProject?.remote, pullNodes: prPullNodes })
             if (prPlan.kind === 'refuse') {
               reply({ ok: false, error: prPlan.error })
               return
@@ -15665,7 +15673,15 @@ export function Canvas() {
               id === prId ? { kind: 'pull', contextCapable: true } : ctlLinkEndpointOf(id))
             // Never say "linked" when no link exists: an agent that cannot read context gets no edge.
             const prSkip = prLink.skipped.find((s) => s.why !== 'already linked')
-            if (prPlan.kind === 'reuse' && !offCanvas) travelToNodeRef.current(prId)
+            // The hook path never moves the camera: a toast offers the jump instead.
+            if (prPlan.kind === 'reuse' && !offCanvas && !fromHook) travelToNodeRef.current(prId)
+            if (fromHook && prPlan.kind === 'create') {
+              setNotice({
+                kind: 'info',
+                text: `PR #${prPlan.ref.pullNumber} opened`,
+                action: { label: 'Jump', run: () => travelToNodeRef.current(prId) }
+              })
+            }
             reply({
               ok: true,
               message: `${prPlan.kind === 'create' ? 'opened' : 'linked existing'} pull request node ${prId}` +
@@ -17067,7 +17083,17 @@ export function Canvas() {
       } catch (e) {
         reply({ ok: false, error: String(e) })
       }
-    })
+    }
+    const offControl = api.onAgentControl((cmd) => void runControl(cmd))
+    // Same dispatch, same `open-pr` case: placement beside the agent, the dedupe, off-screen projects.
+    const offPullCreated = api.onPullCreated(({ nodeId, ...created }) => void runControl(
+      { requestId: '', sourceNodeId: nodeId, verb: 'open-pr', args: { pr: String(created.pullNumber) } },
+      created
+    ))
+    return () => {
+      offControl()
+      offPullCreated()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
