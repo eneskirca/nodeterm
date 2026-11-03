@@ -12,6 +12,7 @@ import { PullNodeView } from './PullNodeView'
 import { PULL_REFRESH_EVENT, pullWebUrl } from '@shared/pull-node'
 import { linkedAgents, usePullAgent } from '../state/pullAgent'
 import { useAgentStatus } from '../state/agentStatus'
+import { useSettings } from '../state/settings'
 import { guardConcurrentRestart } from '../terminal/agent-restart'
 import { sendPullFeedback } from '../lib/pullFeedbackSend'
 import { PULL_WORK_EVENT, type PullWorkRequest } from '@shared/pull-work'
@@ -139,6 +140,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
             edges: getEdges, nodes: getNodes, relay,
             status: (nodeId) => useAgentStatus.getState().byId[nodeId] ?? {},
             paneOwner: (nodeId) => api.pty.paneOwner(nodeId),
+            customAgents: useSettings.getState().settings.customAgents,
             sendChatPrompt: (nodeId, text, agentId) => api.pty.sendChatPrompt(nodeId, text, agentId),
             guard: (nodeId, run) => guardConcurrentRestart(nodeId, run)()
           }, { pullId: id, targetId, message })}

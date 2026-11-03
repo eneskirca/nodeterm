@@ -20,6 +20,8 @@ export interface PullFeedbackSendDeps {
   relay: boolean
   status(nodeId: string): ChatGateStatus
   paneOwner(nodeId: string): Promise<PaneOwner | null>
+  /** The settings' custom agents, so a custom agent's pane can be recognized (as in the chat view). */
+  customAgents?: readonly { id: string; launchCmd: string; baseAgent?: string }[]
   sendChatPrompt(nodeId: string, text: string, agentId: string): Promise<ChatPromptResult>
   /** `guardConcurrentRestart`: 'not-eligible' while a restart or wake holds the node. */
   guard<T extends string>(nodeId: string, run: () => Promise<T>): Promise<T | 'not-eligible'>
@@ -38,7 +40,7 @@ export async function sendPullFeedback(
   if (mode === null || (mode === 'queue' && !canQueue(req.message))) {
     return `${target.title} cannot take a message right now (busy, asking you something, or not running). Nothing was sent.`
   }
-  const pane = await chatPaneRefusal(agentId, target.id, { paneOwner: deps.paneOwner })
+  const pane = await chatPaneRefusal(agentId, target.id, { paneOwner: deps.paneOwner, customAgents: deps.customAgents })
   if (pane) return chatPaneRefusalToast(pane, target.title)
   let result = false as ChatPromptResult
   const held = await deps.guard(target.id, async () => {
