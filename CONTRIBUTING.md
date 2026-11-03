@@ -754,7 +754,11 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   owner on GitHub. Editor is shell access, not identity. All ten are also in `SCOPED_REFUSED`. The
   `open-pr` canvas-control verb only opens or links a node and has no path to a GitHub write. A
   verified agent's `gh pr create` (Claude Code and Codex PostToolUse, `src/shared/pr-created-hook.ts`)
-  runs that same `open-pr` case from the hook payload alone, desktop only.
+  runs that same `open-pr` case from the hook payload alone, desktop only. A verified agent's own
+  `gh` PR write to the project's repository (`src/shared/pr-write-hook.ts`) is denied by its
+  PreToolUse hook with a reason that names `pr-propose`, so it reaches GitHub only through the
+  node's Confirm. That gate FAILS OPEN on every error and timeout (a broken gate must not wedge an
+  agent), so it is a habit guard, not a sandbox: never rely on it to keep a write from GitHub.
   `pr-show` only moves a linked pull node's view. `pr-propose` only stages one write on the node, and
   only the user's Confirm there sends it (armed one second after the proposal appears, behind the
   node's own guards). `src/core/github/pull-writes.guard.test.ts` fails if a control source names a
