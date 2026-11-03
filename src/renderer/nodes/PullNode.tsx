@@ -5,13 +5,12 @@ import { IconClose, IconExternal, IconReload } from '../components/icons'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import type { CanvasNode } from '../state/workspace'
 import { useProjects } from '../state/projects'
-import { useSession } from '../session/session'
+import { useSession, useSessionStores } from '../session/session'
 import { useOwningProjectId } from '../session/owning-project'
 import { MaximizeButton } from './MaximizeButton'
 import { PullNodeView } from './PullNodeView'
 import { PULL_REFRESH_EVENT, pullWebUrl } from '@shared/pull-node'
-import { linkedAgents, usePullAgent } from '../state/pullAgent'
-import { useAgentStatus } from '../state/agentStatus'
+import { linkedAgents, usePullAgent, type LinkedAgent } from '../state/pullAgent'
 import { useSettings } from '../state/settings'
 import { guardConcurrentRestart } from '../terminal/agent-restart'
 import { sendPullFeedback } from '../lib/pullFeedbackSend'
@@ -34,8 +33,10 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const highlight = usePullAgent((s) => s.highlight[id])
   // The agents joined to this node, as a string so a drag elsewhere on the canvas re-renders nothing.
   const agentsKey = useStore((s) => JSON.stringify(linkedAgents(s.edges, s.nodes, id)))
-  const agents = useMemo(() => JSON.parse(agentsKey) as { id: string; title: string }[], [agentsKey])
+  const agents = useMemo(() => JSON.parse(agentsKey) as LinkedAgent[], [agentsKey])
   const relay = source === 'relay'
+  // The node's own session's agent status (CONTRIBUTING: never the global store directly).
+  const agentStatus = useSessionStores().agentStatus.store
   // Lazy-loaded: React Flow measured the Suspense fallback, which has no handle, so its edges had no
   // anchor until the node resized. Re-measure once the real node (and its handle) is mounted.
   const updateNodeInternals = useUpdateNodeInternals()
@@ -138,7 +139,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           // A click in the node is the only sender. The target is re-checked against the canvas at the click.
           onSendToAgent={(targetId, message) => sendPullFeedback({
             edges: getEdges, nodes: getNodes, relay,
-            status: (nodeId) => useAgentStatus.getState().byId[nodeId] ?? {},
+            status: (nodeId) => agentStatus.getState().byId[nodeId] ?? {},
             paneOwner: (nodeId) => api.pty.paneOwner(nodeId),
             customAgents: useSettings.getState().settings.customAgents,
             sendChatPrompt: (nodeId, text, agentId) => api.pty.sendChatPrompt(nodeId, text, agentId),

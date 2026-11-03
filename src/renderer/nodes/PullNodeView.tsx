@@ -33,6 +33,7 @@ import { TextDiff, type DiffZone } from '../editor/TextDiff'
 import { pullLineThreads, type PullLineThread } from '../lib/pullLineThreads'
 import { mergeBlock, type PullChecksRead } from '../lib/pullMergeBlock'
 import { pullFeedbackItems, pullFeedbackMessage } from '../lib/pullFeedback'
+import type { LinkedAgent } from '../state/pullAgent'
 
 export type PullNodeApi = Pick<
   GitHubIssuesApi,
@@ -121,7 +122,7 @@ type ViewProps = {
   /** "Work on this PR": the PR's head in a fresh worktree with the default agent (Canvas does it). */
   onWork?: (detail: GitHubPullDetail) => void
   /** The agent nodes joined to this node: who "Send to agent" may send to. */
-  agents?: readonly { id: string; title: string }[]
+  agents?: readonly LinkedAgent[]
   /** Why "Send to agent" is off on this surface (a relay tab). */
   sendUnavailable?: string
   /** Sends the message to that agent; answers null when sent, else the sentence to show. */
@@ -599,10 +600,6 @@ function PullProposalBar(props: ViewProps & {
   )
 }
 
-/**
- * The requested reviewers, and "Request review…": a pick from the repository's collaborators (read
- * on the first click), sent only on Request. A user click only; no agent verb reaches it.
- */
 /** "Send to agent…": a checklist of the unresolved line comment threads and the failing checks, the
  *  linked agent to send to (picked when there are several), then Send. Nothing is written to GitHub. */
 function PullSendToAgent(props: ViewProps & { detail: GitHubPullDetail; checks: PullChecksRead }): React.JSX.Element {
@@ -625,7 +622,7 @@ function PullSendToAgent(props: ViewProps & { detail: GitHubPullDetail; checks: 
 }
 
 function PullSendPanel(props: ViewProps & {
-  detail: GitHubPullDetail; checks: PullChecksRead; agents: readonly { id: string; title: string }[]; onClose: () => void
+  detail: GitHubPullDetail; checks: PullChecksRead; agents: readonly LinkedAgent[]; onClose: () => void
 }): React.JSX.Element {
   const { pull, detail: d, checks, agents, onSendToAgent, onClose } = props
   const conversation = usePullRead(props.api.pullConversation, props)
@@ -693,6 +690,10 @@ function PullSendPanel(props: ViewProps & {
   )
 }
 
+/**
+ * The requested reviewers, and "Request review…": a pick from the repository's collaborators (read
+ * on the first click), sent only on Request. A user click only; no agent verb reaches it.
+ */
 function PullReviewers(props: ViewProps & { detail: GitHubPullDetail }): React.JSX.Element {
   const { api, projectId, pull, detail: d, onWritten } = props
   const [people, setPeople] = useState<GitHubRepoCollaboratorsResult | 'loading' | null>(null)

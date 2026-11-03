@@ -15,6 +15,7 @@ function deps(over: Partial<PullFeedbackSendDeps> = {}): PullFeedbackSendDeps & 
     relay: false,
     status: (): ChatGateStatus => ({ state: 'done' }),
     paneOwner: async () => ({ panePid: 1, tty: 't', command: 'claude', argv: ['claude'] }) as never,
+    customAgents: [],
     sendChatPrompt: async (id, text) => { sent.push(`${id}: ${text}`); return true },
     guard: async (_id, run) => run(),
     ...over

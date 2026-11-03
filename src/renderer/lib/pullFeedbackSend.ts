@@ -3,8 +3,7 @@
 // screen-checked `pty.sendChatPrompt`, held under the per-node restart lock). A user click is the
 // only caller; nothing here writes to GitHub.
 
-import type { ChatPromptResult } from '@shared/text-delivery'
-import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
+import { TEXT_NOT_SUBMITTED, isChatPromptBlocked, type ChatPromptResult } from '@shared/text-delivery'
 import type { PaneOwner } from '@shared/agents/pane-owner-predicate'
 import { chatSendMode, canQueue, type ChatGateStatus } from './chatSendGate'
 import { chatPaneRefusal, chatPaneRefusalToast } from './chatPaneGate'
@@ -21,10 +20,10 @@ export interface PullFeedbackSendDeps {
   status(nodeId: string): ChatGateStatus
   paneOwner(nodeId: string): Promise<PaneOwner | null>
   /** The settings' custom agents, so a custom agent's pane can be recognized (as in the chat view). */
-  customAgents?: readonly { id: string; launchCmd: string; baseAgent?: string }[]
+  customAgents: readonly { id: string; launchCmd: string; baseAgent?: string }[]
   sendChatPrompt(nodeId: string, text: string, agentId: string): Promise<ChatPromptResult>
   /** `guardConcurrentRestart`: 'not-eligible' while a restart or wake holds the node. */
-  guard<T extends string>(nodeId: string, run: () => Promise<T>): Promise<T | 'not-eligible'>
+  guard(nodeId: string, run: () => Promise<'done'>): Promise<'done' | 'not-eligible'>
 }
 
 /** Null = sent; else the sentence the node shows. */
@@ -42,6 +41,7 @@ export async function sendPullFeedback(
   }
   const pane = await chatPaneRefusal(agentId, target.id, { paneOwner: deps.paneOwner, customAgents: deps.customAgents })
   if (pane) return chatPaneRefusalToast(pane, target.title)
+  // The guard's outcome is a word, so the delivery result rides out beside it.
   let result = false as ChatPromptResult
   const held = await deps.guard(target.id, async () => {
     result = await deps.sendChatPrompt(target.id, req.message, agentId)
