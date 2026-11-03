@@ -9,7 +9,7 @@ import { VisibleMiniMap } from './VisibleMiniMap'
 import { GlassFrostSync } from './GlassFrostSync'
 import { MinimapDock } from './MinimapDock'
 import { keepGlassBlurWhileMoving } from '../lib/glassContrast'
-import { LINK_ENDPOINT_NOT_FOUND } from '@shared/canvas-link'
+import { AGENT_TERMINAL_LINK_REFUSED, LINK_ENDPOINT_NOT_FOUND, agentTerminalLinkVerdict, resolveAgentTerminalLinks } from '@shared/canvas-link'
 import { arrangeArgsRefusal, isTopLevelGroupArg, parseArrangeGap, TOP_ARRANGE_LAYOUTS } from '@shared/arrange-verb'
 import { geometryArgsRefusal, listGeometryRequested, parsePlaceArgs, parseResizeArgs } from '@shared/geometry-verbs'
 import { liveNodeGeometry } from '../lib/nodeGeometry'
@@ -15608,23 +15608,81 @@ export function Canvas() {
             // `--one-way` (issue #852): only --from reads the targets. Valueless flag — the shim
             // sends it as `arg.one-way=` (present, empty).
             const oneWay = 'one-way' in args
-            const { linked, skipped } = bridgeTo(from, targets, undefined, { oneWay })
-            if (linked.length === 0) {
+            // A link between an agent and a plain terminal lets the agent read that terminal's
+            // screen, which can show anything a person ran there. Which terminals an AGENT may
+            // link itself to is this machine's setting (@shared/canvas-link AgentTerminalLinks),
+            // asked per target; the terminal's recorded opener is the only proof of "its own".
+            const terminalMode = resolveAgentTerminalLinks(useSettings.getState().settings.agentTerminalLinks)
+            const fromEnd = ctlLinkEndpointOf(from)
+            const allowed: string[] = []
+            const toConfirm: string[] = []
+            const refused: { id: string; why: string }[] = []
+            for (const t of targets) {
+              const te = ctlLinkEndpointOf(t)
+              if (!fromEnd || !te || classifyLink(fromEnd, te) !== 'pane') {
+                allowed.push(t)
+                continue
+              }
+              const terminalId = fromEnd.contextCapable ? t : from
+              const opener = ctlNodes().find((n) => n.id === terminalId)?.data.openedBy
+              const verdict = agentTerminalLinkVerdict(terminalMode, sourceNodeId, opener)
+              if (verdict === 'allow') allowed.push(t)
+              else if (verdict === 'confirm') toConfirm.push(t)
+              else refused.push({ id: t, why: AGENT_TERMINAL_LINK_REFUSED })
+            }
+            const finishLink = (ids: string[], extraSkipped: { id: string; why: string }[]): void => {
+              const plan = ids.length ? bridgeTo(from, ids, undefined, { oneWay }) : { linked: [], skipped: [] }
+              const linked = plan.linked
+              const skipped = [...plan.skipped, ...extraSkipped]
+              if (linked.length === 0) {
+                reply({
+                  ok: false,
+                  error: `link: nothing linked — ${skipped.map((s) => `${s.id}: ${s.why}`).join('; ')}`
+                })
+                return
+              }
+              const note = skipped.length
+                ? ` (skipped ${skipped.map((s) => `${s.id}: ${s.why}`).join('; ')})`
+                : ''
               reply({
-                ok: false,
-                error: `link: nothing linked — ${skipped.map((s) => `${s.id}: ${s.why}`).join('; ')}`
+                ok: true,
+                message: oneWay
+                  ? `linked one-way: ${from} reads ${linked.join(', ')}${note}`
+                  : `linked ${from} ↔ ${linked.join(', ')}${note}`,
+                result: { from, linked, skipped }
               })
+            }
+            if (toConfirm.length === 0) {
+              finishLink(allowed, refused)
               return
             }
-            const note = skipped.length
-              ? ` (skipped ${skipped.map((s) => `${s.id}: ${s.why}`).join('; ')})`
-              : ''
-            reply({
-              ok: true,
-              message: oneWay
-                ? `linked one-way: ${from} reads ${linked.join(', ')}${note}`
-                : `linked ${from} ↔ ${linked.join(', ')}${note}`,
-              result: { from, linked, skipped }
+            // `confirm` mode: ONE dialog for every terminal this call did not earn by opening it.
+            // No waiver is offered — the setting itself is the waiver, and widening it is the person's.
+            if (confirmBusy()) {
+              finishLink(allowed, [
+                ...refused,
+                ...toConfirm.map((id) => ({ id, why: 'a confirmation is already pending — try again' }))
+              ])
+              return
+            }
+            const titleOfNode = (id: string) =>
+              (ctlNodes().find((n) => n.id === id)?.data.title as string | undefined) || id
+            const deny = (why: string) => () =>
+              finishLink(allowed, [...refused, ...toConfirm.map((id) => ({ id, why }))])
+            setConfirm({
+              message:
+                `Agent "${srcTitle}" wants to read the screen of ${toConfirm.length === 1 ? 'a terminal' : `${toConfirm.length} terminals`} it did not open:\n\n` +
+                toConfirm.map((id) => `• ${titleOfNode(fromEnd?.contextCapable ? id : from)} (${fromEnd?.contextCapable ? id : from})`).join('\n') +
+                `\n\nIt will see whatever those terminals show, now and later, until the link is removed.`,
+              confirmLabel: 'Allow',
+              requestedBy: srcTitle,
+              expiresAt: confirmExpiresAt(Date.now()),
+              onExpire: deny('expired before the user answered'),
+              onConfirm: () => {
+                setConfirm(null)
+                finishLink([...allowed, ...toConfirm], refused)
+              },
+              onCancel: deny('denied by user')
             })
             return
           }

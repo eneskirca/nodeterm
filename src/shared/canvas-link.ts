@@ -24,6 +24,47 @@ export const LINK_NOT_LINKABLE =
  *  always one-way toward the agent — the terminal has no agent to read anything back with. */
 export type LinkKind = 'context' | 'note' | 'pane'
 
+/**
+ * Which plain terminals an AGENT may link itself to with the `link` verb (`settings.agentTerminalLinks`,
+ * machine-local, never settable from the canvas CLI). A pane link lets an agent read a terminal's
+ * screen, and a screen can show anything a person ran there, so an agent needs no more than the
+ * terminals it opened itself — `open-terminal` links those automatically. A link a PERSON draws on
+ * the canvas is never subject to this; nor is the Server Edition, whose `link` already requires the
+ * caller to have opened every endpoint (a stricter rule than any value here).
+ *   own     — only a terminal whose recorded opener (`data.openedBy`) is the calling agent
+ *   confirm — any terminal of the project; a link to one the agent did not open asks first
+ *   any     — no limit
+ */
+export type AgentTerminalLinks = 'own' | 'confirm' | 'any'
+export const AGENT_TERMINAL_LINKS_DEFAULT: AgentTerminalLinks = 'own'
+export const AGENT_TERMINAL_LINK_CHOICES: readonly AgentTerminalLinks[] = ['own', 'confirm', 'any']
+export const AGENT_TERMINAL_LINK_LABELS: Record<AgentTerminalLinks, string> = {
+  own: 'Only terminals the agent opened',
+  confirm: 'Any terminal in the project, after I confirm',
+  any: 'Any terminal in the project'
+}
+/** settings.json is hand-editable: anything but a known value reads as the safe default. */
+export function resolveAgentTerminalLinks(value: unknown): AgentTerminalLinks {
+  return value === 'own' || value === 'confirm' || value === 'any' ? value : AGENT_TERMINAL_LINKS_DEFAULT
+}
+export const AGENT_TERMINAL_LINK_REFUSED =
+  'you did not open this terminal: this machine lets an agent link itself only to terminals it opened ' +
+  '(Settings → Agents → "Agents may link to terminals"); a person can draw the link on the canvas'
+/** One agent-made pane link: may it be drawn, must the person confirm it, or is it refused? The
+ *  opener is the terminal node's `data.openedBy`, which is git-shared text: only an exact match on
+ *  the caller's own id counts; anything else (absent, another id, not a string) is not proof. */
+export function agentTerminalLinkVerdict(
+  mode: AgentTerminalLinks,
+  callerId: string,
+  terminalOpenedBy: unknown
+): 'allow' | 'confirm' | 'refuse' {
+  if (mode === 'any') return 'allow'
+  if (typeof terminalOpenedBy === 'string' && terminalOpenedBy !== '' && terminalOpenedBy === callerId) {
+    return 'allow'
+  }
+  return mode === 'confirm' ? 'confirm' : 'refuse'
+}
+
 /** The endpoints of a context link, plus its optional one-way reader (issue #852). */
 export interface LinkEdge {
   source: string
