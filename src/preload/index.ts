@@ -1038,6 +1038,11 @@ const api: NodeTerminalApi = {
     ipcRenderer.on(IPC.agentControl, handler)
     return () => ipcRenderer.removeListener(IPC.agentControl, handler)
   },
+  onPullCreated: (listener) => {
+    const handler = (_e: unknown, event: unknown) => listener(event as never)
+    ipcRenderer.on(IPC.agentPullCreated, handler)
+    return () => ipcRenderer.removeListener(IPC.agentPullCreated, handler)
+  },
   sendAgentControlResult: (payload) => ipcRenderer.send(IPC.agentControlResult, payload),
   // The `browser` verb resolve round-trip (S8 PR 7): main asks the renderer which project owns the
   // source, whether it is control-capable, and whether the capability is on right now — the renderer

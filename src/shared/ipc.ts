@@ -253,6 +253,8 @@ export const IPC = {
   /** hud → main: dismiss one HUD row by hand (a stuck session). Arg: `nodeId: string`. */
   hudDismiss: 'hud:dismiss',
   agentControl: 'agent:control',
+  /** main → renderer: a verified agent's `gh pr create` made this PR (@shared/pull-created-hook). */
+  agentPullCreated: 'agent:pull-created',
   agentControlResult: 'agent:control-result',
   agentMessageDeliver: 'agent:message-deliver',
   /** Renderer → main: deliver ONE mentioned session's copy of a board comment the local user just

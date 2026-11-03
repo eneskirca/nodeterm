@@ -360,6 +360,7 @@ import { initCanvasControl, canvasControlShimPath } from './canvas-control'
 import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control-verbs'
 import { browserFlagRefusal, issueFlagRefusal } from '../core/canvas-control-core'
 import { openPrArgsRefusal } from '../shared/open-pr-verb'
+import { pullCreatedEvent } from '../shared/pull-created-hook'
 import { pullAgentArgsRefusal } from '../shared/pull-agent-verbs'
 import { afterPrFlagRefusal } from '../shared/pr-wait'
 import { arrangeArgsRefusal } from '../shared/arrange-verb'
@@ -3866,7 +3867,10 @@ app.whenReady().then(async () => {
   }
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
   // Hook server validates session-env capacity and caller identity once for both shells.
-  hookServer.setRawListener((agentId, nodeId, payload, _meta) => {
+  hookServer.setRawListener((agentId, nodeId, payload, meta) => {
+    // A verified agent's `gh pr create`: the canvas opens that PR's node beside it (open-pr's plan).
+    const pullCreated = pullCreatedEvent(agentId, nodeId, payload, meta)
+    if (pullCreated) getMainWindow()?.webContents.send(IPC.agentPullCreated, pullCreated)
     if (agentId === 'cursor') {
       // One shared step (core/cursor-chat.ts `applyCursorRaw`): subagent cards, the meter, and the
       // child-event guard. A remote node gets cards but no meter (its chat is on the host).
@@ -4116,7 +4120,7 @@ app.whenReady().then(async () => {
       const transcriptPath = safeRemoteTranscriptPath(p.transcript_path, remoteHome)
       if (p.session_id && transcriptPath) {
         const ref: RemoteFileRef = { conn: rt.conn, controlPath: rt.controlPath, path: transcriptPath }
-        remoteContextTail.track(p.session_id, ref, _meta.contextWindow)
+        remoteContextTail.track(p.session_id, ref, meta.contextWindow)
         // Hook-fed from now on: a later failed read must not drop it (see remote-transcript-page).
         rememberHookRef(remoteTranscriptRefs, p.session_id, ref)
       }
@@ -4175,7 +4179,7 @@ app.whenReady().then(async () => {
     }
     const transcriptPath = safeTranscriptPath(p.transcript_path)
     // Context-window meter: tail the session transcript (any event carrying both fields).
-    if (p.session_id && transcriptPath) contextTail.track(p.session_id, transcriptPath, _meta.contextWindow)
+    if (p.session_id && transcriptPath) contextTail.track(p.session_id, transcriptPath, meta.contextWindow)
     if (nodeId && p.session_id) nodeContextSession.set(nodeId, p.session_id)
     if (nodeId && p.session_id && transcriptPath) setNodeTranscript(nodeId, p.session_id, transcriptPath)
     if (p.hook_event_name === 'SessionEnd' && p.session_id) contextTail.untrack(p.session_id)
