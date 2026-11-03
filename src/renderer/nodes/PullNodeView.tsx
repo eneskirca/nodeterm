@@ -396,7 +396,7 @@ function PullFileDiff(props: ViewProps & LineProps & {
     <>
       {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
       <p className="pull-node__empty">
-        Click a line number to comment on that line. GitHub takes comments only on changed lines and the lines next to them.
+        Click a line number (or the + beside it) to comment on that line. GitHub takes comments only on changed lines and the lines next to them.
       </p>
       <TextDiff className="pull-files__diff" path={path} original={sideText(contents.base)} modified={sideText(contents.head)}
         highlight={highlight} zones={zones}

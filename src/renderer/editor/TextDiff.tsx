@@ -86,9 +86,16 @@ export function TextDiff({ path, original, modified, className, highlight, zones
     const editor = createReadOnlyDiffEditor(el, themeRef.current)
     editorRef.current = editor
     editor.setModel({ original: before, modified: after })
+    // The whole gutter of a line counts, not only its digits: in a narrow node Monaco shows the diff
+    // inline, where the +/- sign beside the number is its own lane (GUTTER_LINE_DECORATIONS).
+    const gutter: ReadonlySet<monaco.editor.MouseTargetType> = new Set([
+      monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS,
+      monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS,
+      monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN
+    ])
     const clicks = (['original', 'modified'] as const).map((side) =>
       (side === 'original' ? editor.getOriginalEditor() : editor.getModifiedEditor()).onMouseDown((event) => {
-        if (event.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS && event.target.position) {
+        if (gutter.has(event.target.type) && event.target.position) {
           lineClick.current?.(side, event.target.position.lineNumber)
         }
       }))
