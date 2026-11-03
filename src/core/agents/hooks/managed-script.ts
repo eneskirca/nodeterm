@@ -90,6 +90,7 @@ import { HOOK_CURL_HEADERS_SH } from '../hook-curl-config-sh'
 import { NODE_TOKEN_READ_SH } from '../node-token-sh'
 import { HOOK_ENDPOINT_FALLBACK_SH } from '../hook-endpoint-failover-sh'
 import { ANTIGRAVITY_EVENT_ENV, antigravityDecisionCaseSh } from './antigravity-decision'
+import { PRE_TOOL_DENY_PREFIX } from '../../../shared/pr-write-hook'
 import {
   PERMISSION_DECISION_MAX_BYTES,
   PERMISSION_DECISION_PREFIX,
@@ -293,6 +294,78 @@ function antigravityAnswerFirst(): string[] {
   ]
 }
 
+/** Half-second-free poll of the PR write gate: 20 x 0.2 s = a 4 s hold, past desktop main's 2 s answer bound. */
+export const PR_GATE_POLLS = 20
+/** Largest gate answer the script prints, in bytes (a deny reason is a few hundred). */
+export const PR_GATE_ANSWER_MAX_BYTES = 4096
+
+/**
+ * The PR write gate's arm (docs/github-issues-kanban.md, "Agent writes go through Confirm"): a Bash
+ * PreToolUse whose command looks like `gh ... pr ...` or `gh ... api ...` gets a gate id, which makes
+ * the POST below run in the foreground and the answer poll after it run at all. Builtins only (`case`,
+ * `${x#...}`), so every other tool call costs nothing new. The match is deliberately loose: desktop
+ * main parses the command and answers `allow` for anything that is not a write to the project's PR.
+ * Claude: only for the foreground claude of the pane, like the permission wait (claude-pane-origin.ts).
+ */
+const PR_GATE_ARM_SH = (claude: boolean): string[] => [
+  'nt_gate=""',
+  `if ${claude ? '[ "$nt_claude_fg" != 0 ] && ' : ''}[ -z "$nt_pending" ]; then`,
+  '  case "$payload" in',
+  '    *\'"hook_event_name":"PreToolUse"\'*|*\'"hook_event_name": "PreToolUse"\'*)',
+  '      case "$payload" in',
+  '        *\'"tool_name":"Bash"\'*|*\'"tool_name": "Bash"\'*)',
+  '          nt_cmd=${payload#*\'"command":\'}',
+  '          case "$nt_cmd" in',
+  '            *[!A-Za-z0-9_.-]gh[[:space:]]*|*\'\\ngh\'[[:space:]]*|*\'\\tgh\'[[:space:]]*)',
+  '              case "$nt_cmd" in',
+  '                *[[:space:]]pr[[:space:]]*|*[[:space:]]api[[:space:]]*)',
+  '                  nt_gnode=$(printf %s "$NODETERM_NODE_ID" | tr -c \'A-Za-z0-9_-\' \'_\')',
+  '                  nt_gms=$(date +%s%3N 2>/dev/null)',
+  '                  case "$nt_gms" in \'\'|*[!0-9]*) nt_gms=$(date +%s) ;; esac',
+  '                  nt_gate="gate-${nt_gnode}-${nt_gms}-$$"',
+  '                  ;;',
+  '              esac',
+  '              ;;',
+  '          esac',
+  '          ;;',
+  '      esac',
+  '      ;;',
+  '  esac',
+  'fi'
+]
+
+/**
+ * The gate's answer poll. Desktop main writes `<gate id>.answer` under the pending dir (the same
+ * answer-file transport as hook-reply approvals): `allow`, or the PreToolUse deny JSON, which is
+ * printed verbatim only when it has PRE_TOOL_DENY_PREFIX, ends with `}`, fits the cap and holds no
+ * control byte. Anything else, and a hold that times out, prints nothing: the command runs (fail open).
+ */
+const PR_GATE_POLL_SH: readonly string[] = [
+  'if [ -n "$nt_gate" ]; then',
+  '  nt_answer="$HOME/.nodeterm/pending/$nt_gate.answer"',
+  '  nt_i=0',
+  '  while :; do',
+  '    if [ -f "$nt_answer" ]; then',
+  '      nt_size=$(wc -c < "$nt_answer" 2>/dev/null)',
+  `      nt_decision=$(head -c ${PR_GATE_ANSWER_MAX_BYTES + 1} "$nt_answer" 2>/dev/null)`,
+  '      rm -f "$nt_answer" 2>/dev/null || :',
+  '      case "$nt_decision" in',
+  `        '${PRE_TOOL_DENY_PREFIX}'*'}')`,
+  `          if [ "$nt_size" -le ${PR_GATE_ANSWER_MAX_BYTES} ] 2>/dev/null && [ "$(printf '%s' "$nt_decision" | tr -d '\\000-\\037')" = "$nt_decision" ]; then`,
+  "            printf '%s\\n' \"$nt_decision\"",
+  '          fi',
+  '          ;;',
+  '      esac',
+  '      exit 0',
+  '    fi',
+  `    [ "$nt_i" -lt ${PR_GATE_POLLS} ] || break`,
+  '    if sleep 0.2 2>/dev/null; then nt_i=$((nt_i + 1)); else sleep 1; nt_i=$((nt_i + 5)); fi',
+  '  done',
+  '  # No answer in the hold: print nothing, so the command runs. Desktop main logs its own side.',
+  '  exit 0',
+  'fi'
+]
+
 export function buildManagedScript(
   agentId: string,
   identityRoot: string | null = safeIdentityRoot()
@@ -314,6 +387,9 @@ export function buildManagedScript(
   const eventField = antigravity
     ? [`      --data-urlencode "nodeterm_hook_event=\${${ANTIGRAVITY_EVENT_ENV}}" \\`]
     : []
+  // The PR write gate (prWriteGateSh): Claude Code and Codex only, the two whose PreToolUse deny we read.
+  const prGate = agentId === 'claude' || agentId === 'codex'
+  const gateField = prGate ? ['      --data-urlencode "nodeterm_gate_id=${nt_gate}" \\'] : []
   return [
     '#!/bin/sh',
     ...(antigravity ? antigravityAnswerFirst() : []),
@@ -486,6 +562,7 @@ export function buildManagedScript(
           '# Hook-reply approvals are claude-only; this script never arms the wait, even when the',
           '# session env inherited NODETERM_PERM_WAIT_SECS from a claude node (issue #409).'
         ]),
+    ...(prGate ? PR_GATE_ARM_SH(agentId === 'claude') : []),
     // The candidate walk + adopt helpers are SHARED with the canvas-control and context-link
     // shims (hook-endpoint-failover-sh.ts) — issue #445: the shims never learned this walk, so
     // the same stale endpoint a hook event healed itself around stopped every canvas-control
@@ -508,6 +585,7 @@ export function buildManagedScript(
     '      --data-urlencode "nodeterm_context_window=${nt_context_window}" \\',
     '      --data-urlencode "nodeterm_pending_id=${nt_pending}" \\',
     ...eventField,
+    ...gateField,
     ...originFields,
     '      --data-urlencode "payload@${nt_payload_arg}" 2>/dev/null) || return 1',
     '  elif [ -n "$NODETERM_HOOK_PORT" ]; then',
@@ -520,6 +598,7 @@ export function buildManagedScript(
     '      --data-urlencode "nodeterm_context_window=${nt_context_window}" \\',
     '      --data-urlencode "nodeterm_pending_id=${nt_pending}" \\',
     ...eventField,
+    ...gateField,
     ...originFields,
     '      --data-urlencode "payload@${nt_payload_arg}" 2>/dev/null) || return 1',
     '  else',
@@ -573,12 +652,22 @@ export function buildManagedScript(
     '# on the network (fire-and-forget, exactly as before).',
     'if [ -n "$nt_pending" ]; then',
     '  nt_send_request',
+    ...(prGate
+      ? [
+          'elif [ -n "$nt_gate" ]; then',
+          '  # The PR write gate: in the foreground, so the answer poll below starts after the ask landed.',
+          '  # No server reached = nobody will answer: fail open now instead of waiting out the hold.',
+          '  nt_send_request || nt_gate=""',
+          '  rm -f "$nt_payload_file" 2>/dev/null || :'
+        ]
+      : []),
     'else',
     '  # Background the POST (a live session\'s hot path never blocks) and delete the payload temp',
     '  # file only AFTER it — and its one fallback retry — have finished reading it, so the file',
     '  # never outlives its reader. The perm-wait branch keeps the file for its "answered" POST.',
     '  { nt_send_request; rm -f "$nt_payload_file" 2>/dev/null || :; } &',
     'fi',
+    ...(prGate ? PR_GATE_POLL_SH : []),
     // The poll/decision section below is claude-only at BUILD time, like the arm above: with
     // nt_pending permanently empty it was already unreachable in other agents' scripts, but
     // keeping claude's decision JSON inside codex.sh is exactly the kind of latent cross-dialect

@@ -1148,6 +1148,9 @@ export class HookServer {
           // so the normalizer sees it and maps it to a synthetic working transition. See
           // docs/hook-reply-approvals.md.
           if (form.nodeterm_answered) payload.nodeterm_answered = form.nodeterm_answered
+          // The PR write gate's ticket (managed-script.ts PR_GATE_ARM_SH): desktop main answers it in
+          // the pending dir (@shared/pr-write-hook).
+          if (form.nodeterm_gate_id) payload.nodeterm_gate_id = form.nodeterm_gate_id
           // The EVENT NAME, for an agent whose hook payload does not carry one. Antigravity (`agy`)
           // sends five events with no name in any of them, and two of them (Pre/PostInvocation) have
           // identical keys, so the managed command exports the name and the script sends it as this
