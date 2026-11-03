@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useId, useState } from 'react'
 import type { GitHubIssuesApi } from '@shared/github-issues'
 import type {
   GitHubPullConversationResult,
@@ -124,6 +124,8 @@ type ViewProps = {
   sendUnavailable?: string
   /** Sends the message to that agent; answers null when sent, else the sentence to show. */
   onSendToAgent?: (agentId: string, message: string) => Promise<string | null>
+  /** Allows the node's repository on this computer (the add menu's approve); true when it landed. */
+  onAllow?: () => Promise<boolean>
 }
 
 /** A bridge call that rejected (a dropped socket) reads as unreachable. */
@@ -147,6 +149,26 @@ function usePullRead<R>(
   return result
 }
 
+const AllowContext = createContext<(() => Promise<boolean>) | undefined>(undefined)
+
+/** A repository not allowed yet: one click allows it, then the node reads again. */
+function AllowRepo({ repository }: { repository: string }): React.JSX.Element {
+  const onAllow = useContext(AllowContext)
+  const [state, setState] = useState<'idle' | 'busy' | 'failed'>('idle')
+  if (!onAllow) return <p className="pull-node__state" role="status">{REFUSAL_TEXT['not-approved'](repository)}</p>
+  return (
+    <div className="pull-node__state" role="status">
+      <p>{repository} is not allowed on this computer yet.</p>
+      <button className="pull-node__web" disabled={state === 'busy'}
+        onClick={() => {
+          setState('busy')
+          void onAllow().catch(() => false).then((ok) => setState(ok ? 'idle' : 'failed'))
+        }}>{`Allow ${repository}?`}</button>
+      {state === 'failed' && <p className="pull-compose__error" role="alert">{`Could not allow ${repository}. Try again.`}</p>}
+    </div>
+  )
+}
+
 /** The loading, refused and failed states every tab shows the same way. */
 function readState(
   result: Read<Exclude<
@@ -157,6 +179,7 @@ function readState(
 ): React.JSX.Element {
   if (result === 'loading') return <p className="pull-node__state">Loading pull request…</p>
   if (result.status === 'refused') {
+    if (result.reason === 'not-approved') return <AllowRepo repository={repository} />
     return <p className="pull-node__state" role="status">{REFUSAL_TEXT[result.reason](repository)}</p>
   }
   return <p className="pull-node__state" role="status">{FAILURE_TEXT[result.reason]}</p>
@@ -212,7 +235,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   const dropPending = useCallback((sent: readonly PullLineDraft[]) =>
     setPending((list) => list.filter((draft) => !sent.includes(draft))), [])
   return (
-    <>
+    <AllowContext.Provider value={props.onAllow}>
       {proposal && (
         <PullProposalBar key={proposal.seq} {...props} proposal={proposal} seen={seen} seenChecks={seenChecks} ownPull={ownPull}
           onDismiss={() => onDismiss?.()} />
@@ -240,7 +263,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
           <PullConversation {...props} seenHead={seenHead} ownPull={ownPull} pending={pending} onDropPending={dropPending} />
         </div>
       )}
-    </>
+    </AllowContext.Provider>
   )
 }
 

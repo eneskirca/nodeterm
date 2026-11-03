@@ -14,6 +14,7 @@ import { linkedAgents, usePullAgent, type LinkedAgent } from '../state/pullAgent
 import { useSettings } from '../state/settings'
 import { guardConcurrentRestart } from '../terminal/agent-restart'
 import { sendPullFeedback } from '../lib/pullFeedbackSend'
+import { allowProjectRepo } from '../lib/allowRepo'
 import { PULL_WORK_EVENT, type PullWorkRequest } from '@shared/pull-work'
 
 /**
@@ -135,6 +136,13 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           highlight={highlight}
           agents={agents}
           sendUnavailable={relay ? 'Send to agent is not available in a relay tab.' : undefined}
+          // A repository not allowed yet (a PR an agent just made): one click allows it, then the node
+          // reads again. Not in a relay tab: allowing is the host's own decision.
+          onAllow={pull && projectId && !relay ? async () => {
+            const ok = await allowProjectRepo(api.githubControl, projectId, pull.repository).catch(() => false)
+            if (ok) setRefreshTick((tick) => tick + 1)
+            return ok
+          } : undefined}
           // A click in the node is the only sender. The target is re-checked against the canvas at the click.
           onSendToAgent={(targetId, message) => sendPullFeedback({
             edges: getEdges, nodes: getNodes, relay,

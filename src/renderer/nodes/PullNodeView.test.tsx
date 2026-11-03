@@ -128,6 +128,38 @@ describe('PullNodeView overview', () => {
     expect(api.pullChecks).not.toHaveBeenCalled()
   })
 
+  it('offers Allow for a repository not allowed yet, and reads again once it is', async () => {
+    const api = fakeApi({ status: 'refused', reason: 'not-approved' })
+    const onAllow = vi.fn(async () => true)
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} onAllow={onAllow} />)
+    })
+    const allow = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Allow o/r?')
+    expect(allow).toBeDefined()
+    await act(async () => { allow!.click() })
+    expect(onAllow).toHaveBeenCalledTimes(1)
+    expect(host.textContent).not.toContain('Could not allow')
+  })
+
+  it('says so when Allow did not land, and offers it again', async () => {
+    const api = fakeApi({ status: 'refused', reason: 'not-approved' })
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()}
+        onAllow={vi.fn(async () => false)} />)
+    })
+    await act(async () => { [...host.querySelectorAll('button')].find((b) => b.textContent === 'Allow o/r?')!.click() })
+    expect(host.textContent).toContain('Could not allow o/r. Try again.')
+    expect([...host.querySelectorAll('button')].some((b) => b.textContent === 'Allow o/r?' && !b.disabled)).toBe(true)
+  })
+
   it('keeps the last content and says throttled when the latest read was throttled', async () => {
     const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1, stale: 'throttled' }))
     expect(view.textContent).toContain('Add the pull node')
