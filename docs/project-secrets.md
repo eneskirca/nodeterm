@@ -56,7 +56,7 @@ values. Add an `agents.secrets` list:
 Rules for each entry:
 
 - `env` is the variable name your agents expect, for example `GH_TOKEN` or
-  `OP_SERVICE_ACCOUNT_TOKEN`. Letters, digits and `_`, not starting with a digit. Names that would
+  `API_TOKEN`. Letters, digits and `_`, not starting with a digit. Names that would
   break a session are refused: `PATH`, `HOME`, `SHELL`, `TERM`, `USER`, `PWD`, `NODE_OPTIONS`,
   `LD_PRELOAD`, any `LC_*`, `XDG_*` or `NODETERM_*` name, and the names nodeterm uses to pick an
   agent's account. Each name may appear once.
