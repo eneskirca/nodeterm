@@ -283,7 +283,7 @@ function PullOverview(props: ViewProps & {
       {props.onWork && (d.lifecycle === 'open' || d.lifecycle === 'draft') && (
         <button className="pull-compose__button" onClick={() => props.onWork?.(d)}>Work on this PR</button>
       )}
-      {props.onSendToAgent && <PullSendToAgent {...props} detail={d} checks={checks} />}
+      {props.onSendToAgent && (d.lifecycle === 'open' || d.lifecycle === 'draft') && <PullSendToAgent {...props} detail={d} checks={checks} />}
       <PullReviewers {...props} detail={d} />
       <PullMerge {...props} detail={d} checks={checks} />
       {d.body.trim()
