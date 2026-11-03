@@ -23,7 +23,6 @@ import {
   type PermissionAnswer
 } from '../../shared/agents/permission-answer'
 import type { NormalizedAgentEvent } from '../../shared/agents/normalize'
-import { PRE_TOOL_DENY_PREFIX } from '../../shared/pr-write-hook'
 
 /**
  * Every JSON answer core writes starts with exactly these bytes, followed by `"allow"` or `"deny"`.
@@ -301,9 +300,7 @@ export function isBoundedAnswerContent(content: string): boolean {
   if (!content.endsWith('}')) return false
   return (
     content.startsWith(`${PERMISSION_DECISION_PREFIX}"allow"`) ||
-    content.startsWith(`${PERMISSION_DECISION_PREFIX}"deny"`) ||
-    // The PR write gate's deny (@shared/pr-write-hook): only its own poll prints this prefix.
-    content.startsWith(PRE_TOOL_DENY_PREFIX)
+    content.startsWith(`${PERMISSION_DECISION_PREFIX}"deny"`)
   )
 }
 

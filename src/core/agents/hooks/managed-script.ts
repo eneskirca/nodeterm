@@ -90,7 +90,7 @@ import { HOOK_CURL_HEADERS_SH } from '../hook-curl-config-sh'
 import { NODE_TOKEN_READ_SH } from '../node-token-sh'
 import { HOOK_ENDPOINT_FALLBACK_SH } from '../hook-endpoint-failover-sh'
 import { ANTIGRAVITY_EVENT_ENV, antigravityDecisionCaseSh } from './antigravity-decision'
-import { PRE_TOOL_DENY_PREFIX } from '../../../shared/pr-write-hook'
+import { PR_GATE_ANSWER_MAX_BYTES, PRE_TOOL_DENY_PREFIX } from '../../../shared/pr-write-hook'
 import {
   PERMISSION_DECISION_MAX_BYTES,
   PERMISSION_DECISION_PREFIX,
@@ -294,14 +294,13 @@ function antigravityAnswerFirst(): string[] {
   ]
 }
 
-/** Half-second-free poll of the PR write gate: 20 x 0.2 s = a 4 s hold, past desktop main's 2 s answer bound. */
-export const PR_GATE_POLLS = 20
-/** Largest gate answer the script prints, in bytes (a deny reason is a few hundred). */
-export const PR_GATE_ANSWER_MAX_BYTES = 4096
+/** Polls of the PR write gate's answer, 0.2 s apart: a 5 s hold, past desktop main's 3 s answer bound. */
+export const PR_GATE_POLLS = 25
 
 /**
  * The PR write gate's arm (docs/github-issues-kanban.md, "Agent writes go through Confirm"): a Bash
- * PreToolUse whose command looks like `gh ... pr ...` or `gh ... api ...` gets a gate id, which makes
+ * PreToolUse whose command has a `gh` word and a write word (`pr` then merge, review, comment or
+ * close; `api` then a merge, reviews or comments path) gets a gate id, which makes
  * the POST below run in the foreground and the answer poll after it run at all. Builtins only (`case`,
  * `${x#...}`), so every other tool call costs nothing new. The match is deliberately loose: desktop
  * main parses the command and answers `allow` for anything that is not a write to the project's PR.
@@ -318,7 +317,7 @@ const PR_GATE_ARM_SH = (claude: boolean): string[] => [
   '          case "$nt_cmd" in',
   '            *[!A-Za-z0-9_.-]gh[[:space:]]*|*\'\\ngh\'[[:space:]]*|*\'\\tgh\'[[:space:]]*)',
   '              case "$nt_cmd" in',
-  '                *[[:space:]]pr[[:space:]]*|*[[:space:]]api[[:space:]]*)',
+  '                *[[:space:]]pr[[:space:]]*merge*|*[[:space:]]pr[[:space:]]*review*|*[[:space:]]pr[[:space:]]*comment*|*[[:space:]]pr[[:space:]]*close*|*[[:space:]]api[[:space:]]*/merge*|*[[:space:]]api[[:space:]]*/reviews*|*[[:space:]]api[[:space:]]*/comments*)',
   '                  nt_gnode=$(printf %s "$NODETERM_NODE_ID" | tr -c \'A-Za-z0-9_-\' \'_\')',
   '                  nt_gms=$(date +%s%3N 2>/dev/null)',
   '                  case "$nt_gms" in \'\'|*[!0-9]*) nt_gms=$(date +%s) ;; esac',
@@ -387,7 +386,7 @@ export function buildManagedScript(
   const eventField = antigravity
     ? [`      --data-urlencode "nodeterm_hook_event=\${${ANTIGRAVITY_EVENT_ENV}}" \\`]
     : []
-  // The PR write gate (prWriteGateSh): Claude Code and Codex only, the two whose PreToolUse deny we read.
+  // The PR write gate (PR_GATE_ARM_SH, PR_GATE_POLL_SH): Claude Code and Codex, whose PreToolUse deny we read.
   const prGate = agentId === 'claude' || agentId === 'codex'
   const gateField = prGate ? ['      --data-urlencode "nodeterm_gate_id=${nt_gate}" \\'] : []
   return [

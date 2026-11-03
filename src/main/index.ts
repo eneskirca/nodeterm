@@ -361,7 +361,7 @@ import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control
 import { browserFlagRefusal, issueFlagRefusal } from '../core/canvas-control-core'
 import { openPrArgsRefusal } from '../shared/open-pr-verb'
 import { pullCreatedEvent } from '../shared/pr-created-hook'
-import { answerPrWriteGate, PR_GATE_ASK_MS, prWriteEvent, type PrWriteEvent } from '../shared/pr-write-hook'
+import { answerPrWriteGate, isPrGateAnswer, isPrGateId, PR_GATE_ASK_MS, prWriteEvent, type PrWriteEvent } from '../shared/pr-write-hook'
 import { pullAgentArgsRefusal } from '../shared/pull-agent-verbs'
 import { afterPrFlagRefusal } from '../shared/pr-wait'
 import { arrangeArgsRefusal } from '../shared/arrange-verb'
@@ -3511,14 +3511,19 @@ app.whenReady().then(async () => {
   // the project cwd). pendingId is validated before it is interpolated into any path/command.
   // The held request's I/O for a node — shared with the phone's `agent.answer` (hostBridge.chat) so
   // both answer paths reach the SAME host the same way.
-  const heldPermissionIoFor = (nodeId: string, pendingId: string): HeldPermissionIo => {
+  // `bounded`: what the polling hook prints (the PR write gate's differs from a permission's).
+  const heldPermissionIoFor = (
+    nodeId: string,
+    pendingId: string,
+    bounded?: (content: string) => boolean
+  ): HeldPermissionIo => {
     const sshProjectId = workspaceStore.sshProjectIdForNode(nodeId)
     return sshProjectId && sshProjectManager
       ? {
           readPending: () => sshProjectManager!.readPendingRequest(sshProjectId, pendingId),
-          write: (content) => sshProjectManager!.writePendingAnswer(sshProjectId, pendingId, content)
+          write: (content) => sshProjectManager!.writePendingAnswer(sshProjectId, pendingId, content, bounded)
         }
-      : localHeldPermissionIo(pendingId, homedir())
+      : localHeldPermissionIo(pendingId, homedir(), bounded)
   }
   corePlatform.handle(IPC.agentAnswerPermission, async (payload: AnswerPermissionPayload) => {
     const { nodeId, pendingId } = payload ?? ({} as AnswerPermissionPayload)
@@ -3896,12 +3901,12 @@ app.whenReady().then(async () => {
     // "use pr-propose", the pull node's Confirm bar); after it ran, that PR's pull nodes refresh.
     const prWrite = prWriteEvent(agentId, nodeId, payload, meta)
     const gateId = payload.nodeterm_gate_id
-    if (typeof gateId === 'string' && isValidPendingId(gateId)) {
+    if (isPrGateId(gateId)) {
       void answerPrWriteGate({
         event: prWrite,
         ask: askPrWriteGate,
         // The hook runs on the agent's host: an SSH project's answer goes over its ControlMaster.
-        write: (content) => heldPermissionIoFor(nodeId, gateId).write(content),
+        write: (content) => heldPermissionIoFor(nodeId, gateId, isPrGateAnswer).write(content),
         log: (message) => console.warn('[pr-write-gate]', message)
       })
     }

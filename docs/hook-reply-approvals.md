@@ -201,9 +201,10 @@ writes go through Confirm"; `src/shared/pr-write-hook.ts`). Differences from a h
   only the pane's foreground claude, as for a permission. Codex too: its PreToolUse reads the same
   deny JSON (`codex-rs/hooks/src/events/pre_tool_use.rs`).
 - **Desktop main writes the answer**, through the same `heldPermissionIoFor` legs (local fs, or the
-  SSH project's ControlMaster): `allow`, or one line starting with `PRE_TOOL_DENY_PREFIX`
-  (`isBoundedAnswerContent` accepts it). No request file, no "answered" POST, no badge change.
-- **Short hold, fail open.** The script polls 20 x 0.2 s (4 s); main allows after 2 s without a
+  SSH project's ControlMaster): `allow`, or one line starting with `PRE_TOOL_DENY_PREFIX`, under
+  its own bound (`isPrGateAnswer`, 4 KB; ticket ids start with `gate-`, so a held permission's
+  file never gets a gate answer). No request file, no "answered" POST, no badge change.
+- **Short hold, fail open.** The script polls 25 x 0.2 s (5 s); main allows after 3 s without a
   canvas answer. A POST that reaches no server skips the poll. Anything but the deny prefix, and a
   timeout, prints nothing: the command runs. A late answer file is left for the sweeper.
 - The Server Edition writes `allow` at once (no `pr-propose` there).

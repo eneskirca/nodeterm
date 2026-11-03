@@ -14,7 +14,6 @@ import {
   PERMISSION_DECISION_PREFIX,
   type PendingRequest
 } from './permission-decision'
-import { preToolDenyAnswer } from '../../shared/pr-write-hook'
 
 // Real shapes. The PermissionRequest envelope is what Claude Code 2.1.283 builds (`FMe`, research
 // §1: base fields + hook_event_name, tool_name, tool_input, permission_suggestions); the
@@ -342,8 +341,6 @@ describe('isBoundedAnswerContent — the same bound the hook script applies', ()
     const r = buildPermissionDecision(PLAN_REQ, { kind: 'plan', mode: 'restore' })
     if (!r.ok) throw new Error(r.reason)
     expect(isBoundedAnswerContent(r.content)).toBe(true)
-    // The PR write gate's PreToolUse deny (@shared/pr-write-hook), printed only by the gate's own poll.
-    expect(isBoundedAnswerContent(preToolDenyAnswer('nodeterm: Do not write to GitHub yourself.'))).toBe(true)
   })
   it('rejects other words, other hook events, raw newlines/control chars and oversize', () => {
     expect(isBoundedAnswerContent('yes')).toBe(false)

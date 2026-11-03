@@ -97,7 +97,8 @@ describe.skipIf(!shAvailable)('managed hook PR write gate, under /bin/sh', () =>
   })
 
   it('makes no gate round trip and no wait for a command that is not a PR write candidate', () => {
-    for (const command of ['ls -la', 'npm test', 'ghost pr merge 8', 'echo graph api', 'gh issue list']) {
+    for (const command of ['ls -la', 'npm test', 'ghost pr merge 8', 'echo graph api', 'gh issue list', 'gh pr view 8', 'gh pr list',
+      'gh api repos/acme/app/pulls/8']) {
       const r = run('claude', pre(command), { answer: DENY })
       expect(r).toMatchObject({ stdout: '', sleeps: 0, gateIds: [], calls: 1 })
     }

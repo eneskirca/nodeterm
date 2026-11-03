@@ -200,12 +200,12 @@ describe('the managed script for antigravity', () => {
       // hook (`$CLAUDE_PID`, foreground, tty — claude-pane-origin.ts). Recomputed from this
       // branch's builder; the other five are untouched, which is what this test still proves.
       claude: [
-        '039695b6a5cd908f74e55104353a46ccbfcbff261aa59dbfa1ae84617317e76a',
-        '182d2ed1b7f9466bec10a5f7b63e0feb5c9a91e09712d3f706e778eb298113e0'
+        'cb38809e7ca99e0206915481ec4b7258bf23c728bfbc0ebd595b74867c4bea6a',
+        '342f16c395612b1818d0b33f8d3092c6658c8d1551cc8637de37150681f1d6e3'
       ],
       codex: [
-        'fa9663dc8b980bfbfa5664a0ba98a5fa6c2a429e8c14dc927a5b7a35a93f96b6',
-        'ee9b0a2ddde01288e4aeb26ce8610a5db73c505f82dc58c1f612ba895d9a82c8'
+        '4f949ad15c041f72e63f4b19cc783d89d3f6a26c2a97ffabda308b12f182d5ea',
+        '633a64306de52619db0edf53c35de3b5a5bfdac10540661610cf6c87de430aaf'
       ],
       gemini: [
         'c3fb01424ff2a78012ffd6e87200430badfe60b05f603731bf205ee3b791f988',

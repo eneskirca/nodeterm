@@ -20,7 +20,8 @@ export interface PrWrite {
 const SEPARATORS = new Set(['&&', '||', ';', '|', '&', '\n', '(', ')'])
 
 /** Split a shell line into simple commands of words. Quotes and backslashes are honored, so a
- *  separator or a `gh` inside a quoted string is text. Command substitution is not followed. */
+ *  separator or a `gh` inside a quoted string is text. `$(...)` splits on its parentheses, so a `gh`
+ *  inside it is read; backticks, `env`/`sudo` prefixes and `sh -c` strings are not (they run: fail open). */
 function simpleCommands(line: string): string[][] {
   const out: string[][] = [[]]
   let word: string | null = null
@@ -308,8 +309,27 @@ export function preToolDenyAnswer(reason: string): string {
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })
 }
 
-/** How long desktop main waits for the canvas's decision before it allows (the hook holds longer). */
-export const PR_GATE_ASK_MS = 2_000
+/** Largest gate answer the script prints, in UTF-8 bytes (managed-script.ts PR_GATE_POLL_SH). */
+export const PR_GATE_ANSWER_MAX_BYTES = 4096
+
+/** The TS twin of the gate poll's check: what the script would print (or `allow`), nothing else. */
+export function isPrGateAnswer(content: string): boolean {
+  if (content === 'allow') return true
+  // eslint-disable-next-line no-control-regex
+  return content.startsWith(PRE_TOOL_DENY_PREFIX) && content.endsWith('}') && !/[\u0000-\u001f]/.test(content) &&
+    new TextEncoder().encode(content).length <= PR_GATE_ANSWER_MAX_BYTES
+}
+
+/** Gate tickets only (`gate-<node>-<ms>-<pid>`, PR_GATE_ARM_SH): a held permission's id never gets a gate answer. */
+export function isPrGateId(id: unknown): id is string {
+  return typeof id === 'string' && id.length <= 256 && /^gate-[A-Za-z0-9_-]+$/.test(id)
+}
+
+/** How long desktop main waits for the canvas's decision before it allows (the hook holds 5 s). The
+ *  canvas resolves the repository with the same status call open-pr makes, which can be slow cold. */
+export const PR_GATE_ASK_MS = 3_000
+/** A deny reason longer than this is cut (it comes from the renderer; ours are a few hundred). */
+const PR_GATE_REASON_MAX = 1_500
 
 /**
  * Answer one gate ticket: the canvas's decision for a verified PreToolUse PR write, `allow` for
@@ -331,7 +351,7 @@ export async function answerPrWriteGate(input: {
     try {
       const answer = await Promise.race([input.ask(event), timeout])
       if (answer === 'timeout') log(`node ${event.nodeId}: the canvas did not answer; timed out, allowed`)
-      else if (answer.deny) content = preToolDenyAnswer(answer.deny)
+      else if (answer.deny) content = preToolDenyAnswer(answer.deny.slice(0, PR_GATE_REASON_MAX))
     } catch (e) {
       log(`node ${event.nodeId}: ${String(e)}; allowed`)
     } finally {

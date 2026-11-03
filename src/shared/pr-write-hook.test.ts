@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PRE_TOOL_DENY_PREFIX, answerPrWriteGate, parsePrWrites, preToolDenyAnswer, prRefreshTargets, prWriteEvent, prWriteGateDecision } from './pr-write-hook'
+import { PRE_TOOL_DENY_PREFIX, PR_GATE_ANSWER_MAX_BYTES, answerPrWriteGate, isPrGateAnswer, isPrGateId, parsePrWrites, preToolDenyAnswer, prRefreshTargets, prWriteEvent, prWriteGateDecision } from './pr-write-hook'
 
 describe('parsePrWrites', () => {
   it('reads each gh pr write form', () => {
@@ -194,6 +194,24 @@ describe('preToolDenyAnswer', () => {
   })
 })
 
+describe('isPrGateAnswer / isPrGateId', () => {
+  it('accepts allow and the deny line the gate poll prints, nothing else', () => {
+    expect(isPrGateAnswer('allow')).toBe(true)
+    expect(isPrGateAnswer(preToolDenyAnswer('no'))).toBe(true)
+    expect(isPrGateAnswer('deny')).toBe(false)
+    expect(isPrGateAnswer('{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}')).toBe(false)
+    expect(isPrGateAnswer(`${preToolDenyAnswer('no').slice(0, -1)}\n}`)).toBe(false)
+    expect(isPrGateAnswer(preToolDenyAnswer('x'.repeat(PR_GATE_ANSWER_MAX_BYTES)))).toBe(false)
+  })
+
+  it('takes gate tickets only, never a held permission id', () => {
+    expect(isPrGateId('gate-node-1-1730000000000-42')).toBe(true)
+    expect(isPrGateId('node-1-1730000000000-42')).toBe(false)
+    expect(isPrGateId('gate-../x')).toBe(false)
+    expect(isPrGateId(undefined)).toBe(false)
+  })
+})
+
 describe('answerPrWriteGate', () => {
   const event = { nodeId: 'n1', phase: 'pre' as const, writes: [{ action: 'merge' as const, pullNumber: 8 }] }
   const harness = () => {
@@ -202,10 +220,12 @@ describe('answerPrWriteGate', () => {
     return { written, logs, write: async (c: string) => (written.push(c), true), log: (m: string) => logs.push(m) }
   }
 
-  it('writes the deny the canvas decided', async () => {
+  it('writes the deny the canvas decided, cut to a bounded length', async () => {
     const h = harness()
     await answerPrWriteGate({ event, ask: async () => ({ deny: 'no' }), write: h.write, log: h.log })
-    expect(h.written).toEqual([preToolDenyAnswer('no')])
+    await answerPrWriteGate({ event, ask: async () => ({ deny: 'y'.repeat(10_000) }), write: h.write, log: h.log })
+    expect(h.written[0]).toBe(preToolDenyAnswer('no'))
+    expect(isPrGateAnswer(h.written[1])).toBe(true)
   })
 
   it('allows at once, without asking, when there is nothing to gate', async () => {
