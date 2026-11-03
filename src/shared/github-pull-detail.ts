@@ -164,9 +164,10 @@ export type PullLineCommentRequest =
 export type GitHubPullConversationResult =
   /** `items` oldest first. `truncated` = more pages than the node reads; the rest is on GitHub.
    *  `lineComments` oldest first: the Files tab threads them, the Conversation tab lists them under
-   *  their review. */
+   *  their review. `resolvedThreads` = the first comment id of each resolved thread; absent = unknown. */
   | {
     status: 'ok'; items: PullConversationItem[]; lineComments: PullLineComment[]; truncated: boolean; observedAt: number
+    resolvedThreads?: number[]
     stale?: PullReadFailure; retryAt?: number
   }
   | { status: 'refused'; reason: PullRefusal }

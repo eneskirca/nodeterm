@@ -86,6 +86,17 @@ export const PULL_CHECKS_QUERY = `query($owner:String!,$name:String!,$number:Int
   }
 }`
 
+/** Which review threads are resolved, for the pull node's "Send to agent" checklist. REST line
+ *  comments do not say; a thread is named by its first comment's REST id (`databaseId`).
+ *  ponytail: the first 100 threads only; a thread past them is offered as unresolved. */
+export const PULL_RESOLVED_THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      reviewThreads(first:100){ nodes{ isResolved comments(first:1){ nodes{ databaseId } } } }
+    }
+  }
+}`
+
 export class GraphQLShapeError extends Error {
   constructor() { super('malformed-response') }
 }
@@ -349,4 +360,20 @@ export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
     truncated: contexts.totalCount > checks.length,
     ...review
   }
+}
+
+/** The first comment id of every resolved thread. Throws `GraphQLShapeError` for a malformed body or
+ *  any error: an unknown answer must never read as "nothing is resolved". */
+export function parsePullResolvedThreads(body: unknown): number[] {
+  if (graphQLErrors(body).length) throw new GraphQLShapeError()
+  const pull = object(object(object(object(body)?.data)?.repository)?.pullRequest)
+  if (!pull) throw new GraphQLShapeError()
+  return list(pull.reviewThreads, 100).flatMap((entry) => {
+    const thread = object(entry)
+    if (!thread || typeof thread.isResolved !== 'boolean') throw new GraphQLShapeError()
+    const first = object(list(thread.comments, 1)[0])
+    const id = first?.databaseId
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new GraphQLShapeError()
+    return thread.isResolved ? [id] : []
+  })
 }

@@ -142,6 +142,7 @@ export interface GitHubIssuesClientLike {
   ): Promise<{ id: number }>
   /** The review comments on diff lines, one page, and one new line comment or reply. Optional, as above. */
   listPullLineComments?(repository: string, pullNumber: number, page: number): Promise<PullLineCommentsPage>
+  pullResolvedThreads?(repository: string, pullNumber: number): Promise<number[]>
   createPullLineComment?(
     repository: string, pullNumber: number,
     comment: PullLineCommentWrite
@@ -1095,18 +1096,24 @@ export class GitHubIssueService {
         return { items, truncated: true }
       }
       const listLines = client.listPullLineComments?.bind(client)
-      const [comments, reviews, lines] = await Promise.all([
+      const readResolved = client.pullResolvedThreads?.bind(client)
+      const [comments, reviews, lines, resolvedThreads] = await Promise.all([
         pages<PullConversationItem>((page) => client.listPullComments!(repository, pullNumber, page)),
         pages<PullConversationItem>((page) => client.listPullReviews!(repository, pullNumber, page)),
         // ponytail: a client without line comments answers none; the real client always has them.
         listLines
           ? pages<PullLineComment>((page) => listLines(repository, pullNumber, page)
             .then(({ comments: items, nextPage }) => ({ items, nextPage })))
-          : { items: [], truncated: false }
+          : { items: [], truncated: false },
+        // Only "Send to agent" uses it: a failed read leaves it unknown, never fails the tab.
+        readResolved
+          ? this.readWithEpoch(captured, () => readResolved(repository, pullNumber)).catch(() => undefined)
+          : undefined
       ])
       const items = [...comments.items, ...reviews.items].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
       return {
         status: 'ok', items, lineComments: lines.items, truncated: comments.truncated || reviews.truncated || lines.truncated,
+        ...(resolvedThreads ? { resolvedThreads } : {}),
         observedAt: this.now()
       }
     })

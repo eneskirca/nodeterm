@@ -43,6 +43,8 @@ class Client implements GitHubIssuesClientLike {
   async listPullLineComments(_r: string, _n: number, page: number): Promise<PullLineCommentsPage> {
     this.reads.push(`lines ${page}`); return this.lines(page)
   }
+  resolved: () => Promise<number[]> = async () => [10]
+  async pullResolvedThreads(): Promise<number[]> { this.reads.push('resolved'); return this.resolved() }
 }
 
 function harness(contextError?: { code: string }) {
@@ -85,6 +87,16 @@ describe('GitHubIssueService.pullConversation', () => {
     expect(client.reads).toContain('lines 2')
   })
 
+  it('says which threads are resolved, and leaves it unknown when that read fails', async () => {
+    const { client, service, advance } = harness()
+    expect(await service.pullConversation(request)).toMatchObject({ status: 'ok', resolvedThreads: [10] })
+    advance(31_000)
+    client.resolved = async () => { throw new GitHubClientError('malformed-response') }
+    const result = await service.pullConversation(request)
+    expect(result.status).toBe('ok')
+    expect(result).not.toHaveProperty('resolvedThreads')
+  })
+
   it('follows next pages and says truncated past the page cap', async () => {
     const { client, service } = harness()
     client.comments = async (page) => ({ items: [comment(page, `2026-10-01T10:00:0${page % 10}Z`)], nextPage: page + 1 })
@@ -124,6 +136,6 @@ describe('GitHubIssueService.pullConversation', () => {
     await service.pullConversation(request)
     advance(10_000)
     await service.pullConversation(request)
-    expect(client.reads).toEqual(['comments 1', 'reviews 1', 'lines 1'])
+    expect(client.reads).toEqual(['comments 1', 'reviews 1', 'lines 1', 'resolved'])
   })
 })

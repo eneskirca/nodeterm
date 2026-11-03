@@ -4,7 +4,9 @@ import { pullStatusFrom } from '../../shared/github-pull-status'
 import {
   GraphQLShapeError,
   PULL_STATUS_QUERY,
+  PULL_RESOLVED_THREADS_QUERY,
   parsePullChecksResponse,
+  parsePullResolvedThreads,
   parsePullStatusResponse
 } from './graphql-pulls'
 
@@ -288,5 +290,36 @@ describe('review queue facts', () => {
     expect(pullStatusFrom(facts, { ci: true, merge: true })).toMatchObject({
       author: 'bot', review: 'changes-requested', reviewRequested: true
     })
+  })
+})
+
+describe('parsePullResolvedThreads', () => {
+  const threads = (nodes: unknown[]) => ({ data: { repository: { pullRequest: { reviewThreads: { nodes } } } } })
+  const thread = (isResolved: unknown, databaseId: unknown) => ({ isResolved, comments: { nodes: [{ databaseId }] } })
+
+  it('answers the first comment id of every resolved thread', () => {
+    // The shape builtbyd3v/nodeterm-pr-sandbox#5 returned on 2026-11-02, one thread marked resolved.
+    expect(parsePullResolvedThreads(threads([thread(false, 4447909746), thread(true, 4447927864)]))).toEqual([4447927864])
+  })
+
+  it('rejects a malformed body or an error, never answering "nothing is resolved"', () => {
+    expect(() => parsePullResolvedThreads(threads([thread('yes', 1)]))).toThrow(GraphQLShapeError)
+    expect(() => parsePullResolvedThreads(threads([thread(true, 'x')]))).toThrow(GraphQLShapeError)
+    expect(() => parsePullResolvedThreads({ errors: [{ type: 'FORBIDDEN' }] })).toThrow(GraphQLShapeError)
+    expect(() => parsePullResolvedThreads({ data: {} })).toThrow(GraphQLShapeError)
+  })
+
+  it('is read with one query by the client', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (_url, init) => {
+        calls.push(String(init?.body))
+        return new Response(JSON.stringify(threads([thread(true, 9)])), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+    })
+    expect(await client.pullResolvedThreads(REPO, 5)).toEqual([9])
+    expect(JSON.parse(calls[0])).toEqual({ query: PULL_RESOLVED_THREADS_QUERY, variables: { owner: 'eneskirca', name: 'nodeterm', number: 5 } })
+    await expect(client.pullResolvedThreads(REPO, 0)).rejects.toThrow(GitHubClientError)
   })
 })

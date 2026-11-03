@@ -36,9 +36,11 @@ import {
 import {
   GraphQLShapeError,
   PULL_CHECKS_QUERY,
+  PULL_RESOLVED_THREADS_QUERY,
   PULL_STATUS_QUERY,
   graphQLErrors,
   parsePullChecksResponse,
+  parsePullResolvedThreads,
   parsePullStatusResponse,
   rateLimitFrom,
   type PullStatusRead
@@ -947,6 +949,19 @@ export class GitHubIssuesClient {
     const body = await this.graphql(PULL_CHECKS_QUERY, { owner, name, number: pullNumber })
     try {
       return parsePullChecksResponse(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** The first comment id of each resolved review thread of one PR (graphql-pulls.ts). */
+  async pullResolvedThreads(repository: string, pullNumber: number): Promise<number[]> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const body = await this.graphql(PULL_RESOLVED_THREADS_QUERY, { owner, name, number: pullNumber })
+    try {
+      return parsePullResolvedThreads(body)
     } catch (error) {
       if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
       throw error
