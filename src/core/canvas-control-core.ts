@@ -1020,6 +1020,8 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  linked — nothing to `link`. Use `link` only for nodes you did not open, or to link two OTHER nodes.',
     '  `--one-way` makes each new link one-way: `--from` (you, by default) reads the `--to` nodes, and',
     '  they cannot read it back. The human can flip or reset a link\'s direction from its right-click menu.',
+    '  A plain terminal links one-way to the agent: you read its screen (`terminal --node <id>`). The',
+    '  terminals you open with `open-terminal` are linked to you that way already.',
     `  Both endpoints must be in your project. A missing endpoint reports: ${LINK_ENDPOINT_NOT_FOUND}.`,
     '  This does not reveal whether the id exists in another project.',
     '  On Server Edition the ownership rule is stricter: every endpoint must be a node you opened',
@@ -1480,7 +1482,7 @@ Verbs:
   that station finishes another turn.
 - \`help\` — print the verb list. The shim answers this itself, without reaching the app, so it
   is also what to run when you are unsure whether the control endpoint is alive.
-- \`open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--run-now]\` — open N plain terminals (default 1). \`--cmd\` requires verified node identity.
+- \`open-terminal [--count N] [--cwd P] [--cmd C] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--run-now]\` — open N plain terminals (default 1). \`--cmd\` requires verified node identity. Each is linked to you one-way, so you can read its screen with get-linked-context \`terminal --node <id>\`.
 - \`open-claude [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]\` — open N Claude sessions (default 1).
 - \`open-agent --agent ${agentChoices} [--count N] [--cwd P] [--prompt T | --prompt-file F] [--model M] [--group <id>] [--after <id,id>] [--after-success <id,id>] [--success-deadline <90m|12h|3d>] [--after-pr <N:checks|N:merged>] [--pr-deadline <90m|12h|3d>] [--project <id>] [--issue <owner/repo#N | #N>] [--run-now]\` — open N sessions of any agent CLI.
   \`--group\` parents the node(s) into an existing group frame; a worktree-bound group also
@@ -1630,6 +1632,9 @@ ${geometryGuidanceLines().join('\n')}
   or to link two OTHER nodes together. Add \`--one-way\` to make each new link one-way: \`--from\`
   (you, by default) reads the \`--to\` nodes and they cannot read it back. The human can flip or
   reset a link's direction from its right-click menu.
+  A plain terminal (no agent in it) links one-way: you read its screen with get-linked-context
+  \`terminal --node <id>\`. Terminals you open with \`open-terminal\` are linked to you that way
+  already, so read a failed run's output there instead of asking the owner to paste it.
   Both endpoints must be in your project. A missing endpoint reports: ${LINK_ENDPOINT_NOT_FOUND}.
   This does not reveal whether the id exists in another project.
   On Server Edition the ownership rule is stricter: every endpoint must be a node you opened

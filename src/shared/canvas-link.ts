@@ -17,8 +17,12 @@ export interface LinkEndpoint {
 // just to improve this diagnostic: that would turn a refusal into an existence oracle.
 export const LINK_PROJECT_ONLY = 'cross-project linking is not supported'
 export const LINK_ENDPOINT_NOT_FOUND = `node not found in this project; ${LINK_PROJECT_ONLY}`
+export const LINK_NOT_LINKABLE =
+  'not linkable (needs two context-capable agents, an agent + a terminal, or a sticky + terminal)'
 
-export type LinkKind = 'context' | 'note'
+/** 'pane': a context-capable agent reads a plain terminal's screen (`terminal --node <id>`). It is
+ *  always one-way toward the agent — the terminal has no agent to read anything back with. */
+export type LinkKind = 'context' | 'note' | 'pane'
 
 /** The endpoints of a context link, plus its optional one-way reader (issue #852). */
 export interface LinkEdge {
@@ -77,7 +81,15 @@ export function gainedReaders(before: LinkEdge, after: LinkEdge): string[] {
 /** Decide what kind of link (if any) a new edge between two nodes forms. */
 export function classifyLink(a: LinkEndpoint, b: LinkEndpoint): LinkKind | null {
   const stickies = (a.kind === 'sticky' ? 1 : 0) + (b.kind === 'sticky' ? 1 : 0)
-  if (stickies === 0) return a.contextCapable && b.contextCapable ? 'context' : null
+  if (stickies === 0) {
+    if (a.contextCapable && b.contextCapable) return 'context'
+    // Without this an orchestrator could open a terminal (a test run, a build, a sandbox) and
+    // never see what happened in it — the owner had to paste the output back by hand.
+    if (a.contextCapable !== b.contextCapable && (a.contextCapable ? b : a).kind === 'terminal') {
+      return 'pane'
+    }
+    return null
+  }
   if (stickies === 2) return null
   const other = a.kind === 'sticky' ? b : a
   return other.kind === 'terminal' ? 'note' : null
@@ -136,7 +148,7 @@ export function planBridges(
     if (!kind) {
       skipped.push({
         id: targetId,
-        why: 'not linkable (needs two context-capable agents, or a sticky + terminal)'
+        why: LINK_NOT_LINKABLE
       })
       continue
     }
@@ -147,10 +159,19 @@ export function planBridges(
       continue
     }
     // `oneWay` (issue #852): `fromId` reads the targets, never the reverse. Note links are
-    // already one-way (the terminal reads the sticky) and never carry a reader.
+    // already one-way (the terminal reads the sticky) and never carry a reader. A pane link is
+    // one-way whatever was asked: only its agent end can read.
+    const reader =
+      kind === 'pane'
+        ? se.contextCapable
+          ? fromId
+          : targetId
+        : kind === 'context' && options.oneWay
+          ? fromId
+          : undefined
     edges.push(
-      kind === 'context' && options.oneWay
-        ? { id: `bridge-${source}-${target}`, source, target, reader: fromId }
+      reader !== undefined
+        ? { id: `bridge-${source}-${target}`, source, target, reader }
         : { id: `bridge-${source}-${target}`, source, target }
     )
     linked.push(targetId)

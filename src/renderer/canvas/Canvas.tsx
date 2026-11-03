@@ -5002,6 +5002,10 @@ export function Canvas() {
   // notice), or null when delivered.
   const announceContextLink = useCallback(
     async (selfId: string, otherId: string): Promise<{ title: string; reason: LinkNoteSkip } | null> => {
+      // A plain terminal (the far end of a pane link) has no agent to tell, and a note typed into
+      // its shell would run as a command: nothing to announce, so nothing to report as skipped.
+      const selfAgent = agentIdOf(selfId)
+      if (!selfAgent || !canContextLink(selfAgent)) return null
       const selfData = nodesRef.current.find((n) => n.id === selfId)?.data
       const selfTitle = (selfData?.title as string) || selfId
       const title = (nodesRef.current.find((n) => n.id === otherId)?.data.title as string) || 'a linked node'
@@ -5029,8 +5033,8 @@ export function Canvas() {
     []
   )
 
-  // Draw a link: context (two agent nodes read each other) or note (sticky text becomes
-  // the terminal's context).
+  // Draw a link: context (two agent nodes read each other), pane (an agent reads a plain
+  // terminal's screen) or note (sticky text becomes the terminal's context).
   const onConnect = useCallback(
     (c: Connection) => {
       if (!c.source || !c.target || c.source === c.target) return
@@ -5050,13 +5054,17 @@ export function Canvas() {
           (e.source === target && e.target === source)
       )
       if (exists) return
+      // A pane link is readable only from its agent end (see classifyLink).
+      const reader = kind === 'pane' ? (se.contextCapable ? source : target) : undefined
+      const id = `bridge-${source}-${target}`
       setLinkEdges((es) =>
-        addEdge({ id: `bridge-${source}-${target}`, source, target }, es)
+        addEdge(reader ? bridgeToEdge({ id, source, target, reader }) : { id, source, target }, es)
       )
       markDirty()
-      if (kind === 'context') {
+      if (kind === 'context' || kind === 'pane') {
         // Discovery: tell each endpoint it is now linked — only where it is idle at an empty
-        // prompt (pushLinkNote); every endpoint skipped is named in one notice.
+        // prompt (pushLinkNote); every endpoint skipped is named in one notice. The plain-terminal
+        // end of a pane link is never told (announceContextLink).
         void reportLinkNotes('context', [announceContextLink(source, target), announceContextLink(target, source)])
         return
       }
@@ -5111,6 +5119,11 @@ export function Canvas() {
       }
       const a = titleOf(link.source)
       const b = titleOf(link.target)
+      // A pane link has one possible direction (its agent reads the terminal), so it offers no
+      // direction choice — only removal.
+      const se = linkEndpointOf(link.source)
+      const te = linkEndpointOf(link.target)
+      const pane = !!se && !!te && classifyLink(se, te) === 'pane'
       const option = (label: string, reader: string | null) => {
         const active = isCurrentLinkDirection(current, reader)
         return {
@@ -5123,10 +5136,19 @@ export function Canvas() {
         x: e.clientX,
         y: e.clientY,
         items: [
-          { type: 'label', label: 'Context link — who reads whom' },
-          option(`${a} ⇄ ${b} (both read)`, null),
-          option(`${a} reads ${b} only`, link.source),
-          option(`${b} reads ${a} only`, link.target),
+          ...(pane
+            ? [
+                {
+                  type: 'label' as const,
+                  label: `Terminal link — ${se!.contextCapable ? a : b} reads ${se!.contextCapable ? b : a}'s screen`
+                }
+              ]
+            : [
+                { type: 'label' as const, label: 'Context link — who reads whom' },
+                option(`${a} ⇄ ${b} (both read)`, null),
+                option(`${a} reads ${b} only`, link.source),
+                option(`${b} reads ${a} only`, link.target)
+              ]),
           { type: 'separator' },
           {
             label: viaRope ? 'Remove context link (keeps the rope)' : 'Remove link',
@@ -5139,7 +5161,7 @@ export function Canvas() {
         ]
       })
     },
-    [setLinkEdges, markDirty, announceContextLink, reportLinkNotes]
+    [setLinkEdges, markDirty, announceContextLink, reportLinkNotes, linkEndpointOf]
   )
 
   // Of these ropes, the ones that are NOT live waits. A waiting rope's removal means "stop waiting
@@ -15020,15 +15042,23 @@ export function Canvas() {
             ropeDeps(ids, after)
             const openResult = openBatch.result(after ?? [])
             const { queuedIds } = openResult
+            // Let the opener READ what runs in the terminals it opened (a one-way pane link): the
+            // fan-in that open-agent already has. Same not-yet-on-canvas lookup as open-agent.
+            const openedTerminal = (id: string): LinkEndpoint | null =>
+              ids.includes(id) ? { kind: 'terminal', contextCapable: false } : ctlLinkEndpointOf(id)
+            const readable = bridgeTo(sourceNodeId, ids, openedTerminal).linked
             reply({
               ok: true,
               message:
                 `opened ${count} terminal(s): ${ids.join(', ')}` +
                 (queuedIds.length ? '\nqueued; awaiting launch delivery' : '') +
                 (after?.length ? `\nwaiting for ${after.join(', ')} before running` : '') +
+                (readable.length
+                  ? `\nlinked so you can read their screens: get-linked-context terminal --node <id>`
+                  : '') +
                 prReplyText +
                 successReplyText,
-              result: { ...openResult, ...prResult, ...successResult }
+              result: { ...openResult, linked: readable, ...prResult, ...successResult }
             })
             return
           }

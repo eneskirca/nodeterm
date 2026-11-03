@@ -495,11 +495,17 @@ export function pickLinkNode(doc: LinkDoc, want?: string): { node: LinkDocEntry 
   }
 }
 
+/** A node with no agent and no note is a plain terminal (a pane link): only `terminal` reads it. */
+function kindTag(n: LinkDocEntry): string {
+  if (n.note != null) return ' (note)'
+  return n.agent ? '' : ' (terminal)'
+}
+
 export function renderList(doc: LinkDoc): string {
   if (!doc.links.length) return 'No linked nodes.'
   return [
     'Linked nodes:',
-    ...doc.links.map((n) => `- ${n.title}${n.note != null ? ' (note)' : ''} (id: ${n.id})`)
+    ...doc.links.map((n) => `- ${n.title}${kindTag(n)} (id: ${n.id})`)
   ].join('\n')
 }
 
@@ -579,6 +585,10 @@ async function transcriptLinesFor(node: LinkDocEntry, fetch: ContextLinkFetch): 
     return lines
   }
   const buf = await fetch.transcript(node)
-  if (buf == null) return `"${node.title}" has no conversation transcript yet.`
+  if (buf == null) {
+    return node.agent
+      ? `"${node.title}" has no conversation transcript yet.`
+      : `"${node.title}" has no conversation transcript. To see what ran in it, read its screen: terminal --node ${node.id}`
+  }
   return renderTranscriptLines(node.agent, buf)
 }

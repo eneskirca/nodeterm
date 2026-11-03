@@ -6142,6 +6142,18 @@ bridges enter live state only via `appendBridgeEdges`) and the server
   the link file (`ContextLinkInfo.note`), so Claude reads the current text via the
   get-linked-context CLI (`summary`/`transcript` print it; `list` marks `(note)`). Pure
   edge/push/map logic in `renderer/lib/noteLink.ts`.
+  **Pane links:** a context-capable agent and a PLAIN terminal (no agent in it) form a `pane` link
+  (`classifyLink`): the agent reads the terminal's screen with get-linked-context
+  `terminal --node <id>`, and `list` marks the node `(terminal)`. It is ALWAYS one-way toward the
+  agent (`reader` = the agent end, set by `planBridges`, `onConnect` and the Server Edition's
+  `open-terminal`), because a terminal has nothing to read with, so its edge menu offers only
+  Remove. `open-terminal` draws one from the opener to every terminal it opens, on both shells,
+  so an orchestrator can see what a command it started printed (a test run, a build, a dev
+  container launcher) instead of asking the owner to paste it. No discovery note is ever typed
+  into the terminal end (`announceContextLink` returns before `pushLinkNote`): a plain shell would
+  run it as a command. The read is the existing `terminal` capture of the pane, so its reach is
+  the screen and nothing more (scrollback beyond it, a file on disk and a process's environment
+  stay out of reach). Mobile: N/A (the phone has no link edges).
 - **Managed Claude accounts** (Claude-only) — run several logged-in Claude identities side by
   side by giving each its own config dir. `settings.claudeAccounts` is a list of `ClaudeAccount
   {id, label, email?, host?, pending?, createdAt}` (in `settings.json`; the account **list** is
