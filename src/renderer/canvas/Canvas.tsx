@@ -121,7 +121,7 @@ import { ISSUE_WORK_EVENT, issueWorkPrompt, type IssueWorkRequest } from '@share
 import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
 import { nodesJoined, usePullAgent } from '../state/pullAgent'
 import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
-import { planPullCreated, type PullCreated } from '@shared/pull-created-hook'
+import { openPrLanding, planPullCreated, pullCreatedControl, type PullCreated } from '@shared/pull-created-hook'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -13639,7 +13639,10 @@ export function Canvas() {
         // none of them has to know about routing: the clause is appended here and the human strip
         // is raised here. A refusal decorates nothing — it created no node and moved no view.
         // A hook-opened PR says so itself (the `open-pr` case), with no CLI to answer.
-        if (fromHook) return
+        if (fromHook) {
+          if (!r.ok) console.info('[pull-created] no pull node opened:', r.error)
+          return
+        }
         if (offCanvas && r.ok && offCanvas.created.length) {
           const { project, closed, created } = offCanvas
           r = {
@@ -15674,13 +15677,14 @@ export function Canvas() {
             // Never say "linked" when no link exists: an agent that cannot read context gets no edge.
             const prSkip = prLink.skipped.find((s) => s.why !== 'already linked')
             // The hook path never moves the camera: a toast offers the jump instead.
-            if (prPlan.kind === 'reuse' && !offCanvas && !fromHook) travelToNodeRef.current(prId)
-            if (fromHook && prPlan.kind === 'create') {
-              setNotice({
-                kind: 'info',
-                text: `PR #${prPlan.ref.pullNumber} opened`,
-                action: { label: 'Jump', run: () => travelToNodeRef.current(prId) }
-              })
+            const prLanding = openPrLanding({
+              plan: prPlan,
+              onScreen: !offCanvas,
+              fromHook: !!fromHook
+            })
+            if (prLanding.travel) travelToNodeRef.current(prId)
+            if (prLanding.toast) {
+              setNotice({ kind: 'info', text: prLanding.toast, action: { label: 'Jump', run: () => travelToNodeRef.current(prId) } })
             }
             reply({
               ok: true,
@@ -17086,10 +17090,10 @@ export function Canvas() {
     }
     const offControl = api.onAgentControl((cmd) => void runControl(cmd))
     // Same dispatch, same `open-pr` case: placement beside the agent, the dedupe, off-screen projects.
-    const offPullCreated = api.onPullCreated(({ nodeId, ...created }) => void runControl(
-      { requestId: '', sourceNodeId: nodeId, verb: 'open-pr', args: { pr: String(created.pullNumber) } },
-      created
-    ))
+    const offPullCreated = api.onPullCreated((event) => {
+      const { cmd, created } = pullCreatedControl(event)
+      void runControl(cmd, created)
+    })
     return () => {
       offControl()
       offPullCreated()

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { planPullCreated, pullCreatedFromHook } from './pull-created-hook'
+import { openPrLanding, planPullCreated, pullCreatedControl, pullCreatedFromHook } from './pull-created-hook'
 
 // The real payload shapes (fixtures: shared/agents/__fixtures__/claude/subagent-hook-payloads.json,
 // codex/auto-review-permission.json): Claude's Bash tool_response is an object with stdout/stderr,
@@ -89,6 +89,17 @@ describe('pullCreatedFromHook', () => {
     expect(pullCreatedFromHook('claude', claude('gh pr create', `${link}\n`))).toBeUndefined()
   })
 
+  it('takes the last PR link, not a later link of another kind', () => {
+    const out = 'https://github.com/acme/app/pull/42\nChecks: https://github.com/acme/app/actions/runs/9\n'
+    expect(pullCreatedFromHook('claude', claude('gh pr create', out))).toEqual({ repository: 'acme/app', pullNumber: 42 })
+  })
+
+  it('reads a create after cd, on its own line, or inside $( )', () => {
+    for (const command of ['cd app && gh pr create --fill', 'git push\ngh pr create --fill', 'url=$(gh pr create --fill)']) {
+      expect(pullCreatedFromHook('claude', claude(command, CREATED))).toEqual({ repository: 'acme/app', pullNumber: 42 })
+    }
+  })
+
   it('refuses when the last link is malformed, even after a good one', () => {
     const out = 'https://github.com/acme/app/pull/42\nhttps://github.com/acme/app/pull/0\n'
     expect(pullCreatedFromHook('claude', claude('gh pr create', out))).toBeUndefined()
@@ -130,5 +141,32 @@ describe('planPullCreated', () => {
   it('refuses a relay guest', () => {
     expect(planPullCreated({ created, repo: { repository: 'acme/app', approved: true }, pullNodes: [], relayGuest: true }))
       .toEqual({ kind: 'refuse', error: expect.stringContaining('open-pr-relay-refused') })
+  })
+})
+
+describe('pullCreatedControl', () => {
+  it('is the open-pr call the reporting agent would have made', () => {
+    expect(pullCreatedControl({ nodeId: 'n1', repository: 'acme/app', pullNumber: 42 })).toEqual({
+      cmd: { requestId: '', sourceNodeId: 'n1', verb: 'open-pr', args: { pr: '42' } },
+      created: { repository: 'acme/app', pullNumber: 42 }
+    })
+  })
+})
+
+describe('openPrLanding', () => {
+  const create = { kind: 'create' as const, ref: { repository: 'acme/app', pullNumber: 42, tab: 'overview' as const } }
+  const reuse = { kind: 'reuse' as const, nodeId: 'pull-1' }
+
+  it('the hook path never moves the camera: a new node gets a Jump toast, a reused one nothing', () => {
+    for (const onScreen of [true, false]) {
+      expect(openPrLanding({ plan: create, onScreen, fromHook: true })).toEqual({ travel: false, toast: 'PR #42 opened' })
+      expect(openPrLanding({ plan: reuse, onScreen, fromHook: true })).toEqual({ travel: false })
+    }
+  })
+
+  it('the open-pr verb keeps framing a reused node on screen, and only that', () => {
+    expect(openPrLanding({ plan: reuse, onScreen: true, fromHook: false })).toEqual({ travel: true })
+    expect(openPrLanding({ plan: reuse, onScreen: false, fromHook: false })).toEqual({ travel: false })
+    expect(openPrLanding({ plan: create, onScreen: true, fromHook: false })).toEqual({ travel: false })
   })
 })

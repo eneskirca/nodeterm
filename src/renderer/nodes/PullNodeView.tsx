@@ -158,7 +158,8 @@ function AllowRepo({ repository }: { repository: string }): React.JSX.Element {
   if (!onAllow) return <p className="pull-node__state" role="status">{REFUSAL_TEXT['not-approved'](repository)}</p>
   return (
     <div className="pull-node__state" role="status">
-      <p>{repository} is not allowed on this computer yet.</p>
+      <p>{repository} is not allowed on this computer yet. Allowing it lets pull request and issues nodes and
+        agents on this canvas read and act on its pull requests and issues.</p>
       <button className="pull-node__web" disabled={state === 'busy'}
         onClick={() => {
           setState('busy')

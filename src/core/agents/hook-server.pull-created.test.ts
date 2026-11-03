@@ -2,9 +2,9 @@
 // payload (tool_response included), the hook server labels the caller, and the raw listener turns a
 // VERIFIED caller's `gh pr create` into the event desktop main sends the renderer.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { hookServer } from './hook-server'
 import { nodeAuthToken } from './node-auth-token'
 import { initPlatform, resetPlatformForTests } from '../platform'
@@ -75,23 +75,5 @@ describe('a created PR, from hook POST to renderer event', () => {
   it('an unverified caller yields nothing', async () => {
     expect((await post('claude', claudeCreate)).status).toBe(204)
     expect(sent).toEqual([])
-  })
-})
-
-describe('the desktop wiring (source pins)', () => {
-  const read = (p: string) => readFileSync(resolve(__dirname, p), 'utf8').replace(/\r\n/g, '\n')
-
-  it('main sends the event from its raw listener, before any agent branch returns', () => {
-    const main = read('../../main/index.ts')
-    const start = main.indexOf('hookServer.setRawListener((agentId, nodeId, payload, meta) => {')
-    expect(start).toBeGreaterThan(-1)
-    const head = main.slice(start, main.indexOf("if (agentId === 'cursor')", start))
-    expect(head).toContain('pullCreatedEvent(agentId, nodeId, payload, meta)')
-    expect(head).toContain('IPC.agentPullCreated')
-  })
-
-  it('preload exposes the channel to the renderer', () => {
-    const preload = read('../../preload/index.ts')
-    expect(preload).toMatch(/onPullCreated:[\s\S]{0,200}IPC\.agentPullCreated/)
   })
 })

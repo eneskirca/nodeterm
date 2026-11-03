@@ -29,8 +29,9 @@ const PULL_PATH = /^([^/]+)\/([^/]+)\/pull\/([1-9]\d{0,9})$/
 
 function lastPullLink(output: string): PullCreated | undefined {
   const tail = output.slice(-SCAN_CHARS)
-  // One link per tool call: the last one, or nothing. A trailing full stop ends a sentence.
-  const last = [...tail.matchAll(GITHUB_LINK)].at(-1)?.[1].replace(/[.:]$/, '')
+  // One PR link per tool call: the last one, or nothing. A trailing full stop ends a sentence.
+  const last = [...tail.matchAll(GITHUB_LINK)].map((m) => m[1]).filter((p) => p.includes('/pull/')).at(-1)
+    ?.replace(/[.:]$/, '')
   const m = last ? PULL_PATH.exec(last) : null
   if (!m || Number(m[3]) > 2_147_483_647) return undefined
   const repository = `${m[1]}/${m[2]}`
@@ -52,7 +53,8 @@ export function pullCreatedFromHook(agentId: string, payload: Record<string, unk
   return typeof output === 'string' ? lastPullLink(output) : undefined
 }
 
-/** The event for a VERIFIED hook caller, else undefined. Both shells' raw listeners call this. */
+/** The event for a VERIFIED hook caller, else undefined. Desktop main's raw listener calls this;
+ *  the Server Edition does not (docs/github-issues-kanban.md). */
 export function pullCreatedEvent(
   agentId: string,
   nodeId: string,
@@ -62,6 +64,27 @@ export function pullCreatedEvent(
   if (!meta.verified || !nodeId) return undefined
   const created = pullCreatedFromHook(agentId, payload)
   return created ? { nodeId, ...created } : undefined
+}
+
+/** The `open-pr` call the canvas runs for the event, as if the agent had made it. */
+export function pullCreatedControl(event: PullCreatedEvent): {
+  cmd: { requestId: string; sourceNodeId: string; verb: 'open-pr'; args: { pr: string } }
+  created: PullCreated
+} {
+  const { nodeId, ...created } = event
+  return { cmd: { requestId: '', sourceNodeId: nodeId, verb: 'open-pr', args: { pr: String(created.pullNumber) } }, created }
+}
+
+/** What the canvas does once an open-pr plan landed. The verb frames a reused node on screen; the
+ *  hook path never moves the camera and offers a jump toast for a new node instead. */
+export function openPrLanding(input: {
+  plan: Exclude<OpenPrPlan, { kind: 'refuse' }>
+  onScreen: boolean
+  fromHook: boolean
+}): { travel: boolean; toast?: string } {
+  const { plan } = input
+  if (input.fromHook) return { travel: false, ...(plan.kind === 'create' ? { toast: `PR #${plan.ref.pullNumber} opened` } : {}) }
+  return { travel: plan.kind === 'reuse' && input.onScreen }
 }
 
 /** open-pr's plan for a PR the hook reported: only the project's own repository, approved or not. */
