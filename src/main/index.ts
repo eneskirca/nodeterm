@@ -361,6 +361,7 @@ import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control
 import { browserFlagRefusal, issueFlagRefusal } from '../core/canvas-control-core'
 import { openPrArgsRefusal } from '../shared/open-pr-verb'
 import { pullCreatedEvent } from '../shared/pr-created-hook'
+import { answerPrWriteGate, PR_GATE_ASK_MS, prWriteEvent, type PrWriteEvent } from '../shared/pr-write-hook'
 import { pullAgentArgsRefusal } from '../shared/pull-agent-verbs'
 import { afterPrFlagRefusal } from '../shared/pr-wait'
 import { arrangeArgsRefusal } from '../shared/arrange-verb'
@@ -3866,11 +3867,45 @@ app.whenReady().then(async () => {
     return isSafeRemoteTranscriptPath(abs, remoteHome) ? abs : undefined
   }
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
+  // The PR write gate's canvas round trip (@shared/pr-write-hook): the renderer knows the project, its
+  // repository and its pull nodes. answerPrWriteGate allows on its own after PR_GATE_ASK_MS; the
+  // entry is dropped a little later so a canvas that never answers leaves nothing behind.
+  const pendingPrGate = new Map<string, (r: { deny?: string }) => void>()
+  ipcMain.on(IPC.agentPrWriteGateResult, (_e, payload: { requestId?: unknown; deny?: unknown }) => {
+    const resolve = typeof payload?.requestId === 'string' ? pendingPrGate.get(payload.requestId) : undefined
+    if (!resolve) return
+    pendingPrGate.delete(payload.requestId as string)
+    resolve(typeof payload.deny === 'string' && payload.deny ? { deny: payload.deny } : {})
+  })
+  const askPrWriteGate = (event: PrWriteEvent): Promise<{ deny?: string }> => {
+    const w = getMainWindow()
+    if (!w || w.isDestroyed()) return Promise.reject(new Error('no canvas window'))
+    const requestId = randomUUID()
+    setTimeout(() => pendingPrGate.delete(requestId), PR_GATE_ASK_MS * 2).unref?.()
+    return new Promise((resolve) => {
+      pendingPrGate.set(requestId, resolve)
+      w.webContents.send(IPC.agentPrWriteGate, { requestId, ...event })
+    })
+  }
   // Hook server validates session-env capacity and caller identity once for both shells.
   hookServer.setRawListener((agentId, nodeId, payload, meta) => {
     // A verified agent's `gh pr create`: the canvas opens that PR's node beside it (open-pr's plan).
     const pullCreated = pullCreatedEvent(agentId, nodeId, payload, meta)
     if (pullCreated) getMainWindow()?.webContents.send(IPC.agentPullCreated, pullCreated)
+    // A verified agent's own PR write: before it runs, the gate answers the held hook (deny =
+    // "use pr-propose", the pull node's Confirm bar); after it ran, that PR's pull nodes refresh.
+    const prWrite = prWriteEvent(agentId, nodeId, payload, meta)
+    const gateId = payload.nodeterm_gate_id
+    if (typeof gateId === 'string' && isValidPendingId(gateId)) {
+      void answerPrWriteGate({
+        event: prWrite,
+        ask: askPrWriteGate,
+        // The hook runs on the agent's host: an SSH project's answer goes over its ControlMaster.
+        write: (content) => heldPermissionIoFor(nodeId, gateId).write(content),
+        log: (message) => console.warn('[pr-write-gate]', message)
+      })
+    }
+    if (prWrite?.phase === 'post') getMainWindow()?.webContents.send(IPC.agentPrWritten, prWrite)
     if (agentId === 'cursor') {
       // One shared step (core/cursor-chat.ts `applyCursorRaw`): subagent cards, the meter, and the
       // child-event guard. A remote node gets cards but no meter (its chat is on the host).

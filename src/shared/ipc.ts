@@ -255,6 +255,12 @@ export const IPC = {
   agentControl: 'agent:control',
   /** main → renderer: a verified agent's `gh pr create` made this PR (@shared/pr-created-hook). */
   agentPullCreated: 'agent:pr-created',
+  /** main → renderer: is this verified agent's PR write to a PR of its project (@shared/pr-write-hook)?
+   *  The renderer answers on `agentPrWriteGateResult`; main fails open after PR_GATE_ASK_MS. */
+  agentPrWriteGate: 'agent:pr-write-gate',
+  agentPrWriteGateResult: 'agent:pr-write-gate-result',
+  /** main → renderer: a verified agent's PR write ran; its pull nodes refresh. */
+  agentPrWritten: 'agent:pr-written',
   agentControlResult: 'agent:control-result',
   agentMessageDeliver: 'agent:message-deliver',
   /** Renderer → main: deliver ONE mentioned session's copy of a board comment the local user just

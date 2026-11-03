@@ -199,6 +199,9 @@ export function buildRelayApi(
     onAgentControl: stub.onAgentControl,
     // The host's own canvas opens its agents' PRs; a relay tab never does.
     onPullCreated: stub.onPullCreated,
+    onPrWriteGate: stub.onPrWriteGate,
+    sendPrWriteGateResult: stub.sendPrWriteGateResult,
+    onPrWritten: stub.onPrWritten,
     sendAgentControlResult: stub.sendAgentControlResult,
     // Browser control never rides the relay either (no CDP off the desktop) — inert no-ops.
     onBrowserControlResolve: stub.onBrowserControlResolve,

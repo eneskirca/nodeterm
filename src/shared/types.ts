@@ -2,6 +2,7 @@ import type { ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './
 import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from './push-webhook'
 import type { IdentitySeedEntry } from './agent-identity-seed'
 import type { PullCreatedEvent } from './pr-created-hook'
+import type { PrWriteEvent } from './pr-write-hook'
 import type { AgentStatusSnapshotEntry } from './agent-status-snapshot'
 import type { WhiteboardFile, WhiteboardSaveResult } from './whiteboard'
 import type { PullNodeRef } from './pull-node'
@@ -4861,6 +4862,12 @@ export interface NodeTerminalApi {
   /** Fires when a verified agent's `gh pr create` made a PR (@shared/pr-created-hook): the canvas
    *  opens its pull node beside that agent. Desktop only. Returns unsubscribe. */
   onPullCreated(listener: (e: PullCreatedEvent) => void): () => void
+  /** The PR write gate (@shared/pr-write-hook): main asks whether a verified agent's PR write must go
+   *  through the pull node's Confirm bar; answer with `sendPrWriteGateResult`. Desktop only. */
+  onPrWriteGate(listener: (req: { requestId: string } & PrWriteEvent) => void): () => void
+  sendPrWriteGateResult(payload: { requestId: string; deny?: string }): void
+  /** A verified agent's PR write ran: refresh that PR's pull nodes. Desktop only. */
+  onPrWritten(listener: (e: PrWriteEvent) => void): () => void
   /** Reply to an agent control request (resolves the awaiting CLI call in main). */
   sendAgentControlResult(payload: {
     requestId: string

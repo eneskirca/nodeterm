@@ -115,13 +115,14 @@ import {
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
-import { pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
+import { PULL_REFRESH_EVENT, pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
 import { IssuesNode } from '../nodes/IssuesNode'
 import { ISSUE_WORK_EVENT, issueWorkPrompt, type IssueWorkRequest } from '@shared/issues-node'
 import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
 import { nodesJoined, usePullAgent } from '../state/pullAgent'
 import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
 import { openPrLanding, planPullCreated, pullCreatedControl, type PullCreated } from '@shared/pr-created-hook'
+import { prRefreshTargets, prWriteGateDecision, type GatePullNode } from '@shared/pr-write-hook'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -17097,6 +17098,48 @@ export function Canvas() {
     return () => {
       offControl()
       offPullCreated()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // A verified agent's own PR write (@shared/pr-write-hook). Before it runs, main asks whether it must go
+  // through a pull node's Confirm bar; after it ran, that PR's pull nodes refresh. The facts are the
+  // owning project's repository (open-pr's rule: the host's answer) and its pull nodes, linked first.
+  useEffect(() => {
+    const prFacts = async (nodeId: string): Promise<{ repo: string | undefined; pullNodes: GatePullNode[] } | undefined> => {
+      const st = useProjects.getState()
+      const live = st.activeProjectId && nodesRef.current.some((n) => n.id === nodeId) ? st.activeProjectId : undefined
+      const owner = st.getProject(live ?? st.projects.find((p) => p.nodes.some((n) => n.id === nodeId))?.id ?? '')
+      // A relay tab's agent posts its hooks to its own host, which decides there.
+      if (!owner || owner.remote) return undefined
+      const repo = await api.githubControl.status(owner.id).then((v) => v.project?.repository, () => undefined)
+      const edges = [...linkEdgesRef.current, ...controlEdgesRef.current]
+      // ponytail: off screen the links are not read, so every pull node there reads as unlinked.
+      const pullNodes = live
+        ? nodesRef.current.flatMap((n) => n.type === 'pull' && n.data.pull
+          ? [{ id: n.id, repository: n.data.pull.repository, pullNumber: n.data.pull.pullNumber, linked: nodesJoined(edges, nodeId, n.id) }]
+          : [])
+        : owner.nodes.flatMap((n) => n.kind === 'pull' && n.pull
+          ? [{ id: n.id, repository: n.pull.repository, pullNumber: n.pull.pullNumber, linked: false }]
+          : [])
+      return { repo, pullNodes }
+    }
+    const offGate = api.onPrWriteGate(({ requestId, nodeId, writes }) => {
+      void prFacts(nodeId).then(
+        (facts) => api.sendPrWriteGateResult({ requestId, ...(facts ? prWriteGateDecision({ writes, ...facts }) : {}) }),
+        () => api.sendPrWriteGateResult({ requestId })
+      )
+    })
+    const offWritten = api.onPrWritten(({ nodeId, writes }) => {
+      void prFacts(nodeId).then((facts) => {
+        for (const id of facts ? prRefreshTargets({ writes, ...facts }) : []) {
+          window.dispatchEvent(new CustomEvent(PULL_REFRESH_EVENT, { detail: id }))
+        }
+      }, () => {})
+    })
+    return () => {
+      offGate()
+      offWritten()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

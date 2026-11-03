@@ -690,6 +690,9 @@ export function buildStubApi(): Omit<
     onAgentControl: noopUnsub,
     // The Server Edition opens no pull node from a hook (docs/github-issues-kanban.md): inert.
     onPullCreated: noopUnsub,
+    onPrWriteGate: noopUnsub,
+    sendPrWriteGateResult: noop,
+    onPrWritten: noopUnsub,
     sendAgentControlResult: noop,
     // Browser control is desktop-only (no <webview>, no CDP on the Server Edition / relay), so the
     // resolve round-trip is inert here — the verb is refused by name before it reaches a handler.
