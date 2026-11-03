@@ -19034,6 +19034,21 @@ body.focus-mode .dock:hover {
   font: inherit;
 }
 .pull-reviewers .pull-compose__error { flex-basis: 100%; margin: 0; }
+/* "Send to agent…": review threads and failing checks to send to the linked agent. */
+.pull-send { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 10px 0; }
+.pull-send .pull-node__empty, .pull-send .pull-node__state { margin: 0; }
+.pull-send__panel { display: flex; flex-direction: column; gap: 8px; flex-basis: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.pull-send__panel .pull-compose__error { margin: 0; }
+.pull-send__items { display: flex; flex-direction: column; gap: 4px; max-height: 220px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.pull-send__item { display: flex; align-items: flex-start; gap: 8px; color: var(--text); line-height: 1.4; cursor: pointer; overflow-wrap: anywhere; }
+.pull-send__panel select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface-sunken);
+  font: inherit;
+}
 /* A linked agent's proposed action (pr-propose): above the tabs until Confirm or Dismiss. */
 .pull-proposal {
   margin: 0 0 10px;

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Handle, NodeResizer, Position, useReactFlow, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
+import { useEffect, useMemo, useState } from 'react'
+import { Handle, NodeResizer, Position, useReactFlow, useStore, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { Tooltip } from '../components/Tooltip'
 import { IconClose, IconExternal, IconReload } from '../components/icons'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
@@ -10,7 +10,10 @@ import { useOwningProjectId } from '../session/owning-project'
 import { MaximizeButton } from './MaximizeButton'
 import { PullNodeView } from './PullNodeView'
 import { PULL_REFRESH_EVENT, pullWebUrl } from '@shared/pull-node'
-import { usePullAgent } from '../state/pullAgent'
+import { linkedAgents, usePullAgent } from '../state/pullAgent'
+import { useAgentStatus } from '../state/agentStatus'
+import { guardConcurrentRestart } from '../terminal/agent-restart'
+import { sendPullFeedback } from '../lib/pullFeedbackSend'
 import { PULL_WORK_EVENT, type PullWorkRequest } from '@shared/pull-work'
 
 /**
@@ -19,8 +22,8 @@ import { PULL_WORK_EVENT, type PullWorkRequest } from '@shared/pull-work'
  * mount and on Refresh, and nothing read is ever persisted.
  */
 export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
-  const { updateNodeData, deleteElements } = useReactFlow()
-  const { api } = useSession()
+  const { updateNodeData, deleteElements, getEdges, getNodes } = useReactFlow()
+  const { api, source } = useSession()
   const owner = useOwningProjectId()
   const activeProjectId = useProjects((s) => s.activeProjectId)
   const projectId = owner ?? activeProjectId
@@ -28,6 +31,10 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const pull = data.pull
   const proposal = usePullAgent((s) => s.proposal[id])
   const highlight = usePullAgent((s) => s.highlight[id])
+  // The agents joined to this node, as a string so a drag elsewhere on the canvas re-renders nothing.
+  const agentsKey = useStore((s) => JSON.stringify(linkedAgents(s.edges, s.nodes, id)))
+  const agents = useMemo(() => JSON.parse(agentsKey) as { id: string; title: string }[], [agentsKey])
+  const relay = source === 'relay'
   // Lazy-loaded: React Flow measured the Suspense fallback, which has no handle, so its edges had no
   // anchor until the node resized. Re-measure once the real node (and its handle) is mounted.
   const updateNodeInternals = useUpdateNodeInternals()
@@ -125,6 +132,16 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           proposal={proposal}
           onDismiss={() => usePullAgent.getState().dismiss(id)}
           highlight={highlight}
+          agents={agents}
+          sendUnavailable={relay ? 'Send to agent is not available in a relay tab.' : undefined}
+          // A click in the node is the only sender. The target is re-checked against the canvas at the click.
+          onSendToAgent={(targetId, message) => sendPullFeedback({
+            edges: getEdges, nodes: getNodes, relay,
+            status: (nodeId) => useAgentStatus.getState().byId[nodeId] ?? {},
+            paneOwner: (nodeId) => api.pty.paneOwner(nodeId),
+            sendChatPrompt: (nodeId, text, agentId) => api.pty.sendChatPrompt(nodeId, text, agentId),
+            guard: (nodeId, run) => guardConcurrentRestart(nodeId, run)()
+          }, { pullId: id, targetId, message })}
         />
       </div>
     </div>

@@ -969,3 +969,80 @@ describe('PullNodeView agent highlight', () => {
     expect(host.querySelector('.text-diff')?.getAttribute('data-highlight')).toBe('12-30')
   })
 })
+
+describe('PullNodeView Send to agent', () => {
+  const line = (id: number, over: Partial<PullLineComment> = {}): PullLineComment => ({
+    id, reviewId: 1, author: { id, login: `u${id}`, avatarUrl: 'https://avatars.githubusercontent.com/u/1' }, body: `body ${id}`,
+    at: `2026-10-01T10:00:0${id}Z`, url: `https://github.com/o/r/pull/7#discussion_r${id}`, path: 'src/a.ts', side: 'RIGHT',
+    line: id, outdated: false, ...over
+  })
+  const conversation: GitHubPullConversationResult = {
+    status: 'ok', items: [], truncated: false, observedAt: 1, resolvedThreads: [3],
+    lineComments: [line(1), line(2, { line: null, outdated: true }), line(3)]
+  }
+  const failing: GitHubPullChecksResult = {
+    status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [{ name: 'build', state: 'failed' }, { name: 'lint', state: 'passed' }]
+  }
+
+  async function renderSend(
+    agents: { id: string; title: string }[],
+    onSendToAgent = vi.fn(async (_id: string, _message: string): Promise<string | null> => null),
+    sendUnavailable?: string
+  ) {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, failing, conversation)
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()}
+        agents={agents} onSendToAgent={onSendToAgent} sendUnavailable={sendUnavailable} />)
+    })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    return { view: host, onSendToAgent }
+  }
+
+  it('lists unresolved threads and failing checks, outdated unticked, and sends only the ticked ones', async () => {
+    const { view, onSendToAgent } = await renderSend([{ id: 'a1', title: 'Fixer' }])
+    await act(async () => { button(view, 'Send to agent…').click() })
+    const boxes = [...view.querySelectorAll('.pull-send__item input')] as HTMLInputElement[]
+    expect(boxes.map((box) => box.checked)).toEqual([true, false, true])
+    expect(view.textContent).not.toContain('body 3')
+    await act(async () => { boxes[2].click() })
+    await act(async () => { button(view, 'Send to Fixer').click() })
+    expect(onSendToAgent).toHaveBeenCalledTimes(1)
+    const [target, message] = onSendToAgent.mock.calls[0]
+    expect(target).toBe('a1')
+    expect(message).toContain('[BEGIN REVIEW TEXT] src/a.ts:1 u1: body 1 [END REVIEW TEXT]')
+    expect(message).not.toContain('body 2')
+    expect(message).not.toContain('build')
+    expect(view.textContent).toContain('Sent to Fixer.')
+  })
+
+  it('with several linked agents, the user picks one before Send', async () => {
+    const { view, onSendToAgent } = await renderSend([{ id: 'a1', title: 'Fixer' }, { id: 'a2', title: 'Other' }])
+    await act(async () => { button(view, 'Send to agent…').click() })
+    expect((button(view, 'Send') as HTMLButtonElement).disabled).toBe(true)
+    const select = view.querySelector('select[aria-label="Agent"]') as HTMLSelectElement
+    await act(async () => {
+      select.value = 'a2'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await act(async () => { button(view, 'Send').click() })
+    expect(onSendToAgent.mock.calls[0]?.[0]).toBe('a2')
+  })
+
+  it('says why when no agent is linked, or on a relay tab, and shows a refusal', async () => {
+    const none = await renderSend([])
+    expect((button(none.view, 'Send to agent…') as HTMLButtonElement).disabled).toBe(true)
+    expect(none.view.textContent).toContain('No agent is linked to this node')
+    act(() => root.unmount()); host.remove()
+    const relay = await renderSend([{ id: 'a1', title: 'Fixer' }], undefined, 'Send to agent is not available in a relay tab.')
+    expect(relay.view.textContent).toContain('relay tab')
+    act(() => root.unmount()); host.remove()
+    const refused = await renderSend([{ id: 'a1', title: 'Fixer' }], vi.fn(async (): Promise<string | null> => 'Fixer cannot take a message right now.'))
+    await act(async () => { button(refused.view, 'Send to agent…').click() })
+    await act(async () => { button(refused.view, 'Send to Fixer').click() })
+    expect(refused.view.querySelector('[role="alert"]')?.textContent).toContain('cannot take a message')
+  })
+})
