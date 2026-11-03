@@ -1,3 +1,4 @@
+import { execFile } from 'child_process'
 import { describe, expect, it } from 'vitest'
 import {
   createProcessTableReader,
@@ -8,6 +9,7 @@ import {
   type ProcRow
 } from './process-tree'
 import { powershellArgs } from '../core/win32-powershell'
+import { PROC_TABLE_CLASS, WINDOWS_PROBE_WORKER_SCRIPT } from './windows-probe-script'
 
 const row = (pid: number, ppid: number, name: string): ProcRow => ({ pid, ppid, name })
 
@@ -131,4 +133,34 @@ describe('readWin32', () => {
     await expect(readWin32OneShot((_f, _a, _o, cb) => cb(null, 'not json'), {})).resolves.toEqual([])
     await expect(readWin32OneShot((_f, _a, _o, cb) => cb(new Error('timeout'), ''), {})).resolves.toEqual([])
   })
+})
+
+describe('the Windows process-table scripts', () => {
+  // Every WMI query took 10 to 12 s on a measured Windows 11 machine, over both pane budgets, so
+  // the pane read answered "unknown" there and every restart refused (see PROC_TABLE_CLASS).
+  it('read a Toolhelp32 snapshot, never WMI', () => {
+    for (const script of [WIN32_PANE_TABLE_SCRIPT, WINDOWS_PROBE_WORKER_SCRIPT]) {
+      expect(script).toContain('CreateToolhelp32Snapshot')
+      expect(script).toContain('[NtProcTable]::Json()')
+    }
+    expect(WIN32_PANE_TABLE_SCRIPT).not.toMatch(/CimInstance|Win32_Process|Get-WmiObject/)
+    const table = WINDOWS_PROBE_WORKER_SCRIPT.slice(WINDOWS_PROBE_WORKER_SCRIPT.indexOf('function NtTable'))
+    expect(table.slice(0, table.indexOf('}'))).not.toMatch(/CimInstance|Win32_Process/)
+  })
+
+  it('carry the C# inside a single-quoted PowerShell string it cannot break out of', () => {
+    expect(PROC_TABLE_CLASS).not.toContain("'")
+    expect(PROC_TABLE_CLASS).not.toContain('\\')
+  })
+
+  it.skipIf(process.platform !== 'win32')('the one-shot read returns this machine\'s real table', async () => {
+    // The script itself, on a real PowerShell, with a test-sized deadline (PowerShell startup plus
+    // the C# compile can exceed the production 5 s fallback budget under a loaded test run).
+    const rows = await readWin32OneShot((file, args, opts, cb) =>
+      execFile(file, args, { ...opts, timeout: 20_000 }, (err, stdout) => cb(err, String(stdout)))
+    )
+    const me = rows.find((r) => r.pid === process.pid)
+    expect(me?.ppid).toBe(process.ppid)
+    expect(me?.name.toLowerCase()).toMatch(/node/)
+  }, 20_000)
 })

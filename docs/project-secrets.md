@@ -155,6 +155,12 @@ another folder, or press **Clear** in the dialog. **Fetch again…** replaces th
 **Replace value…** replaces a pasted one. After a restart nothing is held until you paste or fetch
 again.
 
+That is nodeterm's own copy. An agent node that already received a value keeps it in its
+environment (and in the shell it runs in) until that process ends: **Clear** only keeps the value
+from agents started later, and an agent's own conversation reset (`/clear` in Claude Code) does not
+touch its environment. To take a value away from a running agent, press **Clear**, then
+**Restart → Restart agent and shell** on that node, or close the node.
+
 A changed declaration is not used until you paste or fetch again: you approved the old command (or
 the paste), not the new one. The dialog then says *Declaration changed — paste or fetch again*.
 

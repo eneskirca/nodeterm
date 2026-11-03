@@ -213,6 +213,9 @@ import {
   clearEnvEligibility,
   restartEligibility,
   restartSessionId,
+  noteRestartRefusal,
+  refusalForIneligible,
+  type RestartRefusal,
   RESTART_EXIT_TIMEOUT_MS,
   RESTART_LATE_EXIT_MS,
   settleRecycledNode,
@@ -4543,6 +4546,12 @@ export function TerminalNode({
     const unregisterRestart = registerAgentRestart(
       id,
       guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean, clearEnv?: boolean, beforeRecycle?: () => Promise<RecyclePatch | void>) => {
+        // Every refusal below records WHY, for the notice (see `RestartRefusal`).
+        const refuse = (why: RestartRefusal): 'not-eligible' => {
+          noteRestartRefusal(id, why)
+          return 'not-eligible'
+        }
+        const onRefusal = (why: RestartRefusal): void => noteRestartRefusal(id, why)
         const st = agentStatusStore.getState().byId[id]
         const currentNode = getNode(id)
         const agentSessionId = restartSessionId(st?.sessionId, currentNode?.data.agentSessionId)
@@ -4567,14 +4576,15 @@ export function TerminalNode({
         // impossible when the gateway is down. `clearEnvEligibility` permits busy for that reason;
         // `restartEligibility` must NOT, because its `/exit` would answer a permission dialog.
         if (clearEnv) {
-          if (session.source === 'relay') return 'not-eligible'
+          if (session.source === 'relay') return refuse('remote-session')
           const clearGate = clearEnvEligibility(sourceAgentId, agentSessionId)
-          if (!clearGate.ok || !sourceAgentId) return 'not-eligible'
+          if (!clearGate.ok) return refuse(refusalForIneligible(clearGate.reason))
+          if (!sourceAgentId) return refuse('not-resumable')
           // Identity-gated (same as a model switch): core SIGTERMs the foreground group ONLY if
           // this agent still owns it, so a stale menu can never kill vim or a build in this pane.
           const stopped = await api.pty.terminateForeground(id, sourceAgentId)
           if (stopped === 'unsupported') return 'host-unsupported'
-          if (!stopped) return 'not-eligible'
+          if (!stopped) return refuse('agent-not-in-pane')
           transport.recycle(id)
           // `clearEnv` rides the respawn's `transport.create` (read from data above) to strip env at
           // spawn; the cold-restore auto-resume relaunches the same agent against the default provider.
@@ -4593,8 +4603,10 @@ export function TerminalNode({
           return 'restarted'
         }
         const gate = restartEligibility(sourceAgentId, st?.state, agentSessionId)
-        if (!gate.ok || !sourceAgentId || !agentSessionId || !restartTarget())
-          return 'not-eligible'
+        if (!gate.ok) return refuse(refusalForIneligible(gate.reason))
+        if (!sourceAgentId) return refuse('not-resumable')
+        if (!agentSessionId) return refuse('no-session')
+        if (!restartTarget()) return refuse('not-attached')
         const target = targetAgentId ?? sourceAgentId
         const settings = useSettings.getState().settings
         const builtinTarget = agentConfig(target)
@@ -4607,7 +4619,7 @@ export function TerminalNode({
           (!builtinTarget && !customTarget) ||
           capabilityAgentId(target) !== capabilityAgentId(sourceAgentId)
         )
-          return 'not-eligible'
+          return refuse('agent-changed')
         const selectedModel = targetModel
           ? normalizedAgentModel(target, targetModel)
           : normalizedAgentModel(
@@ -4621,12 +4633,13 @@ export function TerminalNode({
         // replacement shell the current gateway env. Relay sessions belong to another
         // core/settings store, so a local gateway must never be pushed into one.
         if (targetModel) {
-          if (!selectedModel || session.source === 'relay') return 'not-eligible'
+          if (session.source === 'relay') return refuse('remote-session')
+          if (!selectedModel) return refuse('agent-changed')
           // Identity-gated: core SIGTERMs the foreground group ONLY if `target`'s harness still
           // owns it, so a stale model-switch menu can never kill vim or a build in this pane.
           const stopped = await api.pty.terminateForeground(id, target)
           if (stopped === 'unsupported') return 'host-unsupported'
-          if (!stopped) return 'not-eligible'
+          if (!stopped) return refuse('agent-not-in-pane')
           transport.recycle(id)
           updateNodeData(id, (node) => ({
             agentId: target,
@@ -4643,7 +4656,7 @@ export function TerminalNode({
         // Relay sessions are excluded for the same reason a model switch is: their shell env belongs
         // to another core/settings store, and recycling here would respawn against this Mac's env.
         if (restartShell) {
-          if (session.source === 'relay') return 'not-eligible'
+          if (session.source === 'relay') return refuse('remote-session')
           // Read NOW, before the first await: this node is on the active canvas at call time, and
           // the project may be switched while the CLI quits (see `settleRecycledNode`).
           const ownerProjectId = owningProjectId()
@@ -4655,7 +4668,8 @@ export function TerminalNode({
             // A user-asked restart, like performRestartResume: a CLI that is slow to quit is
             // waited on rather than left to quit unwatched (issue #899 was this exact action).
             lateExitMs: RESTART_LATE_EXIT_MS,
-            isLive: restartTarget
+            isLive: restartTarget,
+            onRefusal
           })
           if (exited !== 'exited') return exited
           // Swallowed: a failed step must not strand the pane at a bare shell — the recycle below
@@ -4717,7 +4731,7 @@ export function TerminalNode({
         // Never type a knowingly mangled launch line (for example `--token ''`) into the pane.
         // Settings already surfaces these missing names in its preview; a stale menu after an env
         // change degrades to the ordinary not-eligible notice and leaves the shell untouched.
-        if (missingEnv.length) return 'not-eligible'
+        if (missingEnv.length) return refuse('launch-env')
         return performRestartResume({
           // Source and target were proven to share one capability base above, so this resolves to
           // the same exit + resume grammar while the explicit command selects the target binary.
@@ -4741,7 +4755,8 @@ export function TerminalNode({
             if (life.dead) cancel()
             else cleanups.push(cancel)
           },
-          onResumed: markRelaunched
+          onResumed: markRelaunched,
+          onRefusal
         })
       })
     )

@@ -477,8 +477,10 @@ import {
   guardConcurrentRestart,
   planBulkRestart,
   restartEligibility,
+  restartRefusalText,
   restartSessionId,
   runBoundedBulkRestart,
+  takeRestartRefusal,
   settleRestart,
   summarizeBulkRestart,
   type BulkRestartPlan,
@@ -8451,6 +8453,8 @@ export function Canvas() {
     // "pause after this turn" mark was taken against.
     usePendingPause.getState().remove([nodeId])
     let outcome: RestartOutcome
+    // A note left by an earlier refusal (a bulk run, an Eco sweep) must not explain this one.
+    takeRestartRefusal(nodeId)
     try {
       outcome = await fn(targetAgentId, targetModel, restartShell, clearEnv)
     } catch {
@@ -8550,16 +8554,10 @@ export function Canvas() {
               }
             : {
               kind: 'error',
-              // 'not-eligible' is every "not a target right now": the gate re-checked and refused,
-              // the session is closed / ended / gone (which the menu row cannot see — only the
-              // node knows its session state), the pane cannot be observed at all (persistent
-              // sessions off, or no persistence backend on this machine — the restart needs to
-              // watch the pane to know when the CLI has quit), or a restart of this node was
-              // already in flight (the per-node action and the bulk one can reach the same node).
-              text:
-                `${action} skipped: this session is busy, already restarting, not attached ` +
-                '(closed, ended, or nothing to resume), or its pane cannot be watched without ' +
-                'persistent sessions. Nothing was written to the pane.'
+              // 'not-eligible' is every "not a target right now". The node's closure records which
+              // one it was (`RestartRefusal`); the generic sentence is only for a refusal nothing
+              // recorded (a node unmounted mid-call).
+              text: restartRefusalText(action, takeRestartRefusal(nodeId))
             }
     )
   }, [setNodes, markDirty])
