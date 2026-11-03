@@ -752,7 +752,9 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   `githubIssues:pull-update-branch`, `githubIssues:pull-auto-merge`, `githubIssues:pull-auto-merge-off`, `githubIssues:pull-create`), and the issues node's comment (`githubIssues:issue-comment`), are in `OWNER_ONLY` (`src/core/relay/access-policy.ts`): every relay
   peer but the host's owner is refused, hosted Editors included, because the write posts as the host
   owner on GitHub. Editor is shell access, not identity. All ten are also in `SCOPED_REFUSED`. The
-  `open-pr` canvas-control verb only opens or links a node and has no path to a GitHub write.
+  `open-pr` canvas-control verb only opens or links a node and has no path to a GitHub write. A
+  verified agent's `gh pr create` (Claude Code and Codex PostToolUse, `src/shared/pull-created-hook.ts`)
+  runs that same `open-pr` case from the hook payload alone, desktop only.
   `pr-show` only moves a linked pull node's view. `pr-propose` only stages one write on the node, and
   only the user's Confirm there sends it (armed one second after the proposal appears, behind the
   node's own guards). `src/core/github/pull-writes.guard.test.ts` fails if a control source names a
