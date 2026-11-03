@@ -1,7 +1,7 @@
 import type { GitHubPullDetail } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
 
-/** Why Merge is off. `conflict` offers a terminal on the branch, `behind` offers Update branch. */
+/** Why Merge is off. `conflict` offers Resolve conflicts with agent, `behind` offers Update branch. */
 export type MergeBlockKind = 'draft' | 'closed' | 'merged' | 'conflict' | 'behind' | 'blocked'
 export interface MergeBlock { kind: MergeBlockKind; text: string }
 /** The Overview's checks read, as `usePullChecks` answers it. */

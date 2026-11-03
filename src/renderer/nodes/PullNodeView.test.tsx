@@ -77,7 +77,7 @@ afterEach(() => { act(() => root.unmount()); host.remove() })
 
 async function render(
   api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'overview', onTab = vi.fn(), onOpenExternal = vi.fn(),
-  onWritten = vi.fn(), selectedFile?: string, onSelectFile = vi.fn(), onOpenTerminal = vi.fn(), onWork = vi.fn()
+  onWritten = vi.fn(), selectedFile?: string, onSelectFile = vi.fn(), onWork = vi.fn()
 ): Promise<HTMLDivElement> {
   host = document.createElement('div')
   document.body.append(host)
@@ -85,7 +85,7 @@ async function render(
   await act(async () => {
     root.render(<PullNodeView api={api} projectId="p" pull={{ repository, pullNumber: 7, tab, selectedFile }}
       refreshTick={0} onTab={onTab} onOpenExternal={onOpenExternal} onWritten={onWritten} onSelectFile={onSelectFile}
-      onOpenTerminal={onOpenTerminal} onWork={onWork} />)
+      onWork={onWork} />)
   })
   // The markdown renderer is a lazy chunk; let it land.
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
@@ -480,18 +480,20 @@ describe('PullNodeView merge blockers', () => {
     expect(onWritten).not.toHaveBeenCalled()
   })
 
-  it('a conflict offers a terminal on the branch; a branch name that needs quoting gets no button', async () => {
-    const onOpenTerminal = vi.fn()
+  it('a conflict offers Resolve conflicts with agent under the conflict sentence, which takes the Work on this PR path', async () => {
+    const onWork = vi.fn()
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict' }, observedAt: 1 }),
-      'o/r', 'overview', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onOpenTerminal)
+      'o/r', 'overview', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onWork)
     expect(button(view, 'Update branch')).toBeUndefined()
-    await act(async () => { button(view, 'Open terminal on this branch').click() })
-    expect(onOpenTerminal).toHaveBeenCalledWith('git fetch origin && git switch feat/pull')
-    act(() => root.unmount())
-    host.remove()
-    const odd = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict', head: { ref: 'x;rm -rf ~', sha: 'c'.repeat(40) } }, observedAt: 1 }))
-    expect(button(odd, 'Open terminal on this branch')).toBeUndefined()
-    expect(odd.querySelector('.pull-merge__reason')?.textContent).toContain('conflicts with main')
+    expect(view.querySelector('.pull-merge__reason')?.textContent).toContain('conflicts with main')
+    await act(async () => { button(view, 'Resolve conflicts with agent').click() })
+    expect(onWork).toHaveBeenCalledWith({ ...detail, merge: 'conflict' }, true)
+  })
+
+  it('a conflict whose base is not a plain ref name refuses the button with a reason', async () => {
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict', base: { ...detail.base, ref: 'x;rm -rf ~' } }, observedAt: 1 }))
+    expect(button(view, 'Resolve conflicts with agent')).toBeUndefined()
+    expect(view.textContent).toContain('cannot be given to an agent')
   })
 })
 
@@ -499,7 +501,7 @@ describe('PullNodeView Work on this PR', () => {
   it('an open or draft PR offers Work on this PR, which hands the detail the Overview showed to the canvas', async () => {
     const onWork = vi.fn()
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, lifecycle: 'draft' }, observedAt: 1 }),
-      'o/r', 'overview', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), vi.fn(), onWork)
+      'o/r', 'overview', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onWork)
     await act(async () => { button(view, 'Work on this PR').click() })
     expect(onWork).toHaveBeenCalledWith({ ...detail, lifecycle: 'draft' })
   })

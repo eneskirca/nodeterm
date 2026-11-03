@@ -6237,17 +6237,11 @@ export function Canvas() {
         revealProjectFile(d.path)
       }
     }
-    // A file-manager node asking for a terminal in the folder it is showing, or a pull node's
-    // conflict asking for one in the project that runs `cmd`, centred right of `nearNodeId` as
-    // `nodeterm:open-agent` does. Same no-direct-line-to-the-canvas pattern as the two above.
+    // A file-manager node asking for a terminal in the folder it is showing. Same
+    // no-direct-line-to-the-canvas pattern as the two above.
     const onTerminal = (e: Event): void => {
-      const d = (e as CustomEvent<{ cwd?: string; cmd?: string; nearNodeId?: string }>).detail
-      if (!d?.cwd && !d?.cmd) return
-      const all = nodesRef.current
-      const source = d.nearNodeId ? all.find((n) => n.id === d.nearNodeId) : undefined
-      const rect = source ? nodeFitRect(source as FocusableNode, all as FocusableNode[]) : null
-      const center = rect ? { x: rect.x + rect.width * 1.5 + 40, y: rect.y + rect.height / 2 } : undefined
-      addTerminal(center, d.cmd, undefined, d.cwd)
+      const d = (e as CustomEvent<{ cwd?: string }>).detail
+      if (d?.cwd) addTerminal(undefined, undefined, undefined, d.cwd)
     }
     window.addEventListener('nodeterm:open-file', onOpen)
     window.addEventListener('nodeterm:reveal-file', onReveal)
@@ -13159,9 +13153,10 @@ export function Canvas() {
   // free `-k` when taken, never a reuse), a frame bound to it, the default agent inside with the PR
   // named in its prompt (title and body as marked, untrusted data), and a rope from the pull node so
   // `pr-show` / `pr-propose` work from that agent. A user click in the node is the only sender.
+  // "Resolve conflicts with agent" is the same path with `conflict`: the prompt adds the merge task.
   useEffect(() => {
     const onWork = async (e: Event): Promise<void> => {
-      const { nodeId, detail: pr } = (e as CustomEvent<PullWorkRequest>).detail ?? {}
+      const { nodeId, detail: pr, conflict } = (e as CustomEvent<PullWorkRequest>).detail ?? {}
       const source = nodesRef.current.find((n) => n.id === nodeId && n.type === 'pull')
       const pull = source?.data.pull as PullNodeRef | undefined
       if (!source || !pull || !pr || pr.number !== pull.pullNumber) return
@@ -13208,7 +13203,7 @@ export function Canvas() {
         const fork = !!pr.fromFork
         const promptFor = (text: { title: string; body: string }): string | undefined => pullWorkPrompt({
           repository: pull.repository, number: n, title: text.title, body: text.body,
-          base: pr.base.ref, head: pr.head.ref, branch, fork
+          base: pr.base.ref, head: pr.head.ref, branch, fork, conflict: conflict === true, node: source.id
         })
         const prompt = promptFor(pr)
         if (!prompt) return

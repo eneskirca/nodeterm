@@ -140,4 +140,34 @@ describe('pullWorkPrompt', () => {
     expect(pullWorkPrompt({ ...pr, repository: '-x/r' })).toBeUndefined()
     expect(pullWorkPrompt({ ...pr, branch: 'main' })).toBeUndefined()
   })
+
+  it('a conflict adds the merge-the-base task before the marked text; plain Work on this PR does not', () => {
+    const prompt = pullWorkPrompt({ ...pr, conflict: true })!
+    const task = 'This pull request conflicts with main. Fetch origin, merge origin/main into this branch, resolve the conflicts, ' +
+      "run the project's checks if any, then stop and show the user the resolution (git diff and git status). " +
+      'Do not push and do not commit unless the user asks.'
+    expect(prompt).toContain(task)
+    expect(prompt.indexOf(task)).toBeLessThan(prompt.indexOf('[BEGIN PR TEXT]'))
+    expect(prompt.endsWith('[END PR TEXT]')).toBe(true)
+    expect(pullWorkPrompt(pr)).not.toContain('conflicts with')
+  })
+
+  it('names the linked pull node for pr-show and pr-propose, and only a safe node id', () => {
+    const prompt = pullWorkPrompt({ ...pr, node: 'pull-abc-1' })!
+    expect(prompt).toContain(
+      'You are linked to pull node pull-abc-1 on the nodeterm canvas. To show the user a file or lines, use the ' +
+      "manage-nodeterm-canvas skill's `pr-show --node pull-abc-1 ...`. To approve, request changes, comment or merge, " +
+      'use `pr-propose --node pull-abc-1 ...`: it puts the action on the node for the user to Confirm. Never write to ' +
+      'GitHub yourself (no `gh pr review`, `gh pr merge`, `gh pr comment`, `gh api` writes).'
+    )
+    expect(prompt.indexOf('pull node pull-abc-1')).toBeLessThan(prompt.indexOf('[BEGIN PR TEXT]'))
+    expect(pullWorkPrompt({ ...pr, node: 'x; rm -rf ~' })).not.toContain('pull node')
+    expect(pullWorkPrompt(pr)).not.toContain('pull node')
+  })
+
+  it('a conflict whose base is not a plain ref name builds no prompt', () => {
+    expect(pullWorkPrompt({ ...pr, conflict: true, base: 'x;rm -rf ~' })).toBeUndefined()
+    expect(pullWorkPrompt({ ...pr, conflict: true, base: '../main' })).toBeUndefined()
+    expect(pullWorkPrompt({ ...pr, base: 'x;rm -rf ~' })).toBeDefined()
+  })
 })

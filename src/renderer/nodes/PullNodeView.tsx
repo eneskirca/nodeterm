@@ -25,6 +25,7 @@ import type {
 } from '@shared/github-pull-detail'
 import type { PullLifecycle } from '@shared/github-pull-status'
 import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-node'
+import { isPlainRef } from '@shared/pull-work'
 import type { PullHighlight, PullProposal, ShownProposal } from '@shared/pull-agent-verbs'
 import { NoteMarkdown } from '../components/NoteMarkdown'
 import { PullChecks, usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
@@ -86,9 +87,6 @@ const METHOD_TEXT: Record<PullMergeMethod, string> = {
   merge: 'Create a merge commit', squash: 'Squash and merge', rebase: 'Rebase and merge'
 }
 
-/** A branch name the conflict terminal can type unquoted. ponytail: any other name gets no button. */
-const PLAIN_BRANCH = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/-]*$/
-
 const LIFECYCLE_TEXT: Record<PullLifecycle, string> = {
   open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed'
 }
@@ -117,10 +115,9 @@ type ViewProps = {
   onOpenExternal: (url: string) => void
   /** A write landed: the node reads again (the core dropped its held reads for this PR). */
   onWritten: () => void
-  /** Open a terminal node in the project that runs `command` (the conflict's "Open terminal on this branch"). */
-  onOpenTerminal?: (command: string) => void
-  /** "Work on this PR": the PR's head in a fresh worktree with the default agent (Canvas does it). */
-  onWork?: (detail: GitHubPullDetail) => void
+  /** "Work on this PR": the PR's head in a fresh worktree with the default agent (Canvas does it).
+   *  `conflict`: "Resolve conflicts with agent", the same path with the merge-the-base task. */
+  onWork?: (detail: GitHubPullDetail, conflict?: true) => void
   /** The agent nodes joined to this node: who "Send to agent" may send to. */
   agents?: readonly LinkedAgent[]
   /** Why "Send to agent" is off on this surface (a relay tab). */
@@ -768,7 +765,7 @@ function PullReviewers(props: ViewProps & { detail: GitHubPullDetail }): React.J
  * the node then says so and reloads.
  */
 function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullChecksRead }): React.JSX.Element {
-  const { api, projectId, pull, detail: d, checks, onWritten, onOpenTerminal } = props
+  const { api, projectId, pull, detail: d, checks, onWritten, onWork } = props
   const name = useId()
   // Which confirmation is open: a merge now, or "Merge when ready" (GitHub's auto-merge).
   const [open, setOpen] = useState<'merge' | 'auto' | null>(null)
@@ -845,12 +842,9 @@ function PullMerge(props: ViewProps & { detail: GitHubPullDetail; checks: PullCh
             return outcome
           })}>Update branch</button>
       )}
-      {block?.kind === 'conflict' && onOpenTerminal && PLAIN_BRANCH.test(d.head.ref) && (
-        // ponytail: switches the project's own checkout; a fork's branch is not on origin.
-        <button className="pull-compose__button" onClick={() => onOpenTerminal(`git fetch origin && git switch ${d.head.ref}`)}>
-          Open terminal on this branch
-        </button>
-      )}
+      {block?.kind === 'conflict' && onWork && (isPlainRef(d.base.ref)
+        ? <button className="pull-compose__button" onClick={() => onWork(d, true)}>Resolve conflicts with agent</button>
+        : <p className="pull-merge__reason">The base branch name cannot be given to an agent, so resolve the conflicts by hand.</p>)}
       {updating && <p className="pull-node__state" role="status">GitHub is updating the branch. Refresh in a moment to see the new commit.</p>}
       {update.refusal && (
         <p className="pull-compose__error" role="alert">
