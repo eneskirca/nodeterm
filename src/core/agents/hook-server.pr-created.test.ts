@@ -9,7 +9,7 @@ import { hookServer } from './hook-server'
 import { nodeAuthToken } from './node-auth-token'
 import { initPlatform, resetPlatformForTests } from '../platform'
 import { fakePlatform } from '../platform-fake'
-import { pullCreatedEvent, type PullCreatedEvent } from '../../shared/pull-created-hook'
+import { pullCreatedEvent, type PullCreatedEvent } from '../../shared/pr-created-hook'
 
 const SECRET = Buffer.alloc(32, 7)
 const NODE = 'node-pr-1'

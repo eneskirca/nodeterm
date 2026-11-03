@@ -17,7 +17,9 @@ const CONTROL_SOURCES = [
   // The agent's pull node verbs (#19): parse, store and the renderer dispatch only stage or move the view.
   'src/shared/pull-agent-verbs.ts',
   'src/renderer/state/pullAgent.ts',
-  'src/renderer/canvas/Canvas.tsx'
+  'src/renderer/canvas/Canvas.tsx',
+  // The hook-opened pull node (`gh pr create` -> open-pr's case) reads a hook payload, nothing more.
+  'src/shared/pr-created-hook.ts'
 ]
 const WRITES =
   /commentOnPull|reviewPull|mergePull|githubIssuesPullComment|githubIssuesPullReview|githubIssuesPullMerge|pull-comment|pull-review|pull-merge|createIssueComment|requestPullReviewer|githubIssuesPullRequestReviewer|pull-request-reviewer|commentOnPullLine|createPullLineComment|githubIssuesPullLineComment|pull-line-comment|\bcreatePull\b|githubIssuesPullCreate|pull-create|updatePullBranch|githubIssuesPullUpdateBranch|pull-update-branch|PullAutoMerge|pull-auto-merge|commentOnIssue|githubIssuesIssueComment|issue-comment\b/

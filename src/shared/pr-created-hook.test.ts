@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { openPrLanding, planPullCreated, pullCreatedControl, pullCreatedFromHook } from './pull-created-hook'
+import { openPrLanding, planPullCreated, pullCreatedControl, pullCreatedFromHook } from './pr-created-hook'
 
 // The real payload shapes (fixtures: shared/agents/__fixtures__/claude/subagent-hook-payloads.json,
 // codex/auto-review-permission.json): Claude's Bash tool_response is an object with stdout/stderr,

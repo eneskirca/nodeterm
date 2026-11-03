@@ -753,7 +753,7 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   peer but the host's owner is refused, hosted Editors included, because the write posts as the host
   owner on GitHub. Editor is shell access, not identity. All ten are also in `SCOPED_REFUSED`. The
   `open-pr` canvas-control verb only opens or links a node and has no path to a GitHub write. A
-  verified agent's `gh pr create` (Claude Code and Codex PostToolUse, `src/shared/pull-created-hook.ts`)
+  verified agent's `gh pr create` (Claude Code and Codex PostToolUse, `src/shared/pr-created-hook.ts`)
   runs that same `open-pr` case from the hook payload alone, desktop only.
   `pr-show` only moves a linked pull node's view. `pr-propose` only stages one write on the node, and
   only the user's Confirm there sends it (armed one second after the proposal appears, behind the

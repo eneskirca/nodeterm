@@ -96,7 +96,7 @@ export function planPullCreated(input: {
 }): OpenPrPlan {
   const { created, repo } = input
   if (!input.relayGuest && repo?.repository?.toLowerCase() !== created.repository.toLowerCase()) {
-    return { kind: 'refuse', error: 'pull-created-other-repo: the PR is not in this project\'s repository' }
+    return { kind: 'refuse', error: 'pr-created-other-repo: the PR is not in this project\'s repository' }
   }
   // ponytail: `approved: true` only lets the node open; the host refuses its reads until the user
   // clicks Allow inside the node.

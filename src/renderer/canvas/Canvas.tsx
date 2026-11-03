@@ -121,7 +121,7 @@ import { ISSUE_WORK_EVENT, issueWorkPrompt, type IssueWorkRequest } from '@share
 import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
 import { nodesJoined, usePullAgent } from '../state/pullAgent'
 import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
-import { openPrLanding, planPullCreated, pullCreatedControl, type PullCreated } from '@shared/pull-created-hook'
+import { openPrLanding, planPullCreated, pullCreatedControl, type PullCreated } from '@shared/pr-created-hook'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -13592,7 +13592,7 @@ export function Canvas() {
   useEffect(() => {
     const runControl = async (
       { requestId, sourceNodeId, verb, args }: Parameters<Parameters<typeof api.onAgentControl>[0]>[0],
-      // Set only for the PR a verified agent's `gh pr create` made (@shared/pull-created-hook): the
+      // Set only for the PR a verified agent's `gh pr create` made (@shared/pr-created-hook): the
       // `open-pr` case runs as if that agent had called it, and no CLI waits for a reply.
       fromHook?: PullCreated
     ) => {
@@ -13640,7 +13640,7 @@ export function Canvas() {
         // is raised here. A refusal decorates nothing — it created no node and moved no view.
         // A hook-opened PR says so itself (the `open-pr` case), with no CLI to answer.
         if (fromHook) {
-          if (!r.ok) console.info('[pull-created] no pull node opened:', r.error)
+          if (!r.ok) console.info('[pr-created] no pull node opened:', r.error)
           return
         }
         if (offCanvas && r.ok && offCanvas.created.length) {

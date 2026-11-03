@@ -1,7 +1,7 @@
 import type { ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
 import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from './push-webhook'
 import type { IdentitySeedEntry } from './agent-identity-seed'
-import type { PullCreatedEvent } from './pull-created-hook'
+import type { PullCreatedEvent } from './pr-created-hook'
 import type { AgentStatusSnapshotEntry } from './agent-status-snapshot'
 import type { WhiteboardFile, WhiteboardSaveResult } from './whiteboard'
 import type { PullNodeRef } from './pull-node'
@@ -4858,7 +4858,7 @@ export interface NodeTerminalApi {
       args: Record<string, string>
     }) => void
   ): () => void
-  /** Fires when a verified agent's `gh pr create` made a PR (@shared/pull-created-hook): the canvas
+  /** Fires when a verified agent's `gh pr create` made a PR (@shared/pr-created-hook): the canvas
    *  opens its pull node beside that agent. Desktop only. Returns unsubscribe. */
   onPullCreated(listener: (e: PullCreatedEvent) => void): () => void
   /** Reply to an agent control request (resolves the awaiting CLI call in main). */
