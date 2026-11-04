@@ -20067,6 +20067,7 @@ export function Canvas() {
     <AerialWallpaper />
     <div className="canvas-root" style={wallpaperStyle}>
       <TabBar
+        liveActiveNodes={liveActiveNodes}
         onSwitch={switchProject}
         onReconnect={reconnectRelay}
         onReorder={reorderProject}
