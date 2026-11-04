@@ -17,6 +17,7 @@ import { nextStep, openThreadCount, pullReadiness, type PullJump } from './pull/
 import { AllowContext, usePullRead, type ViewProps } from './pull/shared'
 import { useMergeMethods } from './pull/useMergeMethods'
 import { SendToProvider, type SendToHost } from './pull/SendTo'
+import { PullZoomCard } from './pull/PullZoomCard'
 
 export type { PullNodeApi } from './pull/shared'
 
@@ -35,6 +36,8 @@ type TabsProps = ViewProps & {
   agentState?: AgentState
   /** Writes text to the clipboard (Copy link, Copy branch name). */
   onCopy?: (text: string) => void
+  /** Canvas zoom under 50% (F-09): show the status card; the full view stays mounted, hidden. */
+  zoomedOut?: boolean
 }
 
 /**
@@ -60,7 +63,7 @@ export function PullNodeView({
  *  the proposal bar and each tab show the same head. A tab mounts the first time it is shown and
  *  then stays mounted (hidden when not shown), so a switch back costs no read and a draft typed in
  *  a tab survives the switch. */
-function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToHost, agentState, onCopy, ...props }: TabsProps): React.JSX.Element {
+function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToHost, agentState, onCopy, zoomedOut, ...props }: TabsProps): React.JSX.Element {
   const { api, projectId, pull } = props
   const shownTab = shownPullTab(pull.tab)
   const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
@@ -108,6 +111,8 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
   return (
     <AllowContext.Provider value={props.onAllow}>
     <SendToProvider host={sendToHost} pr={{ repository: pull.repository, number: pull.pullNumber, title: detail?.title ?? '' }}>
+      {zoomedOut && <PullZoomCard pull={pull} detail={detail} segments={readiness ? pullReadiness(readiness) : []} proposal={proposal} />}
+      <div hidden={zoomedOut}>
       <div ref={top} className="pr-top">
         <PullHeader pull={pull} detail={detail} onCopy={onCopy}
           avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined}
@@ -140,6 +145,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
             onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending} />
         </div>
       )}
+      </div>
     </SendToProvider>
     </AllowContext.Provider>
   )

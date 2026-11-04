@@ -10,6 +10,7 @@ import { useSession, useSessionStores } from '../session/session'
 import { useOwningProjectId } from '../session/owning-project'
 import { MaximizeButton } from './MaximizeButton'
 import { PullNodeView } from './PullNodeView'
+import { isCardZoom } from './pull/PullZoomCard'
 import { PULL_REFRESH_EVENT, pullWebUrl } from '@shared/pull-node'
 import { linkedAgents, usePullAgent, type LinkedAgent } from '../state/pullAgent'
 import { useSettings } from '../state/settings'
@@ -40,6 +41,8 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const agentsKey = useStore((s) => JSON.stringify(linkedAgents(s.edges, s.nodes, id)))
   const agents = useMemo(() => JSON.parse(agentsKey) as LinkedAgent[], [agentsKey])
   const relay = source === 'relay'
+  // Under 50% zoom the body is the status card (F-09). A boolean, so a zoom gesture re-renders only on the flip.
+  const zoomedOut = useStore((s) => isCardZoom(s.transform[2]))
   // The node's own session's agent status (CONTRIBUTING: never the global store directly).
   const agentStatus = useSessionStores().agentStatus.store
   // "Send to…" (F-06): any agent node on this canvas, read at the click; a user click is the only sender.
@@ -143,12 +146,13 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           </button>
         </Tooltip>
       </div>
-      <div className="pull-node__body nodrag nowheel">
+      <div className={`pull-node__body${zoomedOut ? '' : ' nodrag nowheel'}`}>
         <PullNodeView
           api={api.githubIssues}
           projectId={projectId}
           pull={pull}
           refreshTick={refreshTick}
+          zoomedOut={zoomedOut}
           onTab={(tab) => { if (pull) updateNodeData(id, { pull: { ...pull, tab } }) }}
           onSelectFile={(selectedFile) => { if (pull) updateNodeData(id, { pull: { ...pull, selectedFile } }) }}
           onOpenExternal={(url) => void api.shell.openExternal(url)}
