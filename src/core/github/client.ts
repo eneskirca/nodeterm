@@ -738,6 +738,30 @@ export class GitHubIssuesClient {
     })
   }
 
+  /** Add or remove one label, by name, on the PR's issue (`POST` / `DELETE /issues/{n}/labels`). */
+  async setPullLabel(repository: string, pullNumber: number, label: string, add: boolean): Promise<void> {
+    safeRepository(repository)
+    // `.` and `..` would resolve as path segments in the DELETE URL.
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !string(label, 50) || !label.trim() || /^\.{1,2}$/.test(label) ||
+        typeof add !== 'boolean') {
+      throw new GitHubClientError('invalid-request')
+    }
+    const path = `/repos/${repository}/issues/${pullNumber}/labels`
+    await this.request(add ? path : `${path}/${encodeURIComponent(label)}`,
+      add ? { method: 'POST', body: JSON.stringify({ labels: [label] }) } : { method: 'DELETE' })
+  }
+
+  /** Add or remove one assignee, by login, on the PR's issue (`POST` / `DELETE /issues/{n}/assignees`). */
+  async setPullAssignee(repository: string, pullNumber: number, login: string, add: boolean): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !GITHUB_LOGIN.test(login) || typeof add !== 'boolean') {
+      throw new GitHubClientError('invalid-request')
+    }
+    await this.request(`/repos/${repository}/issues/${pullNumber}/assignees`, {
+      method: add ? 'POST' : 'DELETE', body: JSON.stringify({ assignees: [login] })
+    })
+  }
+
   /** Open a pull request (`POST /pulls`) from `head`, a branch of this repository, into `base`. */
   async createPull(repository: string, pull: PullCreateDraft): Promise<{ number: number }> {
     safeRepository(repository)

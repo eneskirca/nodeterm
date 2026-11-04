@@ -1065,3 +1065,49 @@ describe('GitHubIssuesClient viewed files', () => {
     expect(calls).toEqual([])
   })
 })
+
+describe('GitHubIssuesClient pull labels and assignees', () => {
+  const recorder = () => {
+    const calls: Array<{ url: string; method?: string; body?: unknown }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+        return response([])
+      }
+    })
+    return { client, calls }
+  }
+
+  it('adds and removes one label by name on the PR\'s issue', async () => {
+    const { client, calls } = recorder()
+    await client.setPullLabel('o/r', 7, 'good first issue', true)
+    await client.setPullLabel('o/r', 7, 'a/b?c', false)
+    expect(calls).toEqual([
+      { url: 'https://api.github.com/repos/o/r/issues/7/labels', method: 'POST', body: { labels: ['good first issue'] } },
+      { url: 'https://api.github.com/repos/o/r/issues/7/labels/a%2Fb%3Fc', method: 'DELETE', body: undefined }
+    ])
+  })
+
+  it('adds and removes one assignee by login', async () => {
+    const { client, calls } = recorder()
+    await client.setPullAssignee('o/r', 7, 'ana', true)
+    await client.setPullAssignee('o/r', 7, 'ana', false)
+    expect(calls).toEqual([
+      { url: 'https://api.github.com/repos/o/r/issues/7/assignees', method: 'POST', body: { assignees: ['ana'] } },
+      { url: 'https://api.github.com/repos/o/r/issues/7/assignees', method: 'DELETE', body: { assignees: ['ana'] } }
+    ])
+  })
+
+  it('refuses a bad label, login, number or flag before any request', async () => {
+    const { client, calls } = recorder()
+    for (const label of ['', ' ', '..', '.', 'x'.repeat(51)]) {
+      await expect(client.setPullLabel('o/r', 7, label, false)).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    await expect(client.setPullLabel('o/r', 0, 'bug', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setPullLabel('o/r', 7, 'bug', 'yes' as unknown as boolean)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setPullAssignee('o/r', 7, '../x', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setPullAssignee('o/r', 0, 'ana', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(calls).toEqual([])
+  })
+})
