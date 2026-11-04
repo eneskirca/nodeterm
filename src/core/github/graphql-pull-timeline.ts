@@ -9,8 +9,8 @@ import { GraphQLShapeError, graphQLErrors } from './graphql-pulls'
 
 export const PULL_TIMELINE_PAGE = 50
 
-const ACTOR = 'login avatarUrl ... on User{ databaseId } ... on Bot{ databaseId }'
-const EVENT = `id createdAt actor{ ${ACTOR} }`
+export const ACTOR = 'login avatarUrl ... on User{ databaseId } ... on Bot{ databaseId }'
+export const EVENT = `id createdAt actor{ ${ACTOR} }`
 
 export const PULL_TIMELINE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String){
   repository(owner:$owner,name:$name){

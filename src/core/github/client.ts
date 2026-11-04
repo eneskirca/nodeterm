@@ -66,6 +66,7 @@ const PULL_THREAD_IDS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
 }`
 import { PULL_TIMELINE_QUERY, parsePullTimelineResponse } from './graphql-pull-timeline'
 import { isPullTimelineCursor, type PullTimelinePage } from '../../shared/github-pull-timeline'
+import { ISSUE_TIMELINE_QUERY, parseIssueTimelineResponse } from './graphql-issue-timeline'
 
 const API_ORIGIN = 'https://api.github.com'
 const REVIEW_EVENTS: ReadonlySet<unknown> = new Set<PullReviewEvent>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT'])
@@ -1165,6 +1166,21 @@ export class GitHubIssuesClient {
     const body = await this.graphql(PULL_TIMELINE_QUERY, { owner, name, number: pullNumber, ...(after ? { after } : {}) })
     try {
       return parsePullTimelineResponse(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** One page of an issue's timeline (graphql-issue-timeline.ts); `after` = the cursor. */
+  async issueTimeline(repository: string, issueNumber: number, after?: string): Promise<PullTimelinePage> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(issueNumber, 2_147_483_647) || (after !== undefined && !isPullTimelineCursor(after))) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const body = await this.graphql(ISSUE_TIMELINE_QUERY, { owner, name, number: issueNumber, ...(after ? { after } : {}) })
+    try {
+      return parseIssueTimelineResponse(body)
     } catch (error) {
       if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
       throw error
