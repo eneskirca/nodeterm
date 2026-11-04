@@ -73,6 +73,8 @@ export interface GitHubIssueHandlerService {
   enablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string }): Promise<PullWriteResult>
   updatePullBranch(request: { projectId: string; repository: string; pullNumber: number; headSha: string }): Promise<PullWriteResult>
   setFileViewed(request: { projectId: string; repository: string; pullNumber: number; path: string; viewed: boolean }): Promise<PullWriteResult>
+  setReviewThreadResolved(request: { projectId: string; repository: string; pullNumber: number; threadId: number; resolved: boolean }): Promise<PullWriteResult>
+  applySuggestion(request: { projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number }): Promise<PullWriteResult>
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
   }): Promise<PullWriteResult>
@@ -139,6 +141,8 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesPullAutoMerge, (request) => service.enablePullAutoMerge(request))
   platform.handle(IPC.githubIssuesPullUpdateBranch, (request) => service.updatePullBranch(request))
   platform.handle(IPC.githubIssuesPullFileViewed, (request) => service.setFileViewed(request))
+  platform.handle(IPC.githubIssuesPullThreadResolved, (request) => service.setReviewThreadResolved(request))
+  platform.handle(IPC.githubIssuesPullApplySuggestion, (request) => service.applySuggestion(request))
   platform.handle(IPC.githubIssuesRepoCollaborators, (projectId: string, repository: string) =>
     service.repoCollaborators({ projectId, repository }))
   platform.handle(IPC.githubIssuesPullForBranch, (projectId: string, repository: string, head: string) =>

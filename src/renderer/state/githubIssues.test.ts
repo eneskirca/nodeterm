@@ -53,6 +53,8 @@ function api(): GitHubIssuesApi {
     commentOnPullLine: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     disablePullAutoMerge: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     setFileViewed: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
+    setReviewThreadResolved: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
+    applySuggestion: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     enablePullAutoMerge: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     updatePullBranch: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     pullForBranch: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),

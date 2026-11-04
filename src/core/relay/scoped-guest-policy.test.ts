@@ -196,6 +196,8 @@ describe('scoped guest — canvas, board and GitHub', () => {
     expect(allowed(IPC.githubIssuesPullAutoMerge, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'c'.repeat(40) })).toBe(false)
     expect(allowed(IPC.githubIssuesPullAutoMergeOff, { projectId: 'alpha', repository: 'o/r', pullNumber: 12 })).toBe(false)
     expect(allowed(IPC.githubIssuesPullFileViewed, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, path: 'a.ts', viewed: true })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullThreadResolved, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, threadId: 4, resolved: true })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullApplySuggestion, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40), commentId: 4 })).toBe(false)
     expect(allowed(IPC.githubIssuesPullForBranch, 'alpha', 'o/r', 'x')).toBe(true)
     expect(allowed(IPC.githubIssuesPullForBranch, 'beta', 'o/r', 'x')).toBe(false)
     expect(allowed(IPC.githubIssuesRepoCollaborators, 'alpha', 'o/r')).toBe(true)

@@ -357,6 +357,10 @@ export interface GitHubIssuesApi {
   updatePullBranch(request: { projectId: string; repository: string; pullNumber: number; headSha: string }): Promise<PullWriteResult>
   /** Tick or clear GitHub's own "Viewed" mark on one changed file. A user click only, never an agent verb. */
   setFileViewed(request: { projectId: string; repository: string; pullNumber: number; path: string; viewed: boolean }): Promise<PullWriteResult>
+  /** Resolve or unresolve the review thread whose first comment is `threadId`. A user click only, never an agent verb. */
+  setReviewThreadResolved(request: { projectId: string; repository: string; pullNumber: number; threadId: number; resolved: boolean }): Promise<PullWriteResult>
+  /** Commit one comment's suggestion to the head branch, pinned to the file at `headSha`. A user click only, never an agent verb. */
+  applySuggestion(request: { projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number }): Promise<PullWriteResult>
   /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string

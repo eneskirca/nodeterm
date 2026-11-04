@@ -598,6 +598,10 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullUpdateBranch, request) as ReturnType<GitHubIssuesApi['updatePullBranch']>,
     setFileViewed: (request) =>
       client.request(IPC.githubIssuesPullFileViewed, request) as ReturnType<GitHubIssuesApi['setFileViewed']>,
+    setReviewThreadResolved: (request) =>
+      client.request(IPC.githubIssuesPullThreadResolved, request) as ReturnType<GitHubIssuesApi['setReviewThreadResolved']>,
+    applySuggestion: (request) =>
+      client.request(IPC.githubIssuesPullApplySuggestion, request) as ReturnType<GitHubIssuesApi['applySuggestion']>,
     enablePullAutoMerge: (request) =>
       client.request(IPC.githubIssuesPullAutoMerge, request) as ReturnType<GitHubIssuesApi['enablePullAutoMerge']>,
     disablePullAutoMerge: (request) =>
