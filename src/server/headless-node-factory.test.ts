@@ -452,6 +452,94 @@ describe('HeadlessNodeFactory', () => {
       factory = new HeadlessNodeFactory({ ...factoryDeps, controlScope: 'project' })
     }
 
+    it.each(['term-owned', 'term-upstream,term-owned'])(
+      'refuses the whole close of %s when a creator-owned id belongs to two projects',
+      async (ids) => {
+        useProjectScope()
+        const ws = await store.load({ sideline: false })
+        const otherDir = path.join(dataDir, 'review-other')
+        fs.mkdirSync(otherDir, { recursive: true })
+        ws.projects.push({
+          ...ws.projects[0],
+          id: 'project-review-other',
+          name: 'Other checkout',
+          cwd: otherDir,
+          nodes: [terminal('term-owned', 'Same physical session')]
+        })
+        await store.save(ws)
+        pty.live.add('term-owned')
+        pty.live.add('term-upstream')
+        const before = await store.load({ sideline: false })
+        const reply = await factory.close('term-source', { node: ids, force: 'yes' }, true)
+        expect({ reply, destroyed: pty.destroys }).toMatchObject({
+          reply: { ok: false, error: expect.stringContaining('close-not-owner') },
+          destroyed: []
+        })
+        expect(pty.live).toEqual(new Set(['term-owned', 'term-upstream']))
+        expect(await store.load({ sideline: false })).toEqual(before)
+      }
+    )
+
+    it.each([
+      ['term-upstream', 'term-source'],
+      ['term-source', 'term-owned']
+    ])('refuses run from plain terminal %s to %s, even with creator proof', async (sourceId, targetId) => {
+      useProjectScope()
+      const ws = await store.load({ sideline: false })
+      ws.projects[0].nodes.find((n) => n.id === sourceId)!.agentId = undefined
+      ws.projects[0].nodes.find((n) => n.id === targetId)!.pendingLaunch = {
+        after: [], command: 'printf held', executor: 'server', attempted: false
+      }
+      await store.save(ws)
+      const before = await store.load({ sideline: false })
+      const reply = await factory.run(sourceId, { node: targetId }, true)
+      expect({ reply, creates: pty.creates, sends: pty.sends }).toMatchObject({
+        reply: { ok: false, error: 'source node is not a control-capable agent' }, creates: [], sends: []
+      })
+      expect(await store.load({ sideline: false })).toEqual(before)
+    })
+
+    it('refuses list, color and run for an ambiguous creator-owned node before any write', async () => {
+      useProjectScope()
+      const ws = await store.load({ sideline: false })
+      const otherDir = path.join(dataDir, 'other-checkout')
+      fs.mkdirSync(otherDir, { recursive: true })
+      ws.projects[0].nodes.find((n) => n.id === 'term-owned')!.pendingLaunch = {
+        after: [], command: 'printf held', executor: 'server', attempted: false
+      }
+      ws.projects.push({
+        ...ws.projects[0], id: 'project-other', name: 'Other', cwd: otherDir,
+        nodes: [terminal('term-owned', 'Other copy')]
+      })
+      await store.save(ws)
+      const before = await store.load({ sideline: false })
+      const listed = await factory.list('term-source', {})
+      expect(listed).toMatchObject({ ok: true })
+      expect((listed.result as Array<{ id: string }>).map((n) => n.id)).not.toContain('term-owned')
+      await expect(factory.color('term-source', { node: 'term-owned', color: 'blue' })).resolves
+        .toMatchObject({ ok: false, error: expect.stringContaining('color-not-owner') })
+      await expect(factory.run('term-source', { node: 'term-owned' }, true)).resolves
+        .toMatchObject({ ok: false, error: expect.stringContaining('run-not-owner') })
+      expect(pty.creates).toEqual([])
+      expect(pty.sends).toEqual([])
+      expect(published).toEqual([])
+      expect(await store.load({ sideline: false })).toEqual(before)
+    })
+
+    it('lets a control-capable agent run an unowned launch in its project', async () => {
+      useProjectScope()
+      const ws = await store.load({ sideline: false })
+      ws.projects[0].nodes.find((n) => n.id === 'term-source')!.pendingLaunch = {
+        after: [], command: 'printf held', executor: 'server', attempted: false
+      }
+      await store.save(ws)
+      await expect(factory.run('term-upstream', { node: 'term-source' }, true)).resolves
+        .toMatchObject({ ok: true, result: { started: true } })
+      expect(pty.sends).toEqual([{ nodeId: 'term-source', text: 'printf held' }])
+      expect((await store.load({ sideline: false })).projects[0].nodes
+        .find((n) => n.id === 'term-source')?.pendingLaunch).toBeUndefined()
+    })
+
     it('lists every node of the caller project, whoever opened it', async () => {
       useProjectScope()
       const reply = await factory.list('term-upstream', {})

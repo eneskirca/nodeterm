@@ -4854,6 +4854,11 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `open-agent` are verified-only at the Server handler boundary. A plain terminal keeps generic
   node hook wiring but receives neither `NODETERM_AGENT_ID` nor `NODETERM_CANVAS_CONTROL`; missing
   identity never defaults to Claude.
+  The operator's `--control-scope project` also admits nodes in the caller's own project. Its
+  uniqueness check applies even to creator-owned targets: a duplicated id or a target moved away
+  from its recorded project cannot authorize a close or a retained launch. Check every close target
+  before any kill. Project-scope `run` checks the caller's current control-capable agent identity
+  before claiming or typing a launch; a verified plain terminal alone grants no such authority.
   **Windows hosts**: a PowerShell/cmd-run agent cannot type `sh "<shim>"`, so a win32 core also
   writes `nodeterm.cmd` / `context.cmd` beside the shims (`syncWindowsShLauncher` — finds Git for
   Windows' `sh.exe`, passes `%*` through, fails LOUDLY without it) and the skills, the connect-time

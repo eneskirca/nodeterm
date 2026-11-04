@@ -928,7 +928,10 @@ ownership, performs no node/session adoption, and leaves durable queued launches
 mutations and message delivery validate every target before writing anything; missing proof is a
 named refusal. The operator may widen the reach to the caller's whole project
 (`--control-scope project`, `src/server/control-scope.ts`): every ownership check goes through
-`ownsMutation`, and `creator` must stay byte-identical. Validate Server upgrades against a disposable data directory and port. Restarting a
+`ownsMutation`, and `creator` must stay byte-identical. Under `project`, creator proof never waives
+the target's unique project placement; check close batches before any kill and `run` before its
+write-ahead claim. `run` also requires a currently control-capable caller, not just a node token.
+Validate Server upgrades against a disposable data directory and port. Restarting a
 shared live service is
 an explicit operator action, never a test or an automatic repair step.
 
