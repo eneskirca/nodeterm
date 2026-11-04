@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GitHubPullDetail } from '@shared/github-pull-detail'
+import type { GitHubPullDetail, PullLineComment } from '@shared/github-pull-detail'
 import type { GitHubPullTimelineResult, PullTimelineItem } from '@shared/github-pull-timeline'
 import { PullTimeline } from './PullTimeline'
 import type { PullNodeApi } from './shared'
@@ -43,12 +43,12 @@ let host: HTMLDivElement | undefined
 let root: ReturnType<typeof createRoot>
 afterEach(() => { act(() => root.unmount()); host?.remove(); host = undefined })
 
-async function render(pullTimeline: ReturnType<typeof vi.fn>, refreshTick = 0): Promise<HTMLDivElement> {
+async function render(pullTimeline: ReturnType<typeof vi.fn>, refreshTick = 0, lineComments: PullLineComment[] = []): Promise<HTMLDivElement> {
   if (!host) { host = document.createElement('div'); document.body.append(host); root = createRoot(host) }
   await act(async () => {
     root.render(<PullTimeline api={{ pullTimeline } as unknown as PullNodeApi} projectId="p"
       pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }} refreshTick={refreshTick}
-      onOpenExternal={vi.fn()} onWritten={vi.fn()} detail={detail} lineComments={[]} />)
+      onOpenExternal={vi.fn()} onWritten={vi.fn()} detail={detail} lineComments={lineComments} />)
   })
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
   return host!
@@ -71,9 +71,10 @@ describe('PullTimeline', () => {
     for (const entry of entries) {
       expect(entry.querySelector('.pull-avatar')).not.toBeNull()
     }
-    expect(entries.filter((entry) => entry.querySelector('time')).length).toBe(entries.length - 1)
+    expect(entries.filter((entry) => entry.querySelector('time')).length).toBe(entries.length)
     const text = entries.map((entry) => entry.textContent ?? '')
     expect(text[2]).toContain('2 commits pushed')
+    expect(entries[2].querySelector('.pull-convo__head')?.textContent).toContain('ana')
     expect(text[2]).toContain('First commit')
     expect(text[2]).toContain('2222222')
     for (const words of [
@@ -82,6 +83,14 @@ describe('PullTimeline', () => {
       'marked this as a draft', 'merged commit 5555555 into main', 'mentioned this in issue o/r#9 Crash on start'
     ]) expect(text.some((entry) => entry.includes(words) && entry.includes('ana'))).toBe(true)
     expect(text[1]).toContain('Approved')
+  })
+
+  it('shows each review line comment with its author\'s avatar', async () => {
+    const line: PullLineComment = { id: 30, reviewId: 2, author: bo, body: 'Nit', at, url, path: 'a.ts', line: 3, side: 'RIGHT', outdated: false }
+    const view = await render(vi.fn(async () => ok(everyEvent)), 0, [line])
+    const item = view.querySelector('.pull-convo__lines > li')!
+    expect(item.querySelector('.pull-avatar')?.getAttribute('aria-label')).toBe('bo')
+    expect(item.textContent).toContain('bo')
   })
 
   it('loads the next page by its cursor and appends it; a refresh starts from the first page again', async () => {

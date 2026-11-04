@@ -20,6 +20,7 @@ export function PullConversationTab(props: ViewProps & {
 }): React.JSX.Element {
   const { api, pull, detailRead, checks } = props
   const conversation = usePullRead(api.pullConversation, props)
+  const convo = conversation !== 'loading' && conversation.status === 'ok' ? conversation : undefined
   if (detailRead === 'loading' || detailRead.status !== 'ok') return readState(detailRead, pull.repository)
   const { detail: d } = detailRead
   const open = d.lifecycle === 'open' || d.lifecycle === 'draft'
@@ -33,8 +34,8 @@ export function PullConversationTab(props: ViewProps & {
         </div>
       )}
       <PullSidebar {...props} detail={d} avatars={detailRead.avatarDataUrls} />
-      <PullTimeline {...props} detail={d} detailAvatars={detailRead.avatarDataUrls}
-        lineComments={conversation !== 'loading' && conversation.status === 'ok' ? conversation.lineComments : []} />
+      <PullTimeline {...props} detail={d} lineComments={convo?.lineComments ?? []}
+        detailAvatars={{ ...detailRead.avatarDataUrls, ...convo?.avatarDataUrls }} />
       {props.proposalBar}
       <PullMergeBox {...props} detail={d} checks={checks} />
       <PullComposer {...props} headSha={d.head.sha} />

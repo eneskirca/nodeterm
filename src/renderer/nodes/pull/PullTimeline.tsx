@@ -84,9 +84,17 @@ export function PullTimeline({ detail, detailAvatars, lineComments, ...props }: 
           ? (
             <li key={entry.commits[0].id} className="pull-convo__event pull-convo__item--commits">
               <div className="pull-convo__head">
+                {/* ponytail: the first commit's actor names the push; GitHub's own entry does the same. */}
+                <span className="pull-person">
+                  <Avatar user={entry.commits[0].actor} avatars={avatars} />
+                  <span className="pull-node__author">{entry.commits[0].actor?.login ?? 'ghost'}</span>
+                </span>
                 <span className="pull-convo__event-text">
                   {entry.commits.length === 1 ? '1 commit' : `${entry.commits.length} commits`} pushed
                 </span>
+                <time className="pull-convo__time" dateTime={entry.commits.at(-1)!.at}>
+                  {new Date(entry.commits.at(-1)!.at).toLocaleString()}
+                </time>
               </div>
               <ul className="pull-convo__commits">
                 {entry.commits.map((commit) => (
@@ -105,6 +113,10 @@ export function PullTimeline({ detail, detailAvatars, lineComments, ...props }: 
                 <ul className="pull-convo__lines">
                   {linesOf(lineComments, entry.item.databaseId).map((line) => (
                     <li key={line.id}>
+                      <span className="pull-person">
+                        <Avatar user={line.author} avatars={avatars} size={16} />
+                        <span className="pull-node__author">{line.author?.login ?? 'ghost'}</span>
+                      </span>
                       <code>{line.path}{line.line !== null && `:${line.line}`}</code>
                       {line.outdated && <span className="pull-line__outdated">Outdated</span>}
                       <NoteMarkdown text={line.body} className="sticky-node__md pull-node__md" />

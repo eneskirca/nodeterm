@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import type {
+  PullAvatarDataUrls,
   PullDiffSide,
   PullFile,
   PullFileSide,
@@ -16,6 +17,7 @@ import { NoteMarkdown } from '../../components/NoteMarkdown'
 import { TextDiff, type DiffZone } from '../../editor/TextDiff'
 import { pullFileTree, type PullTreeNode } from '../../lib/pullFileTree'
 import { pullLineThreads, type PullLineThread } from '../../lib/pullLineThreads'
+import { Avatar } from './Avatar'
 import { PullComposer } from './PullComposer'
 import { readState, STALE_TEXT, usePullRead, useWrite, WRITE_TEXT, type ViewProps } from './shared'
 
@@ -56,6 +58,7 @@ export function PullFilesTab(props: ViewProps & LineProps & {
   const [reopened, setReopened] = useState<string | null>(null)
   const lineComments = conversation !== 'loading' && conversation.status === 'ok' ? conversation.lineComments : []
   const resolvedThreads = conversation !== 'loading' && conversation.status === 'ok' ? conversation.resolvedThreads : undefined
+  const avatars = conversation !== 'loading' && conversation.status === 'ok' ? conversation.avatarDataUrls : undefined
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   const filesUrl = `${pullWebUrl(pull.repository, pull.pullNumber)}/files`
   const selected = result.files.find((file) => file.path === pull.selectedFile)
@@ -141,7 +144,7 @@ export function PullFilesTab(props: ViewProps & LineProps & {
         : selected
           ? <PullFileDiff key={selected.path} {...props} file={selected} filesUrl={filesUrl}
               highlight={highlight?.file === selected.path ? highlight : undefined} head={head} lineComments={lineComments}
-              resolvedThreads={resolvedThreads} />
+              resolvedThreads={resolvedThreads} avatars={avatars} />
           : result.files.length > 0 && <p className="pull-node__empty">Select a file to see its diff.</p>}
     </div>
   )
@@ -153,7 +156,7 @@ const SIDE_OF = { LEFT: 'original', RIGHT: 'modified' } as const
 
 function PullFileDiff(props: ViewProps & LineProps & {
   file: PullFile; filesUrl: string; highlight?: PullHighlight; head: string | undefined; lineComments: readonly PullLineComment[]
-  resolvedThreads?: readonly number[]
+  resolvedThreads?: readonly number[]; avatars?: PullAvatarDataUrls
 }): React.JSX.Element {
   const { api, pull, file, filesUrl, onOpenExternal, highlight, head, lineComments, pending, onAddPending } = props
   const path = file.path
@@ -217,9 +220,9 @@ const SUGGESTION = /^[ \t]*```suggestion[ \t]*\r?$/m
  *  Resolve / Unresolve (when the read said which threads are resolved) and "Apply suggestion" on a
  *  suggestion on a current head line. */
 function PullLineThreadView(props: ViewProps & {
-  thread: PullLineThread; head?: string; resolvedThreads?: readonly number[]
+  thread: PullLineThread; head?: string; resolvedThreads?: readonly number[]; avatars?: PullAvatarDataUrls
 }): React.JSX.Element {
-  const { api, projectId, pull, thread, onWritten, head, resolvedThreads } = props
+  const { api, projectId, pull, thread, onWritten, head, resolvedThreads, avatars } = props
   const [reply, setReply] = useState('')
   const { busy, refusal, run } = useWrite(() => { setReply(''); onWritten() })
   const action = useWrite(onWritten)
@@ -233,7 +236,10 @@ function PullLineThreadView(props: ViewProps & {
       {thread.comments.map((comment) => (
         <div key={comment.id} className="pull-line__comment">
           <div className="pull-convo__head">
-            <span className="pull-node__author">{comment.author?.login ?? 'ghost'}</span>
+            <span className="pull-person">
+              <Avatar user={comment.author} avatars={avatars} />
+              <span className="pull-node__author">{comment.author?.login ?? 'ghost'}</span>
+            </span>
             <time className="pull-convo__time" dateTime={comment.at}>{new Date(comment.at).toLocaleString()}</time>
           </div>
           <NoteMarkdown text={comment.body} className="sticky-node__md pull-node__md" />

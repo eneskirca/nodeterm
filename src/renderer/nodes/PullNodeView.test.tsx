@@ -861,6 +861,15 @@ describe('PullNodeView line comments', () => {
     expect(off.textContent).toContain('old news')
   })
 
+  it('shows each line comment author\'s avatar from the conversation read', async () => {
+    const api = setup()
+    const read = await api.pullConversation('p', 'o/r', 7)
+    api.pullConversation.mockResolvedValue({ ...read, avatarDataUrls: { [String(author.id)]: 'data:image/png;base64,AA==' } } as never)
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
+    const comment = view.querySelector('.zone .pull-line__comment')!
+    expect(comment.querySelector('img.pull-avatar')?.getAttribute('src')).toBe('data:image/png;base64,AA==')
+  })
+
   it('replies to a thread by its first comment and refreshes the node', async () => {
     const api = setup()
     const onWritten = vi.fn()
