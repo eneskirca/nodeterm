@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PullFile } from '@shared/github-pull-detail'
-import { pullFileTree, type PullTreeNode } from './pullFileTree'
+import type { PullLineComment } from '@shared/github-pull-detail'
+import { openThreadsByPath, pullFileTree, type PullTreeNode } from './pullFileTree'
 
 const file = (path: string, additions = 1, deletions = 0, over: Partial<PullFile> = {}): PullFile =>
   ({ path, status: 'modified', additions, deletions, ...over })
@@ -35,5 +36,27 @@ describe('pullFileTree', () => {
     expect(lines(pullFileTree(files, 'PULL'))).toEqual(['src/ +2 -0', '  Pull.tsx', '  b.ts'])
     expect(pullFileTree(files, 'nothing')).toEqual([])
     expect(lines(pullFileTree(files, '  '))).toHaveLength(4)
+  })
+
+  it('leaves out the files `hide` names, and their lines from the folder sums', () => {
+    const files = [file('src/a.ts', 3, 1), file('src/b.ts', 2, 2), file('c.md')]
+    expect(lines(pullFileTree(files, '', (f) => f.path === 'src/b.ts'))).toEqual(['src/ +3 -1', '  a.ts', 'c.md'])
+    expect(pullFileTree(files, '', () => true)).toEqual([])
+  })
+})
+
+describe('openThreadsByPath', () => {
+  const at = (n: number) => `2026-10-01T09:0${n}:00Z`
+  const c = (id: number, path: string, over: Partial<PullLineComment> = {}): PullLineComment => ({
+    id, reviewId: 1, body: '', at: at(id), url: '', path, side: 'RIGHT', line: 2, outdated: false, ...over
+  } as PullLineComment)
+
+  it('counts the unresolved threads of each file, a reply in its thread', () => {
+    const counts = openThreadsByPath([c(1, 'a.ts'), c(2, 'a.ts', { inReplyTo: 1 }), c(3, 'a.ts', { line: 9 }), c(4, 'b.ts'), c(5, 'd.ts')], [3, 5])
+    expect(counts).toEqual(new Map([['a.ts', 1], ['b.ts', 1]]))
+  })
+
+  it('knows nothing when the read did not say which threads are resolved', () => {
+    expect(openThreadsByPath([c(1, 'a.ts')], undefined)).toBeUndefined()
   })
 })
