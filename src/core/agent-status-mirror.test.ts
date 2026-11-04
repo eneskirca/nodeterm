@@ -1666,6 +1666,21 @@ describe('buildMirrorUsage', () => {
   it('returns undefined for an empty snapshot', () => {
     expect(buildMirrorUsage([], [], 5)).toBeUndefined()
   })
+
+  // The user's own name for `~/.claude` (settings.systemAccountLabel) is the only label the
+  // system row can have — it has no ClaudeAccount record. Without it the phone shows the email
+  // or a bare "System" while the desktop shows the chosen name.
+  it('carries the system account label the user set in settings', () => {
+    const snap = [{ accountId: null, usage: { email: 'sys@x', status: 'ok', limits: [] } }]
+    const mu = buildMirrorUsage(snap, [], 9, 'Work Mac')!
+    expect(mu.accounts[0]).toMatchObject({ accountId: null, label: 'Work Mac', email: 'sys@x' })
+  })
+
+  it('sends null, not an empty string, when the system label is unset or blank', () => {
+    const snap = [{ accountId: null, usage: { status: 'ok', limits: [] } }]
+    expect(buildMirrorUsage(snap, [], 9, '   ')!.accounts[0].label).toBeNull()
+    expect(buildMirrorUsage(snap, [], 9)!.accounts[0].label).toBeNull()
+  })
 })
 
 describe('usage block on flush', () => {

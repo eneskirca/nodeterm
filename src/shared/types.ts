@@ -2281,6 +2281,10 @@ export interface Settings {
   /** Custom display label for the SYSTEM Claude account (~/.claude) in pickers/settings.
    *  Empty = unset → fall back to the detected login email, else "System account". */
   systemAccountLabel: string
+  /** Custom display label for the SYSTEM Codex account (~/.codex) in pickers/settings — the
+   *  Codex twin of `systemAccountLabel`. Empty = unset → detected login email, else "System
+   *  account". */
+  systemCodexAccountLabel: string
   /** Agent ids hidden from the Add menus. */
   disabledAgents: AgentId[]
   /** Usage providers hidden from the pill + popover (Settings → Usage toggles). Hiding is a
@@ -2592,6 +2596,7 @@ export const DEFAULT_SETTINGS: Settings = {
   claudeAccounts: [],
   codexAccounts: [],
   systemAccountLabel: '',
+  systemCodexAccountLabel: '',
   // All three builtin agents (Claude/Codex/Gemini) show in the Add menus out of the box.
   // Existing users keep whatever they've saved (their persisted disabledAgents overrides this).
   disabledAgents: [],

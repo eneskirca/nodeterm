@@ -439,6 +439,7 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
   const accounts = useSettings((s) => s.settings.claudeAccounts)
   const codexAccounts = useSettings((s) => s.settings.codexAccounts)
   const systemLabelSetting = useSettings((s) => s.settings.systemAccountLabel)
+  const systemCodexLabelSetting = useSettings((s) => s.settings.systemCodexAccountLabel)
   const systemEmail = useSystemAccount((s) => s.email)
   useEffect(() => useSystemAccount.getState().ensure(), [])
   const systemCodexEmail = useSystemCodexAccount((s) => s.email)
@@ -1276,6 +1277,7 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
                         <Input
                           className="w-56"
                           placeholder="System account"
+                          aria-label="System Claude account label"
                           value={systemLabelSetting}
                           onChange={(e) =>
                             useSettings.getState().update({ systemAccountLabel: e.target.value })
@@ -1302,7 +1304,25 @@ export function AccountsSection({ isActive }: { isActive: boolean }): React.JSX.
                   error={addErrors[addKey('codex', host)]}
                 >
                   <SystemAccountRow
-                    name={<span className="text-[13px] text-text">System account</span>}
+                    name={
+                      m.remote ? (
+                        <span className="text-[13px] text-text">System account</span>
+                      ) : (
+                        // Same deal as the Claude row: `~/.codex` has no account record, so its
+                        // display label lives in settings (empty = default).
+                        <Input
+                          className="w-56"
+                          placeholder="System account"
+                          aria-label="System Codex account label"
+                          value={systemCodexLabelSetting}
+                          onChange={(e) =>
+                            useSettings
+                              .getState()
+                              .update({ systemCodexAccountLabel: e.target.value })
+                          }
+                        />
+                      )
+                    }
                     detail={codexSystemEmail ?? (m.remote ? `~/.codex on ${host}` : '~/.codex')}
                   />
                   {m.codex.map((a) => codexRow(a, false))}
