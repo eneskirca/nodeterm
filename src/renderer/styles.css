@@ -18798,6 +18798,9 @@ body.focus-mode .dock:hover {
 
 /* Pull request node (nodes/PullNode.tsx, PullNodeView.tsx, nodes/pull/). */
 .pull-node {
+  /* A size container, so the Files diff can fill the node's height (cqh). The node box (React Flow's
+     style width/height) sizes it, never its content. The merge backdrop is absolute against it. */
+  container-type: size;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -19072,10 +19075,11 @@ body.focus-mode .dock:hover {
   margin: 0 0 10px;
   color: var(--muted);
 }
-/* ponytail: a fixed height; the node body scrolls past it. Filling the node would need the body to
-   stop scrolling for this one tab. */
+/* The node's height, less the header (~40px) and 120px of body that stays visible above it so the
+   wheel can still scroll the body back up (the diff takes the wheel). ponytail: the body scrolls to
+   it; no flex chain down the tabs. */
 .pull-files__diff {
-  height: 420px;
+  height: max(420px, calc(100cqh - 160px));
   margin: 0 -14px;
   border-top: 1px solid var(--border);
 }
