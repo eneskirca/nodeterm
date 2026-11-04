@@ -37,15 +37,23 @@ export interface Crumb {
  */
 export function breadcrumbs(path: string, max = 3): Crumb[] {
   const segs = path.split('/').filter(Boolean)
-  const all: Crumb[] = [{ name: '/', path: '/' }]
+  // The crumbs keep the path's OWN root rather than inventing `/`. An SSH project's `remoteCwd`
+  // defaults to `~` (SshSection), so a remote files node routinely stands on `~/a/b`; prefixing
+  // every crumb with `/` turned the `a` crumb into the literal `/~/a`, which exists on no host —
+  // the listing came back empty, so did its parent `/~`, and the node reported "Could not reach
+  // this folder." for a directory it had been showing a second earlier. A relative path has no
+  // root crumb: its first segment (`~`) IS the top the user can climb to from here.
+  const absolute = path.startsWith('/')
+  const all: Crumb[] = absolute ? [{ name: '/', path: '/' }] : []
   let acc = ''
   for (const s of segs) {
-    acc += `/${s}`
+    acc = (acc || absolute) ? `${acc}/${s}` : s // first relative segment carries no separator
     all.push({ name: s, path: acc })
   }
   if (all.length <= max + 1) return all
-  // Keep root, then an ellipsis crumb that navigates to the deepest hidden directory, then the
-  // tail. `max + 1` accounts for root, which is never dropped.
+  // Keep the first crumb (root, or the relative top), then an ellipsis crumb that navigates to
+  // the deepest hidden directory, then the tail. `max + 1` accounts for that first crumb, which is
+  // never dropped.
   const hidden = all.slice(1, all.length - max)
   const ellipsis: Crumb = { name: '…', path: hidden[hidden.length - 1].path }
   return [all[0], ellipsis, ...all.slice(all.length - max)]
