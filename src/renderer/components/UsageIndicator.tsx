@@ -777,7 +777,9 @@ export function UsageIndicator({
       onMouseLeave={closeSoon}
     >
       {open && (
-        <div className="usage-popover">
+        // `nowheel`: same reason as the session-memory panel — inside `.flow-wrap`, a plain wheel
+        // would zoom the canvas ("Scroll wheel zooms") instead of scrolling the account list.
+        <div className="usage-popover nowheel">
           <div className="usage-popover__head">
             <span className="usage-popover__title">✦ Usage</span>
             {/* Tracks whichever snapshot the panel is actually showing — the local poll's, or

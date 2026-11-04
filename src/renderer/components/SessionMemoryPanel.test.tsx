@@ -126,6 +126,15 @@ afterEach(() => {
 })
 
 describe('SessionMemoryPanel', () => {
+  it('owns the wheel, so a plain wheel scrolls its list instead of zooming the canvas', () => {
+    // The panel is mounted inside `.flow-wrap`, whose capture-phase wheel listener (Canvas.tsx)
+    // zooms every plain wheel when Settings → "Scroll wheel zooms" is on, unless the target sits
+    // under `.nowheel`. Without the class, the row list could not be scrolled at all.
+    mount()
+    expect(host.querySelector('.sessmem-panel')?.closest('.nowheel')).not.toBeNull()
+    expect(host.querySelector('.sessmem-panel__rows')?.closest('.nowheel')).not.toBeNull()
+  })
+
   it('renders every row in the order core sorted them', () => {
     mount()
     // No re-sort here: core already sorted by total descending, and a second sort would let the
