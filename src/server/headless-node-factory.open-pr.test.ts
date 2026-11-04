@@ -86,7 +86,7 @@ describe('Server Edition open-pr', () => {
     expect(reply).toMatchObject({ ok: true, result: { created: true } })
     const p = await project()
     const pull = p.nodes.find((n) => n.kind === 'pull')!
-    expect(pull.pull).toEqual({ repository: 'acme/app', pullNumber: 42, tab: 'overview' })
+    expect(pull.pull).toEqual({ repository: 'acme/app', pullNumber: 42, tab: 'conversation' })
     expect(pull.openedBy).toBe('term-source')
     expect(pull.position.x).toBeGreaterThan(source.position.x + source.size!.width)
     expect(p.bridges).toEqual([expect.objectContaining({ source: 'term-source', target: pull.id })])

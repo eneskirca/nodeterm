@@ -7,7 +7,7 @@ import type {
   PullLineComment
 } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
-import type { PullNodeTab } from '@shared/pull-node'
+import { normalizePullRef, type PullNodeTab } from '@shared/pull-node'
 import type { PullProposal, ShownProposal } from '@shared/pull-agent-verbs'
 import { PullNodeView, type PullNodeApi } from './PullNodeView'
 
@@ -76,7 +76,7 @@ let root: ReturnType<typeof createRoot>
 afterEach(() => { act(() => root.unmount()); host.remove() })
 
 async function render(
-  api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'overview', onTab = vi.fn(), onOpenExternal = vi.fn(),
+  api: PullNodeApi, repository = 'o/r', tab: PullNodeTab = 'conversation', onTab = vi.fn(), onOpenExternal = vi.fn(),
   onWritten = vi.fn(), selectedFile?: string, onSelectFile = vi.fn(), onWork = vi.fn()
 ): Promise<HTMLDivElement> {
   host = document.createElement('div')
@@ -135,7 +135,7 @@ describe('PullNodeView overview', () => {
     document.body.append(host)
     root = createRoot(host)
     await act(async () => {
-      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
         refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} onAllow={onAllow} />)
     })
     const allow = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Allow o/r?')
@@ -151,7 +151,7 @@ describe('PullNodeView overview', () => {
     document.body.append(host)
     root = createRoot(host)
     await act(async () => {
-      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
         refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()}
         onAllow={vi.fn(async () => false)} />)
     })
@@ -170,7 +170,7 @@ describe('PullNodeView overview', () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     await render(api)
     await act(async () => {
-      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
         refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
     })
     expect(api.pullDetail).toHaveBeenCalledTimes(2)
@@ -193,7 +193,6 @@ describe('PullNodeView conversation', () => {
     })
     const view = await render(api, 'o/r', 'conversation')
     expect(api.pullConversation).toHaveBeenCalledWith('p', 'o/r', 7)
-    expect(api.pullDetail).not.toHaveBeenCalled()
     const items = [...view.querySelectorAll('.pull-convo__item')].map((item) => item.textContent)
     expect(items).toHaveLength(4)
     expect(items[0]).toContain('First comment')
@@ -223,13 +222,36 @@ describe('PullNodeView conversation', () => {
     expect(view.querySelector('[role="status"]')?.textContent?.toLowerCase()).toContain('approve')
   })
 
+  it('names the tabs Conversation and Files changed N, where N is the changed file count', async () => {
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'files')
+    const tabs = [...view.querySelectorAll('[role="tab"]')]
+    expect(tabs.map((el) => el.textContent)).toEqual(['Conversation', 'Files changed 3'])
+    expect(tabs.map((el) => el.getAttribute('aria-selected'))).toEqual(['false', 'true'])
+  })
+
+  it.each([
+    ['overview', 'Conversation'],
+    ['conversation', 'Conversation'],
+    ['files', 'Files changed 3']
+  ])('opens a node saved with tab %s on %s', async (saved, label) => {
+    const pull = normalizePullRef({ repository: 'o/r', pullNumber: 7, tab: saved })!
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', pull.tab)
+    expect(view.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(label)
+  })
+
+  it('shows Conversation for a tab this build has no panel for', async () => {
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'commits')
+    expect(view.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Conversation')
+    expect(view.textContent).toContain('No comments or reviews yet.')
+  })
+
   it('switches tab through onTab and opens the PR on GitHub from every tab', async () => {
     const onTab = vi.fn()
     const onOpen = vi.fn()
-    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'overview', onTab, onOpen)
-    const tab = [...view.querySelectorAll('[role="tab"]')].find((el) => el.textContent === 'Conversation')!
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'conversation', onTab, onOpen)
+    const tab = [...view.querySelectorAll('[role="tab"]')].find((el) => el.textContent === 'Files changed 3')!
     await act(async () => { (tab as HTMLElement).click() })
-    expect(onTab).toHaveBeenCalledWith('conversation')
+    expect(onTab).toHaveBeenCalledWith('files')
     const link = [...view.querySelectorAll('button')].find((el) => el.textContent === 'Open on GitHub')!
     await act(async () => { link.click() })
     expect(onOpen).toHaveBeenCalledWith('https://github.com/o/r/pull/7')
@@ -244,12 +266,14 @@ describe('PullNodeView tab switching', () => {
       root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab }}
         refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
     })
+    await show('files')
     await show('conversation')
-    await show('overview')
-    await show('conversation')
+    await show('files')
     expect(api.pullDetail).toHaveBeenCalledTimes(1)
-    expect(api.pullConversation).toHaveBeenCalledTimes(1)
-    expect(host.querySelector('.pull-node__overview')?.closest('[hidden]')).not.toBeNull()
+    expect(api.pullFiles).toHaveBeenCalledTimes(1)
+    // One conversation read per tab (Files reads its line comments); none again on a switch back.
+    expect(api.pullConversation).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('.pull-node__conversation')?.closest('[hidden]')).not.toBeNull()
   })
 })
 
@@ -261,15 +285,9 @@ function type(ta: HTMLTextAreaElement, text: string): void {
 const button = (view: HTMLElement, label: string) =>
   [...view.querySelectorAll('button')].find((el) => el.textContent === label) as HTMLButtonElement
 
-/** Shows the Overview first (the head a review is tied to), then the Conversation tab. */
-async function renderSeen(api: PullNodeApi, onWritten = vi.fn()): Promise<HTMLDivElement> {
-  const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
-  await act(async () => {
-    root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
-      refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()} />)
-  })
-  return view
-}
+/** The Conversation tab, whose detail read gives the head a review is tied to. */
+const renderSeen = (api: PullNodeApi, onWritten = vi.fn()): Promise<HTMLDivElement> =>
+  render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
 
 describe('PullNodeView composer', () => {
   it('posts a comment, clears the draft and refreshes the node', async () => {
@@ -295,15 +313,13 @@ describe('PullNodeView composer', () => {
     expect(api.pullDetail).toHaveBeenCalledTimes(1)
   })
 
-  it('offers no review before the Overview showed a head commit, and reads none for it', async () => {
+  it('offers no review before the detail read showed a head commit', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.pullDetail.mockImplementation(() => new Promise(() => {}))
     const view = await render(api, 'o/r', 'conversation')
-    await act(async () => { type(view.querySelector('textarea')!, 'x') })
-    expect(button(view, 'Approve').disabled).toBe(true)
-    expect(button(view, 'Request changes').disabled).toBe(true)
-    expect(button(view, 'Comment').disabled).toBe(false)
-    expect(view.textContent).toContain('Open the Overview tab to review')
-    expect(api.pullDetail).not.toHaveBeenCalled()
+    expect(view.textContent).toContain('Loading pull request')
+    expect(button(view, 'Approve')).toBeUndefined()
+    expect(api.reviewPull).not.toHaveBeenCalled()
   })
 
   it('offers only Comment on the viewer\'s own pull request', async () => {
@@ -361,7 +377,7 @@ describe('PullNodeView composer', () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     await render(api, 'o/r', 'conversation')
     await act(async () => { type(host.querySelector('textarea')!, 'half a thought') })
-    for (const tab of ['overview', 'conversation'] as const) {
+    for (const tab of ['files', 'conversation'] as const) {
       await act(async () => {
         root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab }}
           refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
@@ -374,7 +390,7 @@ describe('PullNodeView composer', () => {
 describe('PullNodeView merge', () => {
   const dialog = () => host.querySelector('[role="dialog"]')
   const openMerge = async (api: PullNodeApi, onWritten = vi.fn()) => {
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     await act(async () => { button(view, 'Merge…').click() })
     return view
   }
@@ -471,7 +487,7 @@ describe('PullNodeView merge blockers', () => {
   it('a branch behind its base offers Update branch, tied to the head the Overview showed, then reloads', async () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'behind' }, observedAt: 1 })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     expect(view.querySelector('.pull-merge__reason')?.textContent).toContain('behind main')
     expect(api.updatePullBranch).not.toHaveBeenCalled()
     await act(async () => { button(view, 'Update branch').click() })
@@ -485,7 +501,7 @@ describe('PullNodeView merge blockers', () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'behind' }, observedAt: 1 })
     api.updatePullBranch.mockResolvedValue({ ok: false, reason: 'head-moved' })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     await act(async () => { button(view, 'Update branch').click() })
     expect(view.querySelector('[role="alert"]')?.textContent).toContain('the branch was not updated')
     expect(onWritten).toHaveBeenCalledTimes(1)
@@ -496,7 +512,7 @@ describe('PullNodeView merge blockers', () => {
     await render(api)
     expect(api.pullChecks).toHaveBeenCalledTimes(1)
     await act(async () => {
-      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
         refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
     })
     expect(api.pullChecks).toHaveBeenCalledTimes(2)
@@ -506,7 +522,7 @@ describe('PullNodeView merge blockers', () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'behind' }, observedAt: 1 })
     api.updatePullBranch.mockResolvedValue({ ok: false, reason: 'forbidden' })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     await act(async () => { button(view, 'Update branch').click() })
     expect(view.querySelector('[role="alert"]')?.textContent).toContain('may not write')
     expect(onWritten).not.toHaveBeenCalled()
@@ -515,7 +531,7 @@ describe('PullNodeView merge blockers', () => {
   it('a conflict offers Resolve conflicts with agent under the conflict sentence, which takes the Work on this PR path', async () => {
     const onWork = vi.fn()
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict' }, observedAt: 1 }),
-      'o/r', 'overview', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onWork)
+      'o/r', 'conversation', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onWork)
     expect(button(view, 'Update branch')).toBeUndefined()
     expect(view.querySelector('.pull-merge__reason')?.textContent).toContain('conflicts with main')
     await act(async () => { button(view, 'Resolve conflicts with agent').click() })
@@ -533,7 +549,7 @@ describe('PullNodeView Work on this PR', () => {
   it('an open or draft PR offers Work on this PR, which hands the detail the Overview showed to the canvas', async () => {
     const onWork = vi.fn()
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, lifecycle: 'draft' }, observedAt: 1 }),
-      'o/r', 'overview', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onWork)
+      'o/r', 'conversation', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onWork)
     await act(async () => { button(view, 'Work on this PR').click() })
     expect(onWork).toHaveBeenCalledWith({ ...detail, lifecycle: 'draft' })
   })
@@ -550,7 +566,7 @@ describe('PullNodeView auto-merge', () => {
   it('a blocked PR offers Merge when ready: the confirmation arms auto-merge with the method and the head shown', async () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     await act(async () => { button(view, 'Merge when ready…').click() })
     expect(dialog()?.textContent).toContain('when ready')
     expect(api.enablePullAutoMerge).not.toHaveBeenCalled()
@@ -576,7 +592,7 @@ describe('PullNodeView auto-merge', () => {
   it('shows the armed state with its method, and Cancel turns it off', async () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked', autoMerge: { method: 'squash' } }, observedAt: 1 })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     expect(view.querySelector('.pull-merge')?.textContent).toContain('Auto-merge is on (Squash and merge)')
     expect(button(view, 'Merge when ready…')).toBeUndefined()
     await act(async () => { button(view, 'Cancel auto-merge').click() })
@@ -597,7 +613,7 @@ describe('PullNodeView auto-merge', () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
     api.enablePullAutoMerge.mockResolvedValue({ ok: false, reason: 'head-moved' })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     await act(async () => { button(view, 'Merge when ready…').click() })
     await act(async () => { button(host, 'Enable auto-merge').click() })
     expect(view.querySelector('[role="alert"]')?.textContent).toContain('did not turn on auto-merge')
@@ -757,7 +773,7 @@ describe('PullNodeView line comments', () => {
 
   it('keeps a line comment for the review, then sends it with Approve', async () => {
     const api = setup()
-    await render(api, 'o/r', 'overview')
+    await render(api, 'o/r', 'conversation')
     await showTab(api, 'files')
     await act(async () => { button(host, 'line modified 3').click() })
     await act(async () => { type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Line comment"]')!, 'Rename.') })
@@ -776,7 +792,7 @@ describe('PullNodeView line comments', () => {
 
   it('sends pending line comments alone as a comment review', async () => {
     const api = setup()
-    await render(api, 'o/r', 'overview')
+    await render(api, 'o/r', 'conversation')
     await showTab(api, 'files')
     await act(async () => { button(host, 'line modified 3').click() })
     await act(async () => { type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Line comment"]')!, 'Nit.') })
@@ -823,7 +839,7 @@ describe('PullNodeView reviewers', () => {
   it('offers the collaborators who are neither the author nor already asked, and requests one on click', async () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, requestedReviewers: [ana] }, observedAt: 1 })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     expect(api.repoCollaborators).not.toHaveBeenCalled()
     await act(async () => { button(view, 'Request review…').click() })
     expect(api.repoCollaborators).toHaveBeenCalledWith('p', 'o/r')
@@ -839,7 +855,7 @@ describe('PullNodeView reviewers', () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     api.requestPullReviewer.mockResolvedValue({ ok: false, reason: 'forbidden' })
     const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'overview', vi.fn(), vi.fn(), onWritten)
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     await act(async () => { button(view, 'Request review…').click() })
     await act(async () => { button(view, 'Request').click() })
     expect(view.querySelector('.pull-reviewers [role="alert"]')?.textContent).toContain('may not write')
@@ -864,7 +880,7 @@ describe('PullNodeView agent proposal', () => {
       refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()}
       proposal={proposal} onDismiss={onDismiss} />
   )
-  async function renderProposal(proposal: PullProposal, api = fakeApi({ status: 'ok', detail, observedAt: 1 }), tab: PullNodeTab = 'overview') {
+  async function renderProposal(proposal: PullProposal, api = fakeApi({ status: 'ok', detail, observedAt: 1 }), tab: PullNodeTab = 'conversation') {
     const onWritten = vi.fn()
     const onDismiss = vi.fn()
     host = document.createElement('div')
@@ -897,7 +913,7 @@ describe('PullNodeView agent proposal', () => {
     await arm()
     expect(confirmButton().disabled).toBe(false)
     // The agent swaps the proposal right before the click: the new one starts disarmed.
-    await act(async () => { root.render(view(api, { action: 'merge', seq: 2 }, 'overview')) })
+    await act(async () => { root.render(view(api, { action: 'merge', seq: 2 }, 'conversation')) })
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
     expect(bar()?.textContent).toContain('Merge')
     expect(confirmButton().disabled).toBe(true)
@@ -914,8 +930,10 @@ describe('PullNodeView agent proposal', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
-  it('a comment needs no head: it is sent before the Overview was ever opened', async () => {
-    const { api } = await renderProposal({ action: 'comment', message: 'Nice' }, undefined, 'files')
+  it('a comment needs no head: it is sent before the detail read landed', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.pullDetail.mockImplementation(() => new Promise(() => {}))
+    await renderProposal({ action: 'comment', message: 'Nice' }, api, 'files')
     await arm()
     await act(async () => { confirmButton().click() })
     expect(api.commentOnPull).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, body: 'Nice' })
@@ -1028,7 +1046,7 @@ describe('PullNodeView Send to agent', () => {
     document.body.append(host)
     root = createRoot(host)
     await act(async () => {
-      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'overview' }}
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
         refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()}
         agents={agents} onSendToAgent={onSendToAgent} sendUnavailable={sendUnavailable} />)
     })

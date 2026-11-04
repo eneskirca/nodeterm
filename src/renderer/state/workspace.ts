@@ -1421,7 +1421,7 @@ export function createPullNode(
       title: `PR #${pullNumber}`,
       color: '#a371f7',
       group: null,
-      pull: { repository, pullNumber, tab: 'overview' }
+      pull: { repository, pullNumber, tab: 'conversation' }
     }
   }
 }

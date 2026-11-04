@@ -118,12 +118,12 @@ describe('planPullCreated', () => {
 
   it('creates a node for the project repository, compared without case', () => {
     expect(planPullCreated({ created: { repository: 'Acme/App', pullNumber: 42 }, repo: { repository: 'acme/app', approved: true }, pullNodes: [] }))
-      .toEqual({ kind: 'create', ref: { repository: 'acme/app', pullNumber: 42, tab: 'overview' } })
+      .toEqual({ kind: 'create', ref: { repository: 'acme/app', pullNumber: 42, tab: 'conversation' } })
   })
 
   it('still creates the node when the repository is not approved yet (the node asks)', () => {
     expect(planPullCreated({ created, repo: { repository: 'acme/app', approved: false }, pullNodes: [] }))
-      .toEqual({ kind: 'create', ref: { repository: 'acme/app', pullNumber: 42, tab: 'overview' } })
+      .toEqual({ kind: 'create', ref: { repository: 'acme/app', pullNumber: 42, tab: 'conversation' } })
   })
 
   it('reuses the node the project already has for that PR', () => {
@@ -154,7 +154,7 @@ describe('pullCreatedControl', () => {
 })
 
 describe('openPrLanding', () => {
-  const create = { kind: 'create' as const, ref: { repository: 'acme/app', pullNumber: 42, tab: 'overview' as const } }
+  const create = { kind: 'create' as const, ref: { repository: 'acme/app', pullNumber: 42, tab: 'conversation' as const } }
   const reuse = { kind: 'reuse' as const, nodeId: 'pull-1' }
 
   it('the hook path never moves the camera: a new node gets a Jump toast, a reused one nothing', () => {

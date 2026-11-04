@@ -18,7 +18,7 @@ import { allowProjectRepo } from '../lib/allowRepo'
 import { PULL_WORK_EVENT, type PullWorkRequest } from '@shared/pull-work'
 
 /**
- * A pull request on the canvas: Overview, Files and Conversation tabs. Node data holds only the reference
+ * A pull request on the canvas: Conversation and Files changed tabs. Node data holds only the reference
  * (`data.pull`, shared/pull-node.ts); everything shown is read through the core's GitHub layer on
  * mount and on Refresh, and nothing read is ever persisted.
  */

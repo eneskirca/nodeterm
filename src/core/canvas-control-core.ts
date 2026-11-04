@@ -223,7 +223,7 @@ function githubReadDocLines(): string[] {
     '  repository is always this project\'s approved one (there is no `--repository` flag); the node only',
     '  shows the PR, and nothing you run here posts a comment, review or merge to GitHub.',
     '- Drive that node only when the user asks you to. `pr-show --node <id> --file <path> [--lines 12-30]`',
-    '  (or `--tab overview|files|conversation`) opens that part of the PR and highlights the lines.',
+    '  (or `--tab conversation|files`) opens that part of the PR and highlights the lines.',
     '  `pr-propose --node <id> --action approve|request-changes|comment|merge [--message <text>]',
     '  [--method merge|squash|rebase]` puts that ONE action on the node for the user to Confirm; nothing',
     '  reaches GitHub until they click it, and a newer proposal replaces the older one. Never propose an',

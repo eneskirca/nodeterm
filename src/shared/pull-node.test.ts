@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { pullPickerChoices } from './pull-node'
+import { normalizePullRef, pullPickerChoices } from './pull-node'
 import { EMPTY_PULL_BOARD, type GitHubPullStatus } from './github-pull-status'
 
 const pull = (number: number, lifecycle: GitHubPullStatus['lifecycle'], headRefName = `b${number}`): GitHubPullStatus =>
@@ -30,5 +30,15 @@ describe('pullPickerChoices', () => {
   })
   it('is empty without a board', () => {
     expect(pullPickerChoices(undefined)).toEqual([])
+  })
+})
+
+describe('normalizePullRef tab', () => {
+  it('opens a project saved with the old tab names on the matching new tab', () => {
+    const ref = (tab: unknown) => normalizePullRef({ repository: 'o/r', pullNumber: 7, tab })?.tab
+    expect(ref('overview')).toBe('conversation')
+    expect(ref('conversation')).toBe('conversation')
+    expect(ref('files')).toBe('files')
+    expect(ref('secrets')).toBeUndefined()
   })
 })

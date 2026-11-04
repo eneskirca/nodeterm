@@ -18796,7 +18796,7 @@ body.focus-mode .dock:hover {
   font-size: 13px;
 }
 
-/* Pull request node (nodes/PullNode.tsx, PullNodeView.tsx). */
+/* Pull request node (nodes/PullNode.tsx, PullNodeView.tsx, nodes/pull/). */
 .pull-node {
   display: flex;
   flex-direction: column;
@@ -18838,10 +18838,20 @@ body.focus-mode .dock:hover {
   color: var(--warn);
   background: rgba(var(--tint-rgb), 0.06);
 }
+/* A+ header: the PR at a glance above the tabs, then the sticky tab bar under it. */
+.pull-head {
+  margin: -12px -14px 0;
+  padding: 12px 14px 8px;
+  background: var(--panel);
+}
+.pull-head .pull-node__meta { margin-bottom: 0; }
 .pull-node__title {
   margin: 0 0 6px;
-  font-size: 15px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
   color: var(--text-strong);
+  overflow-wrap: anywhere;
 }
 .pull-node__number {
   color: var(--muted);
@@ -18855,9 +18865,21 @@ body.focus-mode .dock:hover {
   margin-bottom: 10px;
   color: var(--muted);
 }
+.pull-node__branches code,
+.pull-convo__lines code,
+.pull-send__item code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.pull-node__branches code {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(var(--tint-rgb), 0.08);
+}
 .pull-node__lifecycle {
   padding: 1px 8px;
   border-radius: 999px;
+  font-weight: 600;
   color: var(--text-strong);
   background: rgba(var(--tint-rgb), 0.12);
 }
@@ -18881,11 +18903,27 @@ body.focus-mode .dock:hover {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin: -12px -14px 10px;
+  margin: 0 -14px 10px;
   padding: 6px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
+.pull-node__count {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(var(--tint-rgb), 0.12);
+}
+.pull-node__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 10px; }
+.pull-node__actions .pull-send { margin: 0; }
+.pull-mergebox {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.pull-mergebox .pull-merge { margin: 8px 0 0; }
 .pull-node__tab,
 .pull-node__web {
   padding: 3px 10px;
@@ -18898,7 +18936,7 @@ body.focus-mode .dock:hover {
 }
 .pull-node__tab:hover,
 .pull-node__web:hover { color: var(--text-strong); background: rgba(var(--tint-rgb), 0.08); }
-.pull-node__tab[aria-selected='true'] { color: var(--text-strong); background: rgba(var(--tint-rgb), 0.12); }
+.pull-node__tab[aria-selected='true'] { color: var(--text-strong); background: rgba(var(--tint-rgb), 0.12); box-shadow: inset 0 -2px 0 var(--accent); }
 .pull-files__list {
   margin: 0 0 10px;
   padding: 0;

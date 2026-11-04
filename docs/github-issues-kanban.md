@@ -101,7 +101,7 @@ Line comments: in the Files tab, each review thread shows under its line, on its
 
 The linked agent can drive the node, when the user asks it to:
 
-- `nodeterm pr-show --node <id> --file <path> [--lines 12-30]` (or `--tab overview|files|conversation`) opens that part of the pull request and highlights the lines.
+- `nodeterm pr-show --node <id> --file <path> [--lines 12-30]` (or `--tab conversation|files`) opens that part of the pull request and highlights the lines.
 - `nodeterm pr-propose --node <id> --action approve|request-changes|comment|merge [--message <text>] [--method merge|squash|rebase]` puts one action on the node with Confirm and Dismiss. Nothing reaches GitHub until the user clicks Confirm. Confirm turns on one second after the proposal appears or is replaced. The node's own rules apply: a draft, closed, merged, conflicting or blocked pull request cannot be merged, your own pull request cannot be approved, and a merge method the repository does not allow is refused.
 
 Both verbs work only for an agent linked to the node, while the node is on screen. The Server Edition refuses both.

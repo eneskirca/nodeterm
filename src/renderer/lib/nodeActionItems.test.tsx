@@ -478,7 +478,7 @@ describe('board allowlist carries the session sections', () => {
 })
 
 describe('pull request node rows', () => {
-  const pull = { ...term('pull-1', { pull: { repository: 'o/r', pullNumber: 7, tab: 'overview' } }), type: 'pull' } as CanvasNode
+  const pull = { ...term('pull-1', { pull: { repository: 'o/r', pullNumber: 7, tab: 'conversation' } }), type: 'pull' } as CanvasNode
 
   it('Refresh asks the mounted node to read again', () => {
     const heard: string[] = []

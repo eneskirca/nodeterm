@@ -5,7 +5,9 @@
 import { parseRepository } from './github-issue-ref'
 import type { GitHubPullBoard, PullReviewDecision } from './github-pull-status'
 
-export type PullNodeTab = 'overview' | 'files' | 'conversation'
+// Commits and Checks are named here so their tickets add only a panel; the view shows a tab it has
+// no panel for as Conversation.
+export type PullNodeTab = 'conversation' | 'commits' | 'checks' | 'files'
 
 export interface PullNodeRef {
   /** `owner/name` the node was opened for. The core refuses it unless it is the project's approved
@@ -17,7 +19,14 @@ export interface PullNodeRef {
   selectedFile?: string
 }
 
-const TABS: readonly PullNodeTab[] = ['overview', 'files', 'conversation']
+const TABS: readonly PullNodeTab[] = ['conversation', 'commits', 'checks', 'files']
+
+/** A tab as a saved project or an agent names it. `overview` is the old name of Conversation
+ *  (its content moved there). Anything else is undefined. */
+export function pullTab(value: unknown): PullNodeTab | undefined {
+  if (value === 'overview') return 'conversation'
+  return TABS.find((tab) => tab === value)
+}
 
 /** The reference if it is well formed, else undefined (the node stays and shows no PR). Copies
  *  exactly the four fields, so nothing else on the object is ever persisted. */
@@ -28,19 +37,20 @@ export function normalizePullRef(value: unknown): PullNodeRef | undefined {
   if (typeof repository !== 'string' || !parseRepository(repository)) return undefined
   if (typeof pullNumber !== 'number' || !Number.isSafeInteger(pullNumber) || pullNumber < 1 ||
       pullNumber > 2_147_483_647) return undefined
-  if (!TABS.includes(tab as PullNodeTab)) return undefined
+  const shown = pullTab(tab)
+  if (!shown) return undefined
   const file = typeof selectedFile === 'string' && selectedFile.length > 0 && selectedFile.length <= 4_096 &&
     !selectedFile.includes('\u0000') ? selectedFile : undefined
-  return { repository, pullNumber, tab: tab as PullNodeTab, ...(file ? { selectedFile: file } : {}) }
+  return { repository, pullNumber, tab: shown, ...(file ? { selectedFile: file } : {}) }
 }
 
-/** A node reference from a PR's `html_url` (`https://github.com/o/r/pull/7`), opened on Overview.
+/** A node reference from a PR's `html_url` (`https://github.com/o/r/pull/7`), opened on Conversation.
  *  Undefined unless the URL names exactly `expectedNumber`. */
 export function pullRefFromHtmlUrl(htmlUrl: unknown, expectedNumber: number): PullNodeRef | undefined {
   if (typeof htmlUrl !== 'string') return undefined
   const m = /^https:\/\/github\.com\/([^/?#]+\/[^/?#]+)\/pull\/(\d+)$/.exec(htmlUrl)
   if (!m || Number(m[2]) !== expectedNumber) return undefined
-  return normalizePullRef({ repository: m[1], pullNumber: expectedNumber, tab: 'overview' })
+  return normalizePullRef({ repository: m[1], pullNumber: expectedNumber, tab: 'conversation' })
 }
 
 const REVIEW_TEXT: Record<PullReviewDecision, string> = {

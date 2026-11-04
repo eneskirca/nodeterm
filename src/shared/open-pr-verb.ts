@@ -39,7 +39,7 @@ export function planOpenPr(input: {
   if (input.relayGuest) return refuse('open-pr-relay-refused: a relay guest cannot open nodes on this canvas')
   const shape = openPrArgsRefusal(input.args)
   if (shape) return refuse(shape)
-  const ref = normalizePullRef({ repository: input.repo?.repository, pullNumber: pullNumberArg(input.args.pr), tab: 'overview' })
+  const ref = normalizePullRef({ repository: input.repo?.repository, pullNumber: pullNumberArg(input.args.pr), tab: 'conversation' })
   if (!input.repo?.approved || !ref) {
     return refuse('open-pr-no-repo: the GitHub repository of this project is not allowed on this computer; ask the user to open a pull request from the add menu once (it asks to allow the folder origin)')
   }

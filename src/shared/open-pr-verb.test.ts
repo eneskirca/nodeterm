@@ -7,7 +7,7 @@ describe('planOpenPr', () => {
   it('creates a node for the approved repository when the project has none for that PR', () => {
     expect(planOpenPr({ args: { pr: '42' }, repo: approved, pullNodes: [] })).toEqual({
       kind: 'create',
-      ref: { repository: 'acme/app', pullNumber: 42, tab: 'overview' }
+      ref: { repository: 'acme/app', pullNumber: 42, tab: 'conversation' }
     })
   })
 

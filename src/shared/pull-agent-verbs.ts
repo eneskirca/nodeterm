@@ -1,11 +1,11 @@
 // `pr-show` and `pr-propose`: the agent linked to a pull node drives it on the user's word.
 // `pr-show` only moves the node's view (tab, file, highlighted lines). `pr-propose` only puts ONE
 // pending action on the node; the node shows it with Confirm, and only that click runs the write
-// (renderer/nodes/PullNodeView.tsx). Nothing here, or in the dispatch, can reach a GitHub write, so
+// (renderer/nodes/pull/PullProposalBar.tsx). Nothing here, or in the dispatch, can reach a GitHub write, so
 // text inside a PR that talks the agent into "approve and merge" still stops at the user's click.
 import type { PullMergeMethod } from './github-pull-detail'
 import { isSafeNodeId } from './safe-id'
-import type { PullNodeTab } from './pull-node'
+import { pullTab, type PullNodeTab } from './pull-node'
 
 export interface PullShow {
   tab: PullNodeTab
@@ -26,8 +26,9 @@ export type PullHighlight = { file: string; start: number; end: number; seq: num
 type Parsed<T> = ({ ok: true; node: string } & T) | { ok: false; error: string }
 
 const SHOW_FLAGS = new Set(['node', 'tab', 'file', 'lines'])
+// The tabs the node shows today; Commits (07) and Checks (08) join when their panels land.
+const SHOW_TABS: readonly PullNodeTab[] = ['conversation', 'files']
 const PROPOSE_FLAGS = new Set(['node', 'action', 'message', 'method'])
-const TABS: readonly PullNodeTab[] = ['overview', 'files', 'conversation']
 const ACTIONS = ['approve', 'request-changes', 'comment', 'merge'] as const
 const METHODS: readonly PullMergeMethod[] = ['merge', 'squash', 'rebase']
 const MAX_MESSAGE = 60_000
@@ -44,9 +45,10 @@ export function parsePrShow(args: Record<string, string | undefined>): Parsed<{ 
   if ('error' in gate) return { ok: false, error: gate.error }
   const { node } = gate
   const { file, lines } = args
-  const tab = TABS.find((t) => t === args.tab)
+  // `overview` is the old name of Conversation, which agents may still send.
+  const tab = SHOW_TABS.find((t) => t === pullTab(args.tab))
   if (args.tab !== undefined && !tab) {
-    return { ok: false, error: 'pr-show: --tab is overview, files or conversation' }
+    return { ok: false, error: 'pr-show: --tab is conversation or files' }
   }
   if (file !== undefined) {
     // eslint-disable-next-line no-control-regex

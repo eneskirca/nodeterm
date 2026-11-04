@@ -1318,14 +1318,14 @@ describe('pull request node serialization', () => {
   it('drops PR content that a live node or a hand-edited file put on the reference', () => {
     const node = createPullNode(0, 'o/r', 7)
     node.data.pull = { ...node.data.pull!, ...{ body: 'secret', headSha: 'abc' } }
-    expect(flowToNodeStates([node])[0].pull).toEqual({ repository: 'o/r', pullNumber: 7, tab: 'overview' })
+    expect(flowToNodeStates([node])[0].pull).toEqual({ repository: 'o/r', pullNumber: 7, tab: 'conversation' })
   })
 
   it('drops a hostile reference from project.json, keeping the node', () => {
     const [state] = flowToNodeStates([createPullNode(0, 'o/r', 7)])
     for (const bad of [
-      { repository: '../x', pullNumber: 7, tab: 'overview' },
-      { repository: 'o/r', pullNumber: -1, tab: 'overview' },
+      { repository: '../x', pullNumber: 7, tab: 'conversation' },
+      { repository: 'o/r', pullNumber: -1, tab: 'conversation' },
       { repository: 'o/r', pullNumber: 7, tab: 'secrets' }
     ]) {
       const [back] = nodeStatesToFlow([{ ...state, pull: bad as never }])

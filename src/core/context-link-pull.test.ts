@@ -110,7 +110,7 @@ describe('context-link read of a pull request node', () => {
   it('a persisted pull node gets the same entry from the serialized canvas (Server Edition, background tabs)', () => {
     const nodes = [
       { id: 'agent-1', kind: 'terminal', agentId: 'claude', title: 'claude' },
-      { id: 'pull-1', kind: 'pull', title: 'PR #42', pull: { repository: 'acme/app', pullNumber: 42, tab: 'overview' } }
+      { id: 'pull-1', kind: 'pull', title: 'PR #42', pull: { repository: 'acme/app', pullNumber: 42, tab: 'conversation' } }
     ] as CanvasNodeState[]
     const map = buildBackgroundLinkMaps(
       [{ id: 'p1', nodes, bridges: [{ id: 'bridge-agent-1-pull-1', source: 'agent-1', target: 'pull-1' }] }],
