@@ -4,10 +4,12 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GitHubPullConversationResult, GitHubPullDetail, PullLineComment } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
+import type { GitHubPullTimelineResult } from '@shared/github-pull-timeline'
 import type { PullProposal } from '@shared/pull-agent-verbs'
 import type { SendToApi } from './SendTo'
 import { PullJumpContext } from './PullJumpContext'
 import { PullMergeBox } from './PullMergeBox'
+import { useMergeMethod, useUpdateBranch } from './mergeActions'
 import { PullProposalBar } from './PullProposalBar'
 import type { PullNodeApi } from './shared'
 import type { MergeMethodsRead } from './useMergeMethods'
@@ -54,6 +56,7 @@ const ALLOWED: MergeMethodsRead = { status: 'ok', methods: ['squash', 'rebase'],
 
 async function mount(change: Partial<GitHubPullDetail> = {}, extra: {
   checks?: GitHubPullChecksResult; methods?: MergeMethodsRead; onWork?: () => void
+  top?: React.ReactNode; timeline?: GitHubPullTimelineResult
 } = {}) {
   const api = fakeApi()
   const onJump = vi.fn()
@@ -61,14 +64,19 @@ async function mount(change: Partial<GitHubPullDetail> = {}, extra: {
   const view = host = document.createElement('div')
   document.body.append(view)
   root = createRoot(view)
+  const base = { api, projectId: 'p', pull: { repository: 'o/r', pullNumber: 7, tab: 'conversation' as const }, refreshTick: 0, onOpenExternal: vi.fn(), onWritten }
+  const d = { ...detail, ...change }
+  // The shell's picked method and Update branch, as PullNodeView holds them.
+  function Box() {
+    const methods = extra.methods ?? ALLOWED
+    const { method, pick } = useMergeMethod(methods)
+    const update = useUpdateBranch(base, d)
+    return <PullMergeBox {...base} onWork={extra.onWork} detail={d} checks={extra.checks ?? passing} methods={methods}
+      onLoadMethods={vi.fn()} conversation={conversation} method={method} onPickMethod={pick} update={update}
+      top={extra.top} timeline={extra.timeline} />
+  }
   await act(async () => {
-    root!.render(
-      <PullJumpContext.Provider value={onJump}>
-        <PullMergeBox api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }} refreshTick={0}
-          onOpenExternal={vi.fn()} onWritten={onWritten} onWork={extra.onWork} detail={{ ...detail, ...change }}
-          checks={extra.checks ?? passing} methods={extra.methods ?? ALLOWED} onLoadMethods={vi.fn()} conversation={conversation} />
-      </PullJumpContext.Provider>
-    )
+    root!.render(<PullJumpContext.Provider value={onJump}><Box /></PullJumpContext.Provider>)
   })
   return { view, api, onJump, onWritten }
 }
@@ -84,13 +92,27 @@ describe('PullMergeBox status rows', () => {
     expect([...view.querySelectorAll('[data-row]')].map((el) => el.querySelector('strong')?.textContent)).toEqual([
       'Approved', 'All checks passed', '2 conversations unresolved', 'No conflicts'
     ])
-    await click(button(row(view, 'review'), 'Reviewers'))
+    await click(button(row(view, 'review'), 'Request review'))
     await click(button(row(view, 'checks'), 'Show'))
     await click(button(row(view, 'threads'), 'Jump'))
     expect(onJump.mock.calls.map(([jump]) => jump)).toEqual([
       { tab: 'conversation', section: 'details' }, { tab: 'checks' }, { tab: 'files' }
     ])
     expect(row(view, 'merge').querySelector('button')).toBeNull()
+  })
+
+  it('names who approved or requested changes, and says when merging is still allowed with open threads', async () => {
+    const user = (id: number, login: string) => ({ id, login, avatarUrl: 'https://avatars.githubusercontent.com/u/1' })
+    const sidebar = { reviewers: [{ user: user(1, 'ana'), state: 'approved' as const }, { user: user(2, 'bo'), state: 'commented' as const }] }
+    const approved = await mount({ sidebar })
+    expect(row(approved.view, 'review').textContent).toContain('Approved by ana')
+    expect(row(approved.view, 'threads').textContent).toContain('2 conversations unresolved merging is still allowed')
+    act(() => root!.unmount()); host!.remove(); root = host = undefined
+
+    const changes = await mount({ merge: 'blocked', sidebar: { reviewers: [{ user: user(2, 'bo'), state: 'changes-requested' }] } },
+      { checks: { ...passing, review: 'changes-requested' } })
+    expect(row(changes.view, 'review').textContent).toContain('Changes requested by bo')
+    expect(row(changes.view, 'threads').textContent).not.toContain('still allowed')
   })
 
   it('names failing checks in the checks row', async () => {
@@ -182,6 +204,26 @@ describe('PullMergeBox states', () => {
     await click(button(view, 'Delete branch'))
     expect(api.deleteHeadBranch).toHaveBeenCalledWith(at)
     expect(view.textContent).toContain('Branch feat/pull was deleted.')
+  })
+
+  it('merged and closed: by whom and when, from the timeline read', async () => {
+    const ago = new Date(Date.now() - 3 * 3_600_000).toISOString()
+    const timeline = (kind: 'merged' | 'closed'): GitHubPullTimelineResult => ({
+      status: 'ok', openedAt: '2026-10-01T09:00:00Z', observedAt: 1,
+      items: [{ id: 'e', actor: { id: 3, login: 'octo', avatarUrl: 'https://avatars.githubusercontent.com/u/3' }, at: ago,
+        ...(kind === 'merged' ? { kind, oid: HEAD, base: 'main' } : { kind }) }]
+    })
+    const merged = await mount({ lifecycle: 'merged', merge: undefined }, { timeline: timeline('merged') })
+    expect(merged.view.querySelector('.pr-mstate__sub')?.textContent).toBe('by octo · 3h ago')
+    act(() => root!.unmount()); host!.remove(); root = host = undefined
+    const closed = await mount({ lifecycle: 'closed', merge: undefined }, { timeline: timeline('closed') })
+    expect(closed.view.querySelector('.pr-mstate__sub')?.textContent).toBe('by octo · 3h ago')
+  })
+
+  it('draws the agent proposal as the card\'s top section', async () => {
+    const { view } = await mount({}, { top: <div className="pull-proposal">proposal</div> })
+    const card = view.querySelector('.pr-mbox')!
+    expect(card.firstElementChild?.className).toBe('pull-proposal')
   })
 
   it('closed: says so and offers Reopen pull request', async () => {

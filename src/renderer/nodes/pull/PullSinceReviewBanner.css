@@ -16,3 +16,4 @@
 .pull-node .pr-since--muted { color: var(--pr-muted); }
 .pull-node .pr-since--muted > svg { color: var(--pr-muted); }
 .pull-node .pr-since__diff { margin-left: auto; }
+.pull-node .pr-since [aria-pressed='true'] { border-color: var(--pr-accent); background: var(--pr-accent-bg); color: var(--pr-accent); }

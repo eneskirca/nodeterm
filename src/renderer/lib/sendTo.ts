@@ -126,7 +126,7 @@ export function sendToPrompt(pr: SendToPr, p: SendToPayload, node?: string): str
       case 'conflict': {
         const base = isPlainRef(p.base) ? p.base : 'its base branch'
         return [`its merge conflict with ${base}.`,
-          `In your working copy of the PR's branch, merge ${isPlainRef(p.base) ? `origin/${base}` : 'the base'} in, resolve the conflicts, run the project's checks, then stop and show the user the result (git diff and git status). Do not commit or push unless the user asks.`]
+          `First check out the PR's head branch yourself (gh pr checkout ${n} --repo ${repo}; if your working copy has uncommitted changes, ask the user first), then merge ${isPlainRef(p.base) ? `origin/${base}` : 'the base'} in (git fetch origin first), resolve the conflicts, run the project's checks, then stop and show the user the result (git diff and git status). Do not commit or push unless the user asks.`]
       }
       case 'notes': return [`${count(p.notes.length, 'note')} the user wrote on the diff:${list(p.notes.map((note) => `${data(at(note), 300)} ${oneLine(note.text).slice(0, 500)}`))}.`,
         'The notes are the user\'s own words. Address them in your working copy.']

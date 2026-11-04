@@ -39,10 +39,12 @@ export function useSinceReview(props: ViewProps): { since?: PullSinceReview; com
   return { since, compareExtra }
 }
 
-/** Above the Conversation timeline: the new commits since the viewer's last review, with a button
- *  that opens Files changed on that comparison; or, after a force-push, why it cannot. */
-export function PullSinceReviewBanner({ since, onDiff }: {
+/** Above the Conversation timeline: the new commits since the viewer's last review, with "Show only
+ *  new" (the timeline keeps only what came after the review) and a button that opens Files changed
+ *  on that comparison; or, after a force-push, why it cannot. */
+export function PullSinceReviewBanner({ since, onDiff, onlyNew, onOnlyNew }: {
   since: PullSinceReview | undefined; onDiff: () => void
+  onlyNew?: boolean; onOnlyNew?: (on: boolean) => void
 }): React.JSX.Element | null {
   if (since?.kind === 'unavailable') {
     return (
@@ -57,7 +59,10 @@ export function PullSinceReviewBanner({ since, onDiff }: {
     <div className="pr-since" role="status">
       <Icon name="commit" size={16} />
       <span>{`${plural(since.commits, 'new commit')} since your last review on ${dayOf(since.submittedAt)}`}</span>
-      <button className="pr-btn pr-since__diff" onClick={onDiff}>Diff since review</button>
+      {onOnlyNew && (
+        <button className="pr-btn pr-since__diff" aria-pressed={!!onlyNew} onClick={() => onOnlyNew(!onlyNew)}>Show only new</button>
+      )}
+      <button className={onOnlyNew ? 'pr-btn' : 'pr-btn pr-since__diff'} onClick={onDiff}>Diff since review</button>
     </div>
   )
 }

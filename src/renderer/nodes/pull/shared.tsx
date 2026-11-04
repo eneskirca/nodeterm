@@ -88,8 +88,8 @@ export type ViewProps = {
   /** "Work on this PR": the PR's head in a fresh worktree with the default agent (Canvas does it).
    *  `conflict`: "Resolve conflicts with agent", the same path with the merge-the-base task. */
   onWork?: (detail: GitHubPullDetail, conflict?: true) => void
-  /** The agent nodes joined to this node: who "Send to agent" may send to. */
-  agents?: readonly LinkedAgent[]
+  /** The agent nodes joined to this node: who "Send to agent" may send to. `agentId` names the buttons. */
+  agents?: readonly (LinkedAgent & { agentId?: string })[]
   /** Why "Send to agent" is off on this surface (a relay tab). */
   sendUnavailable?: string
   /** Sends the message to that agent; answers null when sent, else the sentence to show. */

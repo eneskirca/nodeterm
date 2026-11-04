@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GitHubPullDetail } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
 import { NextAction } from './NextAction'
+import { useUpdateBranch } from './mergeActions'
 import { nextStep, type ReadinessInput } from './readiness'
 import type { PullNodeApi } from './shared'
 
@@ -59,11 +60,19 @@ async function mount(d: GitHubPullDetail, input: Partial<ReadinessInput> & { met
   const view = host = document.createElement('div')
   document.body.append(view)
   const r = root = createRoot(view)
-  await act(async () => {
-    r.render(<NextAction api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }} refreshTick={0}
-      onOpenExternal={extra.onOpenExternal ?? vi.fn()} onWritten={onWritten} detail={d} next={nextStep({ detail: d, ...input })}
-      onJump={onJump} onWork={extra.onWork} onCopy={extra.onCopy} />)
-  })
+  const base = {
+    api, projectId: 'p', pull: { repository: 'o/r', pullNumber: 7, tab: 'conversation' as const }, refreshTick: 0,
+    onOpenExternal: extra.onOpenExternal ?? vi.fn(), onWritten, onWork: extra.onWork
+  }
+  // The shell's one Update branch, as PullNodeView holds it.
+  function Shell() {
+    const update = useUpdateBranch(base, d)
+    return <>
+      <NextAction {...base} detail={d} next={nextStep({ detail: d, ...input })} onJump={onJump} onCopy={extra.onCopy} update={update} />
+      {update.refusal && <p data-testid="update-refusal">{update.refusal}</p>}
+    </>
+  }
+  await act(async () => { r.render(<Shell />) })
   const lead = view.querySelector<HTMLButtonElement>('[data-next]')
   const openMenu = async () => act(async () => { view.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!.click() })
   const item = (label: string) => [...view.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.startsWith(label))
@@ -95,11 +104,20 @@ describe('NextAction', () => {
     expect(merge.onJump).toHaveBeenCalledWith({ tab: 'conversation', section: 'merge' })
   })
 
-  it('resolves conflicts with the agent through onWork', async () => {
+  it('Resolve conflicts opens the merge box\'s choice; Resolve myself is Work on this PR', async () => {
     const onWork = vi.fn()
     const view = await mount({ ...detail, merge: 'conflict' }, {}, { onWork })
     await act(async () => { view.lead!.click() })
-    expect(onWork).toHaveBeenCalledWith({ ...detail, merge: 'conflict' }, true)
+    expect(onWork).not.toHaveBeenCalled()
+    expect(view.view.querySelector('[aria-label="Resolve conflicts"]')?.textContent).toBe('Resolve myself')
+    await act(async () => { view.item('Resolve myself')!.click() })
+    expect(onWork).toHaveBeenCalledWith({ ...detail, merge: 'conflict' })
+    act(() => root!.unmount()); host!.remove(); root = host = undefined
+
+    // With no way out at all, the lead button jumps to the merge box, which says how.
+    const bare = await mount({ ...detail, merge: 'conflict' })
+    await act(async () => { bare.lead!.click() })
+    expect(bare.onJump).toHaveBeenCalledWith({ tab: 'conversation', section: 'merge' })
   })
 
   it('shows no lead button for a merged PR, and only Copy link and Open on GitHub in its menu', async () => {
@@ -124,8 +142,10 @@ describe('NextAction', () => {
     expect(view.view.querySelector('[role="menu"]')).toBeNull()
     await view.openMenu()
     await act(async () => { view.item('Update branch')!.click() })
+    // The shell's shared Update branch ran; the merge box (jumped to) shows its state.
     expect(view.api.updatePullBranch).toHaveBeenCalledWith({ ...at, headSha: HEAD })
-    expect(view.view.querySelector('[role="alert"]')?.textContent).toContain('token')
+    expect(view.onJump).toHaveBeenCalledWith({ tab: 'conversation', section: 'merge' })
+    expect(view.view.querySelector('[data-testid="update-refusal"]')?.textContent).toBe('forbidden')
     await view.openMenu()
     await act(async () => { view.item('Close pull request')!.click() })
     expect(view.api.setPullState).toHaveBeenCalledWith({ ...at, open: false })

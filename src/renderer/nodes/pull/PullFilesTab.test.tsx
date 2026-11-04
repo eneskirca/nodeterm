@@ -77,7 +77,9 @@ async function render(api: ReturnType<typeof fakeApi>, over: Partial<FilesTabPro
   const props: FilesTabProps = {
     api: api as unknown as PullNodeApi, projectId: 'p', pull: { repository: 'o/r', pullNumber: 7, tab: 'files', selectedFile: 'src/a.ts' },
     refreshTick: 0, onOpenExternal: vi.fn(), onWritten: vi.fn(), onSelectFile: vi.fn(), head: HEAD, ownPull: false,
-    pending: [], onAddPending: vi.fn(), onDropPending: vi.fn(), ...over
+    pending: [], onAddPending: vi.fn(), onDropPending: vi.fn(),
+    // The shell's conversation read, which the tab takes from props.
+    conversation: await api.pullConversation(), ...over
   }
   host = document.createElement('div')
   document.body.append(host)
@@ -90,11 +92,15 @@ const settle = () => act(async () => { await new Promise((resolve) => setTimeout
 const buttons = (el: Element = host) => [...el.querySelectorAll('button')]
 const button = (label: string, el: Element = host) => buttons(el).find((b) => b.textContent === label) as HTMLButtonElement
 const tree = () => [...host.querySelectorAll('.pf-file')].map((row) => row.getAttribute('title'))
+/** Compare: a commit through the select inside the segmented control, else a segment by its label. */
 const pick = async (value: string) => {
-  const select = host.querySelector<HTMLSelectElement>('select')!
-  await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  if (value.startsWith('commit:')) {
+    const select = host.querySelector<HTMLSelectElement>('[aria-label="Compare"] select')!
+    await act(async () => { select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })) })
+  } else await act(async () => { button(value).click() })
   await settle()
 }
+const segments = () => [...host.querySelectorAll('[aria-label="Compare"] > button')].map((b) => [b.textContent, b.getAttribute('aria-pressed')])
 function type(ta: HTMLTextAreaElement, text: string): void {
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ta, text)
   ta.dispatchEvent(new Event('input', { bubbles: true }))
@@ -104,8 +110,12 @@ describe('PullFilesTab compare', () => {
   it('offers All changes and each commit; a commit shows its own files and diff, read-only, then All changes again', async () => {
     const api = fakeApi()
     await render(api)
-    expect([...host.querySelectorAll('option')].map((o) => o.textContent)).toEqual(['All changes', 'aaaaaaa First', 'ddddddd Second'])
+    // F2: a segmented control; the commits sit in a small select inside it.
+    expect(segments()).toEqual([['All changes', 'true']])
+    expect([...host.querySelectorAll('[aria-label="Compare"] select option')].map((o) => o.textContent)).toEqual(['Commit…', 'aaaaaaa First', 'ddddddd Second'])
     await pick(`commit:${'d'.repeat(40)}`)
+    expect(segments()).toEqual([['All changes', 'false']])
+    expect(host.querySelector('[aria-label="Compare"] select')?.classList.contains('pf-seg__select--on')).toBe(true)
     expect(api.pullCommitFiles).toHaveBeenCalledWith('p', 'o/r', 7, 'd'.repeat(40))
     expect(tree()).toEqual(['only/in-commit.ts'])
     expect(api.pullCommitFileContents).toHaveBeenCalledWith('p', 'o/r', 7, 'd'.repeat(40), 'only/in-commit.ts')
@@ -113,7 +123,8 @@ describe('PullFilesTab compare', () => {
     expect(host.querySelector('input[aria-label^="Viewed"]')).toBeNull()
     expect(button('line modified 3')).toBeUndefined()
     expect(host.textContent).toContain('read-only')
-    await pick('all')
+    await pick('All changes')
+    expect(host.querySelector<HTMLSelectElement>('[aria-label="Compare"] select')?.value).toBe('')
     expect(tree()).toEqual(['src/a.ts', 'src/b.ts', 'c.md'])
     expect(host.querySelector('input[aria-label="Viewed src/a.ts"]')).not.toBeNull()
   })
@@ -126,8 +137,9 @@ describe('PullFilesTab compare', () => {
       contents: vi.fn(async () => ({ status: 'ok' as const, observedAt: 1, contents: { kind: 'diff' as const, base: { kind: 'text' as const, text: 'x' }, head: { kind: 'text' as const, text: 'since text' } } }))
     }
     await render(api, { compareExtra: [since] })
-    expect([...host.querySelectorAll('option')][1].textContent).toBe('Since my last review (1 file)')
-    await pick('since-review')
+    expect(segments()).toEqual([['All changes', 'true'], ['Since my last review (1 file)', 'false']])
+    await pick('Since my last review (1 file)')
+    expect(segments()).toEqual([['All changes', 'false'], ['Since my last review (1 file)', 'true']])
     expect(since.files).toHaveBeenCalledWith('p', 'o/r', 7)
     expect(since.contents).toHaveBeenCalledWith('p', 'o/r', 7, 'src/a.ts')
     expect(host.querySelector('.text-diff')?.getAttribute('data-modified')).toBe('since text')

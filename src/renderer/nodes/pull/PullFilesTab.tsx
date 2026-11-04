@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import type { GitHubPullCommitFilesResult } from '@shared/github-pull-commits'
 import type {
+  GitHubPullConversationResult,
   GitHubPullFileContentsResult,
   GitHubPullFilesResult,
   PullAvatarDataUrls,
@@ -61,6 +62,8 @@ export type PullAgentNote = { path: string; side: PullDiffSide; line: number; te
 
 export type FilesTabProps = ViewProps & LineProps & {
   onSelectFile: (path: string) => void; highlight?: PullHighlight; head: string | undefined
+  /** The shell's conversation read: the line comment threads and open counts per file. */
+  conversation: Read<GitHubPullConversationResult>
   ownPull: boolean; onDropPending: (sent: readonly PullLineDraft[]) => void
   /** F-10 seam: Compare choices after "All changes", before the commits. */
   compareExtra?: readonly PullCompareOption[]
@@ -103,18 +106,25 @@ export function PullFilesTab(props: FilesTabProps): React.JSX.Element {
     (projectId, repository, pullNumber, path) => api.pullCommitFileContents(projectId, repository, pullNumber, sha!, path),
     [api, sha])
   const commitList = commits !== 'loading' && commits.status === 'ok' ? commits.commits : []
+  const choice = (value: string, label: string) => (
+    <button key={value} className="pf-seg__btn" aria-pressed={compare === value} onClick={() => setCompare(value)}>{label}</button>
+  )
   const toolbar = (
     <div className="pf-toolbar">
-      <label className="pf-toolbar__compare">
-        Compare
-        <select className="pf-select" value={compare} onChange={(e) => setCompare(e.target.value)}>
-          <option value={ALL}>All changes</option>
-          {compareExtra?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          {commitList.map((commit) => (
-            <option key={commit.oid} value={`${COMMIT}${commit.oid}`}>{`${commit.oid.slice(0, 7)} ${commit.headline}`}</option>
-          ))}
-        </select>
-      </label>
+      {/* F2: one segmented control; the commits are a small select inside its last segment. */}
+      <span role="group" aria-label="Compare" className="pf-seg pf-compare">
+        {choice(ALL, 'All changes')}
+        {compareExtra?.map((option) => choice(option.value, option.label))}
+        {commitList.length > 0 && (
+          <select className={`pf-seg__select${sha ? ' pf-seg__select--on' : ''}`} aria-label="Compare one commit"
+            value={sha ? compare : ''} onChange={(e) => setCompare(e.target.value)}>
+            <option value="" disabled>Commit…</option>
+            {commitList.map((commit) => (
+              <option key={commit.oid} value={`${COMMIT}${commit.oid}`}>{`${commit.oid.slice(0, 7)} ${commit.headline}`}</option>
+            ))}
+          </select>
+        )}
+      </span>
       <span role="group" aria-label="Diff layout" className="pf-seg">
         <button className="pf-seg__btn" aria-pressed={split} onClick={() => setSplit(true)}>Split</button>
         <button className="pf-seg__btn" aria-pressed={!split} onClick={() => setSplit(false)}>Unified</button>
@@ -149,8 +159,7 @@ function SourceList(props: BodyProps & { read: (projectId: string, repository: s
 }
 
 function FilesBody(props: BodyProps & { list: Read<FilesRead> }): React.JSX.Element {
-  const { api, projectId, pull, onOpenExternal, onSelectFile, highlight, list, all, review, toolbar } = props
-  const conversation = usePullRead(api.pullConversation, props)
+  const { api, projectId, pull, onOpenExternal, onSelectFile, highlight, list, all, review, toolbar, conversation } = props
   const [filter, setFilter] = useState('')
   const [hideViewed, setHideViewed] = useState(false)
   const [closed, setClosed] = useState<ReadonlySet<string>>(new Set())
@@ -380,7 +389,7 @@ function PullLineThreadView(props: ViewProps & {
   const [reply, setReply] = useState<string | null>(null)
   const { busy, refusal, run } = useWrite(() => { setReply(null); onWritten() })
   const action = useWrite(onWritten)
-  const { sendTo, why } = useSendTo()
+  const { sendTo, why, name } = useSendTo()
   const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
   const resolved = resolvedThreads?.includes(thread.id)
   // ponytail: one Commit suggestion per thread, for its latest suggestion.
@@ -426,7 +435,7 @@ function PullLineThreadView(props: ViewProps & {
               <button className="pr-btn pf-small" onClick={() => setReply('')}>Reply</button>
               <button className="pr-btn pf-small" disabled={!sendTo} title={why}
                 onClick={() => sendTo?.(suggestion ? { kind: 'suggestion', thread: sendThread } : { kind: 'threads', threads: [sendThread] })}>
-                <Icon name="agent" size={14} className="pf-agent" />Ask agent
+                <Icon name="agent" size={14} className="pf-agent" />{name ? `Ask ${name}` : 'Ask agent'}
               </button>
             </>
           )
@@ -457,6 +466,7 @@ function PullLineComposer(props: ViewProps & {
   const { api, projectId, pull, head, draft, onAdd, onClose, onWritten, onNoteForAgent } = props
   const [body, setBody] = useState('')
   const { busy, refusal, run } = useWrite(() => { onClose(); onWritten() })
+  const { name } = useSendTo()
   const comment = { ...draft, body }
   const empty = !body.trim()
   return (
@@ -469,7 +479,7 @@ function PullLineComposer(props: ViewProps & {
         <button className="pr-btn pf-small pf-end" disabled={busy || empty || !onNoteForAgent}
           title={onNoteForAgent ? 'A private note the agent reads; not posted to GitHub' : 'Notes for agents are not available yet.'}
           onClick={() => { onNoteForAgent?.({ path: draft.path, side: draft.side, line: draft.line, text: body }); onClose() }}>
-          <Icon name="note" size={14} className="pf-agent" />Note for agent
+          <Icon name="note" size={14} className="pf-agent" />{`Note for ${name ?? 'agent'}`}
         </button>
         <button className="pr-btn pf-small" disabled={busy || empty || !head} onClick={() => void run(() =>
           api.commentOnPullLine({ projectId, repository: pull.repository, pullNumber: pull.pullNumber, headSha: head!, comment }))}>

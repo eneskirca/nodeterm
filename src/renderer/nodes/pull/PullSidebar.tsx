@@ -12,6 +12,8 @@ import type { PullChecksRead } from '../../lib/pullMergeBlock'
 import { Avatar } from './Avatar'
 import { Icon } from './Icon'
 import { LabelChip } from './LabelChip'
+import { agentStatusText } from './readiness'
+import { useSendTo } from './SendTo'
 import { PullSendToAgent } from './PullSendToAgent'
 import { EditPicker, type EditChoices } from './PullSidebarEdit'
 import { useWrite, WRITE_TEXT, type ViewProps } from './shared'
@@ -27,8 +29,6 @@ type SidebarProps = ViewProps & {
 const STATE_TEXT: Record<PullReviewerState, string> = {
   approved: 'Approved', 'changes-requested': 'Changes requested', commented: 'Commented', dismissed: 'Dismissed', pending: 'Pending'
 }
-
-const AGENT_TEXT: Record<AgentState, string> = { working: 'working', waiting: 'waiting', blocked: 'blocked', done: 'idle' }
 
 export function PullSidebar(props: SidebarProps): React.JSX.Element {
   const { sidebar } = props.detail
@@ -112,6 +112,7 @@ function AgentSection(props: SidebarProps): React.JSX.Element {
   const { agents, agentState, detail: d, onWork, onSendToAgent, checks } = props
   const agent = agents?.[0]
   const open = d.lifecycle === 'open' || d.lifecycle === 'draft'
+  const { sendTo, why, name } = useSendTo()
   return (
     <Section label="Agent" section="agent">
       {agent
@@ -119,14 +120,19 @@ function AgentSection(props: SidebarProps): React.JSX.Element {
           <div className="pr-side__agent">
             <span className="pr-side__dot" />
             <span className="pr-side__name">{agent.title}</span>
-            <span className="pr-side__status">{AGENT_TEXT[agentState ?? 'done']}</span>
+            <span className="pr-side__status">{agentStatusText(agentState)}</span>
           </div>
         )
         : <Empty>No agent linked.</Empty>}
       <WatchSwitch {...props} linked={!!agent} />
-      {open && (onWork || onSendToAgent) && (
+      {open && (onWork || onSendToAgent || sendTo || why) && (
         <div className="pr-side__actions">
           {onWork && <button className="pr-btn pr-btn--sm" onClick={() => onWork(d)}>Work on this PR</button>}
+          {(sendTo || why) && (
+            <button className="pr-btn pr-btn--sm" disabled={!sendTo} title={why} onClick={() => sendTo?.({ kind: 'pr' })}>
+              {name ? `Send PR to ${name}` : 'Send PR to…'}
+            </button>
+          )}
           {onSendToAgent && <PullSendToAgent {...props} detail={d} checks={checks ?? null} />}
         </div>
       )}

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GitHubPullDetail, PullLineComment } from '@shared/github-pull-detail'
 import type { GitHubPullTimelineResult, PullTimelineItem } from '@shared/github-pull-timeline'
 import { PullTimeline } from './PullTimeline'
-import type { PullNodeApi } from './shared'
+import { usePullRead, type PullNodeApi, type ViewProps } from './shared'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -43,12 +43,18 @@ let host: HTMLDivElement | undefined
 let root: ReturnType<typeof createRoot>
 afterEach(() => { act(() => root.unmount()); host?.remove(); host = undefined })
 
-async function render(pullTimeline: ReturnType<typeof vi.fn>, refreshTick = 0, lineComments: PullLineComment[] = []): Promise<HTMLDivElement> {
+/** The Conversation tab's side: it reads the first page and hands it over. */
+function Shell({ after, lineComments, ...props }: ViewProps & { after?: string; lineComments: PullLineComment[] }) {
+  const first = usePullRead(props.api.pullTimeline, props)
+  return <PullTimeline {...props} detail={detail} lineComments={lineComments} first={first} after={after} />
+}
+
+async function render(pullTimeline: ReturnType<typeof vi.fn>, refreshTick = 0, lineComments: PullLineComment[] = [], after?: string): Promise<HTMLDivElement> {
   if (!host) { host = document.createElement('div'); document.body.append(host); root = createRoot(host) }
   await act(async () => {
-    root.render(<PullTimeline api={{ pullTimeline } as unknown as PullNodeApi} projectId="p"
+    root.render(<Shell api={{ pullTimeline } as unknown as PullNodeApi} projectId="p"
       pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }} refreshTick={refreshTick}
-      onOpenExternal={vi.fn()} onWritten={vi.fn()} detail={detail} lineComments={lineComments} />)
+      onOpenExternal={vi.fn()} onWritten={vi.fn()} lineComments={lineComments} after={after} />)
   })
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
   return host!
@@ -116,6 +122,14 @@ describe('PullTimeline', () => {
     await act(async () => { [...view.querySelectorAll('button')].find((button) => button.textContent === 'Load more')!.click() })
     expect(view.textContent).toContain('reopened this')
     expect(view.textContent).toContain('GitHub is throttling requests')
+  })
+
+  it('"Show only new" keeps only entries after the review time; the description stays', async () => {
+    const items = [{ ...ev('closed', 'old'), at: '2026-10-01T10:00:00Z' }, { ...ev('reopened', 'new'), at: '2026-10-03T10:00:00Z' }]
+    const view = await render(vi.fn(async () => ok(items)), 0, [], '2026-10-02T00:00:00Z')
+    expect(view.textContent).toContain('opened this pull request')
+    expect(view.textContent).toContain('reopened this')
+    expect(view.textContent).not.toContain('closed this')
   })
 
   it('keeps the last answer and says so when the latest read was throttled', async () => {

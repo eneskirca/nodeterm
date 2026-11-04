@@ -29,6 +29,7 @@ function PullSendPanel(props: ViewProps & {
   sendTo: NonNullable<ReturnType<typeof useSendTo>['sendTo']>
 }): React.JSX.Element {
   const { pull, detail: d, checks, sendTo, onClose } = props
+  const { name } = useSendTo()
   const conversation = usePullRead(props.api.pullConversation, props)
   // The user's ticks over the defaults (outdated threads start unticked).
   const [ticks, setTicks] = useState<Record<string, boolean>>({})
@@ -73,7 +74,7 @@ function PullSendPanel(props: ViewProps & {
           </ul>
         )}
       <div className="pull-compose__actions">
-        <button className="pull-compose__button" disabled={picked.length === 0} onClick={send}>Send to…</button>
+        <button className="pull-compose__button" disabled={picked.length === 0} onClick={send}>{name ? `Send to ${name}` : 'Send to…'}</button>
         <button className="pull-compose__button" onClick={onClose}>Close</button>
       </div>
     </div>

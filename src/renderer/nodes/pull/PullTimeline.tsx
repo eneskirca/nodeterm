@@ -7,7 +7,7 @@ import { Avatar } from './Avatar'
 import { Icon } from './Icon'
 import { useSendTo } from './SendTo'
 import { shortDate, TimelineItem } from './TimelineItem'
-import { FAILURE_TEXT, readState, STALE_TEXT, usePullRead, useWrite, WRITE_TEXT, type ViewProps } from './shared'
+import { FAILURE_TEXT, readState, STALE_TEXT, useWrite, WRITE_TEXT, type Read, type ViewProps } from './shared'
 
 /** The pages read after the first, tied to the first page they continue (a refresh starts over). */
 type More = {
@@ -45,13 +45,16 @@ function group(items: readonly PullTimelineItem[]): Entry[] {
 /** The Conversation tab's timeline (F1): the description card first, then every GitHub timeline entry
  *  oldest first: comments and reviews as cards, events as compact rows, each review with its line
  *  comment threads (Reply, Resolve, Send to…). More pages load when the end of the list scrolls into view. */
-export function PullTimeline({ detail, detailAvatars, lineComments, resolvedThreads, ...props }: ViewProps & {
+export function PullTimeline({ detail, detailAvatars, lineComments, resolvedThreads, first, after, ...props }: ViewProps & {
   detail: GitHubPullDetail; detailAvatars?: PullAvatarDataUrls; lineComments: readonly PullLineComment[]
   /** First comment ids of resolved threads; undefined = unknown (no Resolve, no open count). */
   resolvedThreads?: readonly number[]
+  /** The first page, read by the Conversation tab (the merge box reads who merged from it). */
+  first: Read<GitHubPullTimelineResult>
+  /** "Show only new": only entries after this ISO time. The description stays. */
+  after?: string
 }): React.JSX.Element {
   const { api, projectId, pull } = props
-  const first = usePullRead(api.pullTimeline, props)
   const [more, setMore] = useState<More | null>(null)
   const ok = first !== 'loading' && first.status === 'ok' ? first : undefined
   const extra = ok && more?.base === ok ? more : undefined
@@ -81,7 +84,8 @@ export function PullTimeline({ detail, detailAvatars, lineComments, resolvedThre
     return () => observer.disconnect()
   }, [cursor, busy])
   const avatars = { ...detailAvatars, ...ok?.avatarDataUrls, ...extra?.avatars }
-  const items = ok ? [...ok.items, ...(extra?.items ?? [])] : []
+  const since = after ? Date.parse(after) : NaN
+  const items = (ok ? [...ok.items, ...(extra?.items ?? [])] : []).filter((item) => !(Date.parse(item.at) <= since))
   const threads = threadsByReview(lineComments)
   const resolved = resolvedThreads && new Set(resolvedThreads)
   return (
@@ -155,7 +159,7 @@ export function PullTimeline({ detail, detailAvatars, lineComments, resolvedThre
       {first !== 'loading' && first.status !== 'ok' && readState(first, pull.repository)}
       {first === 'loading' && <p className="pull-node__state">Loading the timeline…</p>}
       {ok?.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[ok.stale]}</p>}
-      {ok && items.length === 0 && <p className="pull-node__empty">No comments or reviews yet.</p>}
+      {ok && items.length === 0 && <p className="pull-node__empty">{after ? 'Nothing new since your last review on the pages loaded.' : 'No comments or reviews yet.'}</p>}
       {extra?.failed && <p className="pull-node__stale" role="status">{extra.failed}</p>}
       {cursor && (
         <button ref={sentinel} className="pull-node__web" disabled={busy} onClick={loadMore}>
@@ -171,7 +175,7 @@ export function PullTimeline({ detail, detailAvatars, lineComments, resolvedThre
  *  A resolved thread shows its head only. */
 function ThreadCard(props: ViewProps & { thread: Thread; avatars: PullAvatarDataUrls; resolved: boolean | undefined }): React.JSX.Element {
   const { api, projectId, pull, thread, avatars, resolved, onWritten } = props
-  const { sendTo, why } = useSendTo()
+  const { sendTo, why, name } = useSendTo()
   const [reply, setReply] = useState<string | null>(null)
   const replyWrite = useWrite(() => { setReply(null); onWritten() })
   const resolveWrite = useWrite(onWritten)
@@ -217,7 +221,7 @@ function ThreadCard(props: ViewProps & { thread: Thread; avatars: PullAvatarData
         {!resolved && (
           <button className="pr-btn pr-btn--sm pr-send-btn" disabled={!sendTo} title={why}
             onClick={() => sendTo?.({ kind: 'threads', threads: [{ id: thread.id, path: thread.path, line: thread.line }] })}>
-            <Icon name="agent" size={14} />Send to…
+            <Icon name="agent" size={14} />{name ? `Send to ${name}` : 'Send to…'}
           </button>
         )}
       </div>

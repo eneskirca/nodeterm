@@ -63,15 +63,13 @@
 /* Toolbar, file header, diff */
 .pf-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; }
 .pf-toolbar { position: relative; display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--pr-line); }
-.pf-toolbar__compare { display: flex; align-items: center; gap: 6px; color: var(--pr-muted); font-size: 12px; }
-.pf-select {
-  max-width: 260px; height: 26px; padding: 0 6px; border: 1px solid var(--pr-line-strong); border-radius: var(--pr-radius-control);
-  background: var(--pr-raised); color: var(--pr-fg); font: inherit; font-size: 12px;
-}
 .pf-seg { display: inline-flex; padding: 2px; border: 1px solid var(--pr-line-strong); border-radius: 7px; }
 .pf-seg__btn { height: 24px; padding: 0 10px; border: 0; border-radius: 5px; background: transparent; color: var(--pr-muted); font: inherit; font-size: 12px; cursor: pointer; }
 .pf-seg__btn[aria-pressed='true'] { background: var(--pr-raised); color: var(--pr-fg); }
 .pf-seg__btn:focus-visible { outline: 2px solid var(--pr-accent); outline-offset: 1px; }
+.pf-seg__select { max-width: 200px; height: 24px; padding: 0 4px; border: 0; border-radius: 5px; background: transparent; color: var(--pr-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.pf-seg__select--on { background: var(--pr-raised); color: var(--pr-fg); }
+.pf-seg__select:focus-visible { outline: 2px solid var(--pr-accent); outline-offset: 1px; }
 .pf-toolbar__finish { margin-left: auto; }
 .pf-count { padding: 0 6px; border-radius: 999px; background: #ffffff33; font-size: 12px; }
 .pf-head {

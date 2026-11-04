@@ -83,7 +83,7 @@
 .pull-node .pull-merge__dialog { border-color: var(--pr-line-strong); background: var(--pr-surface); color: var(--pr-fg); }
 .pull-node .pr-mbox__dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-/* Agent proposal: a tinted box. Right above the merge card it is the card's top (F1). */
+/* Agent proposal: a tinted box. On the Conversation tab it is the merge card's top section (F1). */
 .pull-node .pull-proposal { margin: 0 0 10px; padding: 0; border: 0; background: none; }
 .pull-node .pr-proposal {
   padding: 10px 12px;
@@ -93,15 +93,7 @@
   color: var(--pr-fg);
   font-size: 13px;
 }
-.pull-node .pull-proposal:has(+ .pr-mbox) {
-  margin: 12px 0 0;
-  padding: 12px 14px 4px;
-  border: 1px solid var(--pr-line);
-  border-bottom: 0;
-  border-radius: var(--pr-radius-card) var(--pr-radius-card) 0 0;
-  background: var(--pr-surface);
-}
-.pull-node .pull-proposal + .pr-mbox { margin-top: 0; border-top: 0; border-radius: 0 0 var(--pr-radius-card) var(--pr-radius-card); }
+.pull-node .pr-mbox > .pull-proposal { margin: 0; padding: 12px 14px 4px; border-bottom: 1px solid var(--pr-line); }
 .pull-node .pr-proposal__head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .pull-node .pr-proposal__icon { color: var(--pr-agent); }
 .pull-node .pr-proposal__what strong { font-weight: 600; }

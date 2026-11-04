@@ -16,6 +16,7 @@ import { ReadinessBar } from './pull/ReadinessBar'
 import { nextStep, openThreadCount, pullReadiness, type PullJump } from './pull/readiness'
 import { AllowContext, usePullRead, type ViewProps } from './pull/shared'
 import { useMergeMethods } from './pull/useMergeMethods'
+import { useMergeMethod, useUpdateBranch } from './pull/mergeActions'
 import { PullJumpContext } from './pull/PullJumpContext'
 import { SendToProvider, type SendToHost } from './pull/SendTo'
 import { PullZoomCard } from './pull/PullZoomCard'
@@ -78,8 +79,8 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
   const ownPull = detailRead !== 'loading' && detailRead.status === 'ok' && detailRead.ownPull === true
   const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
   const checks = usePullChecks(api, readsChecks ? projectId : undefined, pull.pullNumber, detail?.head.sha, props.refreshTick)
-  // One conversation read for the readiness bar and the Conversation tab. ponytail: read even when the
-  // node opens on another tab; the core holds it 30 s, so the Files tab's same read costs no request.
+  // One conversation read for the readiness bar, the Conversation tab and the Files tab's threads.
+  // ponytail: read even when the node opens on another tab.
   const conversation = usePullRead(api.pullConversation, props)
   const openThreads = openThreadCount(conversation)
   // F-10: one read of the comparison to the viewer's last review, for the banner and Files' Compare.
@@ -102,7 +103,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
     <PullProposalBar key={proposal.seq} {...props} proposal={proposal} seen={detail} seenChecks={checks} ownPull={ownPull}
       methods={mergeMethods.methods} onDismiss={() => onDismiss?.()} />
   )
-  // The bar sits right above the merge box, where the user acts. On another tab, or before the
+  // The bar is the merge card's top section, where the user acts. On another tab, or before the
   // detail read landed (no merge box yet), it sits under the tab bar so it is never out of sight.
   // ponytail: a move between the two spots remounts the bar, which restarts its one-second arm delay.
   const barAboveMerge = shownTab === 'conversation' && !!detail
@@ -116,53 +117,60 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
   }, [onTab])
   const firstAgent = props.agents?.[0]
   const readiness = detail && { detail, checks, openThreads, proposal, agent: firstAgent && { title: firstAgent.title, state: agentState } }
-  const allowed = mergeMethods.methods && mergeMethods.methods !== 'loading' && mergeMethods.methods.status === 'ok'
-    ? mergeMethods.methods.methods : undefined
+  const segments = readiness ? pullReadiness(readiness) : []
+  // One picked method and one Update branch for the header and the merge box.
+  const { method, pick: pickMethod } = useMergeMethod(mergeMethods.methods)
+  const update = useUpdateBranch(props, detail)
+  // F-10 "Show only new": the timeline keeps what came after the viewer's last review.
+  const [onlyNew, setOnlyNew] = useState(false)
+  const onlyNewAfter = onlyNew && sinceReview.since?.kind === 'moved' ? sinceReview.since.submittedAt : undefined
+  const conversationCount = conversation !== 'loading' && conversation.status === 'ok' ? conversation.items.length : undefined
   return (
     <AllowContext.Provider value={props.onAllow}>
-    <SendToProvider host={sendToHost} pr={{ repository: pull.repository, number: pull.pullNumber, title: detail?.title ?? '' }}>
-      {zoomedOut && <PullZoomCard pull={pull} detail={detail} segments={readiness ? pullReadiness(readiness) : []} proposal={proposal} />}
-      <div hidden={zoomedOut}>
-    <PullJumpContext.Provider value={jump}>
-      <div ref={top} className="pr-top">
-        <PullHeader pull={pull} detail={detail} onCopy={onCopy}
-          avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined}
-          action={readiness && <NextAction {...props} detail={readiness.detail} onJump={jump} onCopy={onCopy}
-            next={nextStep({ ...readiness, method: allowed?.[0] })} />} />
-        {readiness && <ReadinessBar segments={pullReadiness(readiness)} onJump={jump} />}
-      </div>
-      <PullTabBar shown={shownTab} detail={detail} checks={checks} onTab={onTab}
-        extra={notesApi && <PullNotesButton notes={notes.notes} error={notes.error} onClear={notes.clear} />} />
-      {!barAboveMerge && proposalBar}
-      {opened.includes('conversation') && (
-        <div hidden={shownTab !== 'conversation'}>
-          <PullSinceReviewBanner since={sinceReview.since} onDiff={diffSinceReview} />
-          <PullConversationTab {...props} detailRead={detailRead} conversation={conversation} checks={checks} ownPull={ownPull} pending={pending}
-            onDropPending={dropPending} methods={mergeMethods.methods} onLoadMethods={mergeMethods.load}
-            proposalBar={barAboveMerge ? proposalBar : undefined} agentState={agentState} />
+      <SendToProvider host={sendToHost} agents={props.agents} pr={{ repository: pull.repository, number: pull.pullNumber, title: detail?.title ?? '' }}>
+        {zoomedOut && <PullZoomCard pull={pull} detail={detail} segments={segments} proposal={proposal} />}
+        <div hidden={zoomedOut}>
+          <PullJumpContext.Provider value={jump}>
+            <div ref={top} className="pr-top">
+              <PullHeader pull={pull} detail={detail} onCopy={onCopy}
+                avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined}
+                action={readiness && <NextAction {...props} detail={readiness.detail} onJump={jump} onCopy={onCopy} update={update}
+                  next={nextStep({ ...readiness, method: method ?? undefined })} />} />
+              {readiness && <ReadinessBar segments={segments} onJump={jump} />}
+            </div>
+            <PullTabBar shown={shownTab} detail={detail} checks={checks} conversationCount={conversationCount} onTab={onTab}
+              extra={notesApi && <PullNotesButton notes={notes.notes} error={notes.error} onClear={notes.clear} />} />
+            {!barAboveMerge && proposalBar}
+            {opened.includes('conversation') && (
+              <div hidden={shownTab !== 'conversation'}>
+                <PullSinceReviewBanner since={sinceReview.since} onDiff={diffSinceReview} onlyNew={onlyNew} onOnlyNew={setOnlyNew} />
+                <PullConversationTab {...props} detailRead={detailRead} conversation={conversation} checks={checks} ownPull={ownPull} pending={pending}
+                  onDropPending={dropPending} methods={mergeMethods.methods} onLoadMethods={mergeMethods.load}
+                  method={method} onPickMethod={pickMethod} update={update} onlyNewAfter={onlyNewAfter}
+                  proposalBar={barAboveMerge ? proposalBar : undefined} agentState={agentState} />
+              </div>
+            )}
+            {opened.includes('commits') && (
+              <div hidden={shownTab !== 'commits'}>
+                <PullCommitsTab {...props} />
+              </div>
+            )}
+            {opened.includes('checks') && (
+              <div hidden={shownTab !== 'checks'}>
+                <PullChecksTab {...props} checks={checks} head={detail?.head.sha} />
+              </div>
+            )}
+            {opened.includes('files') && (
+              <div hidden={shownTab !== 'files'}>
+                <PullFilesTab {...props} head={detail?.head.sha} onSelectFile={onSelectFile} highlight={highlight} pending={pending}
+                  onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending} conversation={conversation}
+                  compareExtra={sinceReview.compareExtra} compareTo={compareTo}
+                  onNoteForAgent={notesApi ? notes.add : undefined} notes={notes.notes} onDeleteNote={notesApi ? notes.remove : undefined} />
+              </div>
+            )}
+          </PullJumpContext.Provider>
         </div>
-      )}
-      {opened.includes('commits') && (
-        <div hidden={shownTab !== 'commits'}>
-          <PullCommitsTab {...props} />
-        </div>
-      )}
-      {opened.includes('checks') && (
-        <div hidden={shownTab !== 'checks'}>
-          <PullChecksTab {...props} checks={checks} head={detail?.head.sha} />
-        </div>
-      )}
-      {opened.includes('files') && (
-        <div hidden={shownTab !== 'files'}>
-          <PullFilesTab {...props} head={detail?.head.sha} onSelectFile={onSelectFile} highlight={highlight} pending={pending}
-            onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending}
-            compareExtra={sinceReview.compareExtra} compareTo={compareTo}
-            onNoteForAgent={notesApi ? notes.add : undefined} notes={notes.notes} onDeleteNote={notesApi ? notes.remove : undefined} />
-        </div>
-      )}
-    </PullJumpContext.Provider>
-      </div>
-    </SendToProvider>
+      </SendToProvider>
     </AllowContext.Provider>
   )
 }

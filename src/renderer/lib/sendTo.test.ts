@@ -66,6 +66,8 @@ describe('sendToPrompt', () => {
     expect(all).toContain('all open review threads (2 threads)')
     expect(check).toContain('--log-failed')
     expect(conflict).toContain('merge origin/main in')
+    // The agent checks the branch out itself; it may sit on any other branch.
+    expect(conflict).toContain('First check out the PR\'s head branch yourself (gh pr checkout 7 --repo o/r')
     expect(notes).toContain('rename this')
     expect(suggestion).toContain('review thread 13')
   })

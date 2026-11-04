@@ -25,7 +25,7 @@ type Props = ViewProps & { checks: PullChecksRead; head: string | undefined }
  *  node); a check from another app has a Details link only. It shows the shell's one checks read. */
 export function PullChecksTab(props: Props): React.JSX.Element {
   const { checks, head, pull, api, projectId, onOpenExternal, onOpenWeb, onWritten } = props
-  const { sendTo, why } = useSendTo()
+  const { sendTo, why, name } = useSendTo()
   // undefined = nobody toggled: the first failing Actions run is open, as the mockup shows.
   const [toggled, setToggled] = useState<string | undefined>()
   const [rerun, setRerun] = useState<{ busy?: true; refusal?: PullWriteReason; sent?: number }>({})
@@ -111,7 +111,7 @@ export function PullChecksTab(props: Props): React.JSX.Element {
       {checks && checks !== 'loading' && checks.status === 'ok' && checks.truncated && <p className="pr-checks__note">More checks on GitHub.</p>}
       {failed.length > 0 && (
         <p className="pr-checks__footer">
-          {why ?? 'Fix with agent hands the failing check to an agent and draws a rope to it. Nothing is pushed without your click.'}
+          {why ?? `Fix with ${name ?? 'agent'} hands the failing check to ${name ?? 'an agent'} and draws a rope to it. Nothing is pushed without your click.`}
         </p>
       )}
     </div>
@@ -124,6 +124,7 @@ function CheckLog(props: Props & {
   sendTo: ReturnType<typeof useSendTo>['sendTo']; why: string | undefined
 }): React.JSX.Element {
   const { api, pull, jobId, check, onFullLog, sendTo, why } = props
+  const { name } = useSendTo()
   const read = useCallback(
     (projectId: string, repository: string, pullNumber: number) => api.pullCheckLog(projectId, repository, pullNumber, jobId),
     [api, jobId]
@@ -146,7 +147,7 @@ function CheckLog(props: Props & {
         {check.state === 'failed' && (
           <button className="pr-btn pr-checks__fix" disabled={!sendTo} title={why}
             onClick={() => sendTo?.({ kind: 'check', name: check.name })}>
-            <Icon name="agent" size={14} />Fix with agent
+            <Icon name="agent" size={14} />{`Fix with ${name ?? 'agent'}`}
           </button>
         )}
         <button className="pr-btn" onClick={onFullLog}><Icon name="external" size={14} />Full log</button>

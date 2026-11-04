@@ -22,10 +22,15 @@ export function mergeRows(d: GitHubPullDetail, checks: PullChecksRead | undefine
   const rows: MergeRow[] = []
   const read = checks && checks !== 'loading' ? checks : undefined
   if (read && (read.status === 'ok' || read.status === 'no-checks')) {
-    const link = { label: 'Reviewers', jump: { tab: 'conversation', section: 'details' } } as const
-    if (read.review === 'approved') rows.push({ key: 'review', tone: 'ok', icon: 'check', title: 'Approved', link })
+    // "Request review" lands on the sidebar's Reviewers, whose Edit asks someone.
+    const link = { label: 'Request review', jump: { tab: 'conversation', section: 'details' } } as const
+    const by = (state: 'approved' | 'changes-requested') => {
+      const logins = (d.sidebar?.reviewers ?? []).filter((r) => r.state === state).map((r) => r.user.login)
+      return logins.length ? `by ${logins.join(', ')}` : undefined
+    }
+    if (read.review === 'approved') rows.push({ key: 'review', tone: 'ok', icon: 'check', title: 'Approved', sub: by('approved'), link })
     else if (read.review === 'changes-requested') {
-      rows.push({ key: 'review', tone: 'danger', icon: 'x', title: 'Changes requested', sub: 'A reviewer must approve before it can merge.', link })
+      rows.push({ key: 'review', tone: 'danger', icon: 'x', title: 'Changes requested', sub: by('changes-requested') ?? 'A reviewer must approve before it can merge.', link })
     } else if (read.review === 'required') {
       rows.push({ key: 'review', tone: 'attention', icon: 'eye', title: 'Review required', sub: 'At least one approving review is needed.', link })
     } else rows.push({ key: 'review', tone: 'muted', icon: 'eye', title: 'No review required', link })
@@ -41,7 +46,12 @@ export function mergeRows(d: GitHubPullDetail, checks: PullChecksRead | undefine
   } else if (read?.status === 'no-checks') rows.push({ key: 'checks', tone: 'muted', icon: 'check', title: 'No checks', link: show })
   if (openThreads !== undefined) {
     rows.push(openThreads
-      ? { key: 'threads', tone: 'attention', icon: 'thread', title: `${plural(openThreads, 'conversation')} unresolved`, link: { label: 'Jump', jump: { tab: 'files' } } }
+      ? {
+          key: 'threads', tone: 'attention', icon: 'thread', title: `${plural(openThreads, 'conversation')} unresolved`,
+          // GitHub says it may merge: branch protection does not require resolved conversations.
+          sub: d.merge === 'ready' || d.merge === 'unstable' || d.merge === 'hooks' ? 'merging is still allowed' : undefined,
+          link: { label: 'Jump', jump: { tab: 'files' } }
+        }
       : { key: 'threads', tone: 'ok', icon: 'check', title: 'All conversations resolved' })
   }
   const base = d.base.ref

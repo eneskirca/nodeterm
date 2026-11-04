@@ -56,7 +56,7 @@ const plural = (n: number) => `${n} note${n === 1 ? '' : 's'}`
 export function PullNotesButton({ notes, error, onClear }: {
   notes: readonly PullNote[]; error: boolean; onClear: (ids: readonly string[]) => void
 }): React.JSX.Element | null {
-  const { sendTo, why } = useSendTo()
+  const { sendTo, why, name } = useSendTo()
   const [sent, setSent] = useState<readonly string[] | null>(null)
   if (!notes.length && !sent && !error) return null
   return (
@@ -76,7 +76,7 @@ export function PullNotesButton({ notes, error, onClear }: {
               const ids = notes.map((note) => note.id)
               sendTo?.({ kind: 'notes', notes: notes.map(({ path, line, text }) => ({ path, line, text })) }, () => setSent(ids))
             }}>
-            <Icon name="note" size={14} className="pf-agent" />{`${plural(notes.length)} for agent`}
+            <Icon name="note" size={14} className="pf-agent" />{`${plural(notes.length)} for ${name ?? 'agent'}`}
           </button>
         )}
     </span>

@@ -71,7 +71,9 @@ async function renderFiles(api: ReturnType<typeof fakeApi>, over: Partial<FilesT
   const props: FilesTabProps = {
     api: api as unknown as PullNodeApi, projectId: 'p', pull: { repository: 'o/r', pullNumber: 7, tab: 'files', selectedFile: 'src/a.ts' },
     refreshTick: 0, onOpenExternal: vi.fn(), onWritten: vi.fn(), onSelectFile: vi.fn(), head: HEAD, ownPull: false,
-    pending: [], onAddPending: vi.fn(), onDropPending: vi.fn(), ...over
+    pending: [], onAddPending: vi.fn(), onDropPending: vi.fn(),
+    // The shell's conversation read, which the tab takes from props.
+    conversation: await api.pullConversation(), ...over
   }
   await mount(<PullFilesTab {...props} />)
   return props

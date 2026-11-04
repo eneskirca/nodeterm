@@ -26,8 +26,10 @@ export const shownPullTab = (tab: PullNodeTab): PullNodeTab =>
   PULL_TABS.some((row) => row.tab === tab) ? tab : 'conversation'
 
 /** GitHub's underline tabs with counts (F1), and the PR's size (+/-) on the right. */
-export function PullTabBar({ shown, detail, checks, onTab, extra }: {
+export function PullTabBar({ shown, detail, checks, conversationCount, onTab, extra }: {
   shown: PullNodeTab; detail: GitHubPullDetail | undefined; checks?: PullChecksRead
+  /** Comments and reviews from the shell's conversation read; undefined = not known (no count). */
+  conversationCount?: number
   onTab: (tab: PullNodeTab) => void
   /** Right end of the row, after the size (F-07's "N notes for agent"). */
   extra?: React.ReactNode
@@ -36,12 +38,13 @@ export function PullTabBar({ shown, detail, checks, onTab, extra }: {
     <div className="pull-node__tabs pr-tabs" role="tablist">
       {PULL_TABS.map(({ tab, label, count, failing }) => {
         const failed = detail && failing ? failing(detail, checks) : 0
+        const n = tab === 'conversation' ? conversationCount : count && detail ? count(detail, checks) : undefined
         return (
           <button key={tab} role="tab" aria-selected={tab === shown} className="pull-node__tab pr-tabs__tab" onClick={() => onTab(tab)}>
             {label}
-            {count && detail && count(detail, checks) !== undefined && <> <span
-              className={`pull-node__count${failed ? ' pull-node__count--failed' : ''}`}
-              title={failed ? `${failed} failing` : undefined}>{count(detail, checks)}</span></>}
+            {/* F3: a failing check run turns the count into "N failing", red. */}
+            {n !== undefined && <> <span className={`pull-node__count${failed ? ' pull-node__count--failed' : ''}`}>
+              {failed ? `${failed} failing` : n}</span></>}
           </button>
         )
       })}

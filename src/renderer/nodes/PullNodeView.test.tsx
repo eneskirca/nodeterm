@@ -249,16 +249,16 @@ describe('PullNodeView conversation', () => {
     expect(view.querySelector('[role="status"]')?.textContent?.toLowerCase()).toContain('approve')
   })
 
-  it('names the tabs Conversation, Checks N and Files changed N, where N is the check run and changed file count', async () => {
+  it('names the tabs Conversation N, Checks N and Files changed N: comments and reviews, check runs, changed files', async () => {
     const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'files')
     const tabs = [...view.querySelectorAll('[role="tab"]')]
-    expect(tabs.map((el) => el.textContent)).toEqual(['Conversation', 'Commits', 'Checks 1', 'Files changed 3'])
+    expect(tabs.map((el) => el.textContent)).toEqual(['Conversation 0', 'Commits', 'Checks 1', 'Files changed 3'])
     expect(tabs.map((el) => el.getAttribute('aria-selected'))).toEqual(['false', 'false', 'false', 'true'])
   })
 
   it.each([
-    ['overview', 'Conversation'],
-    ['conversation', 'Conversation'],
+    ['overview', 'Conversation 0'],
+    ['conversation', 'Conversation 0'],
     ['checks', 'Checks 1'],
     ['files', 'Files changed 3']
   ])('opens a node saved with tab %s on %s', async (saved, label) => {
@@ -294,8 +294,8 @@ describe('PullNodeView tab switching', () => {
     await show('files')
     expect(api.pullDetail).toHaveBeenCalledTimes(1)
     expect(api.pullFiles).toHaveBeenCalledTimes(1)
-    // One conversation read per tab (Files reads its line comments); none again on a switch back.
-    expect(api.pullConversation).toHaveBeenCalledTimes(2)
+    // One conversation read for the whole node (Files takes its line comments from it); none again on a switch back.
+    expect(api.pullConversation).toHaveBeenCalledTimes(1)
     expect(host.querySelector('.pull-node__conversation')?.closest('[hidden]')).not.toBeNull()
   })
 })
@@ -1152,9 +1152,10 @@ describe('PullNodeView agent proposal', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1)
   })
 
-  it('sits right above the merge box on the Conversation tab, and under the tab bar on another tab', async () => {
+  it('is the merge card\'s top section on the Conversation tab, and sits under the tab bar on another tab', async () => {
     await renderProposal({ action: 'approve', message: 'LGTM' })
-    expect(bar()?.nextElementSibling?.classList.contains('pull-mergebox')).toBe(true)
+    expect(bar()?.parentElement?.classList.contains('pull-mergebox')).toBe(true)
+    expect(bar()?.previousElementSibling).toBeNull()
     act(() => root.unmount()); host.remove()
     await renderProposal({ action: 'approve', message: 'LGTM' }, undefined, 'files')
     expect(bar()?.closest('.pull-node__conversation')).toBeNull()
@@ -1328,7 +1329,7 @@ describe('PullNodeView Send to agent', () => {
     expect(boxes.map((box) => box.checked)).toEqual([true, false, true])
     expect(view.textContent).not.toContain('body 3')
     await act(async () => { boxes[2].click() })
-    await act(async () => { button(view, 'Send to…').click() })
+    await act(async () => { button(view, 'Send to Fixer').click() })
     await pick(view, 'Fixer')
     expect(send).toHaveBeenCalledTimes(1)
     const [target, pr, payload] = send.mock.calls[0]
@@ -1337,7 +1338,7 @@ describe('PullNodeView Send to agent', () => {
     expect(payload).toEqual({ kind: 'threads', threads: [{ id: 1, path: 'src/a.ts', line: 1 }], checks: [] })
     expect(view.textContent).toContain('Sent to Fixer.')
     // Sent: every item is unticked, so Send cannot repeat it.
-    expect((button(view, 'Send to…') as HTMLButtonElement).disabled).toBe(true)
+    expect((button(view, 'Send to Fixer') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('with several agents, the user picks one in the picker', async () => {
@@ -1355,7 +1356,7 @@ describe('PullNodeView Send to agent', () => {
     act(() => root.unmount()); host.remove()
     const refused = await renderSend([{ id: 'a1', title: 'Fixer' }], vi.fn(async (): Promise<string | null> => 'Fixer cannot take a message right now.'))
     await act(async () => { button(refused.view, 'Send review').click() })
-    await act(async () => { button(refused.view, 'Send to…').click() })
+    await act(async () => { button(refused.view, 'Send to Fixer').click() })
     await pick(refused.view, 'Fixer')
     expect(refused.view.querySelector('[role="alert"]')?.textContent).toContain('cannot take a message')
   })
@@ -1551,5 +1552,137 @@ describe('PullNodeView notes for agents (F-07)', () => {
   it('without a notes store the tab row has no notes button', async () => {
     const { view } = await renderNotes()
     expect(view.textContent).not.toContain('for agent')
+  })
+})
+
+describe('PullNodeView shared header and merge box actions', () => {
+  const claude = { id: 'a1', title: 'claude #2', agentId: 'claude' }
+  async function mount(over: {
+    detail?: Partial<GitHubPullDetail>; agents?: { id: string; title: string; agentId?: string }[]
+    timeline?: GitHubPullTimelineResult; onWork?: () => void; onWritten?: () => void
+  } = {}) {
+    const agents = over.agents ?? [claude]
+    const api = fakeApi({ status: 'ok', detail: { ...detail, ...over.detail }, observedAt: 1 }, undefined, undefined, over.timeline)
+    const send = vi.fn(async (_id: string, _pr: unknown, _payload: unknown): Promise<string | null> => null)
+    const sendToHost = {
+      pullId: 'pull', status: () => ({ state: 'done' as const }),
+      nodes: () => [{ id: 'pull', type: 'pull', data: {} }, ...agents.map((a) => ({ id: a.id, type: 'terminal', data: { title: a.title, agentId: a.agentId ?? 'claude' } }))],
+      edges: () => agents.map((a) => ({ source: 'pull', target: a.id })),
+      send
+    }
+    const onWork = vi.fn(over.onWork)
+    const onWritten = over.onWritten ?? vi.fn()
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()} onWork={onWork}
+        agents={agents} sendToHost={sendToHost} />)
+    })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    return { view: host, api, send, onWork, onWritten }
+  }
+  const lead = () => host.querySelector<HTMLButtonElement>('[data-next]')!
+  const menuItem = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.startsWith(label))!
+  const moreActions = () => act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!.click() })
+  const pickAgent = async () => {
+    await act(async () => { (host.querySelector('[role="option"]') as HTMLElement).click() })
+  }
+  const mergeRow = () => host.querySelector<HTMLElement>('.pull-mergebox [data-row="merge"]')!
+
+  it('the header lead button shows and follows the method picked in the merge box', async () => {
+    await mount()
+    expect(lead().textContent).toBe('Squash and merge')
+    await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Choose merge method"]')!.click() })
+    const rebase = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((b) => b.textContent?.startsWith('Rebase'))!
+    await act(async () => { rebase.click() })
+    expect(lead().textContent).toBe('Rebase and merge')
+    expect(host.querySelector('.pr-split__main')?.textContent).toBe('Rebase and merge')
+  })
+
+  it('both conflict buttons offer the same two ways out: Send to… with a checkout prompt, or Work on this PR', async () => {
+    const { send, onWork } = await mount({ detail: { merge: 'conflict' } })
+    expect([...mergeRow().querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Resolve with Claude', 'Resolve myself'])
+    await act(async () => { lead().click() })
+    expect([...host.querySelectorAll('[aria-label="Resolve conflicts"] [role="menuitem"]')].map((b) => b.textContent))
+      .toEqual(['Resolve with Claude', 'Resolve myself'])
+    await act(async () => { menuItem('Resolve with Claude').click() })
+    expect(host.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('Send the conflict to')
+    await pickAgent()
+    expect(send.mock.calls[0]?.[2]).toEqual({ kind: 'conflict', base: 'main' })
+    await act(async () => { lead().click() })
+    await act(async () => { menuItem('Resolve myself').click() })
+    await act(async () => { [...mergeRow().querySelectorAll('button')].find((b) => b.textContent === 'Resolve myself')!.click() })
+    // Work on this PR, never the old merge-the-base variant.
+    expect(onWork.mock.calls).toEqual([[expect.objectContaining({ merge: 'conflict' })], [expect.objectContaining({ merge: 'conflict' })]])
+  })
+
+  it('More actions → Update branch runs the merge box\'s update: "GitHub is updating", then a head-moved reload', async () => {
+    const first = await mount()
+    await moreActions()
+    await act(async () => { menuItem('Update branch').click() })
+    expect(first.api.updatePullBranch).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, headSha: 'c'.repeat(40) })
+    expect(host.querySelector('.pull-mergebox')?.textContent).toContain('GitHub is updating the branch')
+    await moreActions()
+    expect(menuItem('Update branch').disabled).toBe(true)
+    act(() => root.unmount()); host.remove()
+
+    const onWritten = vi.fn()
+    const moved = await mount({ onWritten })
+    moved.api.updatePullBranch.mockResolvedValue({ ok: false, reason: 'head-moved' })
+    await moreActions()
+    await act(async () => { menuItem('Update branch').click() })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('.pull-mergebox [role="alert"]')?.textContent).toContain('the branch was not updated')
+  })
+
+  it('Send PR to… in More actions and in the sidebar sends the whole pull request', async () => {
+    const { send } = await mount()
+    await moreActions()
+    await act(async () => { menuItem('Send PR to Claude').click() })
+    await pickAgent()
+    expect(send.mock.calls[0]?.[2]).toEqual({ kind: 'pr' })
+    const side = [...host.querySelectorAll<HTMLButtonElement>('.pr-sidebar button')].find((b) => b.textContent === 'Send PR to Claude')!
+    await act(async () => { side.click() })
+    await pickAgent()
+    expect(send.mock.calls[1]?.[2]).toEqual({ kind: 'pr' })
+  })
+
+  it('names the one linked agent on its buttons and says its status in the same words everywhere; two agents keep the generic labels', async () => {
+    await mount()
+    expect(host.querySelector('[data-segment="agent"]')?.textContent).toBe('claude #2 idle')
+    expect(host.querySelector('.pr-side__status')?.textContent).toBe('idle')
+    expect(host.textContent).toContain('Send PR to Claude')
+    act(() => root.unmount()); host.remove()
+    await mount({ agents: [claude, { id: 'a2', title: 'codex', agentId: 'codex' }], detail: { merge: 'conflict' } })
+    expect(host.textContent).toContain('Send PR to…')
+    expect([...mergeRow().querySelectorAll('button')].map((b) => b.textContent)).toEqual(['Resolve with agent', 'Resolve myself'])
+  })
+
+  it('"Show only new" on the since-review banner keeps only the timeline entries after the review', async () => {
+    const at = (day: number) => `2026-10-0${day}T10:00:00Z`
+    const timeline: GitHubPullTimelineResult = {
+      status: 'ok', openedAt: at(1), observedAt: 1, items: [
+        { id: 'old', actor: null, at: at(2), kind: 'closed' }, { id: 'new', actor: null, at: at(4), kind: 'reopened' }
+      ]
+    }
+    const { api } = await mount({ timeline })
+    vi.mocked(api.pullSinceReview).mockResolvedValue({
+      status: 'ok', observedAt: 1,
+      since: { kind: 'moved', head: 'c'.repeat(40), commits: 1, files: [], truncated: false, submittedAt: at(3), commitOid: 'e'.repeat(40) }
+    })
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
+        refreshTick={1} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()} />)
+    })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    const toggle = [...host.querySelectorAll<HTMLButtonElement>('.pr-since button')].find((b) => b.textContent === 'Show only new')!
+    expect(toggle.getAttribute('aria-pressed')).toBe('false')
+    expect(host.textContent).toContain('closed this')
+    await act(async () => { toggle.click() })
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    expect(host.textContent).not.toContain('closed this')
+    expect(host.textContent).toContain('reopened this')
   })
 })

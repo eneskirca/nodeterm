@@ -44,6 +44,12 @@ export function openThreadCount(conversation: Read<GitHubPullConversationResult>
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
 
+const AGENT_TEXT: Record<AgentState, string> = { working: 'working', waiting: 'waiting', blocked: 'blocked', done: 'idle' }
+
+/** The linked agent's status in words, everywhere it shows (readiness bar, zoom card, sidebar).
+ *  No state yet reads idle. */
+export const agentStatusText = (state: AgentState | undefined): string => AGENT_TEXT[state ?? 'done']
+
 const PROPOSAL_VERB: Record<PullProposal['action'], string> = {
   approve: 'approve', 'request-changes': 'request changes', comment: 'comment', merge: 'merge'
 }
@@ -88,7 +94,7 @@ export function pullReadiness({ detail: d, checks, openThreads, agent, proposal 
       jump: { tab: 'conversation', section: 'merge' }
     })
   } else if (agent) {
-    segments.push({ key: 'agent', label: `${agent.title} ${agent.state ?? 'idle'}`, tone: 'agent', jump: { tab: 'conversation', section: 'agent' } })
+    segments.push({ key: 'agent', label: `${agent.title} ${agentStatusText(agent.state)}`, tone: 'agent', jump: { tab: 'conversation', section: 'agent' } })
   }
   return segments
 }

@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
-import type { GitHubPullConversationResult, GitHubPullDetailResult, PullLineDraft } from '@shared/github-pull-detail'
+import type { GitHubPullConversationResult, GitHubPullDetailResult, PullLineDraft, PullMergeMethod } from '@shared/github-pull-detail'
 import type { AgentState } from '@shared/agents/normalize'
 import type { PullChecksRead } from '../../lib/pullMergeBlock'
 import { Icon } from './Icon'
+import type { UpdateBranch } from './mergeActions'
 import { PullComposer } from './PullComposer'
 import { PullMergeBox } from './PullMergeBox'
 import { PullSidebar } from './PullSidebar'
 import { PullTimeline } from './PullTimeline'
-import { readState, STALE_TEXT, type Read, type ViewProps } from './shared'
+import { readState, STALE_TEXT, usePullRead, type Read, type ViewProps } from './shared'
 import type { MergeMethodsRead } from './useMergeMethods'
 
 /** Below this width (the tab's own, unscaled by canvas zoom) the sidebar folds into one Details row. */
@@ -26,20 +27,25 @@ function useNarrow(element: HTMLElement | null, px: number): boolean {
   return narrow
 }
 
-/** The Conversation tab (F1): the timeline (the description first), the agent proposal bar, the
- *  merge box and the comment box in the left column; the 232 px sidebar on the right, folded into
+/** The Conversation tab (F1): the timeline (the description first), the merge box (the agent
+ *  proposal as its top section) and the comment box in the left column; the 232 px sidebar on the right, folded into
  *  one Details row when the tab is narrow. The node's detail, conversation and checks reads come
  *  from the shell, so the header, the proposal bar and this tab show one head. */
 export function PullConversationTab(props: ViewProps & {
   detailRead: Read<GitHubPullDetailResult>; conversation: Read<GitHubPullConversationResult>; checks: PullChecksRead; ownPull: boolean
   pending: readonly PullLineDraft[]; onDropPending: (sent: readonly PullLineDraft[]) => void
   methods: MergeMethodsRead; onLoadMethods: () => void
-  /** The shell's agent proposal bar, shown right above the merge box. */
+  method: PullMergeMethod | null; onPickMethod: (method: PullMergeMethod) => void; update: UpdateBranch
+  /** The shell's agent proposal bar, drawn as the merge card's top section. */
   proposalBar?: React.ReactNode
   /** The first linked agent's live state, for the sidebar's Agent section. */
   agentState?: AgentState
+  /** "Show only new": the timeline keeps only entries after this ISO time. */
+  onlyNewAfter?: string
 }): React.JSX.Element {
   const { pull, detailRead, conversation, checks } = props
+  // One read of the timeline's first page: the timeline, and who merged or closed it for the merge box.
+  const timeline = usePullRead(props.api.pullTimeline, props)
   const [root, setRoot] = useState<HTMLDivElement | null>(null)
   const narrow = useNarrow(root, CONVERSATION_FOLD_PX)
   const [details, setDetails] = useState(false)
@@ -69,9 +75,8 @@ export function PullConversationTab(props: ViewProps & {
           </div>
         )}
         <PullTimeline {...props} detail={d} lineComments={convo?.lineComments ?? []} resolvedThreads={convo?.resolvedThreads}
-          detailAvatars={{ ...detailRead.avatarDataUrls, ...convo?.avatarDataUrls }} />
-        {props.proposalBar}
-        <PullMergeBox {...props} detail={d} checks={checks} />
+          detailAvatars={{ ...detailRead.avatarDataUrls, ...convo?.avatarDataUrls }} first={timeline} after={props.onlyNewAfter} />
+        <PullMergeBox {...props} detail={d} checks={checks} top={props.proposalBar} timeline={timeline} />
         <PullComposer {...props} headSha={d.head.sha} lifecycle={d.lifecycle} />
       </div>
       {!narrow && sidebar}

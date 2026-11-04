@@ -37,9 +37,11 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const pull = data.pull
   const proposal = usePullAgent((s) => s.proposal[id])
   const highlight = usePullAgent((s) => s.highlight[id])
-  // The agents joined to this node, as a string so a drag elsewhere on the canvas re-renders nothing.
-  const agentsKey = useStore((s) => JSON.stringify(linkedAgents(s.edges, s.nodes, id)))
-  const agents = useMemo(() => JSON.parse(agentsKey) as LinkedAgent[], [agentsKey])
+  // The agents joined to this node, with their agent id (it names the buttons when only one is
+  // linked), as a string so a drag elsewhere on the canvas re-renders nothing.
+  const agentsKey = useStore((s) => JSON.stringify(linkedAgents(s.edges, s.nodes, id)
+    .map((agent) => ({ ...agent, agentId: s.nodes.find((n) => n.id === agent.id)?.data.agentId }))))
+  const agents = useMemo(() => JSON.parse(agentsKey) as (LinkedAgent & { agentId?: string })[], [agentsKey])
   const relay = source === 'relay'
   // Under 50% zoom the body is the status card (F-09). A boolean, so a zoom gesture re-renders only on the flip.
   const zoomedOut = useStore((s) => isCardZoom(s.transform[2]))

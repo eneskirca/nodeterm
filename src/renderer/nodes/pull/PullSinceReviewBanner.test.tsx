@@ -64,7 +64,9 @@ async function render(api: PullNodeApi): Promise<void> {
   await settle()
 }
 const banner = () => host.querySelector('.pr-since')
-const options = () => [...host.querySelectorAll('.pf-toolbar select option')].map((o) => o.textContent)
+const options = () => [...host.querySelectorAll('.pf-compare > button')].map((o) => o.textContent)
+/** The pressed Compare segment. */
+const compared = () => host.querySelector('.pf-compare [aria-pressed="true"]')?.textContent
 
 describe('Since my last review', () => {
   it('shows the new commits above the timeline; Diff since review opens Files changed on that comparison', async () => {
@@ -75,7 +77,7 @@ describe('Since my last review', () => {
     const diff = [...banner()!.querySelectorAll('button')].find((b) => b.textContent === 'Diff since review')!
     await act(async () => { diff.click() })
     await settle()
-    expect(host.querySelector<HTMLSelectElement>('.pf-toolbar select')?.value).toBe('since-review')
+    expect(compared()).toBe('Since my last review (1 file)')
     expect(options()).toEqual(['All changes', 'Since my last review (1 file)'])
     expect([...host.querySelectorAll('.pf-file')].map((row) => row.getAttribute('title'))).toEqual(['src/new-since.ts'])
     expect(api.pullSinceReviewFileContents).toHaveBeenCalledWith('p', 'o/r', 7, 'src/new-since.ts')
@@ -87,11 +89,11 @@ describe('Since my last review', () => {
     const tab = (name: string) => [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((t) => t.textContent?.startsWith(name))!
     await act(async () => { tab('Files changed').click() })
     await settle()
-    expect(host.querySelector<HTMLSelectElement>('.pf-toolbar select')?.value).toBe('all')
+    expect(compared()).toBe('All changes')
     await act(async () => { tab('Conversation').click() })
     await act(async () => { [...banner()!.querySelectorAll('button')].find((b) => b.textContent === 'Diff since review')!.click() })
     await settle()
-    expect(host.querySelector<HTMLSelectElement>('.pf-toolbar select')?.value).toBe('since-review')
+    expect(compared()).toBe('Since my last review (1 file)')
   })
 
   it.each<[string, PullSinceReview]>([
