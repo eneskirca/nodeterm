@@ -34,7 +34,7 @@ class Client implements GitHubIssuesClientLike {
   async listRepositoryLabels(): Promise<never> { throw new Error('unused') }
   async createLabel(): Promise<never> { throw new Error('unused') }
   async createIssue(): Promise<never> { throw new Error('unused') }
-  async createIssueComment(): Promise<never> { throw new Error('unused') }
+  async createIssueComment(): Promise<never> { return undefined as never }
   async listPullCommits(_r: string, _n: number, after?: string): Promise<PullCommitsPage> {
     this.reads.push(`commits ${after ?? 'first'}`); return this.commitPages(after)
   }
@@ -106,6 +106,14 @@ describe('GitHubIssueService.pullCommits', () => {
     advance(31_000)
     client.commitPages = async () => { throw new GitHubClientError('rate-limited', 403, 2_000_000) }
     expect(await service.pullCommits(request)).toMatchObject({ status: 'ok', stale: 'throttled', commits: [{ headline: 'c1' }, { headline: 'c2' }, { headline: 'c3' }] })
+  })
+
+  it('reads the commits again after a comment lands', async () => {
+    const { client, service } = harness()
+    await service.pullCommits(request)
+    expect(await service.commentOnPull({ ...request, body: 'hi' })).toEqual({ ok: true })
+    await service.pullCommits(request)
+    expect(client.reads).toEqual(['commits first', 'commits first'])
   })
 })
 

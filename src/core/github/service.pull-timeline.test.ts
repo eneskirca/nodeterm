@@ -26,7 +26,7 @@ class Client implements GitHubIssuesClientLike {
   async listRepositoryLabels(): Promise<never> { throw new Error('unused') }
   async createLabel(): Promise<never> { throw new Error('unused') }
   async createIssue(): Promise<never> { throw new Error('unused') }
-  async createIssueComment(): Promise<never> { throw new Error('unused') }
+  async createIssueComment(): Promise<never> { return undefined as never }
   async pullTimeline(_r: string, _n: number, after?: string): Promise<PullTimelinePage> {
     this.reads.push(after); return this.timeline(after)
   }
@@ -122,5 +122,15 @@ describe('GitHubIssueService.pullTimeline', () => {
     service.forgetPull('o/r', 7)
     await service.pullTimeline(request)
     expect(client.reads).toEqual([undefined, undefined])
+  })
+
+  it('reads every held page again after a comment lands, not only the first', async () => {
+    const { client, service } = harness()
+    await service.pullTimeline(request)
+    await service.pullTimeline({ ...request, after: 'Y3Vyc29y' })
+    expect(await service.commentOnPull({ ...request, body: 'hi' })).toEqual({ ok: true })
+    await service.pullTimeline(request)
+    await service.pullTimeline({ ...request, after: 'Y3Vyc29y' })
+    expect(client.reads).toEqual([undefined, 'Y3Vyc29y', undefined, 'Y3Vyc29y'])
   })
 })

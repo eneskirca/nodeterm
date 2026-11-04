@@ -1184,7 +1184,6 @@ export class GitHubIssueService {
   /**
    * One page of a PR's Conversation timeline, oldest first; `after` = the page's cursor (absent = the
    * first page). Each page is held apart under the same refusals, floor and stale rules as `pullDetail`.
-   * ponytail: a write drops only the first page's held read; a later page refreshes after the floor.
    */
   async pullTimeline(
     request: { projectId: string; repository: string; pullNumber: number; after?: string }
@@ -1860,7 +1859,14 @@ export class GitHubIssueService {
   }
 
   private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
-    for (const kind of ['detail', 'conversation', 'files', 'issue-conversation', 'timeline', 'issue-timeline']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
+    const kinds = new Set(['detail', 'conversation', 'files', 'commits', 'issue-conversation', 'timeline', 'issue-timeline'])
+    const suffix = `\0${projectId}\0${repository}\0${pullNumber}`
+    for (const key of [...this.pullReads.keys()]) {
+      if (!key.endsWith(suffix)) continue
+      const kind = key.slice(0, -suffix.length)
+      // A timeline's later pages are held by cursor (`timeline\0<cursor>`): every one is dropped.
+      if (kinds.has(kind) || kind.startsWith('timeline\0') || kind.startsWith('issue-timeline\0')) this.pullReads.delete(key)
+    }
   }
 
   /**
