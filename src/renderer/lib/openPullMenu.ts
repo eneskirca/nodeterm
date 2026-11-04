@@ -22,9 +22,11 @@ export function openPullSection(
   const repository = view?.project?.repository
   if (!view) return { ...base, reason: FAILURE_TEXT.unreachable }
   if (!repository) return { ...base, reason: NO_GITHUB_REMOTE_TEXT }
+  // Approval first: the host does not resolve sign-in for an unapproved repository (host.ts
+  // reports activeProvider null), so checking sign-in first said "not signed in" to a signed-in user.
+  if (!view.project?.approved) return { ...base, reason: notAllowedText(repository) }
   // A sign-in that could not be CHECKED is not "signed out": the memory below may still answer.
   if (!view.auth.activeProvider && !view.auth.unreachable) return { ...base, reason: REFUSAL_TEXT['signed-out'](repository) }
-  if (!view.project?.approved) return { ...base, reason: notAllowedText(repository) }
   if (!board) return { ...base, reason: FAILURE_TEXT.unreachable }
   const rows = board.pulls
     .filter((pull) => pull.lifecycle === 'open' || pull.lifecycle === 'draft')

@@ -53,6 +53,10 @@ describe('openPullSection', () => {
     expect(openPullSection(view(), undefined)).toEqual({ reason: FAILURE_TEXT.unreachable })
   })
 
+  it('an unapproved repository says "allow", not "signed out" (the host skips the sign-in read then)', () => {
+    expect(openPullSection(view({ approved: false, signedIn: false }), undefined)).toEqual({ reason: notAllowedText('o/r') })
+  })
+
   it('a sign-in that could not be checked still lists what memory holds', () => {
     const section = openPullSection(view({ signedIn: false, unreachable: true }), board([pull(1)]))
     expect('rows' in section && section.rows.map((r) => r.number)).toEqual([1])
