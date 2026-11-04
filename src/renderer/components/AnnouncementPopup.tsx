@@ -18,6 +18,21 @@ import { openDialogCount, useDialogStack } from './dialog-stack'
 const SIX_HOURS = 6 * 60 * 60 * 1000
 const RETRY_MS = 1000
 
+/** A popup ready to show: its picture, if it has one, is in hand. */
+type ReadyPopup = PopupAnnouncement & { imageUrl?: string }
+
+/**
+ * `pickPopup`, with the picture fetched. A popup shows only once and was written around its picture,
+ * so it never goes up without it: it is passed over, unrecorded, for the next read to try again, and
+ * the next one in the feed takes its turn rather than waiting behind it.
+ */
+async function readyPopup(items: PopupAnnouncement[], isPremium: boolean): Promise<ReadyPopup | null> {
+  const next = pickPopup(items, loadSeenPopups(), isPremium)
+  if (!next?.image) return next
+  const imageUrl = await window.nodeTerminal.announcements.popupImage(next.image)
+  return imageUrl ? { ...next, imageUrl } : readyPopup(items.filter((p) => p !== next), isPremium)
+}
+
 /**
  * A one-time popup from the check feed (lib/announcementPopup.ts): the admin console's "popup
  * (once)" messages, aimed like banners (plan, OS, channel, version). Mounted once, in Canvas.
@@ -36,8 +51,8 @@ export function AnnouncementPopup({ blocked }: { blocked: boolean }): React.JSX.
   const licenseKnown = useEntitlement((s) => s.known)
   const settingsKnown = useSettings((s) => s.hydrated)
   const upgradeOpen = useUpgradeGate((s) => s.open)
-  const [pending, setPending] = useState<PopupAnnouncement | null>(null)
-  const [shown, setShown] = useState<PopupAnnouncement | null>(null)
+  const [pending, setPending] = useState<ReadyPopup | null>(null)
+  const [shown, setShown] = useState<ReadyPopup | null>(null)
   const lastKeyAt = useRef(0)
   // Only the latest read may set `pending`: a slow read for the plan this install just left must
   // not land after the one for the plan it is on now.
@@ -47,14 +62,16 @@ export function AnnouncementPopup({ blocked }: { blocked: boolean }): React.JSX.
 
   const read = useCallback(async (): Promise<void> => {
     const seq = ++readSeq.current
-    let items: PopupAnnouncement[]
+    let next: ReadyPopup | null
     try {
-      items = await window.nodeTerminal.announcements.popups()
+      const items = await window.nodeTerminal.announcements.popups()
+      if (seq !== readSeq.current) return
+      next = await readyPopup(items, premiumRef.current)
     } catch {
       return
     }
     if (seq !== readSeq.current) return
-    setPending(pickPopup(items, loadSeenPopups(), premiumRef.current))
+    setPending(next)
   }, [])
 
   // Main asks the feed with the current plan, so a plan change re-asks — and drops what is waiting
@@ -119,7 +136,7 @@ export function AnnouncementPopup({ blocked }: { blocked: boolean }): React.JSX.
   return <PopupDialog key={shown.id} popup={shown} onClose={close} />
 }
 
-function PopupDialog({ popup, onClose }: { popup: PopupAnnouncement; onClose(): void }): React.JSX.Element {
+function PopupDialog({ popup, onClose }: { popup: ReadyPopup; onClose(): void }): React.JSX.Element {
   const isTop = useDialogStack()
   const boxRef = useRef<HTMLDivElement>(null)
   const shownAtRef = useRef(Date.now())
@@ -177,6 +194,7 @@ function PopupDialog({ popup, onClose }: { popup: PopupAnnouncement; onClose(): 
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
+        {popup.imageUrl && <img className="announce-popup__image" src={popup.imageUrl} alt="" />}
         <h2 className="announce-popup__title" id={titleId}>
           {popup.title}
         </h2>

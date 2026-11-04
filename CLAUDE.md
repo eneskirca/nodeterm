@@ -10910,7 +10910,13 @@ tour, Settings, palette, dictation, …), and no key was pressed for 4 s. It the
 — and takes Escape in the CAPTURE phase: xterm stops propagation of Escape, so a bubble listener
 never hears it and the agent in the pane gets an ESC that interrupts its turn. Its button opens
 `url`, or with `action: 'upgrade'` starts the Pro checkout — an upgrade popup is skipped for a Pro
-user, dropped the moment the plan flips, and closes when Pro arrives. Server Edition: the bridge answers `[]` (it does not read the feed). Mobile:
+user, dropped the moment the plan flips, and closes when Pro arrives. A popup may carry a picture
+(`image`, a SHA-256): `fetchPopupImage` in `core/check.ts` gets it from `API_BASE` by that hash, so
+the feed can name no URL, checks the hash and the magic bytes, caps the size while reading, and hands
+the renderer a `data:` URL because the CSP's `img-src` takes no network source. It is fetched as part
+of the feed read, and a popup whose picture cannot be had waits for the next read, unrecorded: it
+shows only once, and it was written around that picture. Never add HTML to these messages: a
+picture carries a design with no code in it. Server Edition: the bridge answers `[]` (it does not read the feed). Mobile:
 N/A for v1 (follow-up in the iOS repo). The call no-ops under
 `DO_NOT_TRACK`/`NODETERM_TELEMETRY_DISABLED` or in unpackaged builds (unless `NODETERM_API_BASE`
 targets a local server). Schema example:

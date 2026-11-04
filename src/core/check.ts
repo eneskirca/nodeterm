@@ -12,6 +12,7 @@
 // only while it is); that answer reaches core through `onCheckAnswer`, not through CheckResult.
 // Nothing personal is sent and the client IP is never stored server-side; a hard opt-out is still
 // DO_NOT_TRACK / NODETERM_TELEMETRY_DISABLED.
+import { createHash } from 'node:crypto'
 import { platform } from './platform'
 import { getDeviceId } from './device-id'
 import { isPremium } from './license'
@@ -62,6 +63,7 @@ function sanitize(data: unknown): CheckResult {
     if (label) p.ctaLabel = label.slice(0, CTA_LABEL_MAX)
     // A closed set: an action this build does not know is no action, never a guess at one.
     if (m.action === 'upgrade') p.action = 'upgrade'
+    if (typeof m.image === 'string' && IMAGE_HASH.test(m.image)) p.image = m.image
     return p
   })
   const u = (d.update ?? {}) as Record<string, unknown>
@@ -80,6 +82,10 @@ function sanitize(data: unknown): CheckResult {
 
 const NOTES_MAX = 16 * 1024
 const CTA_LABEL_MAX = 40
+const IMAGE_HASH = /^[0-9a-f]{64}$/
+/** The largest popup picture this build takes; the admin console refuses more on upload. */
+const IMAGE_MAX_BYTES = 2 * 1024 * 1024
+const IMAGE_TIMEOUT_MS = 20_000
 
 /** Test seam: the sanitizer is the whole contract with the feed's shape. */
 export const sanitizeCheckForTest = sanitize
@@ -237,5 +243,60 @@ export async function fetchCheck(): Promise<CheckResult> {
     return data
   } catch {
     return fallback()
+  }
+}
+
+/** The type the bytes say. A closed set, so nothing else can reach a `data:` URL. */
+function imageMime(b: Uint8Array): string | null {
+  const starts = (at: number, sig: number[]): boolean => sig.every((x, i) => b[at + i] === x)
+  if (starts(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png'
+  if (starts(0, [0xff, 0xd8, 0xff])) return 'image/jpeg'
+  if (starts(0, [0x52, 0x49, 0x46, 0x46]) && starts(8, [0x57, 0x45, 0x42, 0x50])) return 'image/webp'
+  return null
+}
+
+/** The body up to `max` bytes, or null past it. Read in chunks: `content-length` is only a claim. */
+async function readCapped(body: ReadableStream<Uint8Array>, max: number): Promise<Buffer | null> {
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return Buffer.concat(chunks)
+    size += value.length
+    if (size > max) {
+      await reader.cancel()
+      return null
+    }
+    chunks.push(value)
+  }
+}
+
+let lastImage: { sha256: string; url: string } | null = null
+
+/**
+ * A popup's picture as a `data:` URL (the renderer CSP's `img-src` takes no network source), or null
+ * when it cannot be had. The feed only ever names a hash, never a URL, so it cannot point this at
+ * another host; the bytes must match that hash and be an image. No install id goes with it.
+ * The latest is kept: a popup waiting its turn asks again every few minutes.
+ */
+export async function fetchPopupImage(sha256: string): Promise<string | null> {
+  if (!IMAGE_HASH.test(sha256) || !allowed()) return null
+  if (lastImage?.sha256 === sha256) return lastImage.url
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), IMAGE_TIMEOUT_MS)
+  try {
+    const res = await fetch(`${API_BASE}/v1/message-image/${sha256}`, { signal: ctrl.signal, redirect: 'error' })
+    if (!res.ok || !res.body) return null
+    const bytes = await readCapped(res.body, IMAGE_MAX_BYTES)
+    if (!bytes || createHash('sha256').update(bytes).digest('hex') !== sha256) return null
+    const mime = imageMime(bytes)
+    if (!mime) return null
+    lastImage = { sha256, url: `data:${mime};base64,${bytes.toString('base64')}` }
+    return lastImage.url
+  } catch {
+    return null
+  } finally {
+    clearTimeout(t)
   }
 }

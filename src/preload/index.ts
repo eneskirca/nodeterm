@@ -566,7 +566,8 @@ const api: NodeTerminalApi = {
   },
   announcements: {
     fetch: () => ipcRenderer.invoke(IPC.announcementsFetch),
-    popups: () => ipcRenderer.invoke(IPC.announcementsPopups)
+    popups: () => ipcRenderer.invoke(IPC.announcementsPopups),
+    popupImage: (sha256: string) => ipcRenderer.invoke(IPC.announcementsPopupImage, sha256)
   },
   usage: {
     fetch: (accountId?: string) => ipcRenderer.invoke(IPC.usageFetch, accountId),

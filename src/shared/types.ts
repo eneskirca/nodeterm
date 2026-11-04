@@ -3088,6 +3088,8 @@ export interface PopupAnnouncement extends Announcement {
   ctaLabel?: string
   /** 'upgrade' = the button starts the app's own Pro checkout instead of opening `url`. */
   action?: 'upgrade'
+  /** The SHA-256 naming its picture, fetched with `AnnouncementsApi.popupImage`. */
+  image?: string
 }
 
 export interface AnnouncementsApi {
@@ -3096,6 +3098,8 @@ export interface AnnouncementsApi {
   /** The feed's one-time popups ([] on any failure, and on the Server Edition, which does not read
    *  the feed). Which of them were already shown is the renderer's record, not the feed's. */
   popups(): Promise<PopupAnnouncement[]>
+  /** A popup's picture as a `data:` URL, or null when it cannot be had. */
+  popupImage(sha256: string): Promise<string | null>
 }
 
 export interface NotifyPayload {

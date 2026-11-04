@@ -18,6 +18,8 @@ vi.mock('../state/entitlement', async () => {
 })
 
 const SIX_HOURS = 6 * 60 * 60 * 1000
+const IMAGE_URL = 'data:image/png;base64,AAAA'
+const HASH = 'a'.repeat(64)
 
 const pop = (id: string, extra: Partial<PopupAnnouncement> = {}): PopupAnnouncement => ({
   id,
@@ -29,12 +31,14 @@ const pop = (id: string, extra: Partial<PopupAnnouncement> = {}): PopupAnnouncem
 
 let root: Root | null = null
 let popups: ReturnType<typeof vi.fn>
+let popupImage: ReturnType<typeof vi.fn>
 
 function setFeed(...reads: PopupAnnouncement[][]): void {
   popups = vi.fn()
   for (const r of reads) popups.mockResolvedValueOnce(r)
   popups.mockResolvedValue(reads[reads.length - 1] ?? [])
-  ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = { announcements: { popups } }
+  popupImage = vi.fn().mockResolvedValue(IMAGE_URL)
+  ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = { announcements: { popups, popupImage } }
 }
 
 async function mount(blocked = false): Promise<void> {
@@ -271,6 +275,74 @@ it('never shows a Pro user an upgrade popup, and keeps it for a lapse', async ()
   useEntitlement.setState({ isPremium: true })
   setFeed([pop('upsell', { action: 'upgrade' })])
   await mount()
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(dialog()).toBeNull()
+  expect(loadSeenPopups().has('upsell')).toBe(false)
+})
+
+it('shows its picture, fetched before it goes up', async () => {
+  setFeed([pop('a', { image: HASH })])
+  await mount()
+  expect(popupImage).toHaveBeenCalledWith(HASH)
+  expect(dialog()?.querySelector('img')?.getAttribute('src')).toBe(IMAGE_URL)
+  expect(loadSeenPopups().has('a')).toBe(true)
+})
+
+it('asks for no picture when it has none', async () => {
+  setFeed([pop('a')])
+  await mount()
+  expect(popupImage).not.toHaveBeenCalled()
+  expect(dialog()?.querySelector('img')).toBeNull()
+})
+
+// Once only, and written around the picture: without it, it waits for the next read, unrecorded.
+it('waits for a picture it could not fetch, and tries again on the next read', async () => {
+  setFeed([pop('a', { image: HASH })])
+  popupImage.mockResolvedValueOnce(null)
+  await mount()
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(dialog()).toBeNull()
+  expect(loadSeenPopups().has('a')).toBe(false)
+
+  await act(async () => vi.advanceTimersByTime(SIX_HOURS))
+  expect(dialog()?.querySelector('img')?.getAttribute('src')).toBe(IMAGE_URL)
+})
+
+it('lets the next popup take its turn when a picture cannot be had', async () => {
+  setFeed([pop('pictured', { image: HASH }), pop('plain')])
+  popupImage.mockResolvedValueOnce(null)
+  await mount()
+  expect(dialog()?.textContent).toContain('Title plain')
+  expect(loadSeenPopups().has('pictured')).toBe(false)
+})
+
+// The re-read while one waits: a newer popup's failed picture must not cost the one already waiting.
+it('keeps the popup that is waiting when a newer one has no picture yet', async () => {
+  setFeed([pop('plain')], [pop('pictured', { image: HASH }), pop('plain')])
+  popupImage.mockResolvedValue(null)
+  await mount(true)
+  await act(async () => vi.advanceTimersByTime(PENDING_RECHECK_MS))
+  await rerender(false)
+  expect(dialog()?.textContent).toContain('Title plain')
+})
+
+it('treats a rejected picture fetch like a missing one', async () => {
+  setFeed([pop('a', { image: HASH })])
+  popupImage.mockRejectedValueOnce(new Error('no handler'))
+  await mount()
+  await act(async () => vi.advanceTimersByTime(10_000))
+  expect(dialog()).toBeNull()
+  expect(loadSeenPopups().has('a')).toBe(false)
+})
+
+it('lets no slow picture land after the plan changed', async () => {
+  setFeed([pop('upsell', { action: 'upgrade', image: HASH })])
+  let answer: (url: string) => void = () => {}
+  popupImage.mockReturnValueOnce(new Promise<string>((r) => (answer = r)))
+  await mount()
+  // The purchase lands while the picture is on its way; the next read finds the popup skipped.
+  await act(async () => useEntitlement.setState({ isPremium: true }))
+  await act(async () => answer(IMAGE_URL))
   await act(async () => vi.advanceTimersByTime(10_000))
   expect(dialog()).toBeNull()
   expect(loadSeenPopups().has('upsell')).toBe(false)
