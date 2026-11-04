@@ -1,5 +1,4 @@
 import type { GitHubPullDetailResult, PullLineDraft } from '@shared/github-pull-detail'
-import { NoteMarkdown } from '../../components/NoteMarkdown'
 import type { PullChecksRead } from '../../lib/pullMergeBlock'
 import { PullComposer } from './PullComposer'
 import { PullMergeBox } from './PullMergeBox'
@@ -8,8 +7,8 @@ import { PullSidebar } from './PullSidebar'
 import { PullTimeline } from './PullTimeline'
 import { readState, STALE_TEXT, usePullRead, type Read, type ViewProps } from './shared'
 
-/** The Conversation tab: the description, the comments and reviews, the merge box, then the comment
- *  box. The node's detail and checks reads come from the shell, so the header, the proposal bar and
+/** The Conversation tab: the timeline (the description first), the merge box, then the comment
+ *  box. The conversation read gives only the reviews' line comments. The node's detail and checks reads come from the shell, so the header, the proposal bar and
  *  this tab show one head. */
 export function PullConversationTab(props: ViewProps & {
   detailRead: Read<GitHubPullDetailResult>; checks: PullChecksRead; ownPull: boolean
@@ -30,10 +29,8 @@ export function PullConversationTab(props: ViewProps & {
         </div>
       )}
       <PullSidebar {...props} detail={d} avatars={detailRead.avatarDataUrls} />
-      {d.body.trim()
-        ? <NoteMarkdown text={d.body} className="sticky-node__md pull-node__md" />
-        : <p className="pull-node__empty">No description provided.</p>}
-      <PullTimeline result={conversation} repository={pull.repository} />
+      <PullTimeline {...props} detail={d} detailAvatars={detailRead.avatarDataUrls}
+        lineComments={conversation !== 'loading' && conversation.status === 'ok' ? conversation.lineComments : []} />
       <PullMergeBox {...props} detail={d} checks={checks} />
       <PullComposer {...props} headSha={d.head.sha} />
     </div>

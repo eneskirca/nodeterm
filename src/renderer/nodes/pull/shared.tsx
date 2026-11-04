@@ -14,12 +14,13 @@ import type {
   PullWriteReason,
   PullWriteResult
 } from '@shared/github-pull-detail'
+import type { GitHubPullTimelineResult } from '@shared/github-pull-timeline'
 import type { PullNodeRef } from '@shared/pull-node'
 import type { LinkedAgent } from '../../state/pullAgent'
 
 export type PullNodeApi = Pick<
   GitHubIssuesApi,
-  'pullDetail' | 'pullChecks' | 'pullConversation' | 'pullFiles' | 'pullFileContents' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods' |
+  'pullDetail' | 'pullChecks' | 'pullConversation' | 'pullTimeline' | 'pullFiles' | 'pullFileContents' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods' |
   'repoCollaborators' | 'requestPullReviewer' | 'commentOnPullLine' | 'updatePullBranch' | 'enablePullAutoMerge' |
   'disablePullAutoMerge' | 'setFileViewed' | 'pullCommits' | 'pullCommitFiles' | 'pullCommitFileContents' |
   'setReviewThreadResolved' | 'applySuggestion'
@@ -133,7 +134,8 @@ function AllowRepo({ repository }: { repository: string }): React.JSX.Element {
 /** The loading, refused and failed states every tab shows the same way. */
 export function readState(
   result: Read<Exclude<
-    GitHubPullDetailResult | GitHubPullConversationResult | GitHubPullFilesResult | GitHubPullFileContentsResult,
+    GitHubPullDetailResult | GitHubPullConversationResult | GitHubPullFilesResult | GitHubPullFileContentsResult |
+    GitHubPullTimelineResult,
     { status: 'ok' }
   >>,
   repository: string

@@ -19120,6 +19120,15 @@ button.pull-commits__headline:hover { text-decoration: underline; }
 .pull-convo__verdict--approved { background: color-mix(in srgb, var(--success) 30%, transparent); }
 .pull-convo__verdict--changes-requested { background: color-mix(in srgb, var(--danger) 30%, transparent); }
 .pull-convo__item .pull-node__md { margin: 6px 0 0; padding: 0; border: 0; }
+.pull-convo__item--description { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+/* Timeline events: one muted line between the bordered comments and reviews. */
+.pull-convo__event { margin: 0 0 10px; padding: 2px 10px; font-size: 12px; }
+.pull-convo__event-text { color: var(--muted); }
+.pull-convo__event-text code, .pull-convo__commits code { font-family: ui-monospace, monospace; font-size: 11px; }
+.pull-convo__commits { margin: 4px 0 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border); }
+.pull-convo__commits li { gap: 6px; margin: 3px 0; }
+.pull-convo__headline { color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pull-label { display: inline-block; padding: 0 7px; border-radius: 999px; color: #fff; font-size: 11px; line-height: 18px; text-shadow: 0 0 2px rgba(0, 0, 0, 0.6); }
 .pull-compose {
   display: flex;
   flex-direction: column;

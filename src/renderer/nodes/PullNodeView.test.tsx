@@ -7,6 +7,7 @@ import type {
   PullLineComment
 } from '@shared/github-pull-detail'
 import type { GitHubPullChecksResult } from '@shared/github-pull-status'
+import type { GitHubPullTimelineResult, PullTimelineItem } from '@shared/github-pull-timeline'
 import { normalizePullRef, type PullNodeTab } from '@shared/pull-node'
 import type { PullProposal, ShownProposal } from '@shared/pull-agent-verbs'
 import { PullNodeView, type PullNodeApi } from './PullNodeView'
@@ -39,9 +40,11 @@ const detail: GitHubPullDetail = {
 
 function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult = {
   status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [{ name: 'test', state: 'passed' }]
-}, conversation: GitHubPullConversationResult = { status: 'ok', items: [], lineComments: [], truncated: false, observedAt: 1 }):
+}, conversation: GitHubPullConversationResult = { status: 'ok', items: [], lineComments: [], truncated: false, observedAt: 1 },
+timeline: GitHubPullTimelineResult = { status: 'ok', items: [], openedAt: '2026-10-01T09:00:00Z', observedAt: 1 }):
   PullNodeApi & {
     pullDetail: ReturnType<typeof vi.fn>; pullChecks: ReturnType<typeof vi.fn>; pullConversation: ReturnType<typeof vi.fn>
+    pullTimeline: ReturnType<typeof vi.fn>
     pullFiles: ReturnType<typeof vi.fn>; pullFileContents: ReturnType<typeof vi.fn>
     commentOnPull: ReturnType<typeof vi.fn>; reviewPull: ReturnType<typeof vi.fn>
     mergePull: ReturnType<typeof vi.fn>; repoMergeMethods: ReturnType<typeof vi.fn>
@@ -55,6 +58,7 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     pullDetail: vi.fn(async () => result),
     pullChecks: vi.fn(async () => checks),
     pullConversation: vi.fn(async () => conversation),
+    pullTimeline: vi.fn(async (): Promise<GitHubPullTimelineResult> => timeline),
     pullFiles: vi.fn(async (): Promise<GitHubPullFilesResult> => ({ status: 'ok', files: [], truncated: false, observedAt: 1 })),
     pullFileContents: vi.fn(async (): Promise<GitHubPullFileContentsResult> => ({ status: 'refused', reason: 'not-approved' })),
     commentOnPull: vi.fn(async () => ({ ok: true as const })),
@@ -189,22 +193,23 @@ const author = { id: 2, login: 'octocat', avatarUrl: 'https://avatars.githubuser
 const at = (hour: number) => `2026-10-01T${hour}:00:00Z`
 const url = 'https://github.com/o/r/pull/7'
 
+const timelineOf = (items: PullTimelineItem[], next?: string): Extract<GitHubPullTimelineResult, { status: 'ok' }> =>
+  ({ status: 'ok', items, openedAt: at(9), observedAt: 1, ...(next ? { next } : {}) })
+
 describe('PullNodeView conversation', () => {
   it('lists comments and reviews in the order read, each review with its verdict', async () => {
-    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, {
-      status: 'ok', truncated: false, observedAt: 1, lineComments: [], items: [
-        { kind: 'comment', id: 1, author, body: 'First **comment**', at: at(10), url },
-        { kind: 'review', id: 2, author, body: '', at: at(11), url, verdict: 'approved' },
-        { kind: 'review', id: 3, author: null, body: 'Fix the test', at: at(12), url, verdict: 'changes-requested' },
-        { kind: 'review', id: 4, author, body: 'Note', at: at(13), url, verdict: 'commented' }
-      ]
-    })
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, undefined, timelineOf([
+      { kind: 'comment', id: 'c1', databaseId: 1, actor: author, body: 'First **comment**', at: at(10), url },
+      { kind: 'review', id: 'r2', databaseId: 2, actor: author, body: '', at: at(11), url, verdict: 'approved' },
+      { kind: 'review', id: 'r3', databaseId: 3, actor: null, body: 'Fix the test', at: at(12), url, verdict: 'changes-requested' },
+      { kind: 'review', id: 'r4', databaseId: 4, actor: author, body: 'Note', at: at(13), url, verdict: 'commented' }
+    ]))
     const view = await render(api, 'o/r', 'conversation')
-    expect(api.pullConversation).toHaveBeenCalledWith('p', 'o/r', 7)
-    const items = [...view.querySelectorAll('.pull-convo__item')].map((item) => item.textContent)
+    expect(api.pullTimeline).toHaveBeenCalledWith('p', 'o/r', 7)
+    const items = [...view.querySelectorAll('.pull-convo__item:not(.pull-convo__item--description)')].map((item) => item.textContent)
     expect(items).toHaveLength(4)
     expect(items[0]).toContain('First comment')
-    expect(view.querySelector('.pull-convo__item strong')?.textContent).toBe('comment')
+    expect(view.querySelector('.pull-convo__item--comment strong')?.textContent).toBe('comment')
     expect(items[1]).toContain('Approved')
     expect(items[2]).toContain('Changes requested')
     expect(items[2]).toContain('Fix the test')
@@ -212,10 +217,9 @@ describe('PullNodeView conversation', () => {
   })
 
   it('never runs script from a comment', async () => {
-    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, {
-      status: 'ok', truncated: false, observedAt: 1, lineComments: [],
-      items: [{ kind: 'comment', id: 1, author, body: '<img src=x onerror="alert(1)"><script>alert(2)</script>', at: at(10), url }]
-    })
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, undefined, timelineOf([
+      { kind: 'comment', id: 'c1', databaseId: 1, actor: author, body: '<img src=x onerror="alert(1)"><script>alert(2)</script>', at: at(10), url }
+    ]))
     const view = await render(api, 'o/r', 'conversation')
     expect(view.querySelector('script')).toBeNull()
     expect(view.querySelector('img')?.getAttribute('onerror')).toBeNull()
@@ -225,7 +229,7 @@ describe('PullNodeView conversation', () => {
     expect((await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'conversation')).textContent)
       .toContain('No comments or reviews yet.')
     act(() => root.unmount()); host.remove()
-    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined,
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, undefined,
       { status: 'refused', reason: 'not-approved' }), 'o/r', 'conversation')
     expect(view.querySelector('[role="status"]')?.textContent?.toLowerCase()).toContain('approve')
   })
@@ -800,7 +804,7 @@ describe('PullNodeView line comments', () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, undefined, {
       status: 'ok', truncated: false, observedAt: 1, lineComments,
       items: [{ kind: 'review', id: 40, author, body: '', at: at(10), url, verdict: 'commented' }]
-    })
+    }, timelineOf([{ kind: 'review', id: 'r40', databaseId: 40, actor: author, body: '', at: at(10), url, verdict: 'commented' }]))
     api.pullFiles.mockResolvedValue({
       status: 'ok', truncated: false, observedAt: 1, files: [{ path: 'src/a.ts', status: 'modified', additions: 1, deletions: 1 }]
     })
@@ -891,7 +895,7 @@ describe('PullNodeView line comments', () => {
 
   it('lists line comments under their review in the Conversation tab', async () => {
     const view = await render(setup(), 'o/r', 'conversation')
-    const review = view.querySelector('.pull-convo__item')!
+    const review = view.querySelector('.pull-convo__item--review')!
     expect(review.textContent).toContain('src/a.ts:2')
     expect(review.textContent).toContain('line comment 1')
     expect(review.textContent).toContain('Outdated')
@@ -1235,10 +1239,11 @@ describe('PullNodeView avatars', () => {
     const api = fakeApi(
       { status: 'ok', detail: { ...detail, requestedReviewers: [reviewer] }, observedAt: 1, avatarDataUrls: { 2: png } },
       undefined,
-      { status: 'ok', truncated: false, observedAt: 1, lineComments: [], avatarDataUrls: { 2: png }, items: [
-        { kind: 'comment', id: 1, author, body: 'Hi', at: at(10), url },
-        { kind: 'comment', id: 2, author: null, body: 'Gone', at: at(11), url }
-      ] }
+      undefined,
+      { ...timelineOf([
+        { kind: 'comment', id: 'c1', databaseId: 1, actor: author, body: 'Hi', at: at(10), url },
+        { kind: 'comment', id: 'c2', databaseId: 2, actor: null, body: 'Gone', at: at(11), url }
+      ]), avatarDataUrls: { 2: png } }
     )
     const view = await render(api)
     const images = [...view.querySelectorAll('img')]
