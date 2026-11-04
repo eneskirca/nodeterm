@@ -24,7 +24,7 @@ const detail: GitHubPullDetail = {
 const octocat = { id: 2, login: 'octocat', avatarUrl: 'https://avatars.githubusercontent.com/u/2' }
 const commits: PullCommit[] = [
   { oid: A, headline: 'Add the reads', author: octocat, authorName: 'Octo', committedAt: '2026-11-01T12:00:00Z', verified: true },
-  { oid: B, headline: 'Wire the tab', author: null, authorName: 'Robot', committedAt: '2026-11-03T12:00:00Z', verified: false }
+  { oid: B, headline: 'Wire the tab', author: null, authorName: 'Robot', committedAt: '2026-11-03T12:00:00Z', verified: false, coAuthors: ['Claude'], ci: 'failed' }
 ]
 
 function fakeApi(read: GitHubPullCommitsResult = {
@@ -74,22 +74,25 @@ describe('PullNodeView Commits tab', () => {
   it('names the tab with the commit count and groups the commits by day', async () => {
     const view = await render(fakeApi())
     expect(view.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Commits 2')
-    const days = [...view.querySelectorAll('.pull-commits__day')]
+    const days = [...view.querySelectorAll('.pr-commits__group')]
     expect(days).toHaveLength(2)
     expect(days[0].querySelector('h3')?.textContent).toContain('Commits on')
     expect(days[0].textContent).toContain('Add the reads')
     expect(days[1].textContent).toContain('Wire the tab')
   })
 
-  it('shows avatar, author, short SHA and Verified only for a signed commit', async () => {
+  it('shows avatar, authors, CI state, short SHA and Verified only for a signed commit', async () => {
     const view = await render(fakeApi())
-    const [signed, unsigned] = [...view.querySelectorAll('.pull-commits__row')]
+    const [signed, unsigned] = [...view.querySelectorAll('.pr-commits__row')]
     expect(signed.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AA==')
-    expect(signed.querySelector('.pull-commits__author')?.textContent).toBe('octocat')
-    expect(signed.querySelector('code')?.textContent).toBe('aaaaaaa')
+    expect(signed.querySelector('.pr-commits__author')?.textContent).toBe('octocat')
+    expect(signed.querySelector('.pr-commits__sha')?.textContent).toBe('aaaaaaa')
     expect(signed.textContent).toContain('Verified')
+    expect(signed.querySelector('.pr-commits__ci')).toBeNull()
     expect(unsigned.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Robot')
-    expect(unsigned.querySelector('.pull-commits__author')?.textContent).toBe('Robot')
+    expect(unsigned.querySelector('.pr-commits__author')?.textContent).toBe('Robot and Claude')
+    expect(unsigned.querySelector('.pr-commits__agent')?.textContent).toBe('Claude')
+    expect(unsigned.querySelector('[aria-label="Checks failed"]')).not.toBeNull()
     expect(unsigned.textContent).not.toContain('Verified')
   })
 
@@ -101,20 +104,24 @@ describe('PullNodeView Commits tab', () => {
     expect(writeText).toHaveBeenCalledWith(B)
   })
 
-  it('opens a commit\'s own diff: its files, the first one against the parent, then back to the list', async () => {
+  it('opens a commit\'s own diff under the list: its files, the first one against the parent, then All commits', async () => {
     const api = fakeApi()
     const view = await render(api)
-    await click(button(view, 'Wire the tab'))
+    await click(button(view, 'bbbbbbb'))
     expect(api.pullCommitFiles).toHaveBeenCalledWith('p', 'o/r', 7, B)
-    expect([...view.querySelectorAll('.pull-files__path')].map((el) => el.textContent)).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(view.querySelectorAll('.pr-commits__group')).toHaveLength(2)
+    expect(view.querySelector('.pr-commits__row--selected')?.textContent).toContain('Wire the tab')
+    expect(view.querySelector('.pr-commits__diff-head')?.textContent).toContain('Showing bbbbbbb · 2 files')
+    expect([...view.querySelectorAll('.pr-commits__path')].map((el) => el.textContent)).toEqual(['src/a.ts', 'src/b.ts'])
     expect(api.pullCommitFileContents).toHaveBeenCalledWith('p', 'o/r', 7, B, 'src/a.ts')
     const diff = () => view.querySelector('.text-diff')
     expect(diff()?.getAttribute('data-modified')).toBe('src/a.ts@b')
-    await click([...view.querySelectorAll('.pull-files__file')][1])
+    await click([...view.querySelectorAll('.pr-commits__file')][1])
     expect(diff()?.getAttribute('data-path')).toBe('src/b.ts')
     expect(diff()?.getAttribute('data-original')).toBe('src/b.ts before')
-    await click(button(view, '← All commits'))
-    expect(view.querySelectorAll('.pull-commits__day')).toHaveLength(2)
+    await click(button(view, 'All commits'))
+    expect(view.querySelector('.pr-commits__diff')).toBeNull()
+    expect(view.querySelector('.pr-commits__row--selected')).toBeNull()
   })
 
   it('names a refusal with its fix, as every tab does', async () => {

@@ -18941,14 +18941,44 @@ body.focus-mode .dock:hover {
   background: rgba(var(--tint-rgb), 0.12);
 }
 .pull-node__count--failed { color: #fff; background: var(--danger); }
-.pull-checks-tab { display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
-.pull-checks-tab select { align-self: flex-start; }
-.pull-checks-tab__table { width: 100%; border-collapse: collapse; }
-.pull-checks-tab__table th { text-align: left; font-weight: 600; color: rgba(var(--tint-rgb), 0.6); }
-.pull-checks-tab__table th, .pull-checks-tab__table td { padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-.pull-checks-tab__name { width: 100%; white-space: normal; overflow-wrap: anywhere; }
-.pull-checks-tab__actions { text-align: right; }
-.pull-checks-tab__actions button + button { margin-left: 6px; }
+/* F3 Checks tab: summary, one row per run, an Actions row expands to its log tail. */
+.pr-checks { display: flex; flex-direction: column; font-size: 13px; color: var(--pr-fg); font-variant-numeric: tabular-nums; }
+.pr-checks__summary { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+.pr-checks__summary strong { font-weight: 600; }
+.pr-checks__muted { color: var(--pr-muted); }
+.pr-checks__rerun { margin-left: auto; }
+.pr-checks__list { margin: 0; padding: 0; list-style: none; border-bottom: 1px solid var(--pr-line); }
+.pr-checks__run { border-top: 1px solid var(--pr-line); }
+.pr-checks__run--failed > .pr-checks__row { background: color-mix(in srgb, var(--pr-closed) 10%, transparent); }
+.pr-checks__run--failed .pr-checks__name { font-weight: 600; }
+.pr-checks__row {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; gap: 10px; align-items: center;
+  width: 100%; min-height: 38px; padding: 9px 16px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left;
+}
+button.pr-checks__row { cursor: pointer; }
+button.pr-checks__row:hover { background: var(--pr-hover); }
+button.pr-checks__row:focus-visible { outline: 2px solid var(--pr-accent); outline-offset: -2px; }
+.pr-checks__name { min-width: 0; overflow-wrap: anywhere; }
+.pr-checks__time { font-family: var(--pr-mono); font-size: 12px; color: var(--pr-muted); }
+.pr-checks__chevron { color: var(--pr-muted); }
+.pr-checks__state--passed { color: var(--pr-open); }
+.pr-checks__state--failed { color: var(--pr-closed); }
+.pr-checks__state--pending { color: var(--pr-attention); }
+.pr-checks__state--neutral, .pr-checks__state--skipped { color: var(--pr-muted); }
+.pr-checks__details { height: 24px; }
+.pr-checks__log { border-top: 1px solid var(--pr-line); background: var(--pr-canvas); }
+.pr-checks__lines { margin: 0; padding: 8px 0; max-height: 360px; overflow: auto; font-family: var(--pr-mono); font-size: 11.5px; line-height: 19px; }
+.pr-checks__line { display: block; padding: 0 14px; white-space: pre; }
+.pr-checks__line--error { color: var(--pr-closed); }
+.pr-checks__log-state { margin: 0; padding: 8px 14px; font-size: 12px; color: var(--pr-muted); }
+.pr-checks__log-actions { display: flex; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--pr-line); }
+.pr-checks__fix {
+  background: color-mix(in srgb, var(--pr-agent) 18%, var(--pr-raised));
+  border-color: color-mix(in srgb, var(--pr-agent) 45%, transparent);
+}
+.pr-checks__fix .pr-icon { color: var(--pr-agent); }
+.pr-checks__note { margin: 0; padding: 8px 16px; font-size: 12px; color: var(--pr-muted); }
+.pr-checks__footer { margin: 0; padding: 12px 16px; font-size: 12px; color: var(--pr-muted); }
 .pull-node__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 10px; }
 .pull-node__actions .pull-send { margin: 0; }
 .pull-mergebox {
@@ -19084,39 +19114,50 @@ body.focus-mode .dock:hover {
   border-top: 1px solid var(--border);
 }
 /* Commits tab (07): days, then one row per commit; a commit opens its own diff in place. */
-.pull-commits__day { margin-bottom: 12px; }
-.pull-commits__date { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
-.pull-commits__list { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 8px; }
-.pull-commits__list li + li { border-top: 1px solid var(--border); }
-.pull-commits__row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; }
-.pull-commits__headline {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  padding: 0;
-  border: 0;
-  color: var(--text-strong);
-  background: transparent;
-  font: inherit;
-  font-weight: 600;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* F3 Commits tab: commits by day, the open commit's diff in a card under the list. */
+.pr-commits { display: flex; flex-direction: column; padding-bottom: 12px; color: var(--pr-fg); font-variant-numeric: tabular-nums; }
+.pr-commits__day { display: flex; align-items: center; gap: 8px; margin: 0; padding: 14px 16px 6px; font-size: 12px; font-weight: 400; color: var(--pr-muted); }
+.pr-commits__list { margin: 0; padding: 0; list-style: none; }
+.pr-commits__row {
+  display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+  margin: 0 8px; padding: 10px 12px; border-radius: 8px;
 }
-button.pull-commits__headline { cursor: pointer; }
-button.pull-commits__headline:hover { text-decoration: underline; }
-.pull-commits__author { flex: none; color: var(--muted); font-size: 12px; }
-.pull-commits__verified {
-  flex: none;
-  padding: 0 7px;
-  border: 1px solid color-mix(in srgb, var(--success) 60%, transparent);
-  border-radius: 999px;
-  color: var(--success);
-  font-size: 11px;
+.pr-commits__row:hover, .pr-commits__row--selected { background: var(--pr-surface); }
+.pr-commits__main { display: flex; flex-direction: column; min-width: 0; }
+.pr-commits__headline {
+  overflow: hidden; padding: 0; border: 0; background: transparent; color: var(--pr-fg); font: inherit; font-size: 13px;
+  font-weight: 500; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
 }
-.pull-commits__sha { flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
-.pull-commits__open { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 10px; }
-.pull-commits__open .pull-commits__row { align-self: stretch; padding: 0; }
+.pr-commits__headline:hover { color: var(--pr-accent); }
+.pr-commits__meta { font-size: 12px; color: var(--pr-muted); }
+.pr-commits__agent { color: var(--pr-agent); }
+.pr-commits__end { display: flex; align-items: center; gap: 6px; }
+.pr-commits__verified {
+  padding: 0 7px; border: 1px solid color-mix(in srgb, var(--pr-open) 40%, transparent); border-radius: 999px;
+  font-size: 11px; color: var(--pr-open);
+}
+.pr-commits__ci--passed { color: var(--pr-open); }
+.pr-commits__ci--failed { color: var(--pr-closed); }
+.pr-commits__ci--pending { color: var(--pr-attention); }
+.pr-commits__sha {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1px solid var(--pr-line-strong);
+  border-radius: var(--pr-radius-control); background: transparent; color: var(--pr-fg-2); cursor: pointer;
+}
+.pr-commits__sha code { font-family: var(--pr-mono); font-size: 11px; }
+.pr-commits__sha:hover { border-color: var(--pr-accent); }
+.pr-commits__diff { margin: 10px 16px 0; overflow: hidden; border: 1px solid var(--pr-line); border-radius: var(--pr-radius-card); background: var(--pr-surface); }
+.pr-commits__diff-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--pr-line); font-size: 12px; }
+.pr-commits__muted { color: var(--pr-muted); }
+.pr-commits__files { margin: 0; padding: 4px 0; list-style: none; }
+.pr-commits__file {
+  display: flex; gap: 8px; width: 100%; padding: 4px 12px; border: 0; background: transparent; color: var(--pr-fg-2);
+  font-family: var(--pr-mono); font-size: 12px; text-align: left; cursor: pointer;
+}
+.pr-commits__file:hover, .pr-commits__file[aria-current='true'] { background: var(--pr-hover); color: var(--pr-fg); }
+.pr-commits__path { min-width: 0; overflow-wrap: anywhere; }
+.pr-commits__add { color: var(--pr-open); }
+.pr-commits__del { color: var(--pr-closed); }
+.pr-commits__note { margin: 8px 16px 0; font-size: 12px; color: var(--pr-muted); }
 .pull-convo {
   margin: 0;
   padding: 0;

@@ -3,9 +3,11 @@ import type { PullCommit } from '@shared/github-pull-commits'
 import type { PullAvatarDataUrls, PullFileSide } from '@shared/github-pull-detail'
 import { pullWebUrl } from '@shared/pull-node'
 import { TextDiff } from '../../editor/TextDiff'
+import { relativeTime } from '../../lib/relativeTime'
 import { ChatCopyButton } from '../ChatCopyButton'
 import { Avatar } from './Avatar'
-import { FILE_STATUS_TEXT, UNAVAILABLE_TEXT } from './PullFilesTab'
+import { Icon } from './Icon'
+import { UNAVAILABLE_TEXT } from './PullFilesTab'
 import { readState, STALE_TEXT, usePullRead, type ViewProps } from './shared'
 
 const dayOf = (at: string): string =>
@@ -22,7 +24,26 @@ export function commitDays(commits: readonly PullCommit[]): Array<{ day: string;
   return days
 }
 
-/** The Commits tab: the PR's commits by day; a click opens that commit's own diff in place. */
+const CI_ICON = { passed: 'check', failed: 'x', pending: 'sync' } as const
+const CI_TEXT = { passed: 'Checks passed', failed: 'Checks failed', pending: 'Checks running' } as const
+// ponytail: an agent co-author is told apart by name only, which is how its trailer names it.
+const AGENT_NAME = /^(claude|codex|copilot|gemini|cursor|grok|opencode)\b/i
+
+/** "a", "a and b", "a, b and c". */
+function Authors({ names }: { names: string[] }): React.JSX.Element {
+  return (
+    <>
+      {names.map((name, i) => (
+        <span key={`${name}:${i}`}>
+          {i > 0 && (i === names.length - 1 ? ' and ' : ', ')}
+          <span className={AGENT_NAME.test(name) ? 'pr-commits__agent' : undefined}>{name}</span>
+        </span>
+      ))}
+    </>
+  )
+}
+
+/** The Commits tab (F3): the PR's commits by day; a click opens that commit's own diff below the list. */
 export function PullCommitsTab(props: ViewProps): React.JSX.Element {
   const { api, pull, onOpenExternal } = props
   const result = usePullRead(api.pullCommits, props)
@@ -30,27 +51,26 @@ export function PullCommitsTab(props: ViewProps): React.JSX.Element {
   const [open, setOpen] = useState<string | null>(null)
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   const commit = result.commits.find((item) => item.oid === open)
-  if (commit) {
-    return <PullCommitDiff {...props} commit={commit} avatars={result.avatarDataUrls} onBack={() => setOpen(null)} />
-  }
   return (
-    <div className="pull-commits">
+    <div className="pr-commits">
       {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
       {result.commits.length === 0 && <p className="pull-node__empty">No commits.</p>}
       {commitDays(result.commits).map(({ day, commits }) => (
-        <section key={day} className="pull-commits__day">
-          <h3 className="pull-commits__date">Commits on {day}</h3>
-          <ul className="pull-commits__list">
+        <section key={day} className="pr-commits__group">
+          <h3 className="pr-commits__day"><Icon name="commit" size={14} />Commits on {day}</h3>
+          <ul className="pr-commits__list">
             {commits.map((item) => (
               <li key={item.oid}>
-                <PullCommitRow commit={item} avatars={result.avatarDataUrls} onOpen={() => setOpen(item.oid)} />
+                <PullCommitRow commit={item} avatars={result.avatarDataUrls} selected={item.oid === open}
+                  onOpen={() => setOpen(item.oid === open ? null : item.oid)} />
               </li>
             ))}
           </ul>
         </section>
       ))}
+      {commit && <PullCommitDiff key={commit.oid} {...props} commit={commit} onBack={() => setOpen(null)} />}
       {result.truncated && (
-        <p className="pull-files__truncated">
+        <p className="pr-commits__note">
           Showing the first {result.commits.length} commits only.{' '}
           <button className="pull-node__web" onClick={() => onOpenExternal(`${pullWebUrl(pull.repository, pull.pullNumber)}/commits`)}>
             Open on GitHub
@@ -61,29 +81,37 @@ export function PullCommitsTab(props: ViewProps): React.JSX.Element {
   )
 }
 
-function PullCommitRow({ commit, avatars, onOpen }: {
-  commit: PullCommit; avatars?: PullAvatarDataUrls; onOpen?: () => void
+function PullCommitRow({ commit, avatars, selected, onOpen }: {
+  commit: PullCommit; avatars?: PullAvatarDataUrls; selected: boolean; onOpen: () => void
 }): React.JSX.Element {
   const name = commit.author?.login ?? (commit.authorName || 'unknown')
+  const short = commit.oid.slice(0, 7)
+  const at = Date.parse(commit.committedAt)
   return (
-    <div className="pull-commits__row">
+    <div className={selected ? 'pr-commits__row pr-commits__row--selected' : 'pr-commits__row'}>
       {/* ponytail: an unlinked git author gets a stand-in user (id 0 has no avatar), so its letter is the name's. */}
-      <Avatar user={commit.author ?? { id: 0, login: name, avatarUrl: '' }} avatars={avatars} />
-      {onOpen
-        ? <button className="pull-commits__headline" onClick={onOpen}>{commit.headline}</button>
-        : <span className="pull-commits__headline">{commit.headline}</span>}
-      <span className="pull-commits__author">{name}</span>
-      {commit.verified && <span className="pull-commits__verified" title="GitHub verified this commit's signature">Verified</span>}
-      <code className="pull-commits__sha">{commit.oid.slice(0, 7)}</code>
-      <ChatCopyButton text={() => commit.oid} label={`Copy the full SHA of ${commit.oid.slice(0, 7)}`} title="Copy full SHA" />
+      <Avatar user={commit.author ?? { id: 0, login: name, avatarUrl: '' }} avatars={avatars} size={24} />
+      <span className="pr-commits__main">
+        <button className="pr-commits__headline" aria-expanded={selected} onClick={onOpen}>{commit.headline}</button>
+        <span className="pr-commits__meta">
+          <span className="pr-commits__author"><Authors names={[name, ...(commit.coAuthors ?? [])]} /></span>
+          {Number.isFinite(at) && <> · {relativeTime(at, Date.now())}</>}
+        </span>
+      </span>
+      <span className="pr-commits__end">
+        {commit.verified && <span className="pr-commits__verified" title="GitHub verified this commit's signature">Verified</span>}
+        {commit.ci && <Icon name={CI_ICON[commit.ci]} size={14} className={`pr-commits__ci pr-commits__ci--${commit.ci}`} label={CI_TEXT[commit.ci]} />}
+        <button className="pr-commits__sha" title={`Show the changes of ${short}`} onClick={onOpen}><code>{short}</code></button>
+        <ChatCopyButton text={() => commit.oid} label={`Copy the full SHA of ${short}`} title="Copy full SHA" />
+      </span>
     </div>
   )
 }
 
-/** One commit's own diff: the files it changed, then the picked one (the first by default) against
- *  the commit's first parent. Read-only: line comments belong to the Files changed tab. */
-function PullCommitDiff(props: ViewProps & { commit: PullCommit; avatars?: PullAvatarDataUrls; onBack: () => void }): React.JSX.Element {
-  const { api, pull, commit, avatars, onBack, onOpenExternal } = props
+/** One commit's own diff, under the list: the files it changed, then the picked one (the first by
+ *  default) against the commit's first parent. Read-only: line comments belong to the Files tab. */
+function PullCommitDiff(props: ViewProps & { commit: PullCommit; onBack: () => void }): React.JSX.Element {
+  const { api, pull, commit, onBack, onOpenExternal } = props
   const sha = commit.oid
   const [picked, setPicked] = useState<string | null>(null)
   const read = useCallback(
@@ -92,36 +120,34 @@ function PullCommitDiff(props: ViewProps & { commit: PullCommit; avatars?: PullA
   )
   const result = usePullRead(read, props)
   const commitUrl = `${pullWebUrl(pull.repository, pull.pullNumber)}/commits/${sha}`
-  const head = (
-    <div className="pull-commits__open">
-      <button className="pull-node__web" onClick={onBack}>← All commits</button>
-      <PullCommitRow commit={commit} avatars={avatars} />
-    </div>
-  )
-  if (result === 'loading' || result.status !== 'ok') return <>{head}{readState(result, pull.repository)}</>
-  const shown = result.files.find((file) => file.path === picked) ?? result.files[0]
+  const files = result !== 'loading' && result.status === 'ok' ? result.files : undefined
+  const shown = files?.find((file) => file.path === picked) ?? files?.[0]
   return (
-    <div className="pull-files">
-      {head}
-      {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
-      {result.files.length === 0
-        ? <p className="pull-node__empty">This commit changes no files.</p>
-        : (
-          <ul className="pull-files__list">
-            {result.files.map((file) => (
-              <li key={file.path}>
-                <button className="pull-files__file" aria-current={file === shown ? 'true' : undefined} onClick={() => setPicked(file.path)}>
-                  <span className={`pull-files__status pull-files__status--${file.status}`}>{FILE_STATUS_TEXT[file.status]}</span>
-                  <span className="pull-files__path">{file.previousPath && <>{file.previousPath} → </>}{file.path}</span>
-                  <span className="pull-files__add">+{file.additions}</span>
-                  <span className="pull-files__del">−{file.deletions}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      {result.truncated && (
-        <p className="pull-files__truncated">
+    <div className="pr-commits__diff" aria-label={`Changes of ${sha.slice(0, 7)}`}>
+      <div className="pr-commits__diff-head">
+        <button className="pr-btn" onClick={onBack}>All commits</button>
+        <span className="pr-commits__muted">
+          Showing {sha.slice(0, 7)}{files && ` · ${files.length} ${files.length === 1 ? 'file' : 'files'}`}
+        </span>
+      </div>
+      {(result === 'loading' || result.status !== 'ok') && readState(result, pull.repository)}
+      {result !== 'loading' && result.status === 'ok' && result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
+      {files?.length === 0 && <p className="pull-node__empty">This commit changes no files.</p>}
+      {files && files.length > 0 && (
+        <ul className="pr-commits__files">
+          {files.map((file) => (
+            <li key={file.path}>
+              <button className="pr-commits__file" aria-current={file === shown ? 'true' : undefined} onClick={() => setPicked(file.path)}>
+                <span className="pr-commits__path">{file.previousPath && <>{file.previousPath} → </>}{file.path}</span>
+                <span className="pr-commits__add">+{file.additions}</span>
+                <span className="pr-commits__del">−{file.deletions}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {result !== 'loading' && result.status === 'ok' && result.truncated && (
+        <p className="pr-commits__note">
           Showing the first 300 files only.{' '}
           <button className="pull-node__web" onClick={() => onOpenExternal(commitUrl)}>Open on GitHub</button> for the rest.
         </p>
