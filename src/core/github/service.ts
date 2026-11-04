@@ -180,6 +180,10 @@ export interface GitHubIssuesClientLike {
   /** The sidebar's label and assignee edits, one name per call. Optional, as above. */
   setPullLabel?(repository: string, pullNumber: number, label: string, add: boolean): Promise<void>
   setPullAssignee?(repository: string, pullNumber: number, login: string, add: boolean): Promise<void>
+  /** The merge box's close / reopen, ready for review and delete head branch. Optional, as above. */
+  setPullState?(repository: string, pullNumber: number, open: boolean): Promise<void>
+  markPullReady?(repository: string, pullNumber: number): Promise<void>
+  deleteBranchRef?(repository: string, branch: string): Promise<void>
   /** "New pull request": the form's start, and the create. Optional, as above. */
   pullForBranch?(repository: string, head: string): Promise<{ defaultBranch: string; existing?: number }>
   createPull?(repository: string, pull: PullCreateDraft): Promise<{ number: number }>
@@ -1716,6 +1720,54 @@ export class GitHubIssueService {
       if (!client.setPullAssignee) throw new Error('unsupported')
       return client.setPullAssignee(repository, pullNumber, login, add)
     })
+  }
+
+  /** Close (`open` false) or reopen the PR, from the merge box (a user click only). */
+  async setPullState(request: { projectId: string; repository: string; pullNumber: number; open: boolean }): Promise<PullWriteResult> {
+    const { open } = request ?? {}
+    if (typeof open !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot do it reads as network; the real client always can.
+      if (!client.setPullState) throw new Error('unsupported')
+      return client.setPullState(repository, pullNumber, open)
+    })
+  }
+
+  /** Mark a draft PR ready for review, from the merge box (a user click only). */
+  async markPullReady(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult> {
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.markPullReady) throw new Error('unsupported')
+      return client.markPullReady(repository, pullNumber)
+    })
+  }
+
+  /**
+   * "Delete branch" after a merge (a user click only). The PR is read again here, never taken from the
+   * renderer: only a merged PR whose head lives in this repository and is not its default branch.
+   * GitHub's 422 on the delete (a protected branch, or one already deleted) answers `branch-protected`.
+   */
+  async deleteHeadBranch(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult> {
+    // ponytail: pullWriteFailure has no branch-protected code, so the 422 is flagged here and read after.
+    let refusedDelete = false
+    const result = await this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.getPull || !client.pullForBranch || !client.deleteBranchRef) throw new Error('unsupported')
+      const pull = await client.getPull(repository, pullNumber)
+      if (pull.fromFork) throw Object.assign(new Error('from-fork'), { code: 'from-fork' })
+      const invalid = Object.assign(new Error('validation'), { code: 'request-failed', status: 422 })
+      if (pull.lifecycle !== 'merged') throw invalid
+      // ponytail: the default branch comes from "New pull request"'s read (one extra pulls query).
+      if ((await client.pullForBranch(repository, pull.head.ref)).defaultBranch === pull.head.ref) throw invalid
+      try {
+        await client.deleteBranchRef(repository, pull.head.ref)
+      } catch (error) {
+        const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+        refusedDelete = code === 'request-failed' && status === 422
+        throw error
+      }
+    })
+    return !result.ok && refusedDelete ? { ok: false, reason: 'branch-protected' } : result
   }
 
   /** The repository's labels for the sidebar's "Add label", name and color. Held per repository like
