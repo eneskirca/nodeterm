@@ -606,6 +606,12 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullThreadResolved, request) as ReturnType<GitHubIssuesApi['setReviewThreadResolved']>,
     applySuggestion: (request) =>
       client.request(IPC.githubIssuesPullApplySuggestion, request) as ReturnType<GitHubIssuesApi['applySuggestion']>,
+    setPullLabels: (request) =>
+      client.request(IPC.githubIssuesPullLabels, request) as ReturnType<GitHubIssuesApi['setPullLabels']>,
+    setPullAssignees: (request) =>
+      client.request(IPC.githubIssuesPullAssignees, request) as ReturnType<GitHubIssuesApi['setPullAssignees']>,
+    repoLabels: (projectId, repository) =>
+      client.request(IPC.githubIssuesRepoLabels, projectId, repository) as ReturnType<GitHubIssuesApi['repoLabels']>,
     enablePullAutoMerge: (request) =>
       client.request(IPC.githubIssuesPullAutoMerge, request) as ReturnType<GitHubIssuesApi['enablePullAutoMerge']>,
     disablePullAutoMerge: (request) =>

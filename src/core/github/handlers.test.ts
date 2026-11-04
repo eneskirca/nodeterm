@@ -68,6 +68,9 @@ describe('registerGitHubIssueHandlers', () => {
       setFileViewed: async (...args: unknown[]) => { calls.push(['setFileViewed', ...args]); return { ok: true as const } },
       setReviewThreadResolved: async (...args: unknown[]) => { calls.push(['setReviewThreadResolved', ...args]); return { ok: true as const } },
       applySuggestion: async (...args: unknown[]) => { calls.push(['applySuggestion', ...args]); return { ok: true as const } },
+      setPullLabels: async (...args: unknown[]) => { calls.push(['setPullLabels', ...args]); return { ok: true as const } },
+      setPullAssignees: async (...args: unknown[]) => { calls.push(['setPullAssignees', ...args]); return { ok: true as const } },
+      repoLabels: async (...args: unknown[]) => { calls.push(['repoLabels', ...args]); return { status: 'ok' as const, labels: [] } },
       pullForBranch: async (...args: unknown[]) => { calls.push(['branch', ...args]); return { status: 'ok' as const, defaultBranch: 'main' } },
       createPull: async (...args: unknown[]) => { calls.push(['create', ...args]); return { ok: true as const, pullNumber: 3 } },
       issueConversation: async (...args: unknown[]) => {
@@ -106,6 +109,9 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullFileViewed]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, path: 'a.ts', viewed: true })
     await platform.handlers[IPC.githubIssuesPullThreadResolved]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, threadId: 4, resolved: true })
     await platform.handlers[IPC.githubIssuesPullApplySuggestion]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40), commentId: 4 })
+    await platform.handlers[IPC.githubIssuesPullLabels]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, label: 'bug', add: true })
+    await platform.handlers[IPC.githubIssuesPullAssignees]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, login: 'ana', add: false })
+    await platform.handlers[IPC.githubIssuesRepoLabels]('p1', 'o/r')
     await platform.handlers[IPC.githubIssuesPullForBranch]('p1', 'o/r', 'feat/x')
     await platform.handlers[IPC.githubIssuesPullCreate]({ projectId: 'p1', repository: 'o/r', head: 'feat/x', base: 'main', title: 't', body: '', draft: true })
     await platform.handlers[IPC.githubIssuesIssueConversation]('p1', 'o/r', 5)
@@ -140,6 +146,9 @@ describe('registerGitHubIssueHandlers', () => {
       ['setFileViewed', { projectId: 'p1', repository: 'o/r', pullNumber: 12, path: 'a.ts', viewed: true }],
       ['setReviewThreadResolved', { projectId: 'p1', repository: 'o/r', pullNumber: 12, threadId: 4, resolved: true }],
       ['applySuggestion', { projectId: 'p1', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40), commentId: 4 }],
+      ['setPullLabels', { projectId: 'p1', repository: 'o/r', pullNumber: 12, label: 'bug', add: true }],
+      ['setPullAssignees', { projectId: 'p1', repository: 'o/r', pullNumber: 12, login: 'ana', add: false }],
+      ['repoLabels', { projectId: 'p1', repository: 'o/r' }],
       ['branch', { projectId: 'p1', repository: 'o/r', head: 'feat/x' }],
       ['create', { projectId: 'p1', repository: 'o/r', head: 'feat/x', base: 'main', title: 't', body: '', draft: true }],
       ['issueConversation', { projectId: 'p1', repository: 'o/r', issueNumber: 5 }],

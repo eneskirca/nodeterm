@@ -1,4 +1,4 @@
-// The pull node's GitHub writes (comment, line comment, review, merge, request reviewer, update branch, auto-merge on and off, file viewed, thread resolved, apply suggestion), "New pull
+// The pull node's GitHub writes (comment, line comment, review, merge, request reviewer, update branch, auto-merge on and off, file viewed, thread resolved, apply suggestion, labels, assignees), "New pull
 // request"'s create and the issues node's comment happen only on a user's click.
 // No canvas-control path may reach them: an agent's verb must never post to GitHub (spec: "no
 // canvas-control command calls a write"). This pins it at the source of every control shell.
@@ -22,7 +22,7 @@ const CONTROL_SOURCES = [
   'src/shared/pr-created-hook.ts'
 ]
 const WRITES =
-  /commentOnPull|reviewPull|mergePull|githubIssuesPullComment|githubIssuesPullReview|githubIssuesPullMerge|pull-comment|pull-review|pull-merge|createIssueComment|requestPullReviewer|githubIssuesPullRequestReviewer|pull-request-reviewer|commentOnPullLine|createPullLineComment|githubIssuesPullLineComment|pull-line-comment|\bcreatePull\b|githubIssuesPullCreate|pull-create|updatePullBranch|githubIssuesPullUpdateBranch|pull-update-branch|PullAutoMerge|pull-auto-merge|setFileViewed|githubIssuesPullFileViewed|pull-file-viewed|setReviewThreadResolved|githubIssuesPullThreadResolved|pull-thread-resolved|applySuggestion|githubIssuesPullApplySuggestion|pull-apply-suggestion|commentOnIssue|githubIssuesIssueComment|issue-comment\b/
+  /commentOnPull|reviewPull|mergePull|githubIssuesPullComment|githubIssuesPullReview|githubIssuesPullMerge|pull-comment|pull-review|pull-merge|createIssueComment|requestPullReviewer|githubIssuesPullRequestReviewer|pull-request-reviewer|commentOnPullLine|createPullLineComment|githubIssuesPullLineComment|pull-line-comment|\bcreatePull\b|githubIssuesPullCreate|pull-create|updatePullBranch|githubIssuesPullUpdateBranch|pull-update-branch|PullAutoMerge|pull-auto-merge|setFileViewed|githubIssuesPullFileViewed|pull-file-viewed|setReviewThreadResolved|githubIssuesPullThreadResolved|pull-thread-resolved|applySuggestion|githubIssuesPullApplySuggestion|pull-apply-suggestion|setPullLabel|setPullAssignee|githubIssuesPullLabels|githubIssuesPullAssignees|pull-labels|pull-assignees|commentOnIssue|githubIssuesIssueComment|issue-comment\b/
 
 describe('pull writes guard', () => {
   it.each(CONTROL_SOURCES)('%s names no pull write', (file) => {

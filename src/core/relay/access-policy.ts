@@ -469,6 +469,7 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullCommitFileContents,
   IPC.githubIssuesRepoMergeMethods,
   IPC.githubIssuesRepoCollaborators,
+  IPC.githubIssuesRepoLabels,
   IPC.githubIssuesPullForBranch,
   IPC.githubIssuesClaimPullAutoMove,
   IPC.githubIssuesNotePullWaits,
@@ -538,6 +539,8 @@ export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullFileViewed,
   IPC.githubIssuesPullThreadResolved,
   IPC.githubIssuesPullApplySuggestion,
+  IPC.githubIssuesPullLabels,
+  IPC.githubIssuesPullAssignees,
   IPC.githubIssuesIssueComment
 ])
 

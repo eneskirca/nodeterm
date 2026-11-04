@@ -605,6 +605,8 @@ export const IPC = {
   githubIssuesPullFileViewed: 'githubIssues:pull-file-viewed',
   githubIssuesPullThreadResolved: 'githubIssues:pull-thread-resolved',
   githubIssuesPullApplySuggestion: 'githubIssues:pull-apply-suggestion',
+  githubIssuesPullLabels: 'githubIssues:pull-labels',
+  githubIssuesPullAssignees: 'githubIssues:pull-assignees',
   // The issues node: one issue's comments (a read, classified like the pull reads) and a comment on
   // it (a write like the pull writes: a user click only, owner-only for relay peers).
   githubIssuesIssueConversation: 'githubIssues:issue-conversation',
@@ -613,6 +615,7 @@ export const IPC = {
   githubIssuesRepoMergeMethods: 'githubIssues:repo-merge-methods',
   // "Request review"'s people list: a read, classified like the pull reads above.
   githubIssuesRepoCollaborators: 'githubIssues:repo-collaborators',
+  githubIssuesRepoLabels: 'githubIssues:repo-labels',
   githubIssuesClaimPullAutoMove: 'githubIssues:claim-pull-auto-move',
   githubIssuesNotePullWaits: 'githubIssues:note-pull-waits',
   githubIssuesChanged: (projectId: string) => `githubIssues:changed:${projectId}`,

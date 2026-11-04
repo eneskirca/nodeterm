@@ -1,5 +1,6 @@
 import type { CorePlatform } from '../platform'
 import { IPC } from '../../shared/ipc'
+import type { GitHubRepoLabelsResult } from '../../shared/github-pull-sidebar'
 import type {
   CreateMappedLabelsResult,
   GitHubCloseReason,
@@ -79,6 +80,9 @@ export interface GitHubIssueHandlerService {
   setFileViewed(request: { projectId: string; repository: string; pullNumber: number; path: string; viewed: boolean }): Promise<PullWriteResult>
   setReviewThreadResolved(request: { projectId: string; repository: string; pullNumber: number; threadId: number; resolved: boolean }): Promise<PullWriteResult>
   applySuggestion(request: { projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number }): Promise<PullWriteResult>
+  setPullLabels(request: { projectId: string; repository: string; pullNumber: number; label: string; add: boolean }): Promise<PullWriteResult>
+  setPullAssignees(request: { projectId: string; repository: string; pullNumber: number; login: string; add: boolean }): Promise<PullWriteResult>
+  repoLabels(request: { projectId: string; repository: string }): Promise<GitHubRepoLabelsResult>
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
   }): Promise<PullWriteResult>
@@ -150,6 +154,10 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesPullFileViewed, (request) => service.setFileViewed(request))
   platform.handle(IPC.githubIssuesPullThreadResolved, (request) => service.setReviewThreadResolved(request))
   platform.handle(IPC.githubIssuesPullApplySuggestion, (request) => service.applySuggestion(request))
+  platform.handle(IPC.githubIssuesPullLabels, (request) => service.setPullLabels(request))
+  platform.handle(IPC.githubIssuesPullAssignees, (request) => service.setPullAssignees(request))
+  platform.handle(IPC.githubIssuesRepoLabels, (projectId: string, repository: string) =>
+    service.repoLabels({ projectId, repository }))
   platform.handle(IPC.githubIssuesRepoCollaborators, (projectId: string, repository: string) =>
     service.repoCollaborators({ projectId, repository }))
   platform.handle(IPC.githubIssuesPullForBranch, (projectId: string, repository: string, head: string) =>

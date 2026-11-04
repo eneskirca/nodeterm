@@ -1,5 +1,6 @@
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
 import type { GitHubPullTimelineResult } from './github-pull-timeline'
+import type { GitHubRepoLabelsResult } from './github-pull-sidebar'
 import type {
   GitHubPullConversationResult,
   GitHubIssueConversationResult,
@@ -365,6 +366,12 @@ export interface GitHubIssuesApi {
   setReviewThreadResolved(request: { projectId: string; repository: string; pullNumber: number; threadId: number; resolved: boolean }): Promise<PullWriteResult>
   /** Commit one comment's suggestion to the head branch, pinned to the file at `headSha`. A user click only, never an agent verb. */
   applySuggestion(request: { projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number }): Promise<PullWriteResult>
+  /** Add or remove one existing repository label on the PR. A user click only, never an agent verb. */
+  setPullLabels(request: { projectId: string; repository: string; pullNumber: number; label: string; add: boolean }): Promise<PullWriteResult>
+  /** Add or remove one assignee on the PR. A user click only, never an agent verb. */
+  setPullAssignees(request: { projectId: string; repository: string; pullNumber: number; login: string; add: boolean }): Promise<PullWriteResult>
+  /** The repository's labels (name and color) for the sidebar's "Add label". Same refusals as `pullDetail`. */
+  repoLabels(projectId: string, repository: string): Promise<GitHubRepoLabelsResult>
   /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
