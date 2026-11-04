@@ -1111,3 +1111,54 @@ describe('GitHubIssuesClient pull labels and assignees', () => {
     expect(calls).toEqual([])
   })
 })
+
+describe('GitHubIssuesClient pull lifecycle', () => {
+  const recorder = (answers: unknown[] = []) => {
+    const calls: Array<{ url: string; method?: string; body?: unknown }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+        return response(answers[calls.length - 1] ?? {})
+      }
+    })
+    return { client, calls }
+  }
+
+  it('closes and reopens the PR', async () => {
+    const { client, calls } = recorder()
+    await client.setPullState('o/r', 7, false)
+    await client.setPullState('o/r', 7, true)
+    expect(calls).toEqual([
+      { url: 'https://api.github.com/repos/o/r/pulls/7', method: 'PATCH', body: { state: 'closed' } },
+      { url: 'https://api.github.com/repos/o/r/pulls/7', method: 'PATCH', body: { state: 'open' } }
+    ])
+  })
+
+  it('marks a draft ready for review on the PR named by repository and number', async () => {
+    const { client, calls } = recorder([
+      { data: { repository: { pullRequest: { id: 'PR_node' } } } },
+      { data: { markPullRequestReadyForReview: { clientMutationId: null } } }
+    ])
+    await client.markPullReady('o/r', 7)
+    expect((calls[1].body as { query: string }).query).toContain('markPullRequestReadyForReview')
+    expect((calls[1].body as { variables: unknown }).variables).toEqual({ id: 'PR_node' })
+  })
+
+  it('deletes one branch ref, each path segment encoded', async () => {
+    const { client, calls } = recorder()
+    await client.deleteBranchRef('o/r', 'feat/a#b')
+    expect(calls).toEqual([{ url: 'https://api.github.com/repos/o/r/git/refs/heads/feat/a%23b', method: 'DELETE', body: undefined }])
+  })
+
+  it('refuses a bad number, flag or branch before any request', async () => {
+    const { client, calls } = recorder()
+    await expect(client.setPullState('o/r', 0, true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setPullState('o/r', 7, 'yes' as unknown as boolean)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.markPullReady('o/r', 0)).rejects.toMatchObject({ code: 'invalid-request' })
+    for (const branch of ['', '../main', 'a//b', '-x']) {
+      await expect(client.deleteBranchRef('o/r', branch)).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    expect(calls).toEqual([])
+  })
+})

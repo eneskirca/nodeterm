@@ -763,6 +763,29 @@ export class GitHubIssuesClient {
     })
   }
 
+  /** Close (`open` false) or reopen the PR (`PATCH /pulls/{n}`). */
+  async setPullState(repository: string, pullNumber: number, open: boolean): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || typeof open !== 'boolean') throw new GitHubClientError('invalid-request')
+    await this.request(`/repos/${repository}/pulls/${pullNumber}`, {
+      method: 'PATCH', body: JSON.stringify({ state: open ? 'open' : 'closed' })
+    })
+  }
+
+  /** Mark a draft PR ready for review (GraphQL `markPullRequestReadyForReview`). */
+  async markPullReady(repository: string, pullNumber: number): Promise<void> {
+    const id = await this.pullNodeId(repository, pullNumber)
+    await this.graphqlWrite(
+      'mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ clientMutationId } }', { id })
+  }
+
+  /** Delete one branch of this repository (`DELETE /git/refs/heads/{branch}`). The caller decides it may go. */
+  async deleteBranchRef(repository: string, branch: string): Promise<void> {
+    safeRepository(repository)
+    if (!isPullBranchName(branch)) throw new GitHubClientError('invalid-request')
+    await this.request(`/repos/${repository}/git/refs/heads/${branch.split('/').map(encodeURIComponent).join('/')}`, { method: 'DELETE' })
+  }
+
   /** Open a pull request (`POST /pulls`) from `head`, a branch of this repository, into `base`. */
   async createPull(repository: string, pull: PullCreateDraft): Promise<{ number: number }> {
     safeRepository(repository)
