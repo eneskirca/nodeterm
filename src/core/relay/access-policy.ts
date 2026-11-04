@@ -542,6 +542,9 @@ export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullApplySuggestion,
   IPC.githubIssuesPullLabels,
   IPC.githubIssuesPullAssignees,
+  IPC.githubIssuesPullState,
+  IPC.githubIssuesPullReady,
+  IPC.githubIssuesPullDeleteBranch,
   IPC.githubIssuesIssueComment
 ])
 

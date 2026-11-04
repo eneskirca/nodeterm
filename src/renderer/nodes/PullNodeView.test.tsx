@@ -53,6 +53,8 @@ timeline: GitHubPullTimelineResult = { status: 'ok', items: [], openedAt: '2026-
     enablePullAutoMerge: ReturnType<typeof vi.fn>; disablePullAutoMerge: ReturnType<typeof vi.fn>
     setFileViewed: ReturnType<typeof vi.fn>
     setReviewThreadResolved: ReturnType<typeof vi.fn>; applySuggestion: ReturnType<typeof vi.fn>
+    setPullState: ReturnType<typeof vi.fn>; markPullReady: ReturnType<typeof vi.fn>
+    deleteHeadBranch: ReturnType<typeof vi.fn>; pullForBranch: ReturnType<typeof vi.fn>
   } {
   return {
     pullDetail: vi.fn(async () => result),
@@ -82,7 +84,11 @@ timeline: GitHubPullTimelineResult = { status: 'ok', items: [], openedAt: '2026-
     applySuggestion: vi.fn(async () => ({ ok: true as const })),
     setPullLabels: vi.fn(async () => ({ ok: true as const })),
     setPullAssignees: vi.fn(async () => ({ ok: true as const })),
-    repoLabels: vi.fn(async () => ({ status: 'ok' as const, labels: [] }))
+    repoLabels: vi.fn(async () => ({ status: 'ok' as const, labels: [] })),
+    setPullState: vi.fn(async () => ({ ok: true as const })),
+    markPullReady: vi.fn(async () => ({ ok: true as const })),
+    deleteHeadBranch: vi.fn(async () => ({ ok: true as const })),
+    pullForBranch: vi.fn(async () => ({ status: 'ok' as const, defaultBranch: 'main' }))
   }
 }
 
@@ -1298,5 +1304,73 @@ describe('PullNodeView avatars', () => {
     await act(async () => { image.dispatchEvent(new Event('error')) })
     expect(broken.querySelector('.pull-head img')).toBeNull()
     expect(broken.querySelector('.pull-head [role="img"][aria-label="octocat"]')?.textContent).toBe('O')
+  })
+})
+
+describe('PullNodeView lifecycle writes', () => {
+  const at = { projectId: 'p', repository: 'o/r', pullNumber: 7 }
+  const withDetail = (change: Partial<GitHubPullDetail>) => fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 })
+
+  it('closes an open PR and reopens a closed one, then reloads', async () => {
+    const api = withDetail({})
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
+    expect(button(view, 'Reopen pull request')).toBeUndefined()
+    await act(async () => { button(view, 'Close pull request').click() })
+    expect(api.setPullState).toHaveBeenCalledWith({ ...at, open: false })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+    act(() => root.unmount()); host.remove()
+    const closed = withDetail({ lifecycle: 'closed', merge: undefined })
+    const again = await render(closed)
+    expect(button(again, 'Close pull request')).toBeUndefined()
+    await act(async () => { button(again, 'Reopen pull request').click() })
+    expect(closed.setPullState).toHaveBeenCalledWith({ ...at, open: true })
+  })
+
+  it('marks a draft ready for review; the button is off while the write runs', async () => {
+    const api = withDetail({ lifecycle: 'draft' })
+    let finish: (value: { ok: true }) => void = () => undefined
+    api.markPullReady.mockReturnValue(new Promise((resolve) => { finish = resolve }))
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
+    await act(async () => { button(view, 'Ready for review').click() })
+    expect(api.markPullReady).toHaveBeenCalledWith(at)
+    expect(button(view, 'Ready for review').disabled).toBe(true)
+    expect(button(view, 'Close pull request').disabled).toBe(true)
+    await act(async () => { finish({ ok: true }) })
+    expect(button(view, 'Ready for review').disabled).toBe(false)
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers Delete branch after a merge for a same-repository head, then says it was deleted', async () => {
+    const api = withDetail({ lifecycle: 'merged', merge: undefined })
+    const view = await render(api)
+    expect(api.pullForBranch).toHaveBeenCalledWith('p', 'o/r', 'feat/pull')
+    await act(async () => { button(view, 'Delete branch feat/pull').click() })
+    expect(api.deleteHeadBranch).toHaveBeenCalledWith(at)
+    expect(button(view, 'Delete branch feat/pull')).toBeUndefined()
+    expect(view.textContent).toContain('Branch feat/pull was deleted.')
+  })
+
+  it.each([
+    ['an open PR', { lifecycle: 'open' }, 'main'],
+    ['a closed PR', { lifecycle: 'closed', merge: undefined }, 'main'],
+    ['a fork head', { lifecycle: 'merged', merge: undefined, fromFork: true }, 'main'],
+    ['the default branch', { lifecycle: 'merged', merge: undefined }, 'feat/pull']
+  ] as const)('has no Delete branch for %s', async (_name, change, defaultBranch) => {
+    const api = withDetail(change)
+    api.pullForBranch.mockResolvedValue({ status: 'ok', defaultBranch })
+    const view = await render(api)
+    expect([...view.querySelectorAll('button')].some((el) => el.textContent?.startsWith('Delete branch'))).toBe(false)
+    expect(api.deleteHeadBranch).not.toHaveBeenCalled()
+  })
+
+  it('says why a protected branch was not deleted', async () => {
+    const api = withDetail({ lifecycle: 'merged', merge: undefined })
+    api.deleteHeadBranch.mockResolvedValue({ ok: false, reason: 'branch-protected' })
+    const view = await render(api)
+    await act(async () => { button(view, 'Delete branch feat/pull').click() })
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('protected')
+    expect(button(view, 'Delete branch feat/pull')).toBeDefined()
   })
 })

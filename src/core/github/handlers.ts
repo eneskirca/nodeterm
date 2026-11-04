@@ -85,6 +85,9 @@ export interface GitHubIssueHandlerService {
   applySuggestion(request: { projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number }): Promise<PullWriteResult>
   setPullLabels(request: { projectId: string; repository: string; pullNumber: number; label: string; add: boolean }): Promise<PullWriteResult>
   setPullAssignees(request: { projectId: string; repository: string; pullNumber: number; login: string; add: boolean }): Promise<PullWriteResult>
+  setPullState(request: { projectId: string; repository: string; pullNumber: number; open: boolean }): Promise<PullWriteResult>
+  markPullReady(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
+  deleteHeadBranch(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
   repoLabels(request: { projectId: string; repository: string }): Promise<GitHubRepoLabelsResult>
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
@@ -162,6 +165,9 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesPullApplySuggestion, (request) => service.applySuggestion(request))
   platform.handle(IPC.githubIssuesPullLabels, (request) => service.setPullLabels(request))
   platform.handle(IPC.githubIssuesPullAssignees, (request) => service.setPullAssignees(request))
+  platform.handle(IPC.githubIssuesPullState, (request) => service.setPullState(request))
+  platform.handle(IPC.githubIssuesPullReady, (request) => service.markPullReady(request))
+  platform.handle(IPC.githubIssuesPullDeleteBranch, (request) => service.deleteHeadBranch(request))
   platform.handle(IPC.githubIssuesRepoLabels, (projectId: string, repository: string) =>
     service.repoLabels({ projectId, repository }))
   platform.handle(IPC.githubIssuesRepoCollaborators, (projectId: string, repository: string) =>

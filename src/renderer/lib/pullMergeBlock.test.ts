@@ -20,7 +20,7 @@ describe('mergeBlock', () => {
     ['undecided: GitHub answers the merge itself', { merge: 'undecided' }, undefined, null, null],
     ['unstable: a non-required check failed, merge still allowed', { merge: 'unstable' }, checks(['failed']), null, null],
     ['draft', { lifecycle: 'draft', merge: 'blocked' }, undefined, 'draft',
-      'A draft pull request cannot be merged. Mark it ready for review on GitHub first.'],
+      'A draft pull request cannot be merged. Mark it ready for review first.'],
     ['closed', { lifecycle: 'closed', merge: undefined }, undefined, 'closed', 'This pull request is closed.'],
     ['merged', { lifecycle: 'merged', merge: undefined }, undefined, 'merged', 'This pull request is already merged.'],
     ['conflict', { merge: 'conflict' }, undefined, 'conflict',

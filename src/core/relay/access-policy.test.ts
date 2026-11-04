@@ -34,7 +34,8 @@ describe('access policy', () => {
   it('pull request writes run on the owner\'s GitHub token, so only an owner may send them', () => {
     for (const m of [IPC.githubIssuesPullComment, IPC.githubIssuesPullReview, IPC.githubIssuesPullMerge, IPC.githubIssuesPullRequestReviewer,
       IPC.githubIssuesPullLineComment, IPC.githubIssuesPullCreate, IPC.githubIssuesPullUpdateBranch, IPC.githubIssuesPullAutoMerge, IPC.githubIssuesPullAutoMergeOff,
-      IPC.githubIssuesPullFileViewed, IPC.githubIssuesPullThreadResolved, IPC.githubIssuesPullApplySuggestion, IPC.githubIssuesIssueComment, IPC.githubIssuesPullLabels, IPC.githubIssuesPullAssignees]) {
+      IPC.githubIssuesPullFileViewed, IPC.githubIssuesPullThreadResolved, IPC.githubIssuesPullApplySuggestion, IPC.githubIssuesIssueComment, IPC.githubIssuesPullLabels, IPC.githubIssuesPullAssignees,
+      IPC.githubIssuesPullState, IPC.githubIssuesPullReady, IPC.githubIssuesPullDeleteBranch]) {
       const args = [{ projectId: 'P', repository: 'o/r', pullNumber: 7, body: 'x' }]
       expect(decideAccess('req', m, args, ctx('owner'))).toEqual({ allow: true })
       for (const role of ['editor', 'commenter', 'viewer'] as const) {

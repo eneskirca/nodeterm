@@ -610,6 +610,12 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullLabels, request) as ReturnType<GitHubIssuesApi['setPullLabels']>,
     setPullAssignees: (request) =>
       client.request(IPC.githubIssuesPullAssignees, request) as ReturnType<GitHubIssuesApi['setPullAssignees']>,
+    setPullState: (request) =>
+      client.request(IPC.githubIssuesPullState, request) as ReturnType<GitHubIssuesApi['setPullState']>,
+    markPullReady: (request) =>
+      client.request(IPC.githubIssuesPullReady, request) as ReturnType<GitHubIssuesApi['markPullReady']>,
+    deleteHeadBranch: (request) =>
+      client.request(IPC.githubIssuesPullDeleteBranch, request) as ReturnType<GitHubIssuesApi['deleteHeadBranch']>,
     repoLabels: (projectId, repository) =>
       client.request(IPC.githubIssuesRepoLabels, projectId, repository) as ReturnType<GitHubIssuesApi['repoLabels']>,
     enablePullAutoMerge: (request) =>

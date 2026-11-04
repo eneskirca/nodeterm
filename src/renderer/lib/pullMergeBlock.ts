@@ -20,7 +20,7 @@ export function mergeBlock(
   checks?: PullChecksRead
 ): MergeBlock | null {
   if (d.lifecycle === 'draft') {
-    return { kind: 'draft', text: 'A draft pull request cannot be merged. Mark it ready for review on GitHub first.' }
+    return { kind: 'draft', text: 'A draft pull request cannot be merged. Mark it ready for review first.' }
   }
   if (d.lifecycle === 'closed') return { kind: 'closed', text: 'This pull request is closed.' }
   if (d.lifecycle === 'merged') return { kind: 'merged', text: 'This pull request is already merged.' }

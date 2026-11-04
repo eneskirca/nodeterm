@@ -607,6 +607,9 @@ export const IPC = {
   githubIssuesPullApplySuggestion: 'githubIssues:pull-apply-suggestion',
   githubIssuesPullLabels: 'githubIssues:pull-labels',
   githubIssuesPullAssignees: 'githubIssues:pull-assignees',
+  githubIssuesPullState: 'githubIssues:pull-state',
+  githubIssuesPullReady: 'githubIssues:pull-ready',
+  githubIssuesPullDeleteBranch: 'githubIssues:pull-delete-branch',
   // The issues node: one issue's comments (a read, classified like the pull reads) and a comment on
   // it (a write like the pull writes: a user click only, owner-only for relay peers).
   githubIssuesIssueConversation: 'githubIssues:issue-conversation',

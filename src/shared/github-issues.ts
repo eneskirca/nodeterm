@@ -373,6 +373,12 @@ export interface GitHubIssuesApi {
   setPullLabels(request: { projectId: string; repository: string; pullNumber: number; label: string; add: boolean }): Promise<PullWriteResult>
   /** Add or remove one assignee on the PR. A user click only, never an agent verb. */
   setPullAssignees(request: { projectId: string; repository: string; pullNumber: number; login: string; add: boolean }): Promise<PullWriteResult>
+  /** Close (`open` false) or reopen the PR. A user click only, never an agent verb. */
+  setPullState(request: { projectId: string; repository: string; pullNumber: number; open: boolean }): Promise<PullWriteResult>
+  /** Mark a draft PR ready for review. A user click only, never an agent verb. */
+  markPullReady(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
+  /** Delete the head branch of a merged PR from this repository (never the default branch). A user click only. */
+  deleteHeadBranch(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
   /** The repository's labels (name and color) for the sidebar's "Add label". Same refusals as `pullDetail`. */
   repoLabels(projectId: string, repository: string): Promise<GitHubRepoLabelsResult>
   /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */

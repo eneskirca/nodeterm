@@ -3,6 +3,7 @@ import type { GitHubPullDetail, PullMergeMethod, PullWriteReason, PullWriteResul
 import { isPlainRef } from '@shared/pull-work'
 import { PullChecks } from '../../components/kanban/GitHubIssueSummaryModal'
 import { mergeBlock, type PullChecksRead } from '../../lib/pullMergeBlock'
+import { PullLifecycleActions } from './PullLifecycleActions'
 import { FAILURE_TEXT, METHOD_TEXT, REFUSAL_TEXT, useWrite, WRITE_TEXT, type ViewProps } from './shared'
 import type { MergeMethodsRead } from './useMergeMethods'
 
@@ -115,6 +116,7 @@ export function PullMergeBox(props: ViewProps & {
           {refusal.auto && refusal.reason === 'head-moved' ? AUTO_MOVED_TEXT : WRITE_TEXT[refusal.reason]}
         </p>
       )}
+      <PullLifecycleActions {...props} detail={d} />
       {open && (
         <div className="pull-merge__backdrop">
           <div className="pull-merge__dialog" role="dialog" aria-modal="true"
