@@ -141,7 +141,7 @@ export type OpenPullSection = {
   branch?: string
   /** Author avatars as data URLs keyed by user id (the board's `avatarDataUrls`). */
   avatars?: Record<string, string>
-} & ({ rows: OpenPullRow[] } | { reason: string })
+} & ({ rows: OpenPullRow[] } | { reason: string; /** The reason is "allow this repository": the row opens the picker, which has the Allow step. */ allow?: true })
 
 /**
  * The bag of creation callbacks every surface already has. Passed in (not imported) so the spec
@@ -542,7 +542,9 @@ export interface OpenPullMenuRow {
  *  that says it, never as an empty list. */
 export function openPullMenuRows(section: OpenPullSection, handlers: AddHandlers, at?: AddPos): OpenPullMenuRow[] {
   if ('reason' in section) {
-    return [{ key: 'pull-reason', label: section.reason, icon: <IconBranch />, disabled: true, hint: section.reason, onClick: () => {} }]
+    return section.allow
+      ? [{ key: 'pull-reason', label: section.reason, icon: <IconBranch />, hint: section.reason, onClick: () => handlers.pull(at) }]
+      : [{ key: 'pull-reason', label: section.reason, icon: <IconBranch />, disabled: true, hint: section.reason, onClick: () => {} }]
   }
   // A repo with many open PRs would push the rest of the menu out of view: the first few (review
   // requested first, the section's order), then the picker for the rest.

@@ -48,13 +48,13 @@ describe('openPullSection', () => {
   it('says why there is no list: no remote, signed out, not allowed, no answer', () => {
     expect(openPullSection(view({ repository: undefined }), undefined)).toEqual({ reason: NO_GITHUB_REMOTE_TEXT })
     expect(openPullSection(view({ signedIn: false }), board([pull(1)]))).toEqual({ reason: REFUSAL_TEXT['signed-out']('o/r') })
-    expect(openPullSection(view({ approved: false }), undefined, 'main')).toEqual({ branch: 'main', reason: notAllowedText('o/r') })
+    expect(openPullSection(view({ approved: false }), undefined, 'main')).toEqual({ branch: 'main', reason: notAllowedText('o/r'), allow: true })
     expect(openPullSection(undefined, undefined)).toEqual({ reason: FAILURE_TEXT.unreachable })
     expect(openPullSection(view(), undefined)).toEqual({ reason: FAILURE_TEXT.unreachable })
   })
 
   it('an unapproved repository says "allow", not "signed out" (the host skips the sign-in read then)', () => {
-    expect(openPullSection(view({ approved: false, signedIn: false }), undefined)).toEqual({ reason: notAllowedText('o/r') })
+    expect(openPullSection(view({ approved: false, signedIn: false }), undefined)).toEqual({ reason: notAllowedText('o/r'), allow: true })
   })
 
   it('a sign-in that could not be checked still lists what memory holds', () => {

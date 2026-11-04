@@ -665,6 +665,14 @@ describe('open pull requests first', () => {
     expect(openPullMenuRows(pulls, handlers()).map((row) => row.label)).not.toContain('More pull requests…')
   })
 
+  it('an "allow this repository" reason is a clickable row that opens the picker (its Allow step)', () => {
+    const picked: unknown[] = []
+    const [row] = openPullMenuRows({ reason: 'Allow o/r.', allow: true }, handlers({ pull: (at) => picked.push(at ?? 'dock') }), { x: 5, y: 6 })
+    expect(row.disabled).toBeFalsy()
+    row.onClick()
+    expect(picked).toEqual([{ x: 5, y: 6 }])
+  })
+
   it('shows the reason as one disabled row, never an empty list', () => {
     const items = buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), { ...ctx, pulls: { reason: 'Sign in first.' } }, [])
     expect(items[0]).toMatchObject({ label: 'Sign in first.', disabled: true })

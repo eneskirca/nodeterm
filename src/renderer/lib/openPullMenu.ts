@@ -9,7 +9,7 @@ import type { OpenPullSection } from './addMenuSpec'
 /** The add menu's own sentence for a folder with no GitHub remote (its "Pull request…" toast). */
 export const NO_GITHUB_REMOTE_TEXT = 'This folder has no GitHub remote. Add one with git remote add origin <url>.'
 export const notAllowedText = (repository: string): string =>
-  `Allow ${repository} on this computer to list its pull requests: pick Pull request… below.`
+  `Allow ${repository} on this computer to list its pull requests: click here to allow it.`
 export const NO_READ_YET_TEXT = 'Open pull requests show after the first GitHub read.'
 export const NO_OPEN_PULLS_TEXT = 'No open pull requests.'
 
@@ -24,7 +24,7 @@ export function openPullSection(
   if (!repository) return { ...base, reason: NO_GITHUB_REMOTE_TEXT }
   // Approval first: the host does not resolve sign-in for an unapproved repository (host.ts
   // reports activeProvider null), so checking sign-in first said "not signed in" to a signed-in user.
-  if (!view.project?.approved) return { ...base, reason: notAllowedText(repository) }
+  if (!view.project?.approved) return { ...base, reason: notAllowedText(repository), allow: true }
   // A sign-in that could not be CHECKED is not "signed out": the memory below may still answer.
   if (!view.auth.activeProvider && !view.auth.unreachable) return { ...base, reason: REFUSAL_TEXT['signed-out'](repository) }
   if (!board) return { ...base, reason: FAILURE_TEXT.unreachable }
