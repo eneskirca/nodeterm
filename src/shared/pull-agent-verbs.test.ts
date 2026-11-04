@@ -9,6 +9,8 @@ describe('parsePrShow', () => {
       .toEqual({ ok: true, node: 'pull-1', show: { tab: 'conversation' } })
     expect(parsePrShow({ node: 'pull-1', tab: 'commits' }))
       .toEqual({ ok: true, node: 'pull-1', show: { tab: 'commits' } })
+    expect(parsePrShow({ node: 'pull-1', tab: 'checks' }))
+      .toEqual({ ok: true, node: 'pull-1', show: { tab: 'checks' } })
     expect(parsePrShow({ node: 'pull-1', file: 'src/a.ts', lines: '12-30' }))
       .toEqual({ ok: true, node: 'pull-1', show: { tab: 'files', file: 'src/a.ts', lines: { start: 12, end: 30 } } })
     expect(parsePrShow({ node: 'pull-1', file: 'src/a.ts', lines: '7' }))
@@ -18,7 +20,7 @@ describe('parsePrShow', () => {
   it('refuses a missing node, an unknown flag, a bad tab, lines without a file and a reversed range', () => {
     expect(parsePrShow({ tab: 'files' })).toMatchObject({ ok: false })
     expect(parsePrShow({ node: 'pull-1', merge: 'x' })).toMatchObject({ ok: false, error: expect.stringContaining('--merge') })
-    expect(parsePrShow({ node: 'pull-1', tab: 'checks' })).toMatchObject({ ok: false })
+    expect(parsePrShow({ node: 'pull-1', tab: 'bogus' })).toMatchObject({ ok: false })
     expect(parsePrShow({ node: 'pull-1', lines: '3-4' })).toMatchObject({ ok: false })
     expect(parsePrShow({ node: 'pull-1', file: 'a.ts', lines: '9-3' })).toMatchObject({ ok: false })
     expect(parsePrShow({ node: 'pull-1', file: 'a\nb' })).toMatchObject({ ok: false })

@@ -75,6 +75,8 @@ export type ViewProps = {
   pull: PullNodeRef
   refreshTick: number
   onOpenExternal: (url: string) => void
+  /** Opens a github.com page in a web node beside this node (the Checks tab's Log). */
+  onOpenWeb?: (url: string) => void
   /** A write landed: the node reads again (the core dropped its held reads for this PR). */
   onWritten: () => void
   /** "Work on this PR": the PR's head in a fresh worktree with the default agent (Canvas does it).

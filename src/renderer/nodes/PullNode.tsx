@@ -16,6 +16,7 @@ import { guardConcurrentRestart } from '../terminal/agent-restart'
 import { sendPullFeedback } from '../lib/pullFeedbackSend'
 import { allowProjectRepo } from '../lib/allowRepo'
 import { PULL_WORK_EVENT, type PullWorkRequest } from '@shared/pull-work'
+import { PULL_WEB_EVENT, type PullWebRequest } from '../lib/openPullNode'
 
 /**
  * A pull request on the canvas: Conversation and Files changed tabs. Node data holds only the reference
@@ -129,6 +130,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           onTab={(tab) => { if (pull) updateNodeData(id, { pull: { ...pull, tab } }) }}
           onSelectFile={(selectedFile) => { if (pull) updateNodeData(id, { pull: { ...pull, selectedFile } }) }}
           onOpenExternal={(url) => void api.shell.openExternal(url)}
+          onOpenWeb={(url) => window.dispatchEvent(new CustomEvent<PullWebRequest>(PULL_WEB_EVENT, { detail: { nodeId: id, url } }))}
           onWritten={() => setRefreshTick((tick) => tick + 1)}
           onWork={(detail, conflict) => window.dispatchEvent(new CustomEvent<PullWorkRequest>(PULL_WORK_EVENT, { detail: { nodeId: id, detail, conflict } }))}
           proposal={proposal}

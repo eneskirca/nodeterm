@@ -5,14 +5,14 @@ import type { PullChecksRead } from '../../lib/pullMergeBlock'
 import type { LinkedAgent } from '../../state/pullAgent'
 import { readState, usePullRead, type ViewProps } from './shared'
 
+export const NO_AGENT_TEXT = 'No agent is linked to this node. Use Work on this PR, or draw a context link from an agent.'
+
 /** "Send to agent…": a checklist of the unresolved line comment threads and the failing checks, the
  *  linked agent to send to (picked when there are several), then Send. Nothing is written to GitHub. */
 export function PullSendToAgent(props: ViewProps & { detail: GitHubPullDetail; checks: PullChecksRead }): React.JSX.Element {
   const { agents = [], sendUnavailable, onSendToAgent } = props
   const [open, setOpen] = useState(false)
-  const why = sendUnavailable ?? (agents.length === 0
-    ? 'No agent is linked to this node. Use Work on this PR, or draw a context link from an agent.'
-    : undefined)
+  const why = sendUnavailable ?? (agents.length === 0 ? NO_AGENT_TEXT : undefined)
   return (
     <div className="pull-send">
       {!open && (

@@ -18937,6 +18937,15 @@ body.focus-mode .dock:hover {
   font-variant-numeric: tabular-nums;
   background: rgba(var(--tint-rgb), 0.12);
 }
+.pull-node__count--failed { color: #fff; background: var(--danger); }
+.pull-checks-tab { display: flex; flex-direction: column; gap: 8px; font-size: 12px; }
+.pull-checks-tab select { align-self: flex-start; }
+.pull-checks-tab__table { width: 100%; border-collapse: collapse; }
+.pull-checks-tab__table th { text-align: left; font-weight: 600; color: rgba(var(--tint-rgb), 0.6); }
+.pull-checks-tab__table th, .pull-checks-tab__table td { padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.pull-checks-tab__name { width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.pull-checks-tab__actions { text-align: right; }
+.pull-checks-tab__actions button + button { margin-left: 6px; }
 .pull-node__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 10px; }
 .pull-node__actions .pull-send { margin: 0; }
 .pull-mergebox {

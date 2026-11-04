@@ -676,7 +676,7 @@ import type { GitHubIssueCardView as DispatchIssueCard } from '@shared/github-is
 import { planIssueWorktree } from '@shared/issue-worktree'
 import { PULL_WORK_EVENT, planPullWorktree, pullWorkPrompt, type PullWorkRequest } from '@shared/pull-work'
 import { ISSUE_OPEN_EVENT, openIssueInNodes, type IssueOpenRequest } from '../lib/openIssueNode'
-import { PULL_OPEN_EVENT, type PullOpenRequest } from '../lib/openPullNode'
+import { isGitHubPage, PULL_OPEN_EVENT, PULL_WEB_EVENT, type PullOpenRequest, type PullWebRequest } from '../lib/openPullNode'
 import { sharedBasePathOf, sharedWorktreeLocationRefusal } from '@shared/worktree-location'
 import {
   frameAgentPlacement,
@@ -11817,6 +11817,19 @@ export function Canvas() {
     window.addEventListener(PULL_OPEN_EVENT, onOpen)
     return () => window.removeEventListener(PULL_OPEN_EVENT, onOpen)
   }, [openListedPull])
+
+  // The pull node's Checks tab "Log": the run's GitHub page in a web node beside that pull node.
+  useEffect(() => {
+    const onOpen = (e: Event): void => {
+      const { nodeId, url } = (e as CustomEvent<PullWebRequest>).detail ?? {}
+      const source = nodesRef.current.find((n) => n.id === nodeId && n.type === 'pull')
+      if (!source || !isGitHubPage(url)) return
+      setNodes((ns) => [...ns, placeSpawned(createWebNode(ns.length, { url }), besideNode(source))])
+      markDirty()
+    }
+    window.addEventListener(PULL_WEB_EVENT, onOpen)
+    return () => window.removeEventListener(PULL_WEB_EVENT, onOpen)
+  }, [setNodes, markDirty, placeSpawned, besideNode])
 
   // The add menu's "Issues…": the open issues of the folder's approved repository. One node per
   // repository: an existing one is framed instead of a second one.

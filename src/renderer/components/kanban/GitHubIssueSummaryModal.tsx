@@ -274,7 +274,7 @@ export function usePullChecks(
   return result
 }
 
-const CHECK_GLYPH = { passed: '✓', failed: '✗', pending: '●', skipped: '–', neutral: '○' } as const
+export const CHECK_GLYPH = { passed: '✓', failed: '✗', pending: '●', skipped: '–', neutral: '○' } as const
 
 /** The checks list. A token that may not read checks (`hidden`) shows NOTHING, and a commit with no
  *  checks says so in words — never a green tick for checks that do not exist. */

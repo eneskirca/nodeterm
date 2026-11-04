@@ -3,6 +3,7 @@ import type { PullLineDraft } from '@shared/github-pull-detail'
 import type { PullNodeRef, PullNodeTab } from '@shared/pull-node'
 import type { PullHighlight, ShownProposal } from '@shared/pull-agent-verbs'
 import { usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
+import { PullChecksTab } from './pull/PullChecksTab'
 import { PullCommitsTab } from './pull/PullCommitsTab'
 import { PullConversationTab } from './pull/PullConversationTab'
 import { PullFilesTab } from './pull/PullFilesTab'
@@ -81,7 +82,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
     <AllowContext.Provider value={props.onAllow}>
       <PullHeader pull={pull} detail={detail}
         avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined} />
-      <PullTabBar pull={pull} shown={shownTab} detail={detail} onTab={onTab} onOpenExternal={onOpenExternal} />
+      <PullTabBar pull={pull} shown={shownTab} detail={detail} checks={checks} onTab={onTab} onOpenExternal={onOpenExternal} />
       {!barAboveMerge && proposalBar}
       {opened.includes('conversation') && (
         <div hidden={shownTab !== 'conversation'}>
@@ -93,6 +94,11 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
       {opened.includes('commits') && (
         <div hidden={shownTab !== 'commits'}>
           <PullCommitsTab {...props} />
+        </div>
+      )}
+      {opened.includes('checks') && (
+        <div hidden={shownTab !== 'checks'}>
+          <PullChecksTab {...props} checks={checks} head={detail?.head.sha} />
         </div>
       )}
       {opened.includes('files') && (

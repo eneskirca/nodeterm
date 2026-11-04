@@ -237,27 +237,22 @@ describe('PullNodeView conversation', () => {
     expect(view.querySelector('[role="status"]')?.textContent?.toLowerCase()).toContain('approve')
   })
 
-  it('names the tabs Conversation and Files changed N, where N is the changed file count', async () => {
+  it('names the tabs Conversation, Checks N and Files changed N, where N is the check run and changed file count', async () => {
     const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'files')
     const tabs = [...view.querySelectorAll('[role="tab"]')]
-    expect(tabs.map((el) => el.textContent)).toEqual(['Conversation', 'Commits', 'Files changed 3'])
-    expect(tabs.map((el) => el.getAttribute('aria-selected'))).toEqual(['false', 'false', 'true'])
+    expect(tabs.map((el) => el.textContent)).toEqual(['Conversation', 'Commits', 'Checks 1', 'Files changed 3'])
+    expect(tabs.map((el) => el.getAttribute('aria-selected'))).toEqual(['false', 'false', 'false', 'true'])
   })
 
   it.each([
     ['overview', 'Conversation'],
     ['conversation', 'Conversation'],
+    ['checks', 'Checks 1'],
     ['files', 'Files changed 3']
   ])('opens a node saved with tab %s on %s', async (saved, label) => {
     const pull = normalizePullRef({ repository: 'o/r', pullNumber: 7, tab: saved })!
     const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', pull.tab)
     expect(view.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe(label)
-  })
-
-  it('shows Conversation for a tab this build has no panel for', async () => {
-    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'checks')
-    expect(view.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Conversation')
-    expect(view.textContent).toContain('No comments or reviews yet.')
   })
 
   it('switches tab through onTab and opens the PR on GitHub from every tab', async () => {
