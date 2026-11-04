@@ -16,12 +16,14 @@ import type {
 } from '@shared/github-pull-detail'
 import { pullWebUrl } from '@shared/pull-node'
 import type { PullHighlight } from '@shared/pull-agent-verbs'
+import type { PullNote } from '@shared/pull-notes'
 import { NoteMarkdown } from '../../components/NoteMarkdown'
 import { TextDiff, type DiffZone } from '../../editor/TextDiff'
 import { openThreadsByPath, pullFileTree, type PullTreeNode } from '../../lib/pullFileTree'
 import { pullLineThreads, type PullLineThread } from '../../lib/pullLineThreads'
 import { Avatar } from './Avatar'
 import { Icon } from './Icon'
+import { PullNoteCard } from './PullNotes'
 import { PullReviewPanel } from './PullReviewPanel'
 import { useSendTo } from './SendTo'
 import { readState, STALE_TEXT, usePullRead, useWrite, WRITE_TEXT, type Read, type ViewProps } from './shared'
@@ -66,6 +68,9 @@ export type FilesTabProps = ViewProps & LineProps & {
   compareTo?: { value: string }
   /** F-07 seam: the line composer's "Note for agent". Absent = the button is off. */
   onNoteForAgent?: (note: PullAgentNote) => void
+  /** F-07: this PR's notes, each shown under its line on All changes. */
+  notes?: readonly PullNote[]
+  onDeleteNote?: (id: string) => void
 }
 
 const ALL = 'all'
@@ -301,7 +306,7 @@ function PullFileDiff(props: BodyProps & {
   file: PullFile; filesUrl: string; lineComments: readonly PullLineComment[]
   resolvedThreads?: readonly number[]; avatars?: PullAvatarDataUrls
 }): React.JSX.Element {
-  const { pull, file, filesUrl, onOpenExternal, highlight, head, lineComments, pending, onAddPending, review, contents: readContents, split } = props
+  const { pull, file, filesUrl, onOpenExternal, highlight, head, lineComments, pending, onAddPending, review, contents: readContents, split, notes, onDeleteNote } = props
   const path = file.path
   // The line the user clicked, where the new-comment box opens.
   const [composing, setComposing] = useState<{ side: PullDiffSide; line: number } | null>(null)
@@ -321,6 +326,10 @@ function PullFileDiff(props: BodyProps & {
     ...pending.flatMap((draft, index) => draft.path !== path ? [] : [{
       key: `pending-${index}`, side: SIDE_OF[draft.side], line: draft.line,
       content: <p className="pf-card pf-card__pending"><strong>Pending</strong> (sent with your review): {draft.body}</p>
+    }]),
+    ...(onDeleteNote ? notes ?? [] : []).flatMap((note) => note.path !== path ? [] : [{
+      key: `note-${note.id}`, side: SIDE_OF[note.side], line: note.line,
+      content: <PullNoteCard {...props} note={note} head={head} onDelete={onDeleteNote!} />
     }]),
     ...(composing ? [{
       key: `new-${composing.side}-${composing.line}`, side: SIDE_OF[composing.side], line: composing.line,

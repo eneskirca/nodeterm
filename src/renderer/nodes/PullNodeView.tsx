@@ -20,6 +20,7 @@ import { PullJumpContext } from './pull/PullJumpContext'
 import { SendToProvider, type SendToHost } from './pull/SendTo'
 import { PullZoomCard } from './pull/PullZoomCard'
 import { PullSinceReviewBanner, SINCE_REVIEW, useSinceReview } from './pull/PullSinceReviewBanner'
+import { PullNotesButton, usePullNotes, type PullNotesApi } from './pull/PullNotes'
 
 export type { PullNodeApi } from './pull/shared'
 
@@ -40,6 +41,8 @@ type TabsProps = ViewProps & {
   onCopy?: (text: string) => void
   /** Canvas zoom under 50% (F-09): show the status card; the full view stays mounted, hidden. */
   zoomedOut?: boolean
+  /** F-07: the machine-local notes store; absent = no notes (the composer's "Note for agent" is off). */
+  notesApi?: PullNotesApi
 }
 
 /**
@@ -65,7 +68,7 @@ export function PullNodeView({
  *  the proposal bar and each tab show the same head. A tab mounts the first time it is shown and
  *  then stays mounted (hidden when not shown), so a switch back costs no read and a draft typed in
  *  a tab survives the switch. */
-function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToHost, agentState, onCopy, zoomedOut, ...props }: TabsProps): React.JSX.Element {
+function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToHost, agentState, onCopy, zoomedOut, notesApi, ...props }: TabsProps): React.JSX.Element {
   const { api, projectId, pull } = props
   const shownTab = shownPullTab(pull.tab)
   const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
@@ -89,6 +92,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
     (opened.includes('conversation') && detail?.lifecycle === 'open') || proposal?.action === 'merge')
   // New line comments waiting for the next review submit. ponytail: kept in memory only; closing
   // the node drops them (nothing was sent).
+  const notes = usePullNotes(notesApi, pull)
   const [pending, setPending] = useState<readonly PullLineDraft[]>([])
   const addPending = useCallback((draft: PullLineDraft) => setPending((list) => [...list, draft]), [])
   // Drops only the drafts named: one added while a review was on its way stays for the next.
@@ -127,7 +131,8 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
             next={nextStep({ ...readiness, method: allowed?.[0] })} />} />
         {readiness && <ReadinessBar segments={pullReadiness(readiness)} onJump={jump} />}
       </div>
-      <PullTabBar shown={shownTab} detail={detail} checks={checks} onTab={onTab} />
+      <PullTabBar shown={shownTab} detail={detail} checks={checks} onTab={onTab}
+        extra={notesApi && <PullNotesButton notes={notes.notes} error={notes.error} onClear={notes.clear} />} />
       {!barAboveMerge && proposalBar}
       {opened.includes('conversation') && (
         <div hidden={shownTab !== 'conversation'}>
@@ -151,7 +156,8 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
         <div hidden={shownTab !== 'files'}>
           <PullFilesTab {...props} head={detail?.head.sha} onSelectFile={onSelectFile} highlight={highlight} pending={pending}
             onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending}
-            compareExtra={sinceReview.compareExtra} compareTo={compareTo} />
+            compareExtra={sinceReview.compareExtra} compareTo={compareTo}
+            onNoteForAgent={notesApi ? notes.add : undefined} notes={notes.notes} onDeleteNote={notesApi ? notes.remove : undefined} />
         </div>
       )}
     </PullJumpContext.Provider>

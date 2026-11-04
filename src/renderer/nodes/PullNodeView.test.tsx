@@ -1501,3 +1501,53 @@ describe('PullNodeView lifecycle writes', () => {
     expect(button(view, 'Delete branch')).toBeDefined()
   })
 })
+
+describe('PullNodeView notes for agents (F-07)', () => {
+  const stored = [
+    { id: 'n1', path: 'src/a.ts', side: 'RIGHT' as const, line: 2, text: 'first', createdAt: 1 },
+    { id: 'n2', path: 'src/a.ts', side: 'RIGHT' as const, line: 5, text: 'second', createdAt: 2 }
+  ]
+  async function renderNotes(notesApi?: Record<string, ReturnType<typeof vi.fn>>) {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    const send = vi.fn(async (): Promise<string | null> => null)
+    const sendToHost = {
+      pullId: 'pull', status: () => ({ state: 'done' as const }),
+      nodes: () => [{ id: 'pull', type: 'pull', data: {} }, { id: 'a1', type: 'terminal', data: { title: 'Fixer', agentId: 'claude' } }],
+      edges: () => [{ source: 'pull', target: 'a1' }],
+      send
+    }
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={vi.fn()} onSelectFile={vi.fn()}
+        sendToHost={sendToHost} notesApi={notesApi as never} />)
+    })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    return { view: host, send }
+  }
+
+  it('the tab row sends every note to the picked agent, then clears the sent ones', async () => {
+    const notesApi = {
+      pullNotes: vi.fn(async () => stored), addPullNote: vi.fn(async () => stored),
+      deletePullNote: vi.fn(async () => stored), clearPullNotes: vi.fn(async () => [])
+    }
+    const { view, send } = await renderNotes(notesApi)
+    expect(notesApi.pullNotes).toHaveBeenCalledWith('o/r', 7)
+    await act(async () => { button(view, '2 notes for agent').click() })
+    const option = [...view.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes('Fixer')) as HTMLElement
+    await act(async () => { option.click() })
+    expect(send.mock.calls[0]).toEqual(['a1', expect.anything(), { kind: 'notes', notes: [
+      { path: 'src/a.ts', line: 2, text: 'first' }, { path: 'src/a.ts', line: 5, text: 'second' }
+    ] }])
+    await act(async () => { button(view, 'Clear').click() })
+    expect(notesApi.clearPullNotes).toHaveBeenCalledWith({ repository: 'o/r', pullNumber: 7, ids: ['n1', 'n2'] })
+    expect(view.textContent).not.toContain('notes for agent')
+  })
+
+  it('without a notes store the tab row has no notes button', async () => {
+    const { view } = await renderNotes()
+    expect(view.textContent).not.toContain('for agent')
+  })
+})

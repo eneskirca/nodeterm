@@ -149,6 +149,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
       <div className={`pull-node__body${zoomedOut ? '' : ' nodrag nowheel'}`}>
         <PullNodeView
           api={api.githubIssues}
+          notesApi={api.githubIssues}
           projectId={projectId}
           pull={pull}
           refreshTick={refreshTick}

@@ -26,9 +26,11 @@ export const shownPullTab = (tab: PullNodeTab): PullNodeTab =>
   PULL_TABS.some((row) => row.tab === tab) ? tab : 'conversation'
 
 /** GitHub's underline tabs with counts (F1), and the PR's size (+/-) on the right. */
-export function PullTabBar({ shown, detail, checks, onTab }: {
+export function PullTabBar({ shown, detail, checks, onTab, extra }: {
   shown: PullNodeTab; detail: GitHubPullDetail | undefined; checks?: PullChecksRead
   onTab: (tab: PullNodeTab) => void
+  /** Right end of the row, after the size (F-07's "N notes for agent"). */
+  extra?: React.ReactNode
 }): React.JSX.Element {
   return (
     <div className="pull-node__tabs pr-tabs" role="tablist">
@@ -48,6 +50,7 @@ export function PullTabBar({ shown, detail, checks, onTab }: {
           <span className="pr-add">+{detail.additions}</span> <span className="pr-del">−{detail.deletions}</span>
         </span>
       )}
+      {extra}
     </div>
   )
 }

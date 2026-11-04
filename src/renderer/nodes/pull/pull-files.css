@@ -128,3 +128,6 @@
 .pf-review__radio small { display: block; color: var(--pr-muted); font-size: 12px; }
 .pf-review__foot { display: flex; align-items: center; gap: 8px; }
 .pf-review__foot .pr-btn { margin-left: auto; }
+/* A note for agents (F-07): the user's own, not on GitHub. */
+.pf-card--note { border-style: dashed; border-color: var(--pr-line-strong); }
+.pf-card__note { margin: 4px 0 8px; white-space: pre-wrap; color: var(--pr-fg); }
