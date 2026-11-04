@@ -1583,7 +1583,7 @@ export class GitHubIssueService {
     projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number
   }): Promise<PullWriteResult> {
     const { headSha, commentId } = request ?? {}
-    if (typeof headSha !== 'string' || !/^[0-9a-f]{40}$/.test(headSha) || !Number.isSafeInteger(commentId) || commentId < 1) {
+    if (!isCommitSha(headSha) || !Number.isSafeInteger(commentId) || commentId < 1) {
       return { ok: false, reason: 'validation' }
     }
     const refuse = (code: string) => Object.assign(new Error(code), code === 'validation' ? { code: 'request-failed', status: 422 } : { code })

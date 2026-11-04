@@ -927,7 +927,7 @@ export class GitHubIssuesClient {
     const line = lineOf(item?.line)
     const startLine = lineOf(item?.start_line)
     if (!item || !positiveInteger(pullNumber, 2_147_483_647) || !isPullPath(item.path) || !string(item.body, 262_144) ||
-        typeof item.commit_id !== 'string' || !/^[0-9a-f]{40}$/.test(item.commit_id) ||
+        !isCommitSha(item.commit_id) ||
         line === undefined || startLine === undefined) throw new GitHubClientError('malformed-response')
     const login = object(item.user)?.login
     return {
@@ -942,10 +942,10 @@ export class GitHubIssuesClient {
    *  pinned to that SHA. A file the contents API sends no text for (binary, over 1 MB) is refused. */
   async fileBlobAt(repository: string, path: string, ref: string): Promise<{ sha: string; text: string }> {
     safeRepository(repository)
-    if (!repoPath(path) || typeof ref !== 'string' || !/^[0-9a-f]{40}$/.test(ref)) throw new GitHubClientError('invalid-request')
+    if (!repoPath(path) || !isCommitSha(ref)) throw new GitHubClientError('invalid-request')
     const encoded = path.split('/').map(encodeURIComponent).join('/')
     const item = object(await this.json(await this.request(`/repos/${repository}/contents/${encoded}?ref=${ref}`, { method: 'GET' })))
-    if (!item || typeof item.sha !== 'string' || !/^[0-9a-f]{40}$/.test(item.sha)) throw new GitHubClientError('malformed-response')
+    if (!item || !isCommitSha(item.sha)) throw new GitHubClientError('malformed-response')
     if (item.type !== 'file' || item.encoding !== 'base64' || typeof item.content !== 'string') {
       throw new GitHubClientError('request-failed', 422)
     }
@@ -960,7 +960,7 @@ export class GitHubIssuesClient {
    *  answers 409 when the file changed. */
   async putFile(repository: string, file: { path: string; branch: string; sha: string; text: string; message: string }): Promise<void> {
     safeRepository(repository)
-    if (!repoPath(file?.path) || !isPullBranchName(file.branch) || typeof file.sha !== 'string' || !/^[0-9a-f]{40}$/.test(file.sha) ||
+    if (!repoPath(file?.path) || !isPullBranchName(file.branch) || !isCommitSha(file.sha) ||
         typeof file.text !== 'string' || !string(file.message, 1_024) || !file.message) throw new GitHubClientError('invalid-request')
     const encoded = file.path.split('/').map(encodeURIComponent).join('/')
     // ponytail: a 2xx is the commit; its body (the new blob and commit) is not needed by anyone.
