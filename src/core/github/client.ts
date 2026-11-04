@@ -54,6 +54,8 @@ import { isCommitSha, type PullCommitFilesPage, type PullCommitsPage } from '../
 import { PULL_TIMELINE_QUERY, parsePullTimelineResponse } from './graphql-pull-timeline'
 import { isPullTimelineCursor, type PullTimelinePage } from '../../shared/github-pull-timeline'
 import { ISSUE_TIMELINE_QUERY, parseIssueTimelineResponse } from './graphql-issue-timeline'
+import { failingStepTail } from './check-log'
+import { CHECK_LOG_LINES } from '../../shared/github-pull-check-log'
 
 const MAX_VIEWED_PAGES = 3
 const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String){
@@ -76,6 +78,7 @@ const MERGE_METHODS: ReadonlyArray<[PullMergeMethod, string]> = [
 const API_VERSION = '2022-11-28'
 const DEFAULT_MAX_RESPONSE = 8 * 1024 * 1024
 const MAX_ERROR_METADATA_BYTES = 4 * 1024
+const MAX_JOB_LOG_TAIL = 512 * 1024
 
 export class GitHubClientError extends Error {
   constructor(
@@ -1230,6 +1233,45 @@ export class GitHubIssuesClient {
     return { files: files as PullFile[], ...(isCommitSha(parent) ? { parent } : {}), ...(next ? { nextPage: next } : {}) }
   }
 
+  /** The failing step's last lines of one Actions job (`GET /actions/jobs/{id}/logs`, a 302 to a
+   *  signed log URL that is fetched without the token). Only the log's last `MAX_JOB_LOG_TAIL` bytes are kept. */
+  async jobLogTail(repository: string, jobId: number): Promise<string[]> {
+    safeRepository(repository)
+    if (!positiveInteger(jobId, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
+    const redirect = await this.request(`/repos/${repository}/actions/jobs/${jobId}/logs`, { method: 'GET' }, true)
+    const location = redirect.headers.get('location')
+    let url: URL
+    try { url = new URL(location ?? '') } catch { throw new GitHubClientError('malformed-response') }
+    if (url.protocol !== 'https:') throw new GitHubClientError('malformed-response')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
+    try {
+      const response = await this.fetcher(url, { redirect: 'error', signal: controller.signal })
+      if (!response.ok || !response.body) throw new GitHubClientError('request-failed', response.status)
+      // ponytail: a huge log is read to its end but only the tail is held; the cut may split the first line.
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      let held = 0
+      for (let next = await reader.read(); !next.done; next = await reader.read()) {
+        chunks.push(next.value)
+        held += next.value.byteLength
+        while (held - chunks[0].byteLength >= MAX_JOB_LOG_TAIL) held -= chunks.shift()!.byteLength
+      }
+      return failingStepTail(new TextDecoder().decode(Buffer.concat(chunks)), CHECK_LOG_LINES)
+    } catch (error) {
+      throw error instanceof GitHubClientError ? error : new GitHubClientError('request-failed')
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** "Re-run failed" (`POST /actions/runs/{id}/rerun-failed-jobs`): GitHub re-runs the run's failed jobs. */
+  async rerunFailedJobs(repository: string, runId: number): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(runId, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
+    await this.request(`/repos/${repository}/actions/runs/${runId}/rerun-failed-jobs`, { method: 'POST' })
+  }
+
   /**
    * One GraphQL request. It goes through the same `request()` as every REST call, so its
    * `x-ratelimit-*` headers (resource `graphql`) reach the coordinator's budget.
@@ -1310,7 +1352,7 @@ export class GitHubIssuesClient {
     return { ...base, description: item.description }
   }
 
-  private async request(path: string, init: RequestInit): Promise<Response> {
+  private async request(path: string, init: RequestInit, acceptRedirect = false): Promise<Response> {
     const url = new URL(path, API_ORIGIN)
     if (url.origin !== API_ORIGIN) throw new GitHubClientError('invalid-request')
     const controller = new AbortController()
@@ -1339,6 +1381,7 @@ export class GitHubIssuesClient {
       try { this.options.onRateLimit(sample) } catch { /* an observer never breaks a request */ }
     }
     if (response.status === 304) return response
+    if (acceptRedirect && response.status === 302) return response
     if (response.status === 403 || response.status === 429) {
       const retryAfter = Number(response.headers.get('retry-after'))
       const reset = Number(response.headers.get('x-ratelimit-reset')) * 1_000
