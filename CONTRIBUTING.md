@@ -746,12 +746,15 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   credentials, license or pairing belongs in `src/shared/host-control.ts` instead — refused to every
   relay peer.
 
-- **A GitHub write made with the host's token is owner-only.** The pull request node's comment,
-  review, merge, request-reviewer, line-comment, update-branch and auto-merge channels, and "New pull request"'s create (`githubIssues:pull-comment`,
-  `githubIssues:pull-review`, `githubIssues:pull-merge`, `githubIssues:pull-request-reviewer`, `githubIssues:pull-line-comment`,
-  `githubIssues:pull-update-branch`, `githubIssues:pull-auto-merge`, `githubIssues:pull-auto-merge-off`, `githubIssues:pull-create`), and the issues node's comment (`githubIssues:issue-comment`), are in `OWNER_ONLY` (`src/core/relay/access-policy.ts`): every relay
+- **A GitHub write made with the host's token is owner-only.** Every pull request node write,
+  "New pull request"'s create and the issues node's comment are in `OWNER_ONLY`
+  (`src/core/relay/access-policy.ts`): `githubIssues:pull-comment`, `:pull-review`, `:pull-merge`,
+  `:pull-request-reviewer`, `:pull-line-comment`, `:pull-create`, `:pull-update-branch`,
+  `:pull-auto-merge`, `:pull-auto-merge-off`, `:pull-file-viewed`, `:pull-thread-resolved`,
+  `:pull-apply-suggestion`, `:pull-labels`, `:pull-assignees`, `:pull-state`, `:pull-ready`,
+  `:pull-delete-branch`, `:pull-rerun-failed` and `:issue-comment`. Every relay
   peer but the host's owner is refused, hosted Editors included, because the write posts as the host
-  owner on GitHub. Editor is shell access, not identity. All ten are also in `SCOPED_REFUSED`. The
+  owner on GitHub. Editor is shell access, not identity. All of them are also in `SCOPED_REFUSED`. The
   `open-pr` canvas-control verb only opens or links a node and has no path to a GitHub write. A
   verified agent's `gh pr create` (Claude Code and Codex PostToolUse, `src/shared/pr-created-hook.ts`)
   runs that same `open-pr` case from the hook payload alone, desktop only. A verified agent's own
@@ -763,6 +766,16 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   only the user's Confirm there sends it (armed one second after the proposal appears, behind the
   node's own guards). `src/core/github/pull-writes.guard.test.ts` fails if a control source names a
   write. A new channel that writes to GitHub as the host owner goes in both sets.
+
+- **Two local pull node controls are owner-only too.** Notes for agents (`pullNotes:list`, `:add`,
+  `:delete`, `:clear`) write the host owner's disk. The Watch switch (`githubIssues:pull-watch-set`)
+  makes the host poll GitHub with its token and wake an agent. Both are in `OWNER_ONLY` and
+  `SCOPED_REFUSED`, and their refusal names the control, not GitHub (`OWNER_ONLY_LOCAL`). The pull
+  node's newer reads (`githubIssues:pull-check-log`, `:pull-since-review`,
+  `:pull-since-review-file-contents`, `:pull-watch`) are classified like the other pull reads:
+  `EDITOR_ONLY`, a `relay-project-scope.ts` row, and `SCOPED` with a project check. Watch wakes
+  arrive as agent messages, so they need agent messaging on for the project. CLAUDE.md has the
+  Watch rules (search "Pull node Watch").
 
 - **Live links: a new broadcast channel needs nothing, a new per-session pty channel needs a
   decision.** Live-link viewers are quiet clients, so no broadcast ever reaches them. A per-session pty
