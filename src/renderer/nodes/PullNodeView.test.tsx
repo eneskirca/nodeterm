@@ -126,7 +126,7 @@ describe('PullNodeView overview', () => {
     expect(view.textContent).toContain('feat/pull')
     expect(view.querySelector('h2')?.textContent).toBe('Why it matters')
     expect(view.querySelector('strong')?.textContent).toBe('in place')
-    expect(view.querySelector('[aria-label="Checks"]')?.textContent).toContain('test')
+    expect(view.querySelector('.pull-mergebox [data-row="checks"]')?.textContent).toContain('All checks passed')
     expect(view.querySelector('[aria-label="Merge readiness"]')?.textContent).toContain('No conflicts')
   })
 
@@ -408,50 +408,50 @@ describe('PullNodeView composer', () => {
   })
 })
 
-const pickMethod = (view: HTMLElement, value: string) => act(async () => {
-  const select = view.querySelector('select[aria-label="Merge method"]') as HTMLSelectElement
-  select.value = value
-  select.dispatchEvent(new Event('change', { bubbles: true }))
-})
+const METHOD_LABEL: Record<string, string> = { merge: 'Create a merge commit', squash: 'Squash and merge', rebase: 'Rebase and merge' }
+const pickMethod = async (view: HTMLElement, value: string) => {
+  await act(async () => { view.querySelector<HTMLButtonElement>('[aria-label="Choose merge method"]')!.click() })
+  await act(async () => {
+    ;[...view.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((el) => el.textContent?.startsWith(METHOD_LABEL[value]))!.click()
+  })
+}
+/** The merge box's split button (the header leads with its own button of the same name). */
+const mergeButton = (view: HTMLElement) => view.querySelector<HTMLButtonElement>('.pull-mergebox .pr-split__main')!
 
 describe('PullNodeView merge', () => {
   const dialog = () => host.querySelector('[role="dialog"]')
   const openMerge = async (api: PullNodeApi, onWritten = vi.fn()) => {
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
-    await act(async () => { button(view, 'Merge…').click() })
+    await act(async () => { mergeButton(view).click() })
     return view
   }
 
   it.each([
-    ['draft', { lifecycle: 'draft' }, 'draft'],
-    ['closed', { lifecycle: 'closed', merge: undefined }, 'closed'],
-    ['merged', { lifecycle: 'merged', merge: undefined }, 'already merged'],
-    ['conflicting', { merge: 'conflict' }, 'conflict'],
-    ['blocked', { merge: 'blocked' }, 'blocked']
+    ['draft', { lifecycle: 'draft' }, 'This is a draft'],
+    ['closed', { lifecycle: 'closed', merge: undefined }, 'Closed without merging'],
+    ['merged', { lifecycle: 'merged', merge: undefined }, 'Merged into main']
+  ] as const)('shows the %s state instead of the merge button', async (_name, change, words) => {
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 }))
+    expect(mergeButton(view)).toBeNull()
+    expect(view.querySelector('.pull-mergebox .pr-mstate')?.textContent).toContain(words)
+  })
+
+  it.each([
+    ['conflicting', { merge: 'conflict' }, 'Conflicts with main'],
+    ['blocked', { merge: 'blocked' }, 'Merging is blocked']
   ] as const)('is disabled with a reason for a %s PR', async (_name, change, words) => {
-    const api = fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 })
-    const view = await render(api)
-    expect(button(view, 'Merge…').disabled).toBe(true)
-    expect(view.querySelector('.pull-merge__reason')?.textContent?.toLowerCase()).toContain(words)
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 }))
+    expect(mergeButton(view)?.disabled).toBe(true)
+    expect(view.querySelector('.pull-mergebox [data-row="merge"]')?.textContent).toContain(words)
   })
 
-  it('lists each check in the merge box with its result, name and duration', async () => {
-    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, {
-      status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [
-        { name: 'windows', state: 'failed', startedAt: '2026-11-01T10:00:00Z', completedAt: '2026-11-01T10:02:05Z' },
-        { name: 'lint', state: 'pending', startedAt: '2026-11-01T10:00:00Z' }
-      ]
-    })
-    const view = await render(api)
-    const rows = [...view.querySelectorAll('.pull-mergebox .pull-checks__row')].map((row) => row.textContent)
-    expect(rows).toEqual(['✗windows2m 5sfailed', '●lintpending'])
-  })
-
-  it('the method select beside Merge offers only the allowed methods', async () => {
+  it('the method menu beside Merge lists only the allowed methods', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     const view = await render(api)
-    const options = [...view.querySelectorAll('select[aria-label="Merge method"] option')].map((el) => (el as HTMLOptionElement).value)
-    expect(options).toEqual(['squash', 'rebase'])
+    await act(async () => { view.querySelector<HTMLButtonElement>('[aria-label="Choose merge method"]')!.click() })
+    const items = [...view.querySelectorAll('[role="menu"][aria-label="Merge method"] [role="menuitemradio"]')]
+    expect(items.map((el) => el.textContent?.split('The')[0])).toEqual(['Squash and merge', 'Rebase and merge'])
+    expect(items.map((el) => el.getAttribute('aria-checked'))).toEqual(['true', 'false'])
     expect(api.repoMergeMethods).toHaveBeenCalledWith('p', 'o/r')
   })
 
@@ -470,7 +470,7 @@ describe('PullNodeView merge', () => {
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     await pickMethod(view, 'rebase')
-    await act(async () => { button(view, 'Merge…').click() })
+    await act(async () => { mergeButton(view).click() })
     expect(dialog()?.textContent).toContain('Method: Rebase and merge')
     await act(async () => { button(host, 'Confirm merge').click() })
     expect(api.mergePull).toHaveBeenCalledWith({
@@ -485,7 +485,7 @@ describe('PullNodeView merge', () => {
     const view = await openMerge(api)
     await act(async () => { button(host, 'Cancel').click() })
     expect(dialog()).toBeNull()
-    await act(async () => { button(view, 'Merge…').click() })
+    await act(async () => { mergeButton(view).click() })
     expect(api.mergePull).not.toHaveBeenCalled()
     expect(api.repoMergeMethods).toHaveBeenCalledTimes(1)
   })
@@ -514,15 +514,15 @@ describe('PullNodeView merge', () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     api.repoMergeMethods.mockResolvedValue({ status: 'ok', methods: [] })
     const view = await render(api)
-    expect(view.querySelector('select[aria-label="Merge method"]')).toBeNull()
-    expect(view.querySelector('.pull-merge__row')?.textContent).toContain('Merge on GitHub')
+    expect(view.querySelector<HTMLButtonElement>('[aria-label="Choose merge method"]')?.disabled).toBe(true)
+    expect(view.querySelector('.pr-mbox__foot')?.textContent).toContain('Merge on GitHub')
   })
 
   it('says beside Merge why there is no method select when the methods read failed', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     api.repoMergeMethods.mockResolvedValue({ status: 'failed', reason: 'unreachable' })
     const view = await render(api)
-    expect(view.querySelector('.pull-merge__note')?.textContent).toBeTruthy()
+    expect(view.querySelector('.pr-mbox__foot .pr-mbox__note')?.textContent).toBeTruthy()
   })
 
   it('offers no Confirm when the repository allows no method for this token', async () => {
@@ -540,7 +540,7 @@ describe('PullNodeView merge blockers', () => {
       status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [{ name: 'test', state: 'failed' }], review: 'required'
     })
     const view = await render(api)
-    expect(view.querySelector('.pull-merge__reason')?.textContent)
+    expect(view.querySelector('.pull-mergebox [data-row="merge"] .pr-mrow__sub')?.textContent)
       .toBe('Branch protection needs an approving review. Checks are failing.')
     expect(button(view, 'Update branch')).toBeUndefined()
   })
@@ -549,12 +549,12 @@ describe('PullNodeView merge blockers', () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'behind' }, observedAt: 1 })
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
-    expect(view.querySelector('.pull-merge__reason')?.textContent).toContain('behind main')
+    expect(view.querySelector('.pull-mergebox [data-row="merge"]')?.textContent).toContain('Behind main')
     expect(api.updatePullBranch).not.toHaveBeenCalled()
     await act(async () => { button(view, 'Update branch').click() })
     expect(api.updatePullBranch).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, headSha: 'c'.repeat(40) })
     expect(onWritten).toHaveBeenCalledTimes(1)
-    expect(view.querySelector('.pull-merge')?.textContent).toContain('GitHub is updating the branch')
+    expect(view.querySelector('.pull-mergebox')?.textContent).toContain('GitHub is updating the branch')
     expect(button(view, 'Update branch').disabled).toBe(true)
   })
 
@@ -589,20 +589,17 @@ describe('PullNodeView merge blockers', () => {
     expect(onWritten).not.toHaveBeenCalled()
   })
 
-  it('a conflict offers Resolve conflicts with agent under the conflict sentence, which takes the Work on this PR path', async () => {
+  it('a conflict offers Resolve myself under the conflict row, which takes the Work on this PR path', async () => {
     const onWork = vi.fn()
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict' }, observedAt: 1 }),
       'o/r', 'conversation', vi.fn(), vi.fn(), vi.fn(), undefined, vi.fn(), onWork)
+    const row = view.querySelector<HTMLElement>('.pull-mergebox [data-row="merge"]')!
     expect(button(view, 'Update branch')).toBeUndefined()
-    expect(view.querySelector('.pull-merge__reason')?.textContent).toContain('conflicts with main')
-    await act(async () => { button(view, 'Resolve conflicts with agent').click() })
-    expect(onWork).toHaveBeenCalledWith({ ...detail, merge: 'conflict' }, true)
-  })
-
-  it('a conflict whose base is not a plain ref name refuses the button with a reason', async () => {
-    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, merge: 'conflict', base: { ...detail.base, ref: 'x;rm -rf ~' } }, observedAt: 1 }))
-    expect(button(view, 'Resolve conflicts with agent')).toBeUndefined()
-    expect(view.textContent).toContain('cannot be given to an agent')
+    expect(row.textContent).toContain('Conflicts with main')
+    // No Send to… host in this render: no Resolve with agent.
+    expect(button(row, 'Resolve with agent')).toBeUndefined()
+    await act(async () => { button(row, 'Resolve myself').click() })
+    expect(onWork).toHaveBeenCalledWith({ ...detail, merge: 'conflict' })
   })
 })
 
@@ -629,7 +626,7 @@ describe('PullNodeView auto-merge', () => {
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     await pickMethod(view, 'rebase')
-    await act(async () => { button(view, 'Merge when ready…').click() })
+    await act(async () => { button(view, 'Merge when ready').click() })
     expect(dialog()?.textContent).toContain('when ready')
     expect(api.enablePullAutoMerge).not.toHaveBeenCalled()
     await act(async () => { button(host, 'Enable auto-merge').click() })
@@ -646,15 +643,15 @@ describe('PullNodeView auto-merge', () => {
     ['behind', { merge: 'behind' }]
   ] as const)('a %s PR offers no Merge when ready', async (_name, change) => {
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 }))
-    expect(button(view, 'Merge when ready…')).toBeUndefined()
+    expect(button(view, 'Merge when ready')).toBeUndefined()
   })
 
   it('shows the armed state with its method, and Cancel turns it off', async () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked', autoMerge: { method: 'squash' } }, observedAt: 1 })
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
-    expect(view.querySelector('.pull-merge')?.textContent).toContain('Auto-merge is on (Squash and merge)')
-    expect(button(view, 'Merge when ready…')).toBeUndefined()
+    expect(view.querySelector('.pull-mergebox')?.textContent).toContain('Auto-merge is on (Squash and merge)')
+    expect(button(view, 'Merge when ready')).toBeUndefined()
     await act(async () => { button(view, 'Cancel auto-merge').click() })
     expect(api.disablePullAutoMerge).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7 })
     expect(onWritten).toHaveBeenCalledTimes(1)
@@ -664,7 +661,7 @@ describe('PullNodeView auto-merge', () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
     api.repoMergeMethods.mockResolvedValue({ status: 'ok', methods: ['squash'] })
     const view = await render(api)
-    await act(async () => { button(view, 'Merge when ready…').click() })
+    await act(async () => { button(view, 'Merge when ready').click() })
     expect(dialog()?.textContent).toContain('does not allow auto-merge')
     expect(button(host, 'Enable auto-merge')).toBeUndefined()
   })
@@ -674,7 +671,7 @@ describe('PullNodeView auto-merge', () => {
     api.enablePullAutoMerge.mockResolvedValue({ ok: false, reason: 'head-moved' })
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
-    await act(async () => { button(view, 'Merge when ready…').click() })
+    await act(async () => { button(view, 'Merge when ready').click() })
     await act(async () => { button(host, 'Enable auto-merge').click() })
     expect(view.querySelector('[role="alert"]')?.textContent).toContain('did not turn on auto-merge')
     expect(onWritten).toHaveBeenCalledTimes(1)
@@ -1077,7 +1074,7 @@ describe('PullNodeView agent proposal', () => {
 
   it('shows the exact action and sends nothing until Confirm', async () => {
     const { api, onWritten, onDismiss } = await renderProposal({ action: 'approve', message: 'LGTM' })
-    expect(bar()?.textContent).toContain('Approve')
+    expect(bar()?.textContent).toContain('Your agent proposes an approval at ccccccc')
     expect(bar()?.textContent).toContain('LGTM')
     expect(api.reviewPull).not.toHaveBeenCalled()
     await arm()
@@ -1134,7 +1131,7 @@ describe('PullNodeView agent proposal', () => {
 
   it('merges with the proposed method, or the first one the repository allows, at the head the node shows', async () => {
     const squash = await renderProposal({ action: 'merge', method: 'rebase' })
-    expect(bar()?.textContent).toContain('Rebase and merge')
+    expect(bar()?.textContent).toContain('proposes rebase and merge at ccccccc')
     await arm()
     await act(async () => { confirmButton().click() })
     expect(squash.api.mergePull).toHaveBeenCalledWith({
@@ -1142,7 +1139,7 @@ describe('PullNodeView agent proposal', () => {
     })
     act(() => root.unmount()); host.remove()
     const first = await renderProposal({ action: 'merge' })
-    expect(bar()?.textContent).toContain('Squash and merge')
+    expect(bar()?.textContent).toContain('proposes squash and merge')
     await arm()
     await act(async () => { confirmButton().click() })
     expect(first.api.mergePull).toHaveBeenCalledWith(expect.objectContaining({ method: 'squash' }))
@@ -1340,20 +1337,19 @@ describe('PullNodeView lifecycle writes', () => {
   const at = { projectId: 'p', repository: 'o/r', pullNumber: 7 }
   const withDetail = (change: Partial<GitHubPullDetail>) => fakeApi({ status: 'ok', detail: { ...detail, ...change }, observedAt: 1 })
 
-  it('closes an open PR and reopens a closed one, then reloads', async () => {
-    const api = withDetail({})
-    const onWritten = vi.fn()
-    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
-    expect(button(view, 'Reopen pull request')).toBeUndefined()
-    await act(async () => { button(view, 'Close pull request').click() })
-    expect(api.setPullState).toHaveBeenCalledWith({ ...at, open: false })
-    expect(onWritten).toHaveBeenCalledTimes(1)
+  it('reopens a closed PR from the merge box, then reloads; an open PR has no lifecycle button there', async () => {
+    const open = await render(withDetail({}))
+    const openBox = open.querySelector<HTMLElement>('.pull-mergebox')!
+    expect(button(openBox, 'Reopen pull request')).toBeUndefined()
+    expect(button(openBox, 'Close pull request')).toBeUndefined()
     act(() => root.unmount()); host.remove()
     const closed = withDetail({ lifecycle: 'closed', merge: undefined })
-    const again = await render(closed)
-    expect(button(again, 'Close pull request')).toBeUndefined()
-    await act(async () => { button(again, 'Reopen pull request').click() })
+    const onWritten = vi.fn()
+    const again = await render(closed, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
+    const box = again.querySelector<HTMLElement>('.pull-mergebox')!
+    await act(async () => { button(box, 'Reopen pull request').click() })
     expect(closed.setPullState).toHaveBeenCalledWith({ ...at, open: true })
+    expect(onWritten).toHaveBeenCalledTimes(1)
   })
 
   it('marks a draft ready for review; the button is off while the write runs', async () => {
@@ -1367,7 +1363,6 @@ describe('PullNodeView lifecycle writes', () => {
     await act(async () => { button(box, 'Ready for review').click() })
     expect(api.markPullReady).toHaveBeenCalledWith(at)
     expect(button(box, 'Ready for review').disabled).toBe(true)
-    expect(button(box, 'Close pull request').disabled).toBe(true)
     await act(async () => { finish({ ok: true }) })
     expect(button(box, 'Ready for review').disabled).toBe(false)
     expect(onWritten).toHaveBeenCalledTimes(1)
@@ -1377,9 +1372,9 @@ describe('PullNodeView lifecycle writes', () => {
     const api = withDetail({ lifecycle: 'merged', merge: undefined })
     const view = await render(api)
     expect(api.pullForBranch).toHaveBeenCalledWith('p', 'o/r', 'feat/pull')
-    await act(async () => { button(view, 'Delete branch feat/pull').click() })
+    await act(async () => { button(view, 'Delete branch').click() })
     expect(api.deleteHeadBranch).toHaveBeenCalledWith(at)
-    expect(button(view, 'Delete branch feat/pull')).toBeUndefined()
+    expect(button(view, 'Delete branch')).toBeUndefined()
     expect(view.textContent).toContain('Branch feat/pull was deleted.')
   })
 
@@ -1400,8 +1395,8 @@ describe('PullNodeView lifecycle writes', () => {
     const api = withDetail({ lifecycle: 'merged', merge: undefined })
     api.deleteHeadBranch.mockResolvedValue({ ok: false, reason: 'branch-protected' })
     const view = await render(api)
-    await act(async () => { button(view, 'Delete branch feat/pull').click() })
+    await act(async () => { button(view, 'Delete branch').click() })
     expect(view.querySelector('[role="alert"]')?.textContent).toContain('protected')
-    expect(button(view, 'Delete branch feat/pull')).toBeDefined()
+    expect(button(view, 'Delete branch')).toBeDefined()
   })
 })

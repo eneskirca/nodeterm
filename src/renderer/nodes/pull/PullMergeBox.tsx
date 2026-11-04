@@ -1,31 +1,49 @@
-import { useState } from 'react'
-import type { GitHubPullDetail, PullMergeMethod, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
-import { isPlainRef } from '@shared/pull-work'
-import { PullChecks } from '../../components/kanban/GitHubIssueSummaryModal'
+import { useEffect, useRef, useState } from 'react'
+import type { GitHubPullConversationResult, GitHubPullDetail, PullMergeMethod, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
 import { mergeBlock, type PullChecksRead } from '../../lib/pullMergeBlock'
+import { Icon } from './Icon'
+import { mergeRows, type MergeRow } from './mergeRows'
 import { PullLifecycleActions } from './PullLifecycleActions'
-import { FAILURE_TEXT, METHOD_TEXT, REFUSAL_TEXT, useWrite, WRITE_TEXT, type ViewProps } from './shared'
+import { usePullJump } from './PullJumpContext'
+import { openThreadCount } from './readiness'
+import { useSendTo } from './SendTo'
+import { FAILURE_TEXT, METHOD_TEXT, REFUSAL_TEXT, useWrite, WRITE_TEXT, type Read, type ViewProps } from './shared'
 import type { MergeMethodsRead } from './useMergeMethods'
+import './PullMergeBox.css'
 
 const AUTO_MOVED_TEXT = 'GitHub did not turn on auto-merge: the pull request changed since you loaded it, or it can merge now. It has been reloaded: check it, then try again.'
 
 const UPDATE_MOVED_TEXT = 'The pull request changed since you loaded it, so the branch was not updated. It has been reloaded: check it, then update again.'
 
+/** One line under each method in the method menu (F4). */
+function methodHint(method: PullMergeMethod, d: GitHubPullDetail): string {
+  const commits = d.commits === undefined ? 'The commits' : `The ${d.commits} commit${d.commits === 1 ? '' : 's'}`
+  if (method === 'merge') return 'All commits are added through a merge commit.'
+  if (method === 'squash') return `${commits} become one on ${d.base.ref}.`
+  return `${commits} are rebased onto ${d.base.ref}.`
+}
+
 /**
- * The merge box, at the end of the Conversation tab: the head's checks (result, name, duration), why
- * Merge is off (draft, closed, conflict, behind, blocked) with its fix, the method select (only the
- * methods the repository allows) and the Merge button, whose confirmation is a modal over the node.
- * Nothing merges without Confirm. The merge is tied to the head the node shows, so GitHub refuses it (head-moved)
- * if the PR moved; the node then says so and reloads.
+ * The merge box (F1), one card at the end of the Conversation tab: a state header for a draft, merged
+ * or closed PR, the status rows (review, checks, unresolved threads, merge state), each with a link
+ * that jumps to where it is acted on, and a footer with the method split button (its menu lists only
+ * the methods the repository allows) and "Merge when ready". Nothing merges without Confirm in the
+ * modal over the node. The merge is tied to the head the node shows, so GitHub refuses it
+ * (head-moved) if the PR moved; the node then says so and reloads.
  */
 export function PullMergeBox(props: ViewProps & {
   detail: GitHubPullDetail; checks: PullChecksRead
   /** The shell's one read of the allowed methods; `onLoadMethods` reads again after a failed one. */
   methods: MergeMethodsRead; onLoadMethods: () => void
+  /** The shell's conversation read, for the unresolved threads row. Absent = no row. */
+  conversation?: Read<GitHubPullConversationResult>
 }): React.JSX.Element {
   const { api, projectId, pull, detail: d, checks, methods, onWritten, onWork } = props
+  const jump = usePullJump()
+  const { sendTo, why } = useSendTo()
   // Which confirmation is open: a merge now, or "Merge when ready" (GitHub's auto-merge).
   const [open, setOpen] = useState<'merge' | 'auto' | null>(null)
+  const [menu, setMenu] = useState(false)
   const [picked, setPicked] = useState<PullMergeMethod | null>(null)
   const [busy, setBusy] = useState(false)
   // The confirmation's refused write: a merge, or (`auto`) turning on auto-merge.
@@ -40,8 +58,19 @@ export function PullMergeBox(props: ViewProps & {
   // Auto-merge waits for the reviews and checks branch protection asks for. It does not update a
   // branch, so a PR behind its base (or one that can merge now, or never can) gets none.
   const offersAuto = !d.autoMerge && block?.kind === 'blocked'
+  const menuRef = useRef<HTMLSpanElement>(null)
+  // A click anywhere else or Escape closes the method menu (the document is the outside system here).
+  useEffect(() => {
+    if (!menu) return
+    const onDown = (event: MouseEvent) => { if (!menuRef.current?.contains(event.target as Node)) setMenu(false) }
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenu(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [menu])
 
   const show = (mode: 'merge' | 'auto') => {
+    setMenu(false)
     setOpen(mode)
     setRefusal(null)
     // The allowed methods are read once per node; only a failed read is read again, on the next open.
@@ -62,67 +91,122 @@ export function PullMergeBox(props: ViewProps & {
   const ready = methods !== null && methods !== 'loading' && methods.status === 'ok' ? methods.methods : null
   // The picked method, else the first one the repository allows.
   const method = picked && ready?.includes(picked) ? picked : ready?.[0] ?? null
-  // Why there is no method select: never a silent missing control (a token that may not push gets no methods).
+  // Why there is no method menu: never a silent missing control (a token that may not push gets no methods).
   const methodsNote = methods === null || methods === 'loading' ? null
     : methods.status === 'refused' ? REFUSAL_TEXT[methods.reason](pull.repository)
       : methods.status === 'failed' ? FAILURE_TEXT[methods.reason]
         : methods.methods.length === 0 ? 'Your GitHub token may not merge in this repository. Merge on GitHub instead.' : null
   const confirmable = !!ready?.length && (open !== 'auto' || (methods as { autoMerge?: true }).autoMerge === true)
-  return (
-    <section className="pull-mergebox" data-pull-section="merge">
-    <PullChecks result={checks} expectedHead={d.head.sha} onOpen={props.onOpenExternal} />
-    <div className="pull-merge">
-      <div className="pull-merge__row">
-        <button className="pull-compose__button" disabled={!!block || busy} onClick={() => show('merge')}>Merge…</button>
-        {!!ready?.length && (
-          <select className="pull-merge__select" aria-label="Merge method" value={method ?? ''} disabled={busy}
-            onChange={(event) => setPicked(event.target.value as PullMergeMethod)}>
-            {ready.map((item) => <option key={item} value={item}>{METHOD_TEXT[item]}</option>)}
-          </select>
+  const live = d.lifecycle === 'open' || d.lifecycle === 'draft'
+  const openThreads = props.conversation ? openThreadCount(props.conversation) : undefined
+
+  // The actions a merge-state row carries: the conflict's two ways out, the behind branch's update.
+  const rowActions = (row: MergeRow): React.ReactNode => {
+    if (row.key !== 'merge') return null
+    if (d.merge === 'conflict') {
+      const withAgent = sendTo || why
+      if (!withAgent && !onWork) return null
+      return <>
+        {withAgent && (
+          <button type="button" className="pr-btn pr-btn--agent" disabled={!sendTo} title={why}
+            onClick={() => sendTo?.({ kind: 'conflict', base: d.base.ref })}>
+            <Icon name="agent" size={14} />Resolve with agent
+          </button>
         )}
-        {methodsNote && <span className="pull-merge__note">{methodsNote}</span>}
-      </div>
-      {offersAuto && (
-        <button className="pull-compose__button" disabled={busy} onClick={() => show('auto')}>Merge when ready…</button>
-      )}
-      {block && <p className="pull-merge__reason">{block.text}</p>}
-      {d.autoMerge && (d.lifecycle === 'open' || d.lifecycle === 'draft') && (
-        <>
-          <p className="pull-node__state" role="status">
-            Auto-merge is on ({METHOD_TEXT[d.autoMerge.method]}). GitHub merges it when the required reviews and checks pass.
-          </p>
-          <button className="pull-compose__button" disabled={cancelAuto.busy}
-            onClick={() => void cancelAuto.run(() => api.disablePullAutoMerge({
-              projectId, repository: pull.repository, pullNumber: pull.pullNumber
-            }))}>Cancel auto-merge</button>
-        </>
-      )}
-      {cancelAuto.refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[cancelAuto.refusal]}</p>}
-      {block?.kind === 'behind' && (
-        <button className="pull-compose__button" disabled={update.busy || updating}
+        {onWork && <button type="button" className="pr-btn" onClick={() => onWork(d)}>Resolve myself</button>}
+      </>
+    }
+    if (block?.kind === 'behind') {
+      return (
+        <button type="button" className="pr-btn" disabled={update.busy || updating}
           onClick={() => void update.run(async () => {
             const outcome = await api.updatePullBranch({
               projectId, repository: pull.repository, pullNumber: pull.pullNumber, headSha: d.head.sha
             })
             if (!outcome.ok && outcome.reason === 'head-moved') onWritten()
             return outcome
-          })}>Update branch</button>
+          })}><Icon name="sync" size={14} />Update branch</button>
+      )
+    }
+    return null
+  }
+
+  return (
+    <section className="pull-mergebox pr-mbox" data-pull-section="merge" aria-label="Merge">
+      <PullLifecycleActions {...props} detail={d} />
+      {live && mergeRows(d, checks, openThreads).map((row) => {
+        const actions = rowActions(row)
+        return (
+          <div key={row.key} className={`pr-mrow pr-tone--${row.tone}`} data-row={row.key}>
+            <Icon name={row.icon} />
+            <span className="pr-mrow__text">
+              <strong>{row.title}</strong>{row.sub && <> <span className="pr-mrow__sub">{row.sub}</span></>}
+              {actions && <span className="pr-mrow__actions">{actions}</span>}
+            </span>
+            {row.link && jump
+              ? <button type="button" className="pr-mrow__link" onClick={() => jump(row.link!.jump)}>{row.link.label}</button>
+              : <span />}
+          </div>
+        )
+      })}
+      {d.lifecycle === 'open' && (
+        <div className="pr-mbox__foot">
+          <span className="pr-split" ref={menuRef}>
+            <button type="button" className={`pr-btn pr-split__main${block ? '' : ' pr-btn--primary'}`} disabled={!!block || busy}
+              onClick={() => show('merge')}>
+              <Icon name="merge" />{method ? METHOD_TEXT[method] : 'Merge'}
+            </button>
+            <button type="button" className={`pr-btn pr-split__chev${block ? '' : ' pr-btn--primary'}`} aria-label="Choose merge method"
+              aria-haspopup="menu" aria-expanded={menu} disabled={!ready?.length || busy}
+              onClick={() => { props.onLoadMethods(); setMenu((shown) => !shown) }}>
+              <Icon name="chevron" />
+            </button>
+            {menu && ready && (
+              <div className="pr-menu pr-split__menu" role="menu" aria-label="Merge method">
+                {ready.map((item) => (
+                  <button key={item} type="button" role="menuitemradio" aria-checked={item === method} className="pr-menu__item"
+                    onClick={() => { setPicked(item); setMenu(false) }}>
+                    <Icon name="check" className={item === method ? undefined : 'pr-split__unchecked'} />
+                    <span>{METHOD_TEXT[item]}<small>{methodHint(item, d)}</small></span>
+                  </button>
+                ))}
+                {offersAuto && <>
+                  <div className="pr-menu__sep" role="separator" />
+                  <button type="button" role="menuitem" className="pr-menu__item" onClick={() => show('auto')}>
+                    <Icon name="merge" />
+                    <span>Merge when ready<small>Merges itself once checks and reviews pass.</small></span>
+                  </button>
+                </>}
+              </div>
+            )}
+          </span>
+          {offersAuto && <button type="button" className="pr-btn" disabled={busy} onClick={() => show('auto')}>Merge when ready</button>}
+          {methodsNote && <span className="pr-mbox__note">{methodsNote}</span>}
+        </div>
       )}
-      {block?.kind === 'conflict' && onWork && (isPlainRef(d.base.ref)
-        ? <button className="pull-compose__button" onClick={() => onWork(d, true)}>Resolve conflicts with agent</button>
-        : <p className="pull-merge__reason">The base branch name cannot be given to an agent, so resolve the conflicts by hand.</p>)}
-      {updating && <p className="pull-node__state" role="status">GitHub is updating the branch. Refresh in a moment to see the new commit.</p>}
+      {d.autoMerge && live && (
+        <div className="pr-mbox__auto">
+          <p className="pr-mbox__note" role="status">
+            Auto-merge is on ({METHOD_TEXT[d.autoMerge.method]}). GitHub merges it when the required reviews and checks pass.
+          </p>
+          <button type="button" className="pr-btn" disabled={cancelAuto.busy}
+            onClick={() => void cancelAuto.run(() => api.disablePullAutoMerge({
+              projectId, repository: pull.repository, pullNumber: pull.pullNumber
+            }))}>Cancel auto-merge</button>
+        </div>
+      )}
+      {cancelAuto.refusal && <p className="pr-mbox__error" role="alert">{WRITE_TEXT[cancelAuto.refusal]}</p>}
+      {updating && <p className="pr-mbox__note" role="status">GitHub is updating the branch. Refresh in a moment to see the new commit.</p>}
       {update.refusal && (
-        <p className="pull-compose__error" role="alert">
+        <p className="pr-mbox__error" role="alert">
           {update.refusal === 'head-moved' ? UPDATE_MOVED_TEXT : WRITE_TEXT[update.refusal]}
         </p>
       )}
       {refusal && (
-        <p className="pull-compose__error" role="alert">
+        <p className="pr-mbox__error" role="alert">
           {refusal.auto && refusal.reason === 'head-moved' ? AUTO_MOVED_TEXT : WRITE_TEXT[refusal.reason]}
         </p>
       )}
-      <PullLifecycleActions {...props} detail={d} />
       {open && (
         <div className="pull-merge__backdrop">
           <div className="pull-merge__dialog" role="dialog" aria-modal="true"
@@ -132,31 +216,30 @@ export function PullMergeBox(props: ViewProps & {
               {open === 'auto' ? ' when ready? GitHub merges it once the required reviews and checks pass.' : '?'}
             </p>
             {methods === null || methods === 'loading'
-              ? <p className="pull-node__state">Loading the allowed merge methods…</p>
+              ? <p className="pr-mbox__note">Loading the allowed merge methods…</p>
               : methods.status === 'refused'
-                ? <p className="pull-node__state" role="status">{REFUSAL_TEXT[methods.reason](pull.repository)}</p>
+                ? <p className="pr-mbox__note" role="status">{REFUSAL_TEXT[methods.reason](pull.repository)}</p>
                 : methods.status === 'failed'
-                  ? <p className="pull-node__state" role="status">{FAILURE_TEXT[methods.reason]}</p>
+                  ? <p className="pr-mbox__note" role="status">{FAILURE_TEXT[methods.reason]}</p>
                   : open === 'auto' && !methods.autoMerge
-                    ? <p className="pull-node__state" role="status">
+                    ? <p className="pr-mbox__note" role="status">
                         This repository does not allow auto-merge. Turn on Allow auto-merge in its GitHub settings (General), or merge on GitHub.
                       </p>
                   : methods.methods.length === 0
-                    ? <p className="pull-node__state" role="status">
+                    ? <p className="pr-mbox__note" role="status">
                         This repository allows no merge method for your GitHub token. Merge on GitHub instead.
                       </p>
-                    : method && <p className="pull-merge__method">Method: <strong>{METHOD_TEXT[method]}</strong></p>}
-            <div className="pull-compose__actions">
+                    : method && <p className="pull-merge__method">Method: <strong>{METHOD_TEXT[method]}</strong> at <code>{d.head.sha.slice(0, 7)}</code></p>}
+            <div className="pr-mbox__dialog-actions">
+              <button type="button" className="pr-btn" disabled={busy} onClick={() => setOpen(null)}>Cancel</button>
               {confirmable && (
-                <button className="pull-compose__button pull-merge__confirm" disabled={busy || !method}
+                <button type="button" className="pr-btn pr-btn--primary" disabled={busy || !method}
                   onClick={() => void confirm()}>{open === 'auto' ? 'Enable auto-merge' : 'Confirm merge'}</button>
               )}
-              <button className="pull-compose__button" disabled={busy} onClick={() => setOpen(null)}>Cancel</button>
             </div>
           </div>
         </div>
       )}
-    </div>
     </section>
   )
 }

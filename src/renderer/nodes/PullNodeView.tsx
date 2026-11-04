@@ -16,6 +16,7 @@ import { ReadinessBar } from './pull/ReadinessBar'
 import { nextStep, openThreadCount, pullReadiness, type PullJump } from './pull/readiness'
 import { AllowContext, usePullRead, type ViewProps } from './pull/shared'
 import { useMergeMethods } from './pull/useMergeMethods'
+import { PullJumpContext } from './pull/PullJumpContext'
 import { SendToProvider, type SendToHost } from './pull/SendTo'
 import { PullZoomCard } from './pull/PullZoomCard'
 
@@ -113,6 +114,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
     <SendToProvider host={sendToHost} pr={{ repository: pull.repository, number: pull.pullNumber, title: detail?.title ?? '' }}>
       {zoomedOut && <PullZoomCard pull={pull} detail={detail} segments={readiness ? pullReadiness(readiness) : []} proposal={proposal} />}
       <div hidden={zoomedOut}>
+    <PullJumpContext.Provider value={jump}>
       <div ref={top} className="pr-top">
         <PullHeader pull={pull} detail={detail} onCopy={onCopy}
           avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined}
@@ -145,6 +147,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
             onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending} />
         </div>
       )}
+    </PullJumpContext.Provider>
       </div>
     </SendToProvider>
     </AllowContext.Provider>

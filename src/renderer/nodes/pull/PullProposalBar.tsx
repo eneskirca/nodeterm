@@ -2,24 +2,31 @@ import { useEffect, useState } from 'react'
 import type { GitHubPullDetail, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
 import type { PullProposal } from '@shared/pull-agent-verbs'
 import { mergeBlock, type PullChecksRead } from '../../lib/pullMergeBlock'
-import { FAILURE_TEXT, METHOD_TEXT, OWN_PULL_TEXT, REFUSAL_TEXT, WRITE_TEXT, type ViewProps } from './shared'
+import { Icon } from './Icon'
+import { FAILURE_TEXT, METHOD_TEXT, OWN_PULL_TEXT, REFUSAL_TEXT, WRITE_TEXT, type PullNodeApi, type ViewProps } from './shared'
 import type { MergeMethodsRead } from './useMergeMethods'
+import './PullMergeBox.css'
 
-const PROPOSAL_TEXT: Record<PullProposal['action'], string> = {
-  approve: 'Approve', 'request-changes': 'Request changes on', comment: 'Comment on', merge: 'Merge'
+const PROPOSAL_TEXT: Record<Exclude<PullProposal['action'], 'merge'>, string> = {
+  approve: 'an approval', 'request-changes': 'requesting changes', comment: 'a comment'
 }
 
 /** Confirm stays off this long after a proposal is shown or replaced, so an agent cannot swap the
  *  action under a click already on its way (security review of #19). */
 const PROPOSAL_ARM_MS = 1_000
 
-
+/** The one write Confirm sends: its bridge call and the exact arguments, shown under Details. */
+type Call =
+  | { name: 'mergePull'; args: Parameters<PullNodeApi['mergePull']>[0] }
+  | { name: 'reviewPull'; args: Parameters<PullNodeApi['reviewPull']>[0] }
+  | { name: 'commentOnPull'; args: Parameters<PullNodeApi['commentOnPull']>[0] }
 
 /**
- * The linked agent's proposed action (`pr-propose`), shown right above the merge box (above the tab
- * content on another tab, or before the detail read landed). It names exactly what will
- * be sent; nothing is sent until Confirm, which runs the same write, behind the same guards, as the
- * node's own buttons. A review and a merge are tied to the head the node shows, as there.
+ * The linked agent's proposed action (`pr-propose`), as the top of the merge card (F1) on the
+ * Conversation tab (under the tab bar on another tab, or before the detail read landed). It names
+ * what will be sent, and Details shows the exact call (method, head SHA); nothing is sent until
+ * Confirm, which runs that same call, behind the same guards, as the node's own buttons. A review and
+ * a merge are tied to the head the node shows, as there.
  */
 export function PullProposalBar(props: ViewProps & {
   proposal: PullProposal; seen: GitHubPullDetail | undefined; seenChecks: PullChecksRead
@@ -45,21 +52,21 @@ export function PullProposalBar(props: ViewProps & {
     : proposal.method ? (allowed.includes(proposal.method) ? proposal.method : null) : allowed[0] ?? null
   const seenHead = seen?.head.sha
   const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
+  // ponytail: only one linked agent can be named; with several, any of them may have proposed.
+  const who = props.agents?.length === 1 ? props.agents[0].title : 'Your agent'
+
+  const call: Call | null = proposal.action === 'merge'
+    ? method && seenHead ? { name: 'mergePull', args: { ...at, method, headSha: seenHead } } : null
+    : proposal.action === 'comment'
+      ? { name: 'commentOnPull', args: { ...at, body: proposal.message } }
+      : seenHead && !ownPull
+        ? { name: 'reviewPull', args: { ...at, event: proposal.action === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES', body: proposal.message, headSha: seenHead } }
+        : null
 
   const confirm = async () => {
-    if (busy || !armed) return
-    let write: Promise<PullWriteResult>
-    if (proposal.action === 'merge') {
-      if (!method || !seenHead) return
-      write = api.mergePull({ ...at, method, headSha: seenHead })
-    } else if (proposal.action === 'comment') {
-      write = api.commentOnPull({ ...at, body: proposal.message })
-    } else {
-      if (!seenHead || ownPull) return
-      write = api.reviewPull({
-        ...at, event: proposal.action === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES', body: proposal.message, headSha: seenHead
-      })
-    }
+    if (busy || !armed || !call) return
+    const write: Promise<PullWriteResult> = call.name === 'mergePull' ? api.mergePull(call.args)
+      : call.name === 'reviewPull' ? api.reviewPull(call.args) : api.commentOnPull(call.args)
     setBusy(true)
     setRefusal(null)
     const outcome = await write.catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
@@ -91,26 +98,44 @@ export function PullProposalBar(props: ViewProps & {
     blocked = ownPull ? OWN_PULL_TEXT : !seenHead ? needsDetail : null
   }
   const waiting = isMerge && methods === 'loading'
+  const what = proposal.action === 'merge'
+    ? method ? METHOD_TEXT[method].toLowerCase() : 'a merge'
+    : PROPOSAL_TEXT[proposal.action]
+  // The call's arguments as sent, minus the project id (this node's own, not the agent's choice).
+  const shown = call && (({ projectId: _, ...rest }) => rest)(call.args)
   return (
     <div className="pull-proposal" role="region" aria-label="Agent proposal">
-      <p className="pull-proposal__what">
-        Your agent proposes:{' '}
-        {isMerge && seen
-          ? <>Merge <strong>#{seen.number} {seen.title}</strong> into <code>{seen.base.ref}</code></>
-          : <strong>{PROPOSAL_TEXT[proposal.action]} #{pull.pullNumber}</strong>}
-        {method && <> ({METHOD_TEXT[method]})</>}
-      </p>
-      {proposal.action !== 'merge' && proposal.message.trim() && (
-        <blockquote className="pull-proposal__message">{proposal.message}</blockquote>
-      )}
-      {(blocked ?? refused) && <p className="pull-node__empty">{blocked ?? refused}</p>}
-      {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
-      <div className="pull-compose__actions">
-        {!refused && (
-          <button className="pull-compose__button pull-merge__confirm" disabled={busy || !armed || !!blocked || waiting}
-            onClick={() => void confirm()}>Confirm</button>
+      <div className="pr-proposal">
+        <div className="pr-proposal__head">
+          <Icon name="agent" className="pr-proposal__icon" />
+          <span className="pr-proposal__what">
+            <strong>{who} proposes {what}</strong>
+            {proposal.action !== 'comment' && seenHead && <span className="pr-proposal__at"> at {seenHead.slice(0, 7)}</span>}
+          </span>
+          <span className="pr-proposal__actions">
+            <button type="button" className="pr-btn" disabled={busy} onClick={onDismiss}>Dismiss</button>
+            {!refused && (
+              <button type="button" className="pr-btn pr-btn--primary" disabled={busy || !armed || !!blocked || waiting || !call}
+                onClick={() => void confirm()}>Confirm</button>
+            )}
+          </span>
+        </div>
+        <p className="pr-proposal__target">
+          {isMerge && seen
+            ? <>Merge <strong>#{seen.number} {seen.title}</strong> into <code>{seen.base.ref}</code></>
+            : <>On <strong>#{pull.pullNumber}{seen ? ` ${seen.title}` : ''}</strong></>}
+        </p>
+        {proposal.action !== 'merge' && proposal.message.trim() && (
+          <blockquote className="pr-proposal__message">{proposal.message}</blockquote>
         )}
-        <button className="pull-compose__button" disabled={busy} onClick={onDismiss}>Dismiss</button>
+        {(blocked ?? refused) && <p className="pr-mbox__note">{blocked ?? refused}</p>}
+        {refusal && <p className="pr-mbox__error" role="alert">{WRITE_TEXT[refusal]}</p>}
+        {call && shown && (
+          <details className="pr-proposal__details">
+            <summary>Details</summary>
+            <pre className="pr-proposal__call" aria-label="Exact call">{`${call.name}(${JSON.stringify(shown, null, 2)})`}</pre>
+          </details>
+        )}
       </div>
     </div>
   )
