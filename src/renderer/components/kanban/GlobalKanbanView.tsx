@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { BridgeLink, CanvasNodeState, ProjectKanban } from '@shared/types'
 import { AGENT_CONFIG, BUILTIN_AGENT_IDS, type AgentId } from '@shared/agents/config'
 import { useProjects } from '../../state/projects'
@@ -7,8 +7,8 @@ import { useBoardWallpaperStyle } from '../../state/wallpaper'
 import { AerialWallpaper } from '../AerialWallpaper'
 import {
   addColumn, assignNode, assignedTo, boardLabels, cardMatchesLabelFilter, cardMeta, columnForNode,
-  deleteColumn, labelsForCard, moveColumn,
-  nextColumnColor, pruneAssignments, recolorColumn, renameColumn, unassigned, defaultKanban, AT_COLUMN_END
+  compareSwimlanePriority, deleteColumn, labelsForCard, moveColumn,
+  nextColumnColor, pruneAssignments, recolorColumn, renameColumn, swimlanePriorityTier, unassigned, defaultKanban, AT_COLUMN_END
 } from '../../lib/kanban'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
@@ -66,7 +66,7 @@ interface SwimlaneProps {
    *  (lib/teamProgress). The ropes are hand-editable input; the reader tolerates anything. */
   ropes?: BridgeLink[]
   nodes: CanvasNodeState[]
-  onChangeBoard: (next: ProjectKanban) => void
+  onChangeBoard: (projectId: string, next: ProjectKanban) => void
   onOpenNode: (nodeId: string, projectId: string) => void
   onCreateNode: (projectId: string, choice: KanbanCreateChoice, columnId: string | null) => void
   onDeleteNode: (projectId: string, nodeId: string) => void
@@ -100,6 +100,60 @@ interface SwimlaneProps {
   onRunQueued?: (projectId: string, nodeId: string) => void
 }
 
+const EMPTY_SWIMLANE_COLLAPSE_MS = 2 * 60 * 1000
+const NO_CARDS: KanbanSession[] = []
+const NO_LABELS: ReturnType<typeof labelsForCard> = []
+const defaultBoards = new Map<string, ProjectKanban>()
+const storedSessionsCache = new WeakMap<readonly CanvasNodeState[], KanbanSession[]>()
+
+function defaultBoardFor(projectId: string): ProjectKanban {
+  let b = defaultBoards.get(projectId)
+  if (!b) {
+    b = defaultKanban(projectId)
+    defaultBoards.set(projectId, b)
+  }
+  return b
+}
+
+function storedSessionsFor(nodes: readonly CanvasNodeState[]): KanbanSession[] {
+  let cached = storedSessionsCache.get(nodes)
+  if (!cached) {
+    cached = nodes.map((n) => toKanbanSessionState(n as never)).filter((s): s is KanbanSession => s !== null)
+    storedSessionsCache.set(nodes, cached)
+  }
+  return cached
+}
+
+const projectActivityAt: Record<string, number> = {}
+const prevProjectBoardSig = new Map<string, string>()
+
+function boardActivitySig(board: ProjectKanban | undefined): string {
+  return board?.assignments.map((a) => `${a.nodeId}:${a.columnId}`).join('|') ?? ''
+}
+
+function touchProjectActivity(projectId: string, at = Date.now()): number {
+  projectActivityAt[projectId] = at
+  return at
+}
+
+function syncProjectBoardActivity(projects: readonly { id: string; kanban?: ProjectKanban }[]): void {
+  for (const p of projects) {
+    const sig = boardActivitySig(p.kanban)
+    const prev = prevProjectBoardSig.get(p.id)
+    if (prev === undefined) {
+      prevProjectBoardSig.set(p.id, sig)
+    } else if (prev !== sig) {
+      prevProjectBoardSig.set(p.id, sig)
+      touchProjectActivity(p.id)
+    }
+  }
+}
+
+syncProjectBoardActivity(useProjects.getState().projects)
+useProjects.subscribe((state) => {
+  syncProjectBoardActivity(state.projects)
+})
+
 const Swimlane = memo(function Swimlane({
   projectId, projectName, projectIndex, projectColor, board, sessions, ropes, nodes, onChangeBoard, onOpenNode, onCreateNode, onDeleteNode, onRenameNode, onEditSticky, onBrowserNav, onSetIcon, modalNodeId, modalView, onModalChange, liveTeams, highlight, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued
 }: SwimlaneProps) {
@@ -110,7 +164,22 @@ const Swimlane = memo(function Swimlane({
   )
   const [cardMenu, setCardMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
   const [labelFilter, setLabelFilter] = useState<string[]>([])
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => sessions.length === 0)
+  const prevSessionCountRef = useRef(sessions.length)
+  useEffect(() => {
+    const prev = prevSessionCountRef.current
+    prevSessionCountRef.current = sessions.length
+    if (sessions.length === 0 && prev > 0) {
+      setCollapsed(true)
+    } else if (sessions.length > 0 && prev === 0) {
+      setCollapsed(false)
+    }
+  }, [sessions.length])
+  useEffect(() => {
+    if (sessions.length > 0 || collapsed) return
+    const timer = setTimeout(() => setCollapsed(true), EMPTY_SWIMLANE_COLLAPSE_MS)
+    return () => clearTimeout(timer)
+  }, [sessions.length, collapsed])
   const activePortsProjectId = useProjects((s) => s.activeProjectId)
   // The card face's Ports chip, for the active project's lane only: the dev-port scanner covers the
   // project on the canvas and nothing else, so a background lane would show a stale or empty list.
@@ -135,6 +204,7 @@ const Swimlane = memo(function Swimlane({
   const disabledAgents = useSettings((s) => s.settings.disabledAgents)
 
   const requestedCardNodeId = useViewMode((s) => s.requestedCardNodeId)
+  const kanbanLayout = useViewMode((s) => s.kanbanLayout)
   useEffect(() => {
     if (!requestedCardNodeId) return
     if (sessions.some(s => s.id === requestedCardNodeId)) {
@@ -184,8 +254,8 @@ const Swimlane = memo(function Swimlane({
   }, [board])
 
   const commit = useCallback((next: ProjectKanban) => {
-    onChangeBoard(pruneAssignments(next, sessionIds))
-  }, [onChangeBoard, sessionIds])
+    onChangeBoard(projectId, pruneAssignments(next, sessionIds))
+  }, [onChangeBoard, projectId, sessionIds])
 
   const createOptions = useMemo(() => [
     ...BUILTIN_AGENT_IDS.filter(id => !disabledAgents.includes(id)).map(id => ({
@@ -203,7 +273,7 @@ const Swimlane = memo(function Swimlane({
     const vis = (ids: string[]) => activeLocalFilter.length ? ids.filter(id => cardMatchesLabelFilter(board, id, activeLocalFilter)) : ids
     const toCards = (ids: string[]) => {
       const cards = ids.flatMap(id => byId.has(id) ? [byId.get(id)!] : [])
-      return cards
+      return cards.length ? cards : NO_CARDS
     }
     return {
       ungrouped: toCards(vis(unassigned(board, sessionIds))),
@@ -214,6 +284,14 @@ const Swimlane = memo(function Swimlane({
   const handleCardDragStart = useCallback((id: string) => { dragRef.current = { kind: 'card', id } }, [])
   const handleColumnDragStart = useCallback((id: string) => { dragRef.current = { kind: 'column', id } }, [])
   const handleDragEnd = useCallback(() => { dragRef.current = null }, [])
+  const handleCardContext = useCallback((id: string, x: number, y: number) => setCardMenu({ nodeId: id, x, y }), [])
+  const handleCreate = useCallback(
+    (choice: KanbanCreateChoice, colId: string | null) => onCreateNode(projectId, choice, colId),
+    [onCreateNode, projectId]
+  )
+  const handleRenameColumn = useCallback((id: string, t: string) => commit(renameColumn(board, id, t)), [board, commit])
+  const handleRecolorColumn = useCallback((id: string, c: string) => commit(recolorColumn(board, id, c)), [board, commit])
+  const handleDeleteColumn = useCallback((id: string) => commit(deleteColumn(board, id)), [board, commit])
 
   const dropOnColumn = useCallback((columnId: string | null) => {
     const drag = dragRef.current; dragRef.current = null; if (!drag) return
@@ -249,36 +327,61 @@ const Swimlane = memo(function Swimlane({
     }
   }, [dropAtCard])
 
-  const lanesFor = (columnId: string | null): KanbanLane[] => {
-    const cards = columnId === null ? columnCards.ungrouped : columnCards.byColumn.get(columnId) ?? []
-    const onDropAt = dropAtCardFor(columnId)
-    const category = columnId === null ? undefined : columnCategory(board.columns.find(c => c.id === columnId))
-    return [{
-      sourceId: 'sessions' as const,
-      count: cards.length,
-      cards: cards.map(s => (
-        <SessionCard
-          key={s.id}
-          session={s}
-          meta={cardMeta(board, s.id)}
-          labels={labelsByCard.get(s.id) ?? []}
-          onOpen={setModalNodeId}
-          onContext={(id, x, y) => setCardMenu({ nodeId: id, x, y })}
-          onDragStart={handleCardDragStart}
-          onDragEnd={handleDragEnd}
-          onDropAt={onDropAt}
-          team={teams.get(s.id) ?? NO_STATIONS}
-          onTravel={travel}
-          columnCategory={category}
-          liveLinkSource={liveLinkSource}
-          ports={cardPorts}
-          onOpenPort={openPort}
-          onRunQueued={runQueued}
-          statusStore={statusStore}
-        />
-      ))
-    }]
-  }
+  const lanesByColumn = useMemo(() => {
+    const buildLane = (columnId: string | null): KanbanLane[] => {
+      const cards = columnId === null ? columnCards.ungrouped : columnCards.byColumn.get(columnId) ?? NO_CARDS
+      const onDropAt = dropAtCardFor(columnId)
+      const category = columnId === null ? undefined : columnCategory(board.columns.find(c => c.id === columnId))
+      return [{
+        sourceId: 'sessions' as const,
+        count: cards.length,
+        cards: cards.map(s => (
+          <SessionCard
+            key={s.id}
+            session={s}
+            meta={cardMeta(board, s.id)}
+            labels={labelsByCard.get(s.id) ?? NO_LABELS}
+            onOpen={setModalNodeId}
+            onContext={handleCardContext}
+            onDragStart={handleCardDragStart}
+            onDragEnd={handleDragEnd}
+            onDropAt={onDropAt}
+            team={teams.get(s.id) ?? NO_STATIONS}
+            onTravel={travel}
+            columnCategory={category}
+            liveLinkSource={liveLinkSource}
+            ports={cardPorts}
+            onOpenPort={openPort}
+            onRunQueued={runQueued}
+            statusStore={statusStore}
+          />
+        ))
+      }]
+    }
+    const map = new Map<string | null, KanbanLane[]>()
+    map.set(null, buildLane(null))
+    for (const col of board.columns) {
+      map.set(col.id, buildLane(col.id))
+    }
+    return map
+  }, [
+    board,
+    columnCards,
+    dropAtCardFor,
+    labelsByCard,
+    setModalNodeId,
+    handleCardContext,
+    handleCardDragStart,
+    handleDragEnd,
+    teams,
+    travel,
+    liveLinkSource,
+    cardPorts,
+    openPort,
+    runQueued,
+    statusStore
+  ])
+  const lanesFor = (columnId: string | null): KanbanLane[] => lanesByColumn.get(columnId) ?? []
 
   // The card menu both boards share (cardMenu.tsx), asked for THIS lane's project.
   const cardMenuItems = (nodeId: string): MenuItem[] => {
@@ -328,13 +431,13 @@ const Swimlane = memo(function Swimlane({
         <span className="kanban-swimlane__count">{sessions.length} sessions</span>
       </div>
       {!collapsed && (
-        <div className="kanban-board kanban-swimlane__board">
+        <div className={`kanban-board kanban-swimlane__board${kanbanLayout === 'vertical' ? ' kanban-board--vertical' : ''}`}>
           <div className="kanban-board__columns">
             <KanbanColumn
               column={null}
               lanes={lanesFor(null)}
               createOptions={createOptions}
-              onCreate={(choice, colId) => onCreateNode(projectId, choice, colId)}
+              onCreate={handleCreate}
               onDragEnd={handleDragEnd}
               onDropOnColumn={dropOnColumn}
             />
@@ -343,11 +446,11 @@ const Swimlane = memo(function Swimlane({
                 key={col.id}
                 column={col}
                 lanes={lanesFor(col.id)}
-                onRename={(id, t) => commit(renameColumn(board, id, t))}
-                onRecolor={(id, c) => commit(recolorColumn(board, id, c))}
-                onDelete={(id) => commit(deleteColumn(board, id))}
+                onRename={handleRenameColumn}
+                onRecolor={handleRecolorColumn}
+                onDelete={handleDeleteColumn}
                 createOptions={createOptions}
-                onCreate={(choice, colId) => onCreateNode(projectId, choice, colId)}
+                onCreate={handleCreate}
                 onColumnDragStart={handleColumnDragStart}
                 onDragEnd={handleDragEnd}
                 onDropOnColumn={dropOnColumn}
@@ -433,7 +536,53 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
   useEffect(() => markCanvasCovered(document.documentElement), [])
   const boardStyle = useBoardWallpaperStyle()
   const allProjects = useProjects(s => s.projects)
-  const projects = useMemo(() => allProjects.filter(p => !p.closed), [allProjects])
+  const openProjects = useMemo(() => allProjects.filter(p => !p.closed), [allProjects])
+  const [autoSort, setAutoSort] = useState(true)
+  const kanbanLayout = useViewMode((s) => s.kanbanLayout)
+  const baseEntries = useMemo(() => {
+    syncProjectBoardActivity(openProjects)
+    return openProjects.map((p, originalIdx) => {
+      const board = p.kanban ?? defaultBoardFor(p.id)
+      const isLive = live !== null && live.projectId === p.id
+      const sessions = isLive ? live.sessions : storedSessionsFor(p.nodes)
+      return { project: p, board, isLive, sessions, originalIdx }
+    })
+  }, [openProjects, live])
+  const registryVersion = useSessionRegistryVersion()
+  const computeSortOrderSig = useCallback(() => {
+    if (!autoSort) return ''
+    return baseEntries
+      .map((e) => ({
+        originalIdx: e.originalIdx,
+        priority: swimlanePriorityTier(
+          e.board,
+          e.sessions,
+          agentStatusForProject(e.project.id).store.getState().byId,
+          projectActivityAt[e.project.id] ?? 0
+        )
+      }))
+      .sort(compareSwimlanePriority)
+      .map((x) => x.originalIdx)
+      .join(',')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSort, baseEntries, registryVersion])
+  const subscribeSortOrder = useCallback(
+    (onStoreChange: () => void) => {
+      if (!autoSort) return () => {}
+      const stores = new Set(baseEntries.map((e) => agentStatusForProject(e.project.id).store))
+      const unsubs = [...stores].map((store) => store.subscribe(onStoreChange))
+      return () => {
+        for (const u of unsubs) u()
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [autoSort, baseEntries, registryVersion]
+  )
+  const sortOrderSig = useSyncExternalStore(subscribeSortOrder, computeSortOrderSig)
+  const laneEntries = useMemo(() => {
+    if (!autoSort || !sortOrderSig) return baseEntries
+    return sortOrderSig.split(',').map((idx) => baseEntries[Number(idx)]).filter(Boolean)
+  }, [baseEntries, autoSort, sortOrderSig])
   const liveRef = useRef(live)
   liveRef.current = live
   const [modal, setModal] = useState<{ projectId: string; nodeId: string; view?: 'md' } | null>(null)
@@ -476,6 +625,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     // host's to change, and a move here would only diverge.
     const session = sessionForProject(projectId)
     if (isHostedReadOnly(session.id)) return
+    touchProjectActivity(projectId)
     const prev = useProjects.getState().getProject(projectId)?.kanban ?? defaultKanban(projectId)
     useProjects.getState().setProjectKanban(projectId, next)
     markWorkspaceDirty()
@@ -499,6 +649,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
   }, [])
 
   const onCreateNode = useCallback((projectId: string, choice: KanbanCreateChoice, columnId: string | null) => {
+    touchProjectActivity(projectId)
     // Delegate to Canvas's createNodeInColumn which correctly mounts the TerminalNode
     // and starts the tmux session (via transport.create). Direct store manipulation
     // would leave the tmux session unstarted for non-active projects, causing the
@@ -540,7 +691,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
     setTimeout(() => window.dispatchEvent(new CustomEvent('nodeterm:focus-node', { detail: { nodeId } })), 50)
   }, [])
 
-  if (projects.length === 0) {
+  if (openProjects.length === 0) {
     return (
       <div className="kanban-overlay global-kanban" style={boardStyle}>
         {boardStyle && <AerialWallpaper board />}
@@ -556,15 +707,26 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
       <div className="kanban-header">
         <span className="kanban-header__name">All Projects</span>
         <KanbanScopeSwitch scope="all" />
-        <span className="kanban-swimlane__hint">{projects.length} projects — {mod}+1..{Math.min(9, projects.length)} to jump</span>
+        <button
+          type="button"
+          className={`kanban-status-chip${autoSort ? ' kanban-status-chip--active' : ''}`}
+          onClick={() => setAutoSort((v) => !v)}
+          title="Sort projects by priority: Needs you / unread first, then running agents, then idle, then empty"
+        >
+          {autoSort ? 'Sort: Priority' : 'Sort: Tab order'}
+        </button>
+        <button
+          type="button"
+          className={`kanban-status-chip${kanbanLayout === 'vertical' ? ' kanban-status-chip--active' : ''}`}
+          onClick={() => useViewMode.getState().toggleKanbanLayout()}
+          title="Switch column layout between Vertical (fits window width, no horizontal scroll) and Horizontal"
+        >
+          {kanbanLayout === 'vertical' ? 'Layout: Vertical' : 'Layout: Horizontal'}
+        </button>
+        <span className="kanban-swimlane__hint">{openProjects.length} projects — {mod}+1..{Math.min(9, openProjects.length)} to jump</span>
       </div>
       <div className="global-kanban__scroll">
-        {projects.map((p, idx) => {
-          const board = p.kanban ?? defaultKanban(p.id)
-          const isLive = live !== null && live.projectId === p.id
-          const sessions = isLive
-            ? live.sessions
-            : p.nodes.map(n => toKanbanSessionState(n as never)).filter((s): s is KanbanSession => s !== null)
+        {laneEntries.map(({ project: p, board, isLive, sessions }, idx) => {
           return (
             <Swimlane
               key={p.id}
@@ -576,7 +738,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
               sessions={sessions}
               ropes={p.ropes}
               nodes={p.nodes}
-              onChangeBoard={next => onChangeBoard(p.id, next)}
+              onChangeBoard={onChangeBoard}
               onOpenNode={onOpenNode}
               onCreateNode={onCreateNode}
               onDeleteNode={onDeleteNode}
@@ -587,7 +749,7 @@ export const GlobalKanbanView = memo(function GlobalKanbanView({ live = null, on
               modalNodeId={modal?.projectId === p.id ? modal.nodeId : null}
               modalView={modal?.projectId === p.id ? modal.view : undefined}
               onModalChange={onModalChange}
-              liveTeams={isLive ? live.teams : undefined}
+              liveTeams={isLive && live ? live.teams : undefined}
               highlight={highlightId === p.id}
               nodeActionItems={nodeActionItems}
               sessionActionItems={sessionActionItems}

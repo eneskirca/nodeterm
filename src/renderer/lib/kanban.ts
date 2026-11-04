@@ -1,7 +1,7 @@
 import type {
   CanvasNodeState, KanbanColumn, KanbanColumnCategory, Project, ProjectKanban
 } from '@shared/types'
-import { columnCategory } from '@shared/kanban-category'
+import { columnCategory, isCompletedCategory } from '@shared/kanban-category'
 import { columnOrder, placeAssignment, type CardAnchor } from '@shared/kanban-order'
 import { SYSTEM_NODE_COLORS } from '../state/workspace'
 import { defaultKanbanFor } from '@shared/kanban-default-board'
@@ -134,13 +134,116 @@ export function assignedTo(k: ProjectKanban, columnId: string): string[] {
  * caller can distinguish "send to Ungrouped" (null) from "no such column" (undefined) and report
  * the available columns. Agents naturally pass a title ("In Progress"); ids come from `board`.
  */
+export function normColTitle(title: string | undefined): string {
+  if (!title) return ''
+  return title.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+}
+
 export function resolveColumnRef(k: ProjectKanban, ref: string): string | null | undefined {
   const raw = ref.trim()
   if (!raw || raw.toLowerCase() === 'ungrouped') return null
   const byId = k.columns.find((c) => c.id === raw)
   if (byId) return byId.id
   const byTitle = k.columns.find((c) => c.title.toLowerCase() === raw.toLowerCase())
-  return byTitle ? byTitle.id : undefined
+  if (byTitle) return byTitle.id
+  const normRaw = normColTitle(raw)
+  const byNorm = k.columns.find((c) => normColTitle(c.title) === normRaw)
+  return byNorm ? byNorm.id : undefined
+}
+
+export interface SwimlanePriorityStatus {
+  state?: string
+  dropped?: boolean
+  unread?: boolean
+  lastEventAt?: number
+}
+
+export interface SwimlanePriority {
+  tier: number
+  comigoCount: number
+  workingCount: number
+  lastEventAt: number
+}
+
+export function swimlanePriorityTier(
+  board: ProjectKanban,
+  sessions: ReadonlyArray<{ id: string; kind: string }>,
+  statusById: Readonly<Record<string, SwimlanePriorityStatus | undefined>>,
+  projectLastActivityAt = 0
+): SwimlanePriority {
+  if (sessions.length === 0) {
+    return { tier: 3, comigoCount: 0, workingCount: 0, lastEventAt: 0 }
+  }
+  let comigoCount = 0
+  let workingCount = 0
+  let minComigoEventAt = 0
+  let minWorkingEventAt = 0
+  for (const s of sessions) {
+    const col = columnForNode(board, s.id)
+    const cat = columnCategory(col)
+    const colTitle = normColTitle(col?.title)
+    const st = s.kind === 'sticky' ? undefined : statusById[s.id]
+    const isDoneColumn = isCompletedCategory(cat) || colTitle === 'concluido' || colTitle === 'done'
+    const needsYou =
+      !!st &&
+      (!!st.dropped ||
+        st.state === 'waiting' ||
+        st.state === 'blocked' ||
+        (!!st.unread && st.state !== 'working' && !isDoneColumn))
+    const isRunning = !!st && !st.dropped && st.state === 'working'
+    // Only count timestamps when a task finished or stopped to wait — never while `working`
+    // (CLI output / mid-turn tool events must not reorder swimlanes).
+    const isStatusEndOrWait =
+      !!st && (!!st.dropped || st.state === 'waiting' || st.state === 'blocked' || st.state === 'done')
+    const nodeEventAt = isStatusEndOrWait ? (st.lastEventAt ?? 0) : 0
+    if (needsYou) {
+      comigoCount++
+      const ev = nodeEventAt > 0 ? nodeEventAt : projectLastActivityAt
+      if (ev > 0 && (minComigoEventAt === 0 || ev < minComigoEventAt)) {
+        minComigoEventAt = ev
+      }
+    }
+    const inStageColumn =
+      cat === 'started' ||
+      colTitle === 'refinamento' ||
+      colTitle === 'contrato e ux' ||
+      colTitle === 'planejamento' ||
+      colTitle === 'implementacao' ||
+      colTitle === 'conferencia e qa' ||
+      colTitle === 'testes e qa' ||
+      colTitle === 'entrega' ||
+      colTitle === 'in progress'
+    if (isRunning || (!st && inStageColumn)) {
+      workingCount++
+      const ev = projectLastActivityAt > 0 ? projectLastActivityAt : nodeEventAt
+      if (ev > 0 && (minWorkingEventAt === 0 || ev < minWorkingEventAt)) {
+        minWorkingEventAt = ev
+      }
+    }
+  }
+  if (comigoCount > 0) {
+    return { tier: 0, comigoCount, workingCount, lastEventAt: minComigoEventAt || projectLastActivityAt }
+  }
+  if (workingCount > 0) {
+    return { tier: 1, comigoCount, workingCount, lastEventAt: minWorkingEventAt || projectLastActivityAt }
+  }
+  // Idle projects (nothing waiting/unread and nothing running) keep their natural tab order.
+  return { tier: 2, comigoCount: 0, workingCount: 0, lastEventAt: 0 }
+}
+
+export function compareSwimlanePriority(
+  a: { priority: SwimlanePriority; originalIdx: number },
+  b: { priority: SwimlanePriority; originalIdx: number }
+): number {
+  if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
+  if (a.priority.lastEventAt !== b.priority.lastEventAt) {
+    if (a.priority.lastEventAt === 0) return 1
+    if (b.priority.lastEventAt === 0) return -1
+    return a.priority.lastEventAt - b.priority.lastEventAt
+  }
+  if (a.priority.comigoCount !== b.priority.comigoCount) return b.priority.comigoCount - a.priority.comigoCount
+  if (a.priority.workingCount !== b.priority.workingCount) return b.priority.workingCount - a.priority.workingCount
+  return a.originalIdx - b.originalIdx
 }
 
 /** Ids from `sessionIds` with no live assignment — never assigned, or assigned to a column

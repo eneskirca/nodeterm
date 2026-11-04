@@ -44,6 +44,12 @@ describe('KanbanColumn lanes', () => {
     expect(render().querySelector('.kanban-col__count')?.textContent).toBe('9')
   })
 
+  it('marks empty columns with .kanban-col--empty for compact vertical layout', () => {
+    expect(render().querySelector('.kanban-col--empty')).toBeNull()
+    const emptyHost = render({ lanes: [{ sourceId: 'sessions', count: 0, cards: [] }] })
+    expect(emptyHost.querySelector('.kanban-col--empty')).not.toBeNull()
+  })
+
   it('renders the new-session menu outside the column overflow container', async () => {
     const host = render({
       createOptions: [{ key: 'terminal', label: 'Terminal', choice: { kind: 'terminal' }, icon: <span /> }]

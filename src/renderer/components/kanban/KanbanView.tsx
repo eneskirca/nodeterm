@@ -424,6 +424,7 @@ export const KanbanView = memo(function KanbanView({
   // Someone asked for a card while the board is up (notch Go, a notification, ⌘K…). Open it here
   // instead of framing the node on the canvas nobody can see under this overlay.
   const requestedCardNodeId = useViewMode((s) => s.requestedCardNodeId)
+  const kanbanLayout = useViewMode((s) => s.kanbanLayout)
   useEffect(() => {
     if (!requestedCardNodeId) return
     setModalNodeId(requestedCardNodeId)
@@ -1219,8 +1220,16 @@ export const KanbanView = memo(function KanbanView({
         >
           {activeView ? `View: ${activeView.name}${viewDirty ? ' •' : ''}` : 'Views'}
         </button>
+        <button
+          type="button"
+          className={`kanban-filter-btn${kanbanLayout === 'vertical' ? ' kanban-filter-btn--on' : ''}`}
+          title="Switch column layout between Vertical (fits window width, no horizontal scroll) and Horizontal"
+          onClick={() => useViewMode.getState().toggleKanbanLayout()}
+        >
+          {kanbanLayout === 'vertical' ? 'Layout: Vertical' : 'Layout: Horizontal'}
+        </button>
       </div>
-      <div className="kanban-board">
+      <div className={`kanban-board${kanbanLayout === 'vertical' ? ' kanban-board--vertical' : ''}`}>
         <div className="kanban-board__columns">
           {ungroupedShown && (
             <KanbanColumn

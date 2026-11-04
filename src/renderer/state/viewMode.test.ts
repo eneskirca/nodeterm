@@ -163,3 +163,14 @@ describe('Omni is a scope of the kanban side, not a third view', () => {
     expect(isGlobalKanbanOpen()).toBe(false)
   })
 })
+
+describe('kanbanLayout toggle (vertical vs horizontal)', () => {
+  beforeEach(() => useViewMode.setState({ kanbanLayout: 'vertical' }))
+  it('defaults to vertical and flips between vertical and horizontal', () => {
+    expect(useViewMode.getState().kanbanLayout).toBe('vertical')
+    useViewMode.getState().toggleKanbanLayout()
+    expect(useViewMode.getState().kanbanLayout).toBe('horizontal')
+    useViewMode.getState().toggleKanbanLayout()
+    expect(useViewMode.getState().kanbanLayout).toBe('vertical')
+  })
+})

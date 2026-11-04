@@ -17318,7 +17318,10 @@ export function Canvas() {
         // `opts.quiet` reaches this function BELOW this block on purpose (issue #708): it silences
         // the two INTERRUPTS (chime, OS notification) and never the unread record or its ack. See
         // `fanoutStillWorking` — a dot is a different fact from a chime.
-        const watching = document.hasFocus() && cs.activeId === e.nodeId
+        const boardCovered = isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId)
+        const watching =
+          document.hasFocus() &&
+          (boardCovered ? kanbanModalNodeRef.current === e.nodeId : cs.activeId === e.nodeId)
         if (!watching) cs.markUnread(e.nodeId)
         // Watched it finish? Then it is already read. Nothing marks it unread in this branch, so
         // without an explicit ack there would never BE a read signal — and the notch capsule's
