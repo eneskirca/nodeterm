@@ -673,6 +673,7 @@ import { dispatchEntry, useBoardDispatch, type DispatchCardEntry } from '../stat
 import type { GitHubIssueCardView as DispatchIssueCard } from '@shared/github-issues'
 import { planIssueWorktree } from '@shared/issue-worktree'
 import { PULL_WORK_EVENT, planPullWorktree, pullWorkPrompt, type PullWorkRequest } from '@shared/pull-work'
+import { ISSUE_OPEN_EVENT, openIssueInNodes, type IssueOpenRequest } from '../lib/openIssueNode'
 import { sharedBasePathOf, sharedWorktreeLocationRefusal } from '@shared/worktree-location'
 import {
   frameAgentPlacement,
@@ -11812,6 +11813,25 @@ export function Canvas() {
     },
     [approvedRepoFor, setNodes, markDirty, emptyNodePos]
   )
+
+  // A pull node's linked issue: the repository's Issues node, focused on it, or a new one on it.
+  // ponytail: a new node opens at the free spot, not beside the pull node.
+  useEffect(() => {
+    const onOpen = (e: Event): void => {
+      const request = (e as CustomEvent<IssueOpenRequest>).detail
+      const plan = openIssueInNodes(nodesRef.current, request)
+      if ('focus' in plan) {
+        setNodes((ns) => { const latest = openIssueInNodes(ns, request); return 'focus' in latest ? latest.nodes : ns })
+        travelToNodeRef.current(plan.focus)
+      } else {
+        const node = createIssuesNode(nodesRef.current.length, request.repository, emptyNodePos())
+        setNodes((ns) => [...ns, { ...node, data: { ...node.data, issues: { repository: request.repository, issueNumber: request.issueNumber } } }])
+      }
+      markDirty()
+    }
+    window.addEventListener(ISSUE_OPEN_EVENT, onOpen)
+    return () => window.removeEventListener(ISSUE_OPEN_EVENT, onOpen)
+  }, [setNodes, markDirty, emptyNodePos])
 
   // "New pull request…" (add menu, Source Control): a PR from the current branch of `cwd` (the
   // project folder, or the Source Control panel's worktree). The dialog does the push and the
