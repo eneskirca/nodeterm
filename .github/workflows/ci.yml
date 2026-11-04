@@ -21,7 +21,14 @@ permissions:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    # PINNED, not `ubuntu-latest`. On 2026-11-04 `ubuntu-latest` rolled 24.04 -> 26.04 and four
+    # host-measurement tests went red on every branch at once: the BSD-chmod stand-in in
+    # remote-atomic-write (26.04's coreutils accepts `chmod 600 -- f` under POSIXLY_CORRECT, so the
+    # guard for the macOS `chmod --` bug stopped being armed), both real-tmux pane-cwd measurements,
+    # and pane-owner's foreground argv (`bash -c sh`). Those suites exist to pin a measured host
+    # behaviour, so they are only meaningful against a host we chose. Bump this deliberately, with
+    # the measurements re-run. See the 26.04 issue for what has to be re-measured first.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
