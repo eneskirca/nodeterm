@@ -147,5 +147,6 @@ export function parsePullTimelineResponse(body: unknown): PullTimelinePage {
     const decoded = value ? item(value) : null
     return decoded ? [decoded] : []
   })
-  return { items, openedAt: pull.createdAt, ...(next ? { next } : {}) }
+  // `author`: who opened it, when the query asked (the issue timeline; a PR's author comes with its detail).
+  return { items, openedAt: pull.createdAt, ...('author' in pull ? { author: user(pull.author) } : {}), ...(next ? { next } : {}) }
 }

@@ -23,6 +23,8 @@ export type PullTimelineItem = { id: string; actor: GitHubIssueUser | null; at: 
 export interface PullTimelinePage {
   items: PullTimelineItem[]
   openedAt: string
+  /** Who opened it (the issue timeline only); null = a deleted account. */
+  author?: GitHubIssueUser | null
   next?: string
 }
 
@@ -34,7 +36,7 @@ export function isPullTimelineCursor(value: unknown): value is string {
 export type GitHubPullTimelineResult =
   /** `openedAt` = when the PR was opened (the description's entry). Same stale rules as `pullDetail`. */
   | {
-    status: 'ok'; items: PullTimelineItem[]; openedAt: string; next?: string; observedAt: number
+    status: 'ok'; items: PullTimelineItem[]; openedAt: string; author?: GitHubIssueUser | null; next?: string; observedAt: number
     stale?: PullReadFailure; retryAt?: number; avatarDataUrls?: PullAvatarDataUrls
   }
   | { status: 'refused'; reason: PullRefusal }

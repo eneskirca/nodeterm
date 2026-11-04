@@ -162,6 +162,14 @@ describe('IssuesNodeView', () => {
     expect(view.querySelector('.pull-convo__item--closed img.pull-avatar')?.getAttribute('src')).toBe(PNG)
   })
 
+  it('names who opened the issue, with their avatar', async () => {
+    const api = fakeApi([issue(5)], { status: 'ok', openedAt: at, author: ana, observedAt: 1, items: [], avatarDataUrls: { 1: PNG } })
+    const view = await render(api, 5)
+    const opened = view.querySelector('.pull-convo__item--description .pull-convo__head')!
+    expect(opened.textContent).toContain('ana')
+    expect(opened.querySelector('img.pull-avatar')?.getAttribute('src')).toBe(PNG)
+  })
+
   it('opens a cross-referenced PR of this repository as a pull node, and one elsewhere on GitHub', async () => {
     const ref = (id: string, repository: string, number: number) => ({
       id, actor: ana, at, kind: 'cross-referenced' as const,

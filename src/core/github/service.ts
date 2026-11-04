@@ -1195,8 +1195,8 @@ export class GitHubIssueService {
       const { client } = captured
       if (!client.pullTimeline) return null
       const page = await this.readWithEpoch(captured, () => client.pullTimeline!(repository, pullNumber, after))
-      const avatarDataUrls = await this.pullAvatars(page.items.flatMap((item) =>
-        item.kind === 'assigned' || item.kind === 'unassigned' ? [item.actor, item.assignee] : [item.actor]))
+      const avatarDataUrls = await this.pullAvatars([page.author ?? null, ...page.items.flatMap((item) =>
+        item.kind === 'assigned' || item.kind === 'unassigned' ? [item.actor, item.assignee] : [item.actor])])
       return { status: 'ok', ...page, observedAt: this.now(), ...(avatarDataUrls ? { avatarDataUrls } : {}) }
     })
   }

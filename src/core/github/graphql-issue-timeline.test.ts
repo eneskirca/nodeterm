@@ -30,6 +30,15 @@ describe('parseIssueTimelineResponse', () => {
     expect(result.items[7]).toMatchObject({ source: { pull: true, number: 12, repository: 'o/r' } })
   })
 
+  it('names who opened the issue, and no one for a deleted account', () => {
+    expect(ISSUE_TIMELINE_QUERY).toContain('author{')
+    const opened = (author: unknown) => parseIssueTimelineResponse({
+      data: { repository: { issue: { createdAt: at, author, timelineItems: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } }
+    }).author
+    expect(opened(actor)).toEqual({ id: 4, login: 'ana', avatarUrl: actor.avatarUrl })
+    expect(opened(null)).toBeNull()
+  })
+
   it('reads the next cursor and rejects a missing issue or an error', () => {
     expect(parseIssueTimelineResponse(page([], { hasNextPage: true, endCursor: 'Y3Vy' })).next).toBe('Y3Vy')
     expect(() => parseIssueTimelineResponse({ data: { repository: { issue: null } } })).toThrow(GraphQLShapeError)

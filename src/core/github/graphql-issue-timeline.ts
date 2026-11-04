@@ -9,7 +9,7 @@ import { GraphQLShapeError, graphQLErrors } from './graphql-pulls'
 export const ISSUE_TIMELINE_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String){
   repository(owner:$owner,name:$name){
     issue(number:$number){
-      createdAt
+      createdAt author{ ${ACTOR} }
       timelineItems(first:${PULL_TIMELINE_PAGE}, after:$after, itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,CROSS_REFERENCED_EVENT]){
         pageInfo{ hasNextPage endCursor }
         nodes{

@@ -248,7 +248,13 @@ function IssueDetail(props: {
       <ol className="pull-convo">
         <li className="pull-convo__item pull-convo__item--description">
           <div className="pull-convo__head">
-            <span className="pull-convo__event-text">Opened</span>
+            {first?.status === 'ok' && first.author !== undefined && (
+              <span className="pull-person">
+                <Avatar user={first.author} avatars={avatars} />
+                <span className="pull-node__author">{first.author?.login ?? 'ghost'}</span>
+              </span>
+            )}
+            <span className="pull-convo__event-text">{first?.status === 'ok' && first.author !== undefined ? 'opened this issue' : 'Opened'}</span>
             {first?.status === 'ok' && <time className="pull-convo__time" dateTime={first.openedAt}>{new Date(first.openedAt).toLocaleString()}</time>}
           </div>
           {issue.body.trim()
