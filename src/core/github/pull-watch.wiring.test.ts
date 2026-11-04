@@ -33,6 +33,15 @@ describe('Watch is wired in both shells', () => {
       expect(src).toContain(`handle: (channel, handler) => ${handle}`)
     })
   }
+  it('both shells keep the service and stop it on shutdown, next to the other services', () => {
+    const desktop = read('main/index.ts')
+    expect(desktop).toMatch(/pullWatch = startPullWatch\(\{/)
+    expect(desktop.slice(desktop.indexOf("app.on('before-quit', (e) => {"))).toMatch(/Promise\.allSettled\(\[[^\]]*pullWatch\?\.stop\(\)/)
+    const server = read('server/index.ts')
+    expect(server).toMatch(/const pullWatch = startPullWatch\(\{/)
+    // Both close() paths: the headless one and the serving one.
+    expect(server.match(/await pullWatch\.stop\(\)/g)).toHaveLength(2)
+  })
   it('the Server Edition wake drops only the creator ledger and keeps its own queue, flushed on done', () => {
     const src = read('server/canvas-control.ts')
     expect(src).toMatch(/const \{ callerOwnsTarget: _creatorLedger, \.\.\.watchBase \} = messaging/)

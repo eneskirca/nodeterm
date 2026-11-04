@@ -127,6 +127,7 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
   let writes: Promise<void> = Promise.resolve()
   let timer: ReturnType<typeof setInterval> | undefined
   const running = new Set<string>()
+  let stopped = false
 
   // Queued, and never awaited inside a tick: the disk write must not hold a node's tick open.
   const persist = (): Promise<void> => {
@@ -166,7 +167,7 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
 
   const tickOne = async (r: WatchRecord): Promise<void> => {
     const k = key(r.projectId, r.nodeId)
-    if (!r.on || running.has(k)) return
+    if (stopped || !r.on || running.has(k)) return
     const canvas = deps.listCanvases().find((c) => c.id === r.projectId)
     // ponytail: a project not listed at all (index still loading, or gone) keeps its record.
     if (!canvas) return
@@ -181,7 +182,7 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
     try {
       const { repository, pullNumber } = node.pull
       const read = await deps.readDetail({ projectId: r.projectId, repository, pullNumber })
-      if (read.status !== 'ok' || read.stale || !records.has(k) || !r.on) return
+      if (stopped || read.status !== 'ok' || read.stale || !records.has(k) || !r.on) return
       const d = read.detail
       if (d.lifecycle === 'merged' || d.lifecycle === 'closed') {
         turnOff(r, `The pull request is ${d.lifecycle}.`)
@@ -189,7 +190,7 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
         return
       }
       const checks = await deps.readChecks({ projectId: r.projectId, pullNumber })
-      if (checks.status === 'unavailable' || checks.status === 'moved') return
+      if (stopped || checks.status === 'unavailable' || checks.status === 'moved') return
       if (checks.status === 'ok' && checks.headRefOid !== d.head.sha) return
       const sha = d.head.sha
       const baseline = r.sha === undefined
@@ -217,7 +218,7 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
         projectId: r.projectId, pullNodeId: r.nodeId, agentNodeId,
         body: wakeBody(`${repository}#${pullNumber}`, sha, failing, conflict, green)
       })
-      if (!records.has(k) || !r.on) return
+      if (stopped || !records.has(k) || !r.on) return
       if (!WOKE.has(outcome.kind)) {
         r.note = noteFor(outcome)
       } else {
@@ -276,6 +277,7 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
   return {
     ready,
     stop() {
+      stopped = true
       if (timer) clearInterval(timer)
       timer = undefined
       return writes

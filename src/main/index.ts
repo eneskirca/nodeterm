@@ -10,7 +10,7 @@ import { grokHomeDir, grokSessionDir, grokSessionsDir } from '../core/agents/gro
 import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { startTriggerService } from '../core/trigger-service'
-import { startPullWatch } from '../core/github/pull-watch'
+import { startPullWatch, type PullWatchService } from '../core/github/pull-watch'
 import { readAgentSessionName, type AgentSessionNameDeps } from '../core/agent-session-name'
 import { readFile, readdir as fsReaddir, realpath as fsRealpath, lstat as fsLstat, writeFile as fsWriteFile } from 'fs/promises'
 import { existsSync, statSync, openSync, fstatSync, readFileSync, closeSync } from 'fs'
@@ -614,6 +614,8 @@ let sshProjectManager: ReturnType<typeof initSshProject> | undefined
 // workspace store's `onPersist`, the license callback and the quit handler read it at call time (the
 // boot workspace load's `onPersist` runs before the assignment — a later `const` would be a TDZ throw).
 let watchLinks: WatchLinkService | null = null
+// Watch (F-08). Assigned in `whenReady`; the quit handler stops it so its last write lands.
+let pullWatch: PullWatchService | undefined
 
 // The standalone Codex relay bundle (`out/main/codex-relay.js`, built by scripts/build-codex-relay.mjs
 // after electron-vite build), uploaded to a Linux host for managed Codex accounts. Read once, beside
@@ -2605,7 +2607,7 @@ app.whenReady().then(async () => {
   // node is off screen; this shell supplies the reads, the canvases and the messaging delivery (the
   // pull node is the source, every messaging gate and the deliver-on-idle queue apply). Identical
   // call in src/server/index.ts.
-  startPullWatch({
+  pullWatch = startPullWatch({
     userDataDir: app.getPath('userData'),
     listCanvases: () => workspaceStore.persistedCanvases(),
     projectClosed: (projectId) => !!workspaceStore.linkProjectEntries()?.find((e) => e.id === projectId)?.closed,
@@ -5740,7 +5742,8 @@ app.on('before-quit', (e) => {
     requestRendererFlush(getMainWindow()?.webContents, ipcMain).then(() => remoteWorkspaceIO.flush()),
     remoteWorkspaceIO.flush(),
     ptyManager.killAll(),
-    watchLinksStopped
+    watchLinksStopped,
+    pullWatch?.stop()
   ])
   void Promise.race([flush, new Promise((r) => setTimeout(r, 1500))])
     // Then let whisper go. A dictation still transcribing when Electron tears down the main

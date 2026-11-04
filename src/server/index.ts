@@ -503,7 +503,7 @@ export async function startServer(
   // A pull node's Watch switch (F-08): the same core poller the desktop boots (src/main/index.ts).
   // Agent messaging exists here only with canvas control on, so without it a wake is refused by
   // edition and the switch says so. `canvasControl` is read per wake: it comes up later in boot.
-  startPullWatch({
+  const pullWatch = startPullWatch({
     userDataDir: config.dataDir,
     listCanvases: () => workspaceStore.persistedCanvases(),
     projectClosed: (projectId) => !!workspaceStore.linkProjectEntries()?.find((e) => e.id === projectId)?.closed,
@@ -1230,6 +1230,8 @@ export async function startServer(
         pressure.stop()
         ptyPressure.stop()
         canvasControl?.stop()
+        // Watch (F-08): no tick after this, and its last write lands.
+        await pullWatch.stop()
         workspaceWatcher.dispose()
         await contextLink.stop()
         // Every save already queued lands while the authority still governs (see the serving close).
@@ -1305,6 +1307,8 @@ export async function startServer(
       pressure.stop()
       ptyPressure.stop()
       canvasControl?.stop()
+      // Watch (F-08): no tick after this, and its last write lands.
+      await pullWatch.stop()
       workspaceWatcher.dispose()
       await contextLink.stop()
       // Every save already queued lands while the authority still governs, then it writes what it owes.

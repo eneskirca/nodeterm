@@ -302,6 +302,24 @@ describe('pull watch', () => {
     expect(deliver).toHaveBeenCalledTimes(2)
   })
 
+  it('stop: a tick in flight neither wakes nor writes, and the last write has landed', async () => {
+    await start()
+    await set(true)
+    await vi.advanceTimersByTimeAsync(0)
+    let answer!: (r: GitHubPullDetailResult) => void
+    readDetail.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
+    checksResult = checks([check('build', 'failed')])
+    await tick()
+    await service!.stop()
+    const saved = fs.readFileSync(path.join(dir, 'pull-watch.json'), 'utf8')
+    expect(JSON.parse(saved).watches).toHaveLength(1)
+    answer(detail())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(deliver).not.toHaveBeenCalled()
+    await tick()
+    expect(readDetail).toHaveBeenCalledTimes(2)
+  })
+
   it('switching off forgets the node; bad input is refused at the boundary', async () => {
     await start()
     await set(true)
