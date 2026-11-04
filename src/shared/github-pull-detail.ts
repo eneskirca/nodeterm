@@ -2,6 +2,7 @@
 // by core/github/service.ts `pullDetail`; never persisted (the node stores only the reference).
 import type { GitHubIssueUser } from './github-issues'
 import type { PullLifecycle, PullMergeState } from './github-pull-status'
+import type { PullSidebar } from './github-pull-sidebar'
 
 export interface GitHubPullDetail {
   number: number
@@ -25,6 +26,8 @@ export interface GitHubPullDetail {
   autoMerge?: { method: PullMergeMethod }
   /** The head branch lives in another repository (a fork): origin has it only as `pull/<n>/head`. */
   fromFork?: true
+  /** Reviewers with state, assignees, labels, closing issues, participants. Absent = not read. */
+  sidebar?: PullSidebar
 }
 
 /** A GitHub login: letters, digits and single hyphens, at most 39 characters. */

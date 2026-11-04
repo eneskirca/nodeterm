@@ -64,6 +64,7 @@ import {
   GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft, isPullPath
 } from '../../shared/github-pull-detail'
 import { parseGitHubRepository } from './config'
+import { mergePullReviewers, type PullSidebar, type PullSidebarRead } from '../../shared/github-pull-sidebar'
 import type { GitHubHostError } from './host'
 
 const MAX_ISSUES = 10_000
@@ -156,6 +157,8 @@ export interface GitHubIssuesClientLike {
   /** "New pull request": the form's start, and the create. Optional, as above. */
   pullForBranch?(repository: string, head: string): Promise<{ defaultBranch: string; existing?: number }>
   createPull?(repository: string, pull: PullCreateDraft): Promise<{ number: number }>
+  /** The pull node sidebar (one GraphQL read). Optional, as above. */
+  pullSidebar?(repository: string, pullNumber: number): Promise<PullSidebarRead>
 }
 
 export interface GitHubIssueProjectContext {
@@ -1069,10 +1072,17 @@ export class GitHubIssueService {
   async pullDetail(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullDetailResult> {
     return this.pullRead('detail', request, async (captured, repository, pullNumber) => {
       if (!captured.client.getPull) return null
-      const detail = await this.readWithEpoch(captured, () => captured.client.getPull!(repository, pullNumber))
+      const [read, sidebar] = await Promise.all([
+        this.readWithEpoch(captured, () => captured.client.getPull!(repository, pullNumber)),
+        this.pullSidebar(captured, repository, pullNumber)
+      ])
+      const detail = sidebar ? { ...read, sidebar } : read
       // The numeric id, not the login: a login can be renamed.
       const ownPull = detail.author !== null && String(detail.author.id) === captured.userId
-      const avatarDataUrls = await this.pullAvatars([detail.author, ...(detail.requestedReviewers ?? [])])
+      const avatarDataUrls = await this.pullAvatars([
+        detail.author, ...(detail.requestedReviewers ?? []), ...(sidebar?.reviewers ?? []).map((reviewer) => reviewer.user),
+        ...(sidebar?.assignees ?? []), ...(sidebar?.participants ?? [])
+      ])
       return {
         status: 'ok', detail, observedAt: this.now(), ...(ownPull ? { ownPull: true as const } : {}),
         ...(avatarDataUrls ? { avatarDataUrls } : {})
@@ -1555,6 +1565,17 @@ export class GitHubIssueService {
    * keeps the last good answer, marks it stale, and does not hold the floor. Never throws.
    * `read` answers null when this client cannot make the read at all.
    */
+  /** The sidebar part of `pullDetail`, reviewers merged. Undefined when this client has no such read
+   *  or it failed. ponytail: a failed sidebar hides the sidebar parts and never fails the detail. */
+  private async pullSidebar(captured: GitHubIssueServiceContext, repository: string, pullNumber: number): Promise<PullSidebar | undefined> {
+    const read = captured.client.pullSidebar?.bind(captured.client)
+    if (!read) return undefined
+    const answer: PullSidebarRead | undefined = await this.readWithEpoch(captured, () => read(repository, pullNumber)).catch(() => undefined)
+    if (!answer) return undefined
+    const { requested, reviews, ...rest } = answer
+    return { ...(requested && reviews ? { reviewers: mergePullReviewers(requested, reviews) } : {}), ...rest }
+  }
+
   /** The avatars of a pull read's users as data URLs keyed by user id (the kanban cards' shape), or
    *  undefined when none loaded. Never throws: an avatar is decoration, never a reason a read fails. */
   private async pullAvatars(users: readonly (GitHubIssueUser | null)[]): Promise<Record<string, string> | undefined> {

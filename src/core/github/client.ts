@@ -46,6 +46,8 @@ import {
   rateLimitFrom,
   type PullStatusRead
 } from './graphql-pulls'
+import { PULL_SIDEBAR_QUERY, parsePullSidebar } from './graphql-pull-sidebar'
+import type { PullSidebarRead } from '../../shared/github-pull-sidebar'
 
 const MAX_VIEWED_PAGES = 3
 const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String){
@@ -1007,6 +1009,19 @@ export class GitHubIssuesClient {
     const body = await this.graphql(PULL_RESOLVED_THREADS_QUERY, { owner, name, number: pullNumber })
     try {
       return parsePullResolvedThreads(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** The pull node sidebar's people, labels and closing issues: one GraphQL read (graphql-pull-sidebar.ts). */
+  async pullSidebar(repository: string, pullNumber: number): Promise<PullSidebarRead> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const body = await this.graphql(PULL_SIDEBAR_QUERY, { owner, name, number: pullNumber })
+    try {
+      return parsePullSidebar(body)
     } catch (error) {
       if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
       throw error
