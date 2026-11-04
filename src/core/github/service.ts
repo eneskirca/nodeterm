@@ -187,6 +187,8 @@ export interface GitHubIssuesClientLike {
   pullSidebar?(repository: string, pullNumber: number): Promise<PullSidebarRead>
   /** One page of a PR's Conversation timeline (GraphQL `timelineItems`). Optional, as above. */
   pullTimeline?(repository: string, pullNumber: number, after?: string): Promise<PullTimelinePage>
+  /** One page of an issue's timeline (GraphQL `timelineItems`). Optional, as above. */
+  issueTimeline?(repository: string, issueNumber: number, after?: string): Promise<PullTimelinePage>
 }
 
 export interface GitHubIssueProjectContext {
@@ -1402,6 +1404,26 @@ export class GitHubIssueService {
     })
   }
 
+  /**
+   * One page of an issue's timeline for the issues node, oldest first; `after` = the page's cursor.
+   * The pull timeline's read for an issue: same refusals, floor and stale rules, one entry per page.
+   */
+  async issueTimeline(
+    request: { projectId: string; repository: string; issueNumber: number; after?: string }
+  ): Promise<GitHubPullTimelineResult> {
+    const after = request?.after
+    if (after !== undefined && !isPullTimelineCursor(after)) return { status: 'refused', reason: 'not-configured' }
+    const kind = after ? `issue-timeline\0${after}` as const : 'issue-timeline'
+    return this.pullRead(kind, { ...request, pullNumber: request?.issueNumber }, async (captured, repository, issueNumber) => {
+      const { client } = captured
+      if (!client.issueTimeline) return null
+      const page = await this.readWithEpoch(captured, () => client.issueTimeline!(repository, issueNumber, after))
+      const avatarDataUrls = await this.pullAvatars(page.items.flatMap((item) =>
+        item.kind === 'assigned' || item.kind === 'unassigned' ? [item.actor, item.assignee] : [item.actor]))
+      return { status: 'ok', ...page, observedAt: this.now(), ...(avatarDataUrls ? { avatarDataUrls } : {}) }
+    })
+  }
+
   /** Post a comment on an issue from the issues node. A user click only; never an agent verb. */
   async commentOnIssue(
     request: { projectId: string; repository: string; issueNumber: number; body: string }
@@ -1781,7 +1803,7 @@ export class GitHubIssueService {
   }
 
   private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
-    for (const kind of ['detail', 'conversation', 'files', 'issue-conversation', 'timeline']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
+    for (const kind of ['detail', 'conversation', 'files', 'issue-conversation', 'timeline', 'issue-timeline']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
   }
 
   /**
@@ -1819,7 +1841,8 @@ export class GitHubIssueService {
     kind: 'detail' | 'conversation' | 'files' | 'issue-conversation' | `contents\0${string}` | `merge-base\0${string}`
       // `commit-…\0<sha>…`: one commit's files or one file of it (07).
       | 'commits' | `commit-files\0${string}` | `commit-contents\0${string}`
-      | 'timeline' | `timeline\0${string}`,
+      | 'timeline' | `timeline\0${string}`
+      | 'issue-timeline' | `issue-timeline\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {

@@ -350,6 +350,9 @@ export interface GitHubIssuesApi {
   commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
   /** The issues node: one issue's comments, oldest first (same refusals and floor as `pullDetail`). */
   issueConversation(projectId: string, repository: string, issueNumber: number): Promise<GitHubIssueConversationResult>
+  /** The issues node: one page of an issue's timeline, oldest first; `after` = the previous page's
+   *  `next`. Same refusals and floor as `pullDetail`; `openedAt` = when the issue was opened. */
+  issueTimeline(projectId: string, repository: string, issueNumber: number, after?: string): Promise<GitHubPullTimelineResult>
   /** Comment on an issue from the issues node. A user click only; needs the approved repository. */
   commentOnIssue(
     request: { projectId: string; repository: string; issueNumber: number; body: string }

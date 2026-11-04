@@ -302,6 +302,8 @@ const api: NodeTerminalApi = {
     commentOnPullLine: (request) => ipcRenderer.invoke(IPC.githubIssuesPullLineComment, request),
     issueConversation: (projectId, repository, issueNumber) =>
       ipcRenderer.invoke(IPC.githubIssuesIssueConversation, projectId, repository, issueNumber),
+    issueTimeline: (projectId, repository, issueNumber, after) =>
+      ipcRenderer.invoke(IPC.githubIssuesIssueTimeline, projectId, repository, issueNumber, after),
     commentOnIssue: (request) => ipcRenderer.invoke(IPC.githubIssuesIssueComment, request),
     disablePullAutoMerge: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAutoMergeOff, request),
     enablePullAutoMerge: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAutoMerge, request),

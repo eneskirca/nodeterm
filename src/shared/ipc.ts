@@ -610,6 +610,7 @@ export const IPC = {
   // The issues node: one issue's comments (a read, classified like the pull reads) and a comment on
   // it (a write like the pull writes: a user click only, owner-only for relay peers).
   githubIssuesIssueConversation: 'githubIssues:issue-conversation',
+  githubIssuesIssueTimeline: 'githubIssues:issue-timeline',
   githubIssuesIssueComment: 'githubIssues:issue-comment',
   // The merge confirmation's allowed methods: a read, classified like the pull reads above.
   githubIssuesRepoMergeMethods: 'githubIssues:repo-merge-methods',

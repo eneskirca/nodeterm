@@ -622,6 +622,10 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesIssueConversation, projectId, repository, issueNumber) as ReturnType<
         GitHubIssuesApi['issueConversation']
       >,
+    issueTimeline: (projectId, repository, issueNumber, after) =>
+      client.request(IPC.githubIssuesIssueTimeline, projectId, repository, issueNumber, after) as ReturnType<
+        GitHubIssuesApi['issueTimeline']
+      >,
     commentOnIssue: (request) =>
       client.request(IPC.githubIssuesIssueComment, request) as ReturnType<GitHubIssuesApi['commentOnIssue']>,
     claimPullAutoMove: (request) =>

@@ -73,6 +73,9 @@ export interface GitHubIssueHandlerService {
   }): Promise<PullWriteResult>
   commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
   issueConversation(request: { projectId: string; repository: string; issueNumber: number }): Promise<GitHubIssueConversationResult>
+  issueTimeline(
+    request: { projectId: string; repository: string; issueNumber: number; after?: string }
+  ): Promise<GitHubPullTimelineResult>
   commentOnIssue(request: { projectId: string; repository: string; issueNumber: number; body: string }): Promise<PullWriteResult>
   disablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
   enablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string }): Promise<PullWriteResult>
@@ -147,6 +150,9 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesPullLineComment, (request) => service.commentOnPullLine(request))
   platform.handle(IPC.githubIssuesIssueConversation, (projectId: string, repository: string, issueNumber: number) =>
     service.issueConversation({ projectId, repository, issueNumber }))
+  platform.handle(IPC.githubIssuesIssueTimeline,
+    (projectId: string, repository: string, issueNumber: number, after?: string) =>
+      service.issueTimeline({ projectId, repository, issueNumber, after }))
   platform.handle(IPC.githubIssuesIssueComment, (request) => service.commentOnIssue(request))
   platform.handle(IPC.githubIssuesPullAutoMergeOff, (request) => service.disablePullAutoMerge(request))
   platform.handle(IPC.githubIssuesPullAutoMerge, (request) => service.enablePullAutoMerge(request))
