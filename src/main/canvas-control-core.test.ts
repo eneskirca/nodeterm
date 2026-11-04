@@ -300,7 +300,7 @@ describe('parseControlRequest', () => {
   it('both agent-facing bodies describe pr-show and pr-propose as the gate enforces them', () => {
     for (const body of [buildCanvasSkillBody('/x/canvas.sh'), buildCanvasControlInstructions('/x/canvas.sh')]) {
       expect(body).toContain('`pr-show --node <id> --file <path> [--lines 12-30]`')
-      expect(body).toContain('`--tab conversation|files`')
+      expect(body).toContain('`--tab conversation|commits|files`')
       expect(body).toContain('`pr-propose --node <id> --action approve|request-changes|comment|merge [--message <text>]')
       expect(body).toContain('[--method merge|squash|rebase]`')
       expect(body).toContain('nothing\n  reaches GitHub until they click it')
