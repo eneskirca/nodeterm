@@ -261,16 +261,11 @@ function IssueDetail(props: {
             ? <NoteMarkdown text={issue.body} className="sticky-node__md pull-node__md" />
             : <p className="pull-node__empty">No description.</p>}
         </li>
-        {items.map((item) => item.kind === 'cross-referenced'
-          ? [
-            <TimelineItem key={item.id} item={item} avatars={avatars} />,
-            <li key={`${item.id}-open`} className="pull-convo__event">
-              {item.source.pull && here(item.source.repository)
-                ? <button className="pull-compose__button" onClick={() => onOpenPull(item.source.number)}>Open #{item.source.number} as a pull node</button>
-                : <button className="pull-compose__button" onClick={() => onOpenExternal(item.source.url)}>Open {item.source.repository}#{item.source.number} on GitHub</button>}
-            </li>
-          ]
-          : <TimelineItem key={item.id} item={item} avatars={avatars} />)}
+        {items.map((item) => (
+          <TimelineItem key={item.id} item={item} avatars={avatars} onOpenSource={(source) => source.pull && here(source.repository)
+            ? onOpenPull(source.number)
+            : onOpenExternal(source.url)} />
+        ))}
       </ol>
       {timeline === 'loading' && <p className="pull-node__state">Loading the timeline…</p>}
       {first && first.status !== 'ok' && <p className="pull-node__state" role="status">{READ_TEXT[first.reason]}</p>}

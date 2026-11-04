@@ -179,8 +179,11 @@ describe('IssuesNodeView', () => {
     const onOpenPull = vi.fn()
     const onOpenExternal = vi.fn()
     const view = await render(api, 5, vi.fn(), vi.fn(), onOpenPull, onOpenExternal)
-    act(() => button(view, 'Open #12 as a pull node').click())
-    act(() => button(view, 'Open x/y#4 on GitHub').click())
+    // One row per reference, as in the PR timeline: the reference itself opens it.
+    expect(view.querySelectorAll('.pull-convo__item--cross-referenced')).toHaveLength(2)
+    expect(button(view, 'Open x/y#4 on GitHub')).toBeUndefined()
+    act(() => button(view, 'o/r#12').click())
+    act(() => button(view, 'x/y#4').click())
     expect(onOpenPull).toHaveBeenCalledWith(12)
     expect(onOpenExternal).toHaveBeenCalledWith('https://github.com/x/y/pull/4')
   })

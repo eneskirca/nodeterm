@@ -19150,6 +19150,13 @@ button.pull-commits__headline:hover { text-decoration: underline; }
 /* Timeline events: one muted line between the bordered comments and reviews. */
 .pull-convo__event { margin: 0 0 10px; padding: 2px 10px; font-size: 12px; }
 .pull-convo__event-text { color: var(--muted); }
+/* An event stays one line in any width (the issues node's detail pane is narrow): the text shrinks
+   and ends in an ellipsis, the time keeps its place at the right. */
+.pull-convo__event > .pull-convo__head { flex-wrap: nowrap; }
+.pull-convo__event > .pull-convo__head > * { flex-shrink: 0; }
+.pull-convo__event > .pull-convo__head > .pull-convo__event-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pull-convo__ref { padding: 0; border: 0; color: var(--text-strong); background: none; font: inherit; font-weight: 600; cursor: pointer; }
+.pull-convo__ref:hover { text-decoration: underline; }
 .pull-convo__event-text code, .pull-convo__commits code { font-family: ui-monospace, monospace; font-size: 11px; }
 .pull-convo__commits { margin: 4px 0 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border); }
 .pull-convo__commits li { gap: 6px; margin: 3px 0; }

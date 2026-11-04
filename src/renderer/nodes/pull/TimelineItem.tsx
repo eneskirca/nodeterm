@@ -12,8 +12,10 @@ const VERDICT_TEXT: Record<PullReviewVerdict, string> = {
 
 const short = (oid: string | null): string => oid ? oid.slice(0, 7) : 'an unknown commit'
 
-/** What an event says after its actor's login. */
-function eventText(item: PullTimelineItem): React.ReactNode {
+type CrossReference = Extract<PullTimelineItem, { kind: 'cross-referenced' }>['source']
+
+/** What an event says after its actor's login. `onOpenSource` makes a cross-reference's name a link. */
+function eventText(item: PullTimelineItem, onOpenSource?: (source: CrossReference) => void): React.ReactNode {
   switch (item.kind) {
     case 'commit': return <>added <code>{short(item.oid)}</code> {item.headline}</>
     case 'force-push': return <>force-pushed from <code>{short(item.before)}</code> to <code>{short(item.after)}</code></>
@@ -27,15 +29,21 @@ function eventText(item: PullTimelineItem): React.ReactNode {
     case 'merged': return <>merged commit <code>{short(item.oid)}</code> into <code>{item.base}</code></>
     case 'ready-for-review': return 'marked this as ready for review'
     case 'converted-to-draft': return 'marked this as a draft'
-    case 'cross-referenced':
-      return <>mentioned this in {item.source.pull ? 'pull request' : 'issue'} <strong>{item.source.repository}#{item.source.number}</strong> {item.source.title}</>
+    case 'cross-referenced': {
+      const name = `${item.source.repository}#${item.source.number}`
+      return <>mentioned this in {item.source.pull ? 'pull request' : 'issue'} {onOpenSource
+        ? <button className="pull-convo__ref" onClick={() => onOpenSource(item.source)}>{name}</button>
+        : <strong>{name}</strong>} {item.source.title}</>
+    }
     default: return null
   }
 }
 
 /** One entry. `children` render under a comment or review body (a review's line comments). */
-export function TimelineItem({ item, avatars, children }: {
+export function TimelineItem({ item, avatars, children, onOpenSource }: {
   item: PullTimelineItem; avatars?: PullAvatarDataUrls; children?: React.ReactNode
+  /** Opens a cross-reference's source (the issues node: a PR here as a node, else on GitHub). */
+  onOpenSource?: (source: CrossReference) => void
 }): React.JSX.Element {
   const head = (
     <div className="pull-convo__head">
@@ -46,7 +54,7 @@ export function TimelineItem({ item, avatars, children }: {
       {item.kind === 'review' && (
         <span className={`pull-convo__verdict pull-convo__verdict--${item.verdict}`}>{VERDICT_TEXT[item.verdict]}</span>
       )}
-      {item.kind !== 'comment' && item.kind !== 'review' && <span className="pull-convo__event-text">{eventText(item)}</span>}
+      {item.kind !== 'comment' && item.kind !== 'review' && <span className="pull-convo__event-text">{eventText(item, onOpenSource)}</span>}
       <time className="pull-convo__time" dateTime={item.at}>{new Date(item.at).toLocaleString()}</time>
     </div>
   )
