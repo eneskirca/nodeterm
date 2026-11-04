@@ -308,6 +308,24 @@ it('waits for a picture it could not fetch, and tries again on the next read', a
   expect(dialog()?.querySelector('img')?.getAttribute('src')).toBe(IMAGE_URL)
 })
 
+it('lets the next popup take its turn when a picture cannot be had', async () => {
+  setFeed([pop('pictured', { image: HASH }), pop('plain')])
+  popupImage.mockResolvedValueOnce(null)
+  await mount()
+  expect(dialog()?.textContent).toContain('Title plain')
+  expect(loadSeenPopups().has('pictured')).toBe(false)
+})
+
+// The re-read while one waits: a newer popup's failed picture must not cost the one already waiting.
+it('keeps the popup that is waiting when a newer one has no picture yet', async () => {
+  setFeed([pop('plain')], [pop('pictured', { image: HASH }), pop('plain')])
+  popupImage.mockResolvedValue(null)
+  await mount(true)
+  await act(async () => vi.advanceTimersByTime(PENDING_RECHECK_MS))
+  await rerender(false)
+  expect(dialog()?.textContent).toContain('Title plain')
+})
+
 it('treats a rejected picture fetch like a missing one', async () => {
   setFeed([pop('a', { image: HASH })])
   popupImage.mockRejectedValueOnce(new Error('no handler'))

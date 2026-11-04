@@ -22,6 +22,18 @@ const RETRY_MS = 1000
 type ReadyPopup = PopupAnnouncement & { imageUrl?: string }
 
 /**
+ * `pickPopup`, with the picture fetched. A popup shows only once and was written around its picture,
+ * so it never goes up without it: it is passed over, unrecorded, for the next read to try again, and
+ * the next one in the feed takes its turn rather than waiting behind it.
+ */
+async function readyPopup(items: PopupAnnouncement[], isPremium: boolean): Promise<ReadyPopup | null> {
+  const next = pickPopup(items, loadSeenPopups(), isPremium)
+  if (!next?.image) return next
+  const imageUrl = await window.nodeTerminal.announcements.popupImage(next.image)
+  return imageUrl ? { ...next, imageUrl } : readyPopup(items.filter((p) => p !== next), isPremium)
+}
+
+/**
  * A one-time popup from the check feed (lib/announcementPopup.ts): the admin console's "popup
  * (once)" messages, aimed like banners (plan, OS, channel, version). Mounted once, in Canvas.
  *
@@ -54,13 +66,7 @@ export function AnnouncementPopup({ blocked }: { blocked: boolean }): React.JSX.
     try {
       const items = await window.nodeTerminal.announcements.popups()
       if (seq !== readSeq.current) return
-      next = pickPopup(items, loadSeenPopups(), premiumRef.current)
-      // It shows only once and was written around its picture, so it never goes up without it. Not
-      // shown means not recorded: the next read tries again.
-      if (next?.image) {
-        const imageUrl = await window.nodeTerminal.announcements.popupImage(next.image)
-        next = imageUrl ? { ...next, imageUrl } : null
-      }
+      next = await readyPopup(items, premiumRef.current)
     } catch {
       return
     }
