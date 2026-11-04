@@ -82,6 +82,26 @@ describe('useOpenPullSection', () => {
     expect(fake.api.githubIssues.refresh).toHaveBeenCalledTimes(1)
   })
 
+  it('fills the open menu once the primed refresh lands, with no change event (no host subscription)', async () => {
+    vi.useFakeTimers()
+    try {
+      const listed = fake.pulls
+      fake.observedAt = undefined
+      fake.pulls = []
+      act(() => root.render(<Probe projectId="p5" />))
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      act(() => seen.prime())
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(seen.section && 'reason' in seen.section).toBe(true)
+      fake.observedAt = 2
+      fake.pulls = listed
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+      expect(seen.section && 'rows' in seen.section && seen.section.rows.length).toBeGreaterThan(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('an unapproved repository reads no pull status and gives the reason', async () => {
     fake.approved = false
     act(() => root.render(<Probe projectId="p3" />))

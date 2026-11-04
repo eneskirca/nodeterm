@@ -49,7 +49,17 @@ export function useOpenPullSection(projectId: string): { section?: OpenPullSecti
     void load().then((next) => {
       if (!next?.view?.project?.approved || next.board?.observedAt !== undefined || primed.has(projectId)) return
       primed.add(projectId)
+      // Change events reach board subscribers only, and this hook holds none, so read the memory
+      // again until the refresh's pull read lands. ponytail: a bounded poll, 1 s apart, 20 tries.
+      const settle = async () => {
+        for (let tries = 0; tries < 20; tries++) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000))
+          const again = await load()
+          if (!again || again.board?.observedAt !== undefined) return
+        }
+      }
       void api.githubIssues.refresh(projectId).catch(() => {})
+      void settle()
     })
   }, [api, cwd, sshId, load, projectId])
 
