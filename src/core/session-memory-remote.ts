@@ -52,8 +52,10 @@ const SWEEP_SOCKETS: readonly string[] = [TMUX_SOCKET, RMT_TMUX_SOCKET]
  *    `echo`, so the command still exits 0 for the shell's exit-code gate.
  *  - The socket names and the `-F` format come from the shared constants, so the remote sweep can
  *    never look at a different socket, or ask for different fields, than the local one.
- *  - `ps -eo pid,ppid,rss` is used even on Linux hosts: it is one process instead of thousands of
- *    /proc reads over a link we do not control, and its output is what we already parse.
+ *  - `ps -eo pid,ppid,rss,comm` is used even on Linux hosts: it is one process instead of thousands
+ *    of /proc reads over a link we do not control, and its output is what we already parse. So an
+ *    SSH host's numbers are always rss, on a macOS host too (no `top` footprint here), and the
+ *    report says so (`metric`).
  */
 export function remoteSessionMemoryCommand(): string {
   const listPanes = (socket: string): string => fencedListPanesCommand(socket)
@@ -67,7 +69,7 @@ export function remoteSessionMemoryCommand(): string {
     `echo '${PANES}'`,
     ...SWEEP_SOCKETS.map(listPanes),
     `echo '${PROCS}'`,
-    `ps -eo pid,ppid,rss 2>/dev/null || true`
+    `ps -eo pid,ppid,rss,comm 2>/dev/null || true`
   ].join('\n')
 }
 
@@ -186,7 +188,7 @@ export function parseRemoteSessionMemory(stdout: string): SessionMemoryReport {
   // session is one row, exactly as the local leg's `bySession` map guarantees.
   const bySession = new Map<string, PaneRef>()
   for (const p of panes) if (!bySession.has(p.session)) bySession.set(p.session, p)
-  return buildReport([...bySession.values()], table, mem)
+  return { ...buildReport([...bySession.values()], table, mem), metric: 'rss' }
 }
 
 /** Runs a POSIX sh command on the project's host; resolves stdout, or null if it could not run. */
