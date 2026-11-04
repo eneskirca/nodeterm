@@ -1,25 +1,24 @@
-import type { GitHubPullDetailResult, PullLineDraft } from '@shared/github-pull-detail'
+import type { GitHubPullConversationResult, GitHubPullDetailResult, PullLineDraft } from '@shared/github-pull-detail'
 import type { PullChecksRead } from '../../lib/pullMergeBlock'
 import { PullComposer } from './PullComposer'
 import { PullMergeBox } from './PullMergeBox'
 import { PullSendToAgent } from './PullSendToAgent'
 import { PullSidebar } from './PullSidebar'
 import { PullTimeline } from './PullTimeline'
-import { readState, STALE_TEXT, usePullRead, type Read, type ViewProps } from './shared'
+import { readState, STALE_TEXT, type Read, type ViewProps } from './shared'
 import type { MergeMethodsRead } from './useMergeMethods'
 
 /** The Conversation tab: the timeline (the description first), the agent proposal bar, the merge
- *  box, then the comment box. The conversation read gives only the reviews' line comments. The node's detail and checks reads come from the shell, so the header, the proposal bar and
+ *  box, then the comment box. The conversation read gives only the reviews' line comments. The node's detail, conversation and checks reads come from the shell, so the header, the proposal bar and
  *  this tab show one head. */
 export function PullConversationTab(props: ViewProps & {
-  detailRead: Read<GitHubPullDetailResult>; checks: PullChecksRead; ownPull: boolean
+  detailRead: Read<GitHubPullDetailResult>; conversation: Read<GitHubPullConversationResult>; checks: PullChecksRead; ownPull: boolean
   pending: readonly PullLineDraft[]; onDropPending: (sent: readonly PullLineDraft[]) => void
   methods: MergeMethodsRead; onLoadMethods: () => void
   /** The shell's agent proposal bar, shown right above the merge box. */
   proposalBar?: React.ReactNode
 }): React.JSX.Element {
-  const { api, pull, detailRead, checks } = props
-  const conversation = usePullRead(api.pullConversation, props)
+  const { pull, detailRead, conversation, checks } = props
   const convo = conversation !== 'loading' && conversation.status === 'ok' ? conversation : undefined
   if (detailRead === 'loading' || detailRead.status !== 'ok') return readState(detailRead, pull.repository)
   const { detail: d } = detailRead

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Handle, NodeResizer, Position, useReactFlow, useStore, useUpdateNodeInternals, type NodeProps } from '@xyflow/react'
 import { Tooltip } from '../components/Tooltip'
-import { IconClose, IconExternal, IconReload } from '../components/icons'
+import { IconClose } from '../components/icons'
+import { Icon } from './pull/Icon'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import type { CanvasNode } from '../state/workspace'
 import { useProjects } from '../state/projects'
@@ -56,6 +57,8 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
       guard: (nodeId, run) => guardConcurrentRestart(nodeId, run)()
     }, { pullId: id, targetId, pr, payload })
   }), [id, relay, getNodes, getEdges, agentStatus, api])
+  // The first linked agent's live state, for the readiness bar.
+  const agentState = agentStatus((s) => (agents[0] ? s.byId[agents[0].id]?.state : undefined))
   // Lazy-loaded: React Flow measured the Suspense fallback, which has no handle, so its edges had no
   // anchor until the node resized. Re-measure once the real node (and its handle) is mounted.
   const updateNodeInternals = useUpdateNodeInternals()
@@ -105,6 +108,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           spellCheck={false}
           onChange={(e) => updateNodeData(id, { title: e.target.value })}
         />
+        {pull && <span className="pull-node__repo">{pull.repository}</span>}
         <span className="term-node__spacer" />
         <Tooltip label="Refresh">
           <button
@@ -115,7 +119,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
               setRefreshTick((tick) => tick + 1)
             }}
           >
-            <IconReload />
+            <Icon name="refresh" />
           </button>
         </Tooltip>
         {pull && (
@@ -128,7 +132,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
                 void api.shell.openExternal(pullWebUrl(pull.repository, pull.pullNumber))
               }}
             >
-              <IconExternal />
+              <Icon name="external" />
             </button>
           </Tooltip>
         )}
@@ -156,6 +160,8 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           highlight={highlight}
           agents={agents}
           sendToHost={sendToHost}
+          agentState={agentState}
+          onCopy={(text) => void api.clipboard.writeText(text)}
           sendUnavailable={relay ? 'Send to agent is not available in a relay tab.' : undefined}
           // A repository not allowed yet (a PR an agent just made): one click allows it, then the node
           // reads again. Not in a relay tab: allowing is the host's own decision.

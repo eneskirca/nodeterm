@@ -1,5 +1,5 @@
 import type { GitHubPullDetail } from '@shared/github-pull-detail'
-import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-node'
+import type { PullNodeTab } from '@shared/pull-node'
 import type { PullChecksRead } from '../../lib/pullMergeBlock'
 import { headChecks } from './PullChecksTab'
 
@@ -25,16 +25,17 @@ export const PULL_TABS: ReadonlyArray<{
 export const shownPullTab = (tab: PullNodeTab): PullNodeTab =>
   PULL_TABS.some((row) => row.tab === tab) ? tab : 'conversation'
 
-export function PullTabBar({ pull, shown, detail, checks, onTab, onOpenExternal }: {
-  pull: PullNodeRef; shown: PullNodeTab; detail: GitHubPullDetail | undefined; checks?: PullChecksRead
-  onTab: (tab: PullNodeTab) => void; onOpenExternal: (url: string) => void
+/** GitHub's underline tabs with counts (F1), and the PR's size (+/-) on the right. */
+export function PullTabBar({ shown, detail, checks, onTab }: {
+  shown: PullNodeTab; detail: GitHubPullDetail | undefined; checks?: PullChecksRead
+  onTab: (tab: PullNodeTab) => void
 }): React.JSX.Element {
   return (
-    <div className="pull-node__tabs" role="tablist">
+    <div className="pull-node__tabs pr-tabs" role="tablist">
       {PULL_TABS.map(({ tab, label, count, failing }) => {
         const failed = detail && failing ? failing(detail, checks) : 0
         return (
-          <button key={tab} role="tab" aria-selected={tab === shown} className="pull-node__tab" onClick={() => onTab(tab)}>
+          <button key={tab} role="tab" aria-selected={tab === shown} className="pull-node__tab pr-tabs__tab" onClick={() => onTab(tab)}>
             {label}
             {count && detail && count(detail, checks) !== undefined && <> <span
               className={`pull-node__count${failed ? ' pull-node__count--failed' : ''}`}
@@ -42,10 +43,11 @@ export function PullTabBar({ pull, shown, detail, checks, onTab, onOpenExternal 
           </button>
         )
       })}
-      <span className="term-node__spacer" />
-      <button className="pull-node__web" onClick={() => onOpenExternal(pullWebUrl(pull.repository, pull.pullNumber))}>
-        Open on GitHub
-      </button>
+      {detail && (
+        <span className="pr-tabs__size" title={`${detail.additions} additions, ${detail.deletions} deletions`}>
+          <span className="pr-add">+{detail.additions}</span> <span className="pr-del">−{detail.deletions}</span>
+        </span>
+      )}
     </div>
   )
 }

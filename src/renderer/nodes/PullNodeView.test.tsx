@@ -127,7 +127,7 @@ describe('PullNodeView overview', () => {
     expect(view.querySelector('h2')?.textContent).toBe('Why it matters')
     expect(view.querySelector('strong')?.textContent).toBe('in place')
     expect(view.querySelector('[aria-label="Checks"]')?.textContent).toContain('test')
-    expect(view.textContent).toContain('Ready to merge')
+    expect(view.querySelector('[aria-label="Merge readiness"]')?.textContent).toContain('No conflicts')
   })
 
   it('never runs script from the description', async () => {
@@ -268,7 +268,8 @@ describe('PullNodeView conversation', () => {
     const tab = [...view.querySelectorAll('[role="tab"]')].find((el) => el.textContent === 'Files changed 3')!
     await act(async () => { (tab as HTMLElement).click() })
     expect(onTab).toHaveBeenCalledWith('files')
-    const link = [...view.querySelectorAll('button')].find((el) => el.textContent === 'Open on GitHub')!
+    await act(async () => { view.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!.click() })
+    const link = [...view.querySelectorAll('[role="menuitem"]')].find((el) => el.textContent === 'Open on GitHub') as HTMLButtonElement
     await act(async () => { link.click() })
     expect(onOpen).toHaveBeenCalledWith('https://github.com/o/r/pull/7')
   })
@@ -1324,14 +1325,14 @@ describe('PullNodeView avatars', () => {
     })
     const view = await render(api)
     expect(view.querySelector('img')).toBeNull()
-    expect(view.querySelector('.pull-head [role="img"][aria-label="octocat"]')?.textContent).toBe('O')
+    expect(view.querySelector('.pr-head [role="img"][aria-label="octocat"]')?.textContent).toBe('O')
 
     act(() => root.unmount()); host.remove()
     const broken = await render(fakeApi({ status: 'ok', detail, observedAt: 1, avatarDataUrls: { 2: png } }))
-    const image = broken.querySelector('.pull-head img')!
+    const image = broken.querySelector('.pr-head img')!
     await act(async () => { image.dispatchEvent(new Event('error')) })
-    expect(broken.querySelector('.pull-head img')).toBeNull()
-    expect(broken.querySelector('.pull-head [role="img"][aria-label="octocat"]')?.textContent).toBe('O')
+    expect(broken.querySelector('.pr-head img')).toBeNull()
+    expect(broken.querySelector('.pr-head [role="img"][aria-label="octocat"]')?.textContent).toBe('O')
   })
 })
 
@@ -1361,12 +1362,14 @@ describe('PullNodeView lifecycle writes', () => {
     api.markPullReady.mockReturnValue(new Promise((resolve) => { finish = resolve }))
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
-    await act(async () => { button(view, 'Ready for review').click() })
+    // The merge box's buttons (the header leads with its own Ready for review).
+    const box = view.querySelector<HTMLElement>('.pull-mergebox')!
+    await act(async () => { button(box, 'Ready for review').click() })
     expect(api.markPullReady).toHaveBeenCalledWith(at)
-    expect(button(view, 'Ready for review').disabled).toBe(true)
-    expect(button(view, 'Close pull request').disabled).toBe(true)
+    expect(button(box, 'Ready for review').disabled).toBe(true)
+    expect(button(box, 'Close pull request').disabled).toBe(true)
     await act(async () => { finish({ ok: true }) })
-    expect(button(view, 'Ready for review').disabled).toBe(false)
+    expect(button(box, 'Ready for review').disabled).toBe(false)
     expect(onWritten).toHaveBeenCalledTimes(1)
   })
 

@@ -69,7 +69,7 @@ export function PullMergeBox(props: ViewProps & {
         : methods.methods.length === 0 ? 'Your GitHub token may not merge in this repository. Merge on GitHub instead.' : null
   const confirmable = !!ready?.length && (open !== 'auto' || (methods as { autoMerge?: true }).autoMerge === true)
   return (
-    <section className="pull-mergebox">
+    <section className="pull-mergebox" data-pull-section="merge">
     <PullChecks result={checks} expectedHead={d.head.sha} onOpen={props.onOpenExternal} />
     <div className="pull-merge">
       <div className="pull-merge__row">

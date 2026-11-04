@@ -22,7 +22,7 @@ export function PullSidebar(props: SidebarProps): React.JSX.Element {
   const { avatars, api, projectId, pull } = props
   const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
   return (
-    <div className="pull-sidebar">
+    <div className="pull-sidebar" data-pull-section="details">
       <PullReviewers {...props} />
       {sidebar?.assignees && (
         <EditRow label="Assignees" noun="assignee" items={sidebar.assignees} nameOf={(user) => user.login}

@@ -29,7 +29,8 @@ const runs: GitHubPullChecksResult = {
 function fakeApi(checks: GitHubPullChecksResult = runs) {
   const api = {
     pullDetail: vi.fn(async () => ({ status: 'ok' as const, detail, observedAt: 1 })),
-    pullChecks: vi.fn(async () => checks)
+    pullChecks: vi.fn(async () => checks),
+    pullConversation: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const }))
   }
   // ponytail: the shell and this tab call only these; the rest of the bridge is never reached here.
   return api as typeof api & PullNodeApi

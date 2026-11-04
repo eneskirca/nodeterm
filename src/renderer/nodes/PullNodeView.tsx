@@ -1,15 +1,19 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { PullLineDraft } from '@shared/github-pull-detail'
 import type { PullNodeRef, PullNodeTab } from '@shared/pull-node'
 import type { PullHighlight, ShownProposal } from '@shared/pull-agent-verbs'
+import type { AgentState } from '@shared/agents/normalize'
 import { usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
 import { PullChecksTab } from './pull/PullChecksTab'
 import { PullCommitsTab } from './pull/PullCommitsTab'
 import { PullConversationTab } from './pull/PullConversationTab'
 import { PullFilesTab } from './pull/PullFilesTab'
+import { NextAction } from './pull/NextAction'
 import { PullHeader } from './pull/PullHeader'
 import { PullProposalBar } from './pull/PullProposalBar'
 import { PullTabBar, shownPullTab } from './pull/PullTabBar'
+import { ReadinessBar } from './pull/ReadinessBar'
+import { nextStep, openThreadCount, pullReadiness, type PullJump } from './pull/readiness'
 import { AllowContext, usePullRead, type ViewProps } from './pull/shared'
 import { useMergeMethods } from './pull/useMergeMethods'
 import { SendToProvider, type SendToHost } from './pull/SendTo'
@@ -27,6 +31,10 @@ type TabsProps = ViewProps & {
   highlight?: PullHighlight
   /** The canvas side of "Send to…" (PullNode); absent = no picker. */
   sendToHost?: SendToHost
+  /** The live state of the first linked agent (`agents[0]`), for the readiness bar. */
+  agentState?: AgentState
+  /** Writes text to the clipboard (Copy link, Copy branch name). */
+  onCopy?: (text: string) => void
 }
 
 /**
@@ -52,8 +60,8 @@ export function PullNodeView({
  *  the proposal bar and each tab show the same head. A tab mounts the first time it is shown and
  *  then stays mounted (hidden when not shown), so a switch back costs no read and a draft typed in
  *  a tab survives the switch. */
-function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToHost, ...props }: TabsProps): React.JSX.Element {
-  const { api, projectId, pull, onOpenExternal } = props
+function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToHost, agentState, onCopy, ...props }: TabsProps): React.JSX.Element {
+  const { api, projectId, pull } = props
   const shownTab = shownPullTab(pull.tab)
   const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
   if (!opened.includes(shownTab)) setOpened([...opened, shownTab])
@@ -62,6 +70,10 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
   const ownPull = detailRead !== 'loading' && detailRead.status === 'ok' && detailRead.ownPull === true
   const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
   const checks = usePullChecks(api, readsChecks ? projectId : undefined, pull.pullNumber, detail?.head.sha, props.refreshTick)
+  // One conversation read for the readiness bar and the Conversation tab. ponytail: read even when the
+  // node opens on another tab; the core holds it 30 s, so the Files tab's same read costs no request.
+  const conversation = usePullRead(api.pullConversation, props)
+  const openThreads = openThreadCount(conversation)
   // One read of the allowed merge methods for the merge box's select (once the Conversation tab
   // shows an open PR) and a merge proposal.
   const mergeMethods = useMergeMethods(api, projectId, pull.repository,
@@ -81,16 +93,33 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
   // detail read landed (no merge box yet), it sits under the tab bar so it is never out of sight.
   // ponytail: a move between the two spots remounts the bar, which restarts its one-second arm delay.
   const barAboveMerge = shownTab === 'conversation' && !!detail
+  // A readiness segment or the lead button: switch tab, then scroll to its marked section.
+  const top = useRef<HTMLDivElement>(null)
+  const jump = useCallback(({ tab, section }: PullJump) => {
+    onTab(tab)
+    if (!section) return
+    setTimeout(() => top.current?.parentElement?.querySelector(`[data-pull-section="${section}"]`)
+      ?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }), 0)
+  }, [onTab])
+  const firstAgent = props.agents?.[0]
+  const readiness = detail && { detail, checks, openThreads, proposal, agent: firstAgent && { title: firstAgent.title, state: agentState } }
+  const allowed = mergeMethods.methods && mergeMethods.methods !== 'loading' && mergeMethods.methods.status === 'ok'
+    ? mergeMethods.methods.methods : undefined
   return (
     <AllowContext.Provider value={props.onAllow}>
     <SendToProvider host={sendToHost} pr={{ repository: pull.repository, number: pull.pullNumber, title: detail?.title ?? '' }}>
-      <PullHeader pull={pull} detail={detail}
-        avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined} />
-      <PullTabBar pull={pull} shown={shownTab} detail={detail} checks={checks} onTab={onTab} onOpenExternal={onOpenExternal} />
+      <div ref={top} className="pr-top">
+        <PullHeader pull={pull} detail={detail} onCopy={onCopy}
+          avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined}
+          action={readiness && <NextAction {...props} detail={readiness.detail} onJump={jump} onCopy={onCopy}
+            next={nextStep({ ...readiness, method: allowed?.[0] })} />} />
+        {readiness && <ReadinessBar segments={pullReadiness(readiness)} onJump={jump} />}
+      </div>
+      <PullTabBar shown={shownTab} detail={detail} checks={checks} onTab={onTab} />
       {!barAboveMerge && proposalBar}
       {opened.includes('conversation') && (
         <div hidden={shownTab !== 'conversation'}>
-          <PullConversationTab {...props} detailRead={detailRead} checks={checks} ownPull={ownPull} pending={pending}
+          <PullConversationTab {...props} detailRead={detailRead} conversation={conversation} checks={checks} ownPull={ownPull} pending={pending}
             onDropPending={dropPending} methods={mergeMethods.methods} onLoadMethods={mergeMethods.load}
             proposalBar={barAboveMerge ? proposalBar : undefined} />
         </div>

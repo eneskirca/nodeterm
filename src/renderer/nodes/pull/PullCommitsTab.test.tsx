@@ -37,6 +37,7 @@ function fakeApi(read: GitHubPullCommitsResult = {
   const api = {
     pullDetail: vi.fn(async () => ({ status: 'ok' as const, detail, observedAt: 1 })),
     pullChecks: vi.fn(async () => ({ status: 'ok' as const, headRefOid: B, truncated: false, checks: [] })),
+    pullConversation: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     pullCommits: vi.fn(async () => read),
     pullCommitFiles: vi.fn(async () => files),
     pullCommitFileContents: vi.fn(async (_p: string, _r: string, _n: number, sha: string, path: string): Promise<GitHubPullFileContentsResult> =>
