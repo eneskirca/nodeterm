@@ -39,6 +39,25 @@ function panePath(session: string): string {
   )
 }
 
+/** `tmux new-session -d -c <dir>` returns as soon as the server forks the pane process, before the
+ *  child is scheduled to run `chdir(dir)` — so an immediate `#{pane_current_path}` under CI load
+ *  can still read `/proc/<pid>/cwd` as the server's initial working directory. Poll until the pane
+ *  lands in `dir` before deleting `dir` or asserting its path. */
+function waitForPaneCwd(session: string, expectedDir: string): string {
+  const target = fs.realpathSync(expectedDir)
+  const deadline = Date.now() + 10_000
+  let reported = panePath(session)
+  while (Date.now() < deadline) {
+    try {
+      if (reported && fs.realpathSync(reported) === target) return reported
+    } catch {
+      /* path not settled yet */
+    }
+    reported = panePath(session)
+  }
+  return reported
+}
+
 const dirExists = (p: string): boolean => {
   try {
     return fs.statSync(p).isDirectory()
@@ -80,7 +99,9 @@ describe('pane_current_path across delete → recreate (real tmux)', () => {
     tmux(['-f', '/dev/null', 'new-session', '-d', '-s', 'victim', '-c', dir, 'sleep 60'])
 
     // Healthy: tmux names the directory and it exists.
-    expect(classifyPaneCwd(panePath('victim'), dirExists)).toBe('ok')
+    const initial = waitForPaneCwd('victim', dir)
+    expect(classifyPaneCwd(initial, dirExists)).toBe('ok')
+    expect(fs.realpathSync(initial)).toBe(fs.realpathSync(dir))
 
     // Deleted: the shell keeps the inode; the classifier must call it stale.
     fs.rmSync(dir, { recursive: true, force: true })
@@ -109,7 +130,7 @@ describe('pane_current_path across delete → recreate (real tmux)', () => {
     fs.rmSync(dir, { recursive: true, force: true })
     fs.mkdirSync(dir)
     tmux(['new-session', '-d', '-s', 'fresh', '-c', dir, 'sleep 60'])
-    const reported = panePath('fresh')
+    const reported = waitForPaneCwd('fresh', dir)
     expect(classifyPaneCwd(reported, dirExists)).toBe('ok')
     expect(fs.realpathSync(reported)).toBe(fs.realpathSync(dir))
   })
