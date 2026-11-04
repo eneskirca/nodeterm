@@ -651,6 +651,20 @@ describe('open pull requests first', () => {
     expect(calls).toEqual([[12, { x: 1, y: 2 }], [9, 'dock']])
   })
 
+  it('caps the list at 8 PRs, then a "More pull requests…" row that opens the picker', () => {
+    const many: OpenPullSection = {
+      rows: Array.from({ length: 12 }, (_, i) => ({ number: 100 - i, headRefName: `b${i}`, draft: false, author: null }))
+    }
+    const picked: unknown[] = []
+    const rows = openPullMenuRows(many, handlers({ pull: (at) => picked.push(at ?? 'dock') }), { x: 3, y: 4 })
+    expect(rows.map((row) => row.label)).toEqual([
+      ...many.rows.slice(0, 8).map((row) => `#${row.number} · ${row.headRefName}`), 'More pull requests…'
+    ])
+    rows[8].onClick()
+    expect(picked).toEqual([{ x: 3, y: 4 }])
+    expect(openPullMenuRows(pulls, handlers()).map((row) => row.label)).not.toContain('More pull requests…')
+  })
+
   it('shows the reason as one disabled row, never an empty list', () => {
     const items = buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), { ...ctx, pulls: { reason: 'Sign in first.' } }, [])
     expect(items[0]).toMatchObject({ label: 'Sign in first.', disabled: true })

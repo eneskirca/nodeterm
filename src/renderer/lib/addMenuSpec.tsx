@@ -526,6 +526,7 @@ export function contentAddItemsToDockRows(
 export const PULL_SECTION_KINDS: ReadonlySet<AddItem['kind']> = new Set(['pull', 'new-pull', 'issues'])
 
 const PULL_TITLE_MAX = 60
+const PULL_ROWS_MAX = 8
 
 /** One open PR row, or the reason row. Shared by the menu and the Dock adapters. */
 export interface OpenPullMenuRow {
@@ -543,7 +544,12 @@ export function openPullMenuRows(section: OpenPullSection, handlers: AddHandlers
   if ('reason' in section) {
     return [{ key: 'pull-reason', label: section.reason, icon: <IconBranch />, disabled: true, hint: section.reason, onClick: () => {} }]
   }
-  return section.rows.map((row) => {
+  // A repo with many open PRs would push the rest of the menu out of view: the first few (review
+  // requested first, the section's order), then the picker for the rest.
+  const more: OpenPullMenuRow[] = section.rows.length > PULL_ROWS_MAX
+    ? [{ key: 'pull-more', label: 'More pull requests…', icon: <IconBranch />, onClick: () => handlers.pull(at) }]
+    : []
+  return [...section.rows.slice(0, PULL_ROWS_MAX).map((row) => {
     const title = row.title && row.title.length > PULL_TITLE_MAX ? `${row.title.slice(0, PULL_TITLE_MAX - 1)}…` : row.title
     return {
       key: `pull-${row.number}`,
@@ -552,7 +558,7 @@ export function openPullMenuRows(section: OpenPullSection, handlers: AddHandlers
       hint: [row.title, row.author?.login].filter(Boolean).join(' · ') || undefined,
       onClick: () => handlers.openPull?.(row.number, at)
     }
-  })
+  }), ...more]
 }
 
 /** "New pull request from <branch>" when the branch is known, else the row's own label. */
