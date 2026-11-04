@@ -3910,7 +3910,11 @@ app.whenReady().then(async () => {
         log: (message) => console.warn('[pr-write-gate]', message)
       })
     }
-    if (prWrite?.phase === 'post') getMainWindow()?.webContents.send(IPC.agentPrWritten, prWrite)
+    if (prWrite?.phase === 'post') {
+      // The pull node's reads answer from a 30 s floor: drop them first, or its refresh shows the old state.
+      for (const write of prWrite.writes) github.service.forgetPull(write.repository, write.pullNumber)
+      getMainWindow()?.webContents.send(IPC.agentPrWritten, prWrite)
+    }
     if (agentId === 'cursor') {
       // One shared step (core/cursor-chat.ts `applyCursorRaw`): subagent cards, the meter, and the
       // child-event guard. A remote node gets cards but no meter (its chat is on the host).

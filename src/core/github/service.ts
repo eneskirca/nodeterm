@@ -1498,6 +1498,20 @@ export class GitHubIssueService {
     void this.refresh({ projectId }).catch(() => undefined)
   }
 
+  /**
+   * An agent's own shell wrote to a pull request (@shared/pr-write-hook, a verified PostToolUse): its
+   * held reads go, so the pull node's refresh reads GitHub instead of answering from the floor.
+   * `repository` undefined (the agent's shell repo) matches every repository; `pullNumber` undefined
+   * (gh's current-branch PR) every pull request.
+   */
+  forgetPull(repository: string | undefined, pullNumber: number | undefined): void {
+    for (const key of [...this.pullReads.keys()]) {
+      const [repo, num] = key.split('\0').slice(-2)
+      if ((pullNumber === undefined || num === String(pullNumber)) &&
+          (!repository || repo.toLowerCase() === repository.toLowerCase())) this.pullReads.delete(key)
+    }
+  }
+
   private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
     for (const kind of ['detail', 'conversation', 'files', 'issue-conversation']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
   }
