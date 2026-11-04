@@ -3,7 +3,7 @@
 // (core/github/graphql-pull-sidebar.ts) fills it, carried on `GitHubPullDetail.sidebar`.
 // A field left out = that part could not be read: the sidebar hides it, never shows it as empty.
 import type { GitHubIssueUser } from './github-issues'
-import type { PullReviewVerdict } from './github-pull-detail'
+import type { PullReadFailure, PullRefusal, PullReviewVerdict } from './github-pull-detail'
 
 /** A reviewer's latest word. `pending` = asked and not answered since (a re-request is pending again). */
 export type PullReviewerState = PullReviewVerdict | 'pending'
@@ -51,3 +51,9 @@ export function mergePullReviewers(
   })
   return [...answered, ...pending]
 }
+
+/** The repository's labels for the sidebar's "Add label" pick (`repoLabels`), refused and failed as a pull read. */
+export type GitHubRepoLabelsResult =
+  | { status: 'ok'; labels: PullLabel[] }
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }

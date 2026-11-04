@@ -65,7 +65,7 @@ import {
   GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft, isPullPath
 } from '../../shared/github-pull-detail'
 import { parseGitHubRepository } from './config'
-import { mergePullReviewers, type PullSidebar, type PullSidebarRead } from '../../shared/github-pull-sidebar'
+import { mergePullReviewers, type GitHubRepoLabelsResult, type PullLabel, type PullSidebar, type PullSidebarRead } from '../../shared/github-pull-sidebar'
 import {
   isCommitSha, type GitHubPullCommitFilesResult, type GitHubPullCommitsResult, type PullCommit, type PullCommitFilesPage,
   type PullCommitsPage
@@ -177,6 +177,9 @@ export interface GitHubIssuesClientLike {
   /** The node's "Request review": the collaborators, and one reviewer request. Optional, as above. */
   listCollaborators?(repository: string): Promise<GitHubIssueUser[]>
   requestPullReviewer?(repository: string, pullNumber: number, login: string): Promise<void>
+  /** The sidebar's label and assignee edits, one name per call. Optional, as above. */
+  setPullLabel?(repository: string, pullNumber: number, label: string, add: boolean): Promise<void>
+  setPullAssignee?(repository: string, pullNumber: number, login: string, add: boolean): Promise<void>
   /** "New pull request": the form's start, and the create. Optional, as above. */
   pullForBranch?(repository: string, head: string): Promise<{ defaultBranch: string; existing?: number }>
   createPull?(repository: string, pull: PullCreateDraft): Promise<{ number: number }>
@@ -447,6 +450,7 @@ export class GitHubIssueService {
    *  settings rarely change, and a merge GitHub refuses still says why). Successful reads only. */
   private readonly mergeMethods = new Map<string, { methods: PullMergeMethod[]; autoMerge: boolean }>()
   private readonly collaborators = new Map<string, GitHubIssueUser[]>()
+  private readonly repoLabelLists = new Map<string, PullLabel[]>()
   /** Merge base per `base\0head` SHA pair. Commits are immutable, so an answer never ages. */
   private readonly mergeBases = new Map<string, string>()
   private readonly pullReads = new Map<string, {
@@ -1664,6 +1668,40 @@ export class GitHubIssueService {
       if (!client.requestPullReviewer) throw new Error('unsupported')
       return client.requestPullReviewer(repository, pullNumber, request.reviewer)
     })
+  }
+
+  /** Add or remove one existing repository label on the PR, from the sidebar (a user click only). */
+  async setPullLabels(
+    request: { projectId: string; repository: string; pullNumber: number; label: string; add: boolean }
+  ): Promise<PullWriteResult> {
+    const { label, add } = request ?? {}
+    if (typeof label !== 'string' || !label.trim() || label.length > 50 || typeof add !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot edit labels reads as network; the real client always can.
+      if (!client.setPullLabel) throw new Error('unsupported')
+      return client.setPullLabel(repository, pullNumber, label, add)
+    })
+  }
+
+  /** Add or remove one assignee on the PR, from the sidebar (a user click only). */
+  async setPullAssignees(
+    request: { projectId: string; repository: string; pullNumber: number; login: string; add: boolean }
+  ): Promise<PullWriteResult> {
+    const { login, add } = request ?? {}
+    if (typeof login !== 'string' || !GITHUB_LOGIN.test(login) || typeof add !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.setPullAssignee) throw new Error('unsupported')
+      return client.setPullAssignee(repository, pullNumber, login, add)
+    })
+  }
+
+  /** The repository's labels for the sidebar's "Add label", name and color. Held per repository like
+   *  the collaborators (ponytail: first 100 labels only; a label made on GitHub shows after a restart). */
+  async repoLabels(request: { projectId: string; repository: string }): Promise<GitHubRepoLabelsResult> {
+    const result = await this.heldRepoRead(this.repoLabelLists, request, (client) => async (repository: string) =>
+      (await client.listRepositoryLabels(repository, { page: 1, perPage: 100 })).items.map(({ name, color }) => ({ name, color })))
+    return result.status === 'ok' ? { status: 'ok', labels: result.value } : result
   }
 
   /**
