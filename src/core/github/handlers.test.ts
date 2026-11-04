@@ -53,6 +53,7 @@ describe('registerGitHubIssueHandlers', () => {
       disablePullAutoMerge: async (...args: unknown[]) => { calls.push(['disablePullAutoMerge', ...args]); return { ok: true as const } },
       enablePullAutoMerge: async (...args: unknown[]) => { calls.push(['enablePullAutoMerge', ...args]); return { ok: true as const } },
       updatePullBranch: async (...args: unknown[]) => { calls.push(['updatePullBranch', ...args]); return { ok: true as const } },
+      setFileViewed: async (...args: unknown[]) => { calls.push(['setFileViewed', ...args]); return { ok: true as const } },
       pullForBranch: async (...args: unknown[]) => { calls.push(['branch', ...args]); return { status: 'ok' as const, defaultBranch: 'main' } },
       createPull: async (...args: unknown[]) => { calls.push(['create', ...args]); return { ok: true as const, pullNumber: 3 } },
       issueConversation: async (...args: unknown[]) => {
@@ -85,6 +86,7 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullUpdateBranch]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40) })
     await platform.handlers[IPC.githubIssuesPullAutoMerge]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'c'.repeat(40) })
     await platform.handlers[IPC.githubIssuesPullAutoMergeOff]({ projectId: 'p1', repository: 'o/r', pullNumber: 12 })
+    await platform.handlers[IPC.githubIssuesPullFileViewed]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, path: 'a.ts', viewed: true })
     await platform.handlers[IPC.githubIssuesPullForBranch]('p1', 'o/r', 'feat/x')
     await platform.handlers[IPC.githubIssuesPullCreate]({ projectId: 'p1', repository: 'o/r', head: 'feat/x', base: 'main', title: 't', body: '', draft: true })
     await platform.handlers[IPC.githubIssuesIssueConversation]('p1', 'o/r', 5)
@@ -112,6 +114,7 @@ describe('registerGitHubIssueHandlers', () => {
       ['updatePullBranch', { projectId: 'p1', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40) }],
       ['enablePullAutoMerge', { projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'c'.repeat(40) }],
       ['disablePullAutoMerge', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
+      ['setFileViewed', { projectId: 'p1', repository: 'o/r', pullNumber: 12, path: 'a.ts', viewed: true }],
       ['branch', { projectId: 'p1', repository: 'o/r', head: 'feat/x' }],
       ['create', { projectId: 'p1', repository: 'o/r', head: 'feat/x', base: 'main', title: 't', body: '', draft: true }],
       ['issueConversation', { projectId: 'p1', repository: 'o/r', issueNumber: 5 }],

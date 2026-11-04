@@ -297,6 +297,7 @@ const api: NodeTerminalApi = {
     disablePullAutoMerge: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAutoMergeOff, request),
     enablePullAutoMerge: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAutoMerge, request),
     updatePullBranch: (request) => ipcRenderer.invoke(IPC.githubIssuesPullUpdateBranch, request),
+    setFileViewed: (request) => ipcRenderer.invoke(IPC.githubIssuesPullFileViewed, request),
     claimPullAutoMove: (request) => ipcRenderer.invoke(IPC.githubIssuesClaimPullAutoMove, request),
     notePullWaits: (request) => ipcRenderer.invoke(IPC.githubIssuesNotePullWaits, request),
     projectAvatar: (projectId) => ipcRenderer.invoke(IPC.githubProjectAvatar, projectId),

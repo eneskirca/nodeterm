@@ -597,6 +597,7 @@ export const IPC = {
   githubIssuesPullAutoMergeOff: 'githubIssues:pull-auto-merge-off',
   githubIssuesPullAutoMerge: 'githubIssues:pull-auto-merge',
   githubIssuesPullUpdateBranch: 'githubIssues:pull-update-branch',
+  githubIssuesPullFileViewed: 'githubIssues:pull-file-viewed',
   // The issues node: one issue's comments (a read, classified like the pull reads) and a comment on
   // it (a write like the pull writes: a user click only, owner-only for relay peers).
   githubIssuesIssueConversation: 'githubIssues:issue-conversation',

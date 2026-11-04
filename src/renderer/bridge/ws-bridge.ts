@@ -586,6 +586,8 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullCreate, request) as ReturnType<GitHubIssuesApi['createPull']>,
     updatePullBranch: (request) =>
       client.request(IPC.githubIssuesPullUpdateBranch, request) as ReturnType<GitHubIssuesApi['updatePullBranch']>,
+    setFileViewed: (request) =>
+      client.request(IPC.githubIssuesPullFileViewed, request) as ReturnType<GitHubIssuesApi['setFileViewed']>,
     enablePullAutoMerge: (request) =>
       client.request(IPC.githubIssuesPullAutoMerge, request) as ReturnType<GitHubIssuesApi['enablePullAutoMerge']>,
     disablePullAutoMerge: (request) =>

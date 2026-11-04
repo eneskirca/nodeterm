@@ -347,6 +347,8 @@ export interface GitHubIssuesApi {
   enablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string }): Promise<PullWriteResult>
   /** "Update branch": merge the base into the head, tied to the head the Overview showed. A user click only, never an agent verb. */
   updatePullBranch(request: { projectId: string; repository: string; pullNumber: number; headSha: string }): Promise<PullWriteResult>
+  /** Tick or clear GitHub's own "Viewed" mark on one changed file. A user click only, never an agent verb. */
+  setFileViewed(request: { projectId: string; repository: string; pullNumber: number; path: string; viewed: boolean }): Promise<PullWriteResult>
   /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
