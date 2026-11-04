@@ -39,6 +39,15 @@ describe('registerGitHubIssueHandlers', () => {
       pullFileContents: async (...args: unknown[]) => {
         calls.push(['contents', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
       },
+      pullCommits: async (...args: unknown[]) => {
+        calls.push(['commits', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
+      },
+      pullCommitFiles: async (...args: unknown[]) => {
+        calls.push(['commitFiles', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
+      },
+      pullCommitFileContents: async (...args: unknown[]) => {
+        calls.push(['commitContents', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
+      },
       commentOnPull: async (...args: unknown[]) => { calls.push(['comment', ...args]); return { ok: true as const } },
       reviewPull: async (...args: unknown[]) => { calls.push(['review', ...args]); return { ok: true as const } },
       mergePull: async (...args: unknown[]) => { calls.push(['merge', ...args]); return { ok: true as const } },
@@ -76,6 +85,9 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullConversation]('p1', 'o/r', 12)
     await platform.handlers[IPC.githubIssuesPullFiles]('p1', 'o/r', 12)
     await platform.handlers[IPC.githubIssuesPullFileContents]('p1', 'o/r', 12, 'src/a.ts')
+    await platform.handlers[IPC.githubIssuesPullCommits]('p1', 'o/r', 12)
+    await platform.handlers[IPC.githubIssuesPullCommitFiles]('p1', 'o/r', 12, 'c'.repeat(40))
+    await platform.handlers[IPC.githubIssuesPullCommitFileContents]('p1', 'o/r', 12, 'c'.repeat(40), 'src/a.ts')
     await platform.handlers[IPC.githubIssuesPullComment]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, body: 'b' })
     await platform.handlers[IPC.githubIssuesPullReview]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' })
     await platform.handlers[IPC.githubIssuesPullMerge]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'h' })
@@ -104,6 +116,9 @@ describe('registerGitHubIssueHandlers', () => {
       ['conversation', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
       ['files', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
       ['contents', { projectId: 'p1', repository: 'o/r', pullNumber: 12, path: 'src/a.ts' }],
+      ['commits', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
+      ['commitFiles', { projectId: 'p1', repository: 'o/r', pullNumber: 12, sha: 'c'.repeat(40) }],
+      ['commitContents', { projectId: 'p1', repository: 'o/r', pullNumber: 12, sha: 'c'.repeat(40), path: 'src/a.ts' }],
       ['comment', { projectId: 'p1', repository: 'o/r', pullNumber: 12, body: 'b' }],
       ['review', { projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' }],
       ['merge', { projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'h' }],

@@ -564,6 +564,16 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullFileContents, projectId, repository, pullNumber, path) as ReturnType<
         GitHubIssuesApi['pullFileContents']
       >,
+    pullCommits: (projectId, repository, pullNumber) =>
+      client.request(IPC.githubIssuesPullCommits, projectId, repository, pullNumber) as ReturnType<GitHubIssuesApi['pullCommits']>,
+    pullCommitFiles: (projectId, repository, pullNumber, sha) =>
+      client.request(IPC.githubIssuesPullCommitFiles, projectId, repository, pullNumber, sha) as ReturnType<
+        GitHubIssuesApi['pullCommitFiles']
+      >,
+    pullCommitFileContents: (projectId, repository, pullNumber, sha, path) =>
+      client.request(IPC.githubIssuesPullCommitFileContents, projectId, repository, pullNumber, sha, path) as ReturnType<
+        GitHubIssuesApi['pullCommitFileContents']
+      >,
     commentOnPull: (request) =>
       client.request(IPC.githubIssuesPullComment, request) as ReturnType<GitHubIssuesApi['commentOnPull']>,
     reviewPull: (request) =>

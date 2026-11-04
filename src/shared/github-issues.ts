@@ -16,6 +16,7 @@ import type {
   PullReviewEvent,
   PullWriteResult
 } from './github-pull-detail'
+import type { GitHubPullCommitFilesResult, GitHubPullCommitsResult } from './github-pull-commits'
 
 export interface ProjectKanbanGitHub {
   repository?: string
@@ -322,6 +323,13 @@ export interface GitHubIssuesApi {
   /** Base and head of one changed file, at the SHAs of the latest `pullDetail`, for the Files tab's diff. */
   pullFileContents(
     projectId: string, repository: string, pullNumber: number, path: string
+  ): Promise<GitHubPullFileContentsResult>
+  /** The Commits tab: the PR's commits, one commit's files, and one of those files as a diff against
+   *  the commit's first parent. Same refusals and floor as `pullDetail`. */
+  pullCommits(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullCommitsResult>
+  pullCommitFiles(projectId: string, repository: string, pullNumber: number, sha: string): Promise<GitHubPullCommitFilesResult>
+  pullCommitFileContents(
+    projectId: string, repository: string, pullNumber: number, sha: string, path: string
   ): Promise<GitHubPullFileContentsResult>
   /** Post a comment on the PR. A user click only; needs the approved repository, not the mapping. */
   commentOnPull(

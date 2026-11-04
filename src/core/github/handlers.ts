@@ -25,6 +25,7 @@ import type {
   PullReviewEvent,
   PullWriteResult
 } from '../../shared/github-pull-detail'
+import type { GitHubPullCommitFilesResult, GitHubPullCommitsResult } from '../../shared/github-pull-commits'
 
 export interface GitHubIssueHandlerService {
   subscribe(uiId: number, request: { projectId: string }): Promise<GitHubIssuePage>
@@ -50,6 +51,13 @@ export interface GitHubIssueHandlerService {
   pullFiles(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullFilesResult>
   pullFileContents(
     request: { projectId: string; repository: string; pullNumber: number; path: string }
+  ): Promise<GitHubPullFileContentsResult>
+  pullCommits(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullCommitsResult>
+  pullCommitFiles(
+    request: { projectId: string; repository: string; pullNumber: number; sha: string }
+  ): Promise<GitHubPullCommitFilesResult>
+  pullCommitFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; sha: string; path: string }
   ): Promise<GitHubPullFileContentsResult>
   commentOnPull(
     request: { projectId: string; repository: string; pullNumber: number; body: string }
@@ -110,6 +118,13 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesPullFileContents,
     (projectId: string, repository: string, pullNumber: number, path: string) =>
       service.pullFileContents({ projectId, repository, pullNumber, path }))
+  platform.handle(IPC.githubIssuesPullCommits, (projectId: string, repository: string, pullNumber: number) =>
+    service.pullCommits({ projectId, repository, pullNumber }))
+  platform.handle(IPC.githubIssuesPullCommitFiles, (projectId: string, repository: string, pullNumber: number, sha: string) =>
+    service.pullCommitFiles({ projectId, repository, pullNumber, sha }))
+  platform.handle(IPC.githubIssuesPullCommitFileContents,
+    (projectId: string, repository: string, pullNumber: number, sha: string, path: string) =>
+      service.pullCommitFileContents({ projectId, repository, pullNumber, sha, path }))
   platform.handle(IPC.githubIssuesPullComment, (request) => service.commentOnPull(request))
   platform.handle(IPC.githubIssuesPullReview, (request) => service.reviewPull(request))
   platform.handle(IPC.githubIssuesPullMerge, (request) => service.mergePull(request))
