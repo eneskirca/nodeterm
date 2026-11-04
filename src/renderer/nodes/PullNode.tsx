@@ -53,6 +53,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
   }, [id])
 
   return (
+    <>
     <div className={`pull-node${selected ? ' selected' : ''}`} style={{ borderColor: data.color }}>
       <NodeResizer
         minWidth={NODE_MIN_SIZES.pull.width}
@@ -157,5 +158,9 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
         />
       </div>
     </div>
+    {/* The live resizer: a sibling AFTER the root, like every other node (see .nt-resize-ghost in
+        styles.css). The one inside the root only paints, so without this the node never resized. */}
+    <NodeResizer minWidth={NODE_MIN_SIZES.pull.width} minHeight={NODE_MIN_SIZES.pull.height} isVisible={selected} color={data.color} />
+    </>
   )
 }

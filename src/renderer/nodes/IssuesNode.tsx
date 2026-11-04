@@ -28,6 +28,7 @@ export function IssuesNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const issues = data.issues
 
   return (
+    <>
     <div className={`pull-node issues-node${selected ? ' selected' : ''}`} style={{ borderColor: data.color }}>
       <NodeResizer
         minWidth={NODE_MIN_SIZES.issues.width}
@@ -108,5 +109,8 @@ export function IssuesNode({ id, data, selected }: NodeProps<CanvasNode>) {
           : <p className="pull-node__state">This node names no repository. Add the Issues node again.</p>}
       </div>
     </div>
+    {/* The live resizer, a sibling after the root like every other node; the one inside only paints. */}
+    <NodeResizer minWidth={NODE_MIN_SIZES.issues.width} minHeight={NODE_MIN_SIZES.issues.height} isVisible={selected} color={data.color} />
+    </>
   )
 }
