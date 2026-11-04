@@ -28,7 +28,8 @@ import type {
   PullLineDraft,
   PullMergeMethod,
   PullReviewEvent,
-  PullReviewVerdict
+  PullReviewVerdict,
+  PullViewedState
 } from '../../shared/github-pull-detail'
 import {
   GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft, isPullPath
@@ -45,6 +46,13 @@ import {
   rateLimitFrom,
   type PullStatusRead
 } from './graphql-pulls'
+
+const MAX_VIEWED_PAGES = 3
+const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    files(first:100,after:$after){ nodes{ path viewerViewedState } pageInfo{ hasNextPage endCursor } }
+  } }
+}`
 
 const API_ORIGIN = 'https://api.github.com'
 const REVIEW_EVENTS: ReadonlySet<unknown> = new Set<PullReviewEvent>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT'])
@@ -785,6 +793,43 @@ export class GitHubIssuesClient {
     const id = await this.pullNodeId(repository, pullNumber)
     await this.graphqlWrite(
       'mutation($id:ID!){ disablePullRequestAutoMerge(input:{pullRequestId:$id}){ clientMutationId } }', { id })
+  }
+
+  /** The signed-in user's "Viewed" mark per changed file (GraphQL `files.viewerViewedState`), at
+   *  most `MAX_VIEWED_PAGES` pages of 100, the same 300 files the Files tab lists. */
+  async pullViewedStates(repository: string, pullNumber: number): Promise<Record<string, PullViewedState>> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const states: Record<string, PullViewedState> = {}
+    let after: string | undefined
+    for (let read = 0; read < MAX_VIEWED_PAGES; read += 1) {
+      const body = await this.graphql(PULL_VIEWED_QUERY, { owner, name, number: pullNumber, ...(after ? { after } : {}) })
+      const files = object(object(object(object(object(body)?.data)?.repository)?.pullRequest)?.files)
+      const nodes = files?.nodes
+      const info = object(files?.pageInfo)
+      if (!Array.isArray(nodes) || !info) throw new GitHubClientError('malformed-response')
+      for (const node of nodes) {
+        const { path, viewerViewedState: state } = object(node) ?? {}
+        if (!isPullPath(path) || (state !== 'VIEWED' && state !== 'UNVIEWED' && state !== 'DISMISSED')) {
+          throw new GitHubClientError('malformed-response')
+        }
+        states[path] = state
+      }
+      if (info.hasNextPage !== true) break
+      if (!string(info.endCursor, 1_024) || !info.endCursor) throw new GitHubClientError('malformed-response')
+      after = info.endCursor
+    }
+    return states
+  }
+
+  /** Tick or clear GitHub's own "Viewed" mark on one file (GraphQL `markFileAsViewed` /
+   *  `unmarkFileAsViewed`), as the signed-in user. */
+  async setFileViewed(repository: string, pullNumber: number, path: string, viewed: boolean): Promise<void> {
+    if (!isPullPath(path) || typeof viewed !== 'boolean') throw new GitHubClientError('invalid-request')
+    const id = await this.pullNodeId(repository, pullNumber)
+    const mutation = viewed ? 'markFileAsViewed' : 'unmarkFileAsViewed'
+    await this.graphqlWrite(
+      `mutation($id:ID!,$path:String!){ ${mutation}(input:{pullRequestId:$id,path:$path}){ clientMutationId } }`, { id, path })
   }
 
   /** The PR's GraphQL id, looked up here from the repository and number (never taken from a caller). */

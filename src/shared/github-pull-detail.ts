@@ -213,7 +213,12 @@ export interface PullFile {
   status: PullFileStatus
   additions: number
   deletions: number
+  /** The signed-in user's GitHub "Viewed" mark (GraphQL `viewerViewedState`); `DISMISSED` = it was
+   *  viewed, then the file changed. Absent when the read could not say. */
+  viewerViewedState?: PullViewedState
 }
+
+export type PullViewedState = 'VIEWED' | 'UNVIEWED' | 'DISMISSED'
 
 /** One page of `GET /pulls/{n}/files`, as the client reads it. */
 export interface PullFilesPage {

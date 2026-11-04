@@ -1013,3 +1013,55 @@ describe('create a pull request', () => {
     expect(await client.pullForBranch('o/r', 'feat/x')).toEqual({ defaultBranch: 'main' })
   })
 })
+
+describe('GitHubIssuesClient viewed files', () => {
+  const graphql = (answers: unknown[]) => {
+    const calls: Array<{ query: string; variables: Record<string, unknown> }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => {
+        expect(String(url)).toBe('https://api.github.com/graphql')
+        calls.push(JSON.parse(String(init?.body)))
+        return response(answers[calls.length - 1])
+      }
+    })
+    return { client, calls }
+  }
+  const page = (nodes: unknown[], endCursor?: string) =>
+    ({ data: { repository: { pullRequest: { files: { nodes, pageInfo: { hasNextPage: !!endCursor, endCursor: endCursor ?? null } } } } } })
+  const pullId = { data: { repository: { pullRequest: { id: 'PR_node' } } } }
+
+  it('reads the viewer\'s viewed state of every file, page by page', async () => {
+    const { client, calls } = graphql([
+      page([{ path: 'a.ts', viewerViewedState: 'VIEWED' }, { path: 'b.ts', viewerViewedState: 'UNVIEWED' }], 'C1'),
+      page([{ path: 'c.ts', viewerViewedState: 'DISMISSED' }])
+    ])
+    expect(await client.pullViewedStates('o/r', 7)).toEqual({ 'a.ts': 'VIEWED', 'b.ts': 'UNVIEWED', 'c.ts': 'DISMISSED' })
+    expect(calls[0].query).toContain('viewerViewedState')
+    expect(calls[0].variables).toEqual({ owner: 'o', name: 'r', number: 7 })
+    expect(calls[1].variables).toEqual({ owner: 'o', name: 'r', number: 7, after: 'C1' })
+  })
+
+  it('refuses a malformed answer', async () => {
+    const { client } = graphql([page([{ path: 'a.ts', viewerViewedState: 'SEEN' }])])
+    await expect(client.pullViewedStates('o/r', 7)).rejects.toMatchObject({ code: 'malformed-response' })
+  })
+
+  it('marks and unmarks one file as viewed on the PR named by repository and number', async () => {
+    const marked = graphql([pullId, { data: { markFileAsViewed: { clientMutationId: null } } }])
+    await marked.client.setFileViewed('o/r', 7, 'src/a.ts', true)
+    expect(marked.calls[1].query).toContain('markFileAsViewed')
+    expect(marked.calls[1].variables).toEqual({ id: 'PR_node', path: 'src/a.ts' })
+    const unmarked = graphql([pullId, { data: { unmarkFileAsViewed: { clientMutationId: null } } }])
+    await unmarked.client.setFileViewed('o/r', 7, 'src/a.ts', false)
+    expect(unmarked.calls[1].query).toContain('unmarkFileAsViewed')
+  })
+
+  it('refuses a bad path or number before any request', async () => {
+    const { client, calls } = graphql([])
+    await expect(client.setFileViewed('o/r', 7, '../x', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setFileViewed('o/r', 0, 'a.ts', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.pullViewedStates('o/r', 0)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(calls).toEqual([])
+  })
+})
