@@ -617,6 +617,10 @@ export const IPC = {
   // and "Re-run failed" (a write like the ones above: a user click only, owner-only for relay peers).
   githubIssuesPullCheckLog: 'githubIssues:pull-check-log',
   githubIssuesPullRerunFailed: 'githubIssues:pull-rerun-failed',
+  // A pull node's Watch switch (F-08, core/github/pull-watch.ts): its state (a read) and the toggle
+  // (a local control, not a GitHub write: owner-only for relay peers, refused for scoped guests).
+  githubIssuesPullWatch: 'githubIssues:pull-watch',
+  githubIssuesPullWatchSet: 'githubIssues:pull-watch-set',
   // The issues node: one issue's comments (a read, classified like the pull reads) and a comment on
   // it (a write like the pull writes: a user click only, owner-only for relay peers).
   githubIssuesIssueConversation: 'githubIssues:issue-conversation',
