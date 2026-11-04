@@ -116,6 +116,8 @@ import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
 import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
 import { PULL_REFRESH_EVENT, pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
+import { NO_GITHUB_REMOTE_TEXT } from '../lib/openPullMenu'
+import { useOpenPullSection } from '../state/openPulls'
 import { IssuesNode } from '../nodes/IssuesNode'
 import { ISSUE_WORK_EVENT, issueWorkPrompt, type IssueWorkRequest } from '@shared/issues-node'
 import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
@@ -11708,7 +11710,7 @@ export function Canvas() {
       const view = await api.githubControl.status(projectId).catch(() => undefined)
       let repo = view?.project
       if (!repo?.repository) {
-        toast('This folder has no GitHub remote. Add one with git remote add origin <url>.')
+        toast(NO_GITHUB_REMOTE_TEXT)
         return undefined
       }
       if (!repo.approved) {
@@ -11792,6 +11794,18 @@ export function Canvas() {
     [approvedRepoFor, placePullNode]
   )
 
+  // The add menu's and the Dock's open PR rows: the same plan as "Pull request…", so a PR that
+  // already has a node is framed instead of a second one.
+  const openListedPull = useCallback(
+    async (pullNumber: number, at?: { x: number; y: number }) => {
+      const projectId = useProjects.getState().activeProjectId
+      if (!projectId) return
+      const repo = await approvedRepoFor(projectId)
+      if (repo?.repository) placePullNode(projectId, repo, String(pullNumber), at)
+    },
+    [approvedRepoFor, placePullNode]
+  )
+
   // The add menu's "Issues…": the open issues of the folder's approved repository. One node per
   // repository: an existing one is framed instead of a second one.
   const addIssues = useCallback(
@@ -11867,6 +11881,7 @@ export function Canvas() {
     }),
     [activeProjectId, isSshProject, isWindowsCore]
   )
+  const { section: openPullsSection, prime: primeOpenPulls } = useOpenPullSection(activeProjectId)
   const addHandlers = useMemo<AddHandlers>(
     () => ({
       terminal: (at) => addTerminal(at),
@@ -11881,6 +11896,7 @@ export function Canvas() {
       whiteboard: (at) => addWhiteboard(at),
       trigger: (at) => addTrigger(at),
       pull: (at) => void addPull(at),
+      openPull: (pullNumber, at) => void openListedPull(pullNumber, at),
       issues: (at) => void addIssues(at),
       newPull: (at) => void addNewPull(at),
       openFile: (at) => void openFileDialog(at),
@@ -11901,6 +11917,7 @@ export function Canvas() {
       addWhiteboard,
       addTrigger,
       addPull,
+      openListedPull,
       addNewPull,
       openFileDialog,
       newProjectFile,
@@ -11917,10 +11934,11 @@ export function Canvas() {
       // `New agent ▸` / `New view ▸` / `Files ▸` / `Orchestrate ▸`. The spec is still the single
       // source for WHICH kinds appear, in what order, and with which disabled reason — this
       // surface only chooses to render the grouped tree rather than the flat list.
+      primeOpenPulls()
       const items = buildGroupedAddMenu(
         CONTENT_ADD_ITEMS,
         addHandlers,
-        addCtx,
+        { ...addCtx, pulls: openPullsSection },
         agentCreationEntries(at),
         at,
         screenPos
@@ -11977,6 +11995,8 @@ export function Canvas() {
       agentCreationEntries,
       addHandlers,
       addCtx,
+      openPullsSection,
+      primeOpenPulls,
       selectAll,
       fitAll,
       arrangeAllNodes,
@@ -17629,14 +17649,15 @@ export function Canvas() {
         items: buildGroupedAddMenu(
           CONTENT_ADD_ITEMS,
           addHandlers,
-          addCtx,
+          // Another project's "+" switches first; its PR list is not loaded yet, so it gets none.
+          projectId === activeProjectId ? { ...addCtx, pulls: openPullsSection } : addCtx,
           agentCreationEntries(),
           undefined,
           pos
         )
       })
     },
-    [activeProjectId, switchProject, addHandlers, addCtx, agentCreationEntries]
+    [activeProjectId, switchProject, addHandlers, addCtx, openPullsSection, agentCreationEntries]
   )
 
   // Sidebar drag-to-group: reparent a session into a canvas group (groupId) or out (null).
@@ -21420,6 +21441,9 @@ export function Canvas() {
         onAddWhiteboard={addWhiteboard}
         onAddTrigger={addTrigger}
         onAddPull={() => void addPull()}
+        openPulls={openPullsSection}
+        onOpenPull={(pullNumber) => void openListedPull(pullNumber)}
+        onAddMenuOpen={primeOpenPulls}
         onAddIssues={() => void addIssues()}
         onAddNewPull={() => void addNewPull()}
         onAddFiles={() => addFiles()}

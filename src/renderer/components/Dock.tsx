@@ -10,7 +10,15 @@ import { AgentIcon } from '../lib/agentIcons'
 import { useSettings } from '../state/settings'
 import { useProjects } from '../state/projects'
 import { accountsForProject, sshAccountsHint } from '../state/workspace'
-import { CONTENT_ADD_ITEMS, contentAddItemsToDockRows, type AddHandlers } from '../lib/addMenuSpec'
+import {
+  CONTENT_ADD_ITEMS,
+  PULL_SECTION_KINDS,
+  contentAddItemsToDockRows,
+  newPullLabel,
+  openPullMenuRows,
+  type AddHandlers,
+  type OpenPullSection
+} from '../lib/addMenuSpec'
 import { layoutSubtitle, sortedLayouts } from '../lib/canvasLayoutView'
 import { ZOOM_PRESETS, activeZoomPreset } from '../lib/zoomPresets'
 import { useCoreIsWindows } from '../terminal/use-core-platform'
@@ -36,6 +44,12 @@ interface DockProps {
   onAddWhiteboard: () => void
   onAddTrigger: () => void
   onAddPull: () => void
+  /** The open PR section (absent = none, e.g. a relay tab): listed first in the "+" menu. */
+  openPulls?: OpenPullSection
+  /** Opens one listed PR as a node, or focuses its node. */
+  onOpenPull: (pullNumber: number) => void
+  /** The "+" menu opened: refresh the PR section. */
+  onAddMenuOpen: () => void
   onAddNewPull: () => void
   onAddIssues: () => void
   onAddFiles: () => void
@@ -94,6 +108,9 @@ export function Dock({
   onAddWhiteboard,
   onAddTrigger,
   onAddPull,
+  openPulls,
+  onOpenPull,
+  onAddMenuOpen,
   onAddNewPull,
   onAddIssues,
   onAddFiles,
@@ -240,6 +257,7 @@ export function Dock({
     whiteboard: onAddWhiteboard,
     trigger: onAddTrigger,
     pull: onAddPull,
+    openPull: (pullNumber) => onOpenPull(pullNumber),
     newPull: onAddNewPull,
     issues: onAddIssues,
     files: onAddFiles,
@@ -249,12 +267,25 @@ export function Dock({
     newFile: onNewFile,
     worktree: onAddWorktree
   }
-  const contentRows = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, dockAddHandlers, {
+  const allContentRows = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, dockAddHandlers, {
     hasCwd,
     isSshProject,
     isWindowsCore,
     isRelayTab: !!activeProject?.remote
   })
+  // Open PRs first, then "Pull request…", "New pull request from <branch>" and "Issues…" (as the
+  // pane menu's grouped builder does); without a section the rows stay where they were.
+  const pullRows = openPulls
+    ? [
+        ...openPullMenuRows(openPulls, dockAddHandlers),
+        ...allContentRows.filter((row) => PULL_SECTION_KINDS.has(row.kind)).map((row) => ({
+          ...row,
+          key: row.kind,
+          label: (row.kind === 'new-pull' && newPullLabel(openPulls)) || row.label
+        }))
+      ]
+    : []
+  const contentRows = openPulls ? allContentRows.filter((row) => !PULL_SECTION_KINDS.has(row.kind)) : allContentRows
 
   return (
     <>
@@ -279,6 +310,12 @@ export function Dock({
                 setOpenSub(null)
               }}
             >
+              {pullRows.map((row) => (
+                <button key={row.key} disabled={row.disabled} title={row.hint} onClick={pick(row.onClick)}>
+                  {row.icon}
+                  <span>{row.label}</span>
+                </button>
+              ))}
               <button onClick={pick(onAddTerminal)}>
                 <TerminalIcon />
                 <span>Terminal</span>
@@ -412,6 +449,7 @@ export function Dock({
             onClick={() => {
               setZoomMenuOpen(false)
               setLayoutMenuOpen(false)
+              if (!menuOpen) onAddMenuOpen()
               setMenuOpen((v) => !v)
             }}
           >
