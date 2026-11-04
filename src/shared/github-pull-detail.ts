@@ -36,6 +36,10 @@ export type GitHubRepoCollaboratorsResult =
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
 
+/** Avatar images as data URLs keyed by `String(user.id)`, the kanban cards' shape. Filled in main by
+ *  the hardened avatar fetcher; the renderer never loads a remote image. A missing key = fallback letter. */
+export type PullAvatarDataUrls = Record<string, string>
+
 /** Why a read produced no fresh answer. `signed-out` only for an answer GitHub gave about the token. */
 export type PullReadFailure = 'throttled' | 'unreachable' | 'signed-out'
 
@@ -45,7 +49,7 @@ export type PullRefusal = 'not-approved' | 'signed-out' | 'repository-mismatch' 
 export type GitHubPullDetailResult =
   /** `stale` = the latest read failed; `detail` is the last one that succeeded, kept on purpose. */
   /** `ownPull` = the signed-in user wrote it, so GitHub refuses Approve and Request changes. */
-  | { status: 'ok'; detail: GitHubPullDetail; observedAt: number; ownPull?: true; stale?: PullReadFailure; retryAt?: number }
+  | { status: 'ok'; detail: GitHubPullDetail; observedAt: number; ownPull?: true; stale?: PullReadFailure; retryAt?: number; avatarDataUrls?: PullAvatarDataUrls }
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
 
@@ -168,7 +172,7 @@ export type GitHubPullConversationResult =
   | {
     status: 'ok'; items: PullConversationItem[]; lineComments: PullLineComment[]; truncated: boolean; observedAt: number
     resolvedThreads?: number[]
-    stale?: PullReadFailure; retryAt?: number
+    stale?: PullReadFailure; retryAt?: number; avatarDataUrls?: PullAvatarDataUrls
   }
   | { status: 'refused'; reason: PullRefusal }
   | { status: 'failed'; reason: PullReadFailure; retryAt?: number }

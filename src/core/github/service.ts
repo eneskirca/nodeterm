@@ -1069,7 +1069,11 @@ export class GitHubIssueService {
       const detail = await this.readWithEpoch(captured, () => captured.client.getPull!(repository, pullNumber))
       // The numeric id, not the login: a login can be renamed.
       const ownPull = detail.author !== null && String(detail.author.id) === captured.userId
-      return { status: 'ok', detail, observedAt: this.now(), ...(ownPull ? { ownPull: true as const } : {}) }
+      const avatarDataUrls = await this.pullAvatars([detail.author, ...(detail.requestedReviewers ?? [])])
+      return {
+        status: 'ok', detail, observedAt: this.now(), ...(ownPull ? { ownPull: true as const } : {}),
+        ...(avatarDataUrls ? { avatarDataUrls } : {})
+      }
     })
   }
 
@@ -1111,9 +1115,11 @@ export class GitHubIssueService {
           : undefined
       ])
       const items = [...comments.items, ...reviews.items].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+      const avatarDataUrls = await this.pullAvatars([...items, ...lines.items].map((item) => item.author))
       return {
         status: 'ok', items, lineComments: lines.items, truncated: comments.truncated || reviews.truncated || lines.truncated,
         ...(resolvedThreads ? { resolvedThreads } : {}),
+        ...(avatarDataUrls ? { avatarDataUrls } : {}),
         observedAt: this.now()
       }
     })
@@ -1524,6 +1530,16 @@ export class GitHubIssueService {
    * keeps the last good answer, marks it stale, and does not hold the floor. Never throws.
    * `read` answers null when this client cannot make the read at all.
    */
+  /** The avatars of a pull read's users as data URLs keyed by user id (the kanban cards' shape), or
+   *  undefined when none loaded. Never throws: an avatar is decoration, never a reason a read fails. */
+  private async pullAvatars(users: readonly (GitHubIssueUser | null)[]): Promise<Record<string, string> | undefined> {
+    if (!this.options.avatarFetcher) return undefined
+    const known = users.filter((user): user is GitHubIssueUser => user !== null)
+    if (!known.length) return undefined
+    const { dataUrls } = await this.options.avatarFetcher.forPage(known).catch(() => ({ dataUrls: new Map<number, string>() }))
+    return dataUrls.size ? Object.fromEntries([...dataUrls].map(([id, url]) => [String(id), url])) : undefined
+  }
+
   private async pullRead<O extends PullOk>(
     // `contents\0…` carries the file and SHAs, so a held entry is one file at one head;
     // `merge-base\0…` carries the base and head SHAs.
