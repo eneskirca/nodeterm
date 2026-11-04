@@ -582,6 +582,7 @@ export const IPC = {
   githubIssuesPullChecks: 'githubIssues:pull-checks',
   githubIssuesPullDetail: 'githubIssues:pull-detail',
   githubIssuesPullConversation: 'githubIssues:pull-conversation',
+  githubIssuesPullTimeline: 'githubIssues:pull-timeline',
   githubIssuesPullFiles: 'githubIssues:pull-files',
   githubIssuesPullFileContents: 'githubIssues:pull-file-contents',
   // The Commits tab's reads (07).

@@ -278,6 +278,8 @@ const api: NodeTerminalApi = {
       ipcRenderer.invoke(IPC.githubIssuesPullDetail, projectId, repository, pullNumber),
     pullConversation: (projectId, repository, pullNumber) =>
       ipcRenderer.invoke(IPC.githubIssuesPullConversation, projectId, repository, pullNumber),
+    pullTimeline: (projectId, repository, pullNumber, after) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullTimeline, projectId, repository, pullNumber, after),
     pullFiles: (projectId, repository, pullNumber) =>
       ipcRenderer.invoke(IPC.githubIssuesPullFiles, projectId, repository, pullNumber),
     pullFileContents: (projectId, repository, pullNumber, path) =>

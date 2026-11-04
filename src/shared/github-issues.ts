@@ -1,4 +1,5 @@
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
+import type { GitHubPullTimelineResult } from './github-pull-timeline'
 import type {
   GitHubPullConversationResult,
   GitHubIssueConversationResult,
@@ -318,6 +319,9 @@ export interface GitHubIssuesApi {
   /** One PR's comments and reviews, oldest first, for the node's Conversation tab. Same refusals
    *  and refresh floor as `pullDetail`. */
   pullConversation(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullConversationResult>
+  /** One page of a PR's Conversation timeline, oldest first; `after` = the cursor the previous page
+   *  answered as `next`. Same refusals and refresh floor as `pullDetail`. */
+  pullTimeline(projectId: string, repository: string, pullNumber: number, after?: string): Promise<GitHubPullTimelineResult>
   /** One PR's changed files (at most 300) for the node's Files tab. Same refusals and floor as `pullDetail`. */
   pullFiles(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullFilesResult>
   /** Base and head of one changed file, at the SHAs of the latest `pullDetail`, for the Files tab's diff. */

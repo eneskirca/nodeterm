@@ -33,6 +33,9 @@ describe('registerGitHubIssueHandlers', () => {
       pullConversation: async (...args: unknown[]) => {
         calls.push(['conversation', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
       },
+      pullTimeline: async (...args: unknown[]) => {
+        calls.push(['timeline', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
+      },
       pullFiles: async (...args: unknown[]) => {
         calls.push(['files', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
       },
@@ -109,6 +112,7 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesIssueComment]({ projectId: 'p1', repository: 'o/r', issueNumber: 5, body: 'b' })
     await platform.handlers[IPC.githubIssuesClaimPullAutoMove]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     await platform.handlers[IPC.githubIssuesNotePullWaits]({ projectId: 'p1', cardId: 'n', pulls: [3] })
+    await platform.handlers[IPC.githubIssuesPullTimeline]('p1', 'o/r', 12, 'Y3Vy')
     expect(calls).toEqual([
       ['subscribe', 7, { projectId: 'p1' }],
       ['unsubscribe', 7, 'p1'],
@@ -141,7 +145,8 @@ describe('registerGitHubIssueHandlers', () => {
       ['issueConversation', { projectId: 'p1', repository: 'o/r', issueNumber: 5 }],
       ['issueComment', { projectId: 'p1', repository: 'o/r', issueNumber: 5, body: 'b' }],
       ['claim', { projectId: 'p1', cardId: 'n', pulls: [3] }],
-      ['wait', { projectId: 'p1', cardId: 'n', pulls: [3] }]
+      ['wait', { projectId: 'p1', cardId: 'n', pulls: [3] }],
+      ['timeline', { projectId: 'p1', repository: 'o/r', pullNumber: 12, after: 'Y3Vy' }]
     ])
     expect(Object.keys(platform.handlers).some((channel) => channel.startsWith('githubControl:'))).toBe(false)
   })

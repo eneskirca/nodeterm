@@ -556,6 +556,10 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullConversation, projectId, repository, pullNumber) as ReturnType<
         GitHubIssuesApi['pullConversation']
       >,
+    pullTimeline: (projectId, repository, pullNumber, after) =>
+      client.request(IPC.githubIssuesPullTimeline, projectId, repository, pullNumber, after) as ReturnType<
+        GitHubIssuesApi['pullTimeline']
+      >,
     pullFiles: (projectId, repository, pullNumber) =>
       client.request(IPC.githubIssuesPullFiles, projectId, repository, pullNumber) as ReturnType<
         GitHubIssuesApi['pullFiles']

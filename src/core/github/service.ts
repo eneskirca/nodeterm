@@ -27,6 +27,7 @@ import {
 import { classifyGitHubFailure } from './failure'
 import type { GitHubRequestCoordinator } from './request-coordinator'
 import type { PullStatusRead } from './graphql-pulls'
+import { isPullTimelineCursor, type GitHubPullTimelineResult, type PullTimelinePage } from '../../shared/github-pull-timeline'
 import { GitHubPullStatusTracker } from './pull-status-tracker'
 import type { GitHubPullBoard, GitHubPullChecksResult, PullLifecycle } from '../../shared/github-pull-status'
 import type {
@@ -181,6 +182,8 @@ export interface GitHubIssuesClientLike {
   createPull?(repository: string, pull: PullCreateDraft): Promise<{ number: number }>
   /** The pull node sidebar (one GraphQL read). Optional, as above. */
   pullSidebar?(repository: string, pullNumber: number): Promise<PullSidebarRead>
+  /** One page of a PR's Conversation timeline (GraphQL `timelineItems`). Optional, as above. */
+  pullTimeline?(repository: string, pullNumber: number, after?: string): Promise<PullTimelinePage>
 }
 
 export interface GitHubIssueProjectContext {
@@ -1169,6 +1172,26 @@ export class GitHubIssueService {
   }
 
   /**
+   * One page of a PR's Conversation timeline, oldest first; `after` = the page's cursor (absent = the
+   * first page). Each page is held apart under the same refusals, floor and stale rules as `pullDetail`.
+   * ponytail: a write drops only the first page's held read; a later page refreshes after the floor.
+   */
+  async pullTimeline(
+    request: { projectId: string; repository: string; pullNumber: number; after?: string }
+  ): Promise<GitHubPullTimelineResult> {
+    const after = request?.after
+    if (after !== undefined && !isPullTimelineCursor(after)) return { status: 'refused', reason: 'not-configured' }
+    return this.pullRead(after ? `timeline\0${after}` : 'timeline', request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.pullTimeline) return null
+      const page = await this.readWithEpoch(captured, () => client.pullTimeline!(repository, pullNumber, after))
+      const avatarDataUrls = await this.pullAvatars(page.items.flatMap((item) =>
+        item.kind === 'assigned' || item.kind === 'unassigned' ? [item.actor, item.assignee] : [item.actor]))
+      return { status: 'ok', ...page, observedAt: this.now(), ...(avatarDataUrls ? { avatarDataUrls } : {}) }
+    })
+  }
+
+  /**
    * One PR's changed files for the Files tab, 100 per page, at most `MAX_PULL_FILES`, past which
    * `truncated` is set. Same refusals, floor and stale rules as `pullDetail`.
    */
@@ -1720,7 +1743,7 @@ export class GitHubIssueService {
   }
 
   private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
-    for (const kind of ['detail', 'conversation', 'files', 'issue-conversation']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
+    for (const kind of ['detail', 'conversation', 'files', 'issue-conversation', 'timeline']) this.pullReads.delete(`${kind}\0${projectId}\0${repository}\0${pullNumber}`)
   }
 
   /**
@@ -1757,7 +1780,8 @@ export class GitHubIssueService {
     // `merge-base\0…` carries the base and head SHAs.
     kind: 'detail' | 'conversation' | 'files' | 'issue-conversation' | `contents\0${string}` | `merge-base\0${string}`
       // `commit-…\0<sha>…`: one commit's files or one file of it (07).
-      | 'commits' | `commit-files\0${string}` | `commit-contents\0${string}`,
+      | 'commits' | `commit-files\0${string}` | `commit-contents\0${string}`
+      | 'timeline' | `timeline\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {

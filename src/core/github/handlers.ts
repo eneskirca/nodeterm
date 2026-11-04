@@ -8,6 +8,7 @@ import type {
   GitHubMutationResult
 } from '../../shared/github-issues'
 import type { GitHubPullBoard, GitHubPullChecksResult } from '../../shared/github-pull-status'
+import type { GitHubPullTimelineResult } from '../../shared/github-pull-timeline'
 import type {
   GitHubPullConversationResult,
   GitHubIssueConversationResult,
@@ -48,6 +49,9 @@ export interface GitHubIssueHandlerService {
   pullConversation(
     request: { projectId: string; repository: string; pullNumber: number }
   ): Promise<GitHubPullConversationResult>
+  pullTimeline(
+    request: { projectId: string; repository: string; pullNumber: number; after?: string }
+  ): Promise<GitHubPullTimelineResult>
   pullFiles(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullFilesResult>
   pullFileContents(
     request: { projectId: string; repository: string; pullNumber: number; path: string }
@@ -115,6 +119,9 @@ export function registerGitHubIssueHandlers(
     service.pullDetail({ projectId, repository, pullNumber }))
   platform.handle(IPC.githubIssuesPullConversation, (projectId: string, repository: string, pullNumber: number) =>
     service.pullConversation({ projectId, repository, pullNumber }))
+  platform.handle(IPC.githubIssuesPullTimeline,
+    (projectId: string, repository: string, pullNumber: number, after?: string) =>
+      service.pullTimeline({ projectId, repository, pullNumber, after }))
   platform.handle(IPC.githubIssuesPullFiles, (projectId: string, repository: string, pullNumber: number) =>
     service.pullFiles({ projectId, repository, pullNumber }))
   platform.handle(IPC.githubIssuesPullFileContents,
