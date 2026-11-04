@@ -12,6 +12,7 @@ import { PullProposalBar } from './pull/PullProposalBar'
 import { PullTabBar, shownPullTab } from './pull/PullTabBar'
 import { AllowContext, usePullRead, type ViewProps } from './pull/shared'
 import { useMergeMethods } from './pull/useMergeMethods'
+import { SendToProvider, type SendToHost } from './pull/SendTo'
 
 export type { PullNodeApi } from './pull/shared'
 
@@ -24,6 +25,8 @@ type TabsProps = ViewProps & {
   onDismiss?: () => void
   /** Lines the linked agent pointed at (`pr-show --lines`), in one file of the Files tab. */
   highlight?: PullHighlight
+  /** The canvas side of "Send to…" (PullNode); absent = no picker. */
+  sendToHost?: SendToHost
 }
 
 /**
@@ -49,7 +52,7 @@ export function PullNodeView({
  *  the proposal bar and each tab show the same head. A tab mounts the first time it is shown and
  *  then stays mounted (hidden when not shown), so a switch back costs no read and a draft typed in
  *  a tab survives the switch. */
-function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...props }: TabsProps): React.JSX.Element {
+function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToHost, ...props }: TabsProps): React.JSX.Element {
   const { api, projectId, pull, onOpenExternal } = props
   const shownTab = shownPullTab(pull.tab)
   const [opened, setOpened] = useState<readonly PullNodeTab[]>([shownTab])
@@ -80,6 +83,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   const barAboveMerge = shownTab === 'conversation' && !!detail
   return (
     <AllowContext.Provider value={props.onAllow}>
+    <SendToProvider host={sendToHost} pr={{ repository: pull.repository, number: pull.pullNumber, title: detail?.title ?? '' }}>
       <PullHeader pull={pull} detail={detail}
         avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined} />
       <PullTabBar pull={pull} shown={shownTab} detail={detail} checks={checks} onTab={onTab} onOpenExternal={onOpenExternal} />
@@ -107,6 +111,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
             onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending} />
         </div>
       )}
+    </SendToProvider>
     </AllowContext.Provider>
   )
 }

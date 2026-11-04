@@ -1,60 +1,53 @@
 import { useState } from 'react'
 import type { GitHubPullDetail } from '@shared/github-pull-detail'
-import { pullFeedbackItems, pullFeedbackMessage } from '../../lib/pullFeedback'
+import { pullFeedbackItems } from '../../lib/pullFeedback'
 import type { PullChecksRead } from '../../lib/pullMergeBlock'
-import type { LinkedAgent } from '../../state/pullAgent'
 import { readState, usePullRead, type ViewProps } from './shared'
+import { useSendTo } from './SendTo'
 
 export const NO_AGENT_TEXT = 'No agent is linked to this node. Use Work on this PR, or draw a context link from an agent.'
 
-/** "Send to agent…": a checklist of the unresolved line comment threads and the failing checks, the
- *  linked agent to send to (picked when there are several), then Send. Nothing is written to GitHub. */
+/** "Send to agent…": a checklist of the unresolved line comment threads and the failing checks, then
+ *  "Send to…", which opens the picker of every agent node in this project (F-06). Nothing is written
+ *  to GitHub. */
 export function PullSendToAgent(props: ViewProps & { detail: GitHubPullDetail; checks: PullChecksRead }): React.JSX.Element {
-  const { agents = [], sendUnavailable, onSendToAgent } = props
+  const { sendTo, why } = useSendTo()
   const [open, setOpen] = useState(false)
-  const why = sendUnavailable ?? (agents.length === 0 ? NO_AGENT_TEXT : undefined)
   return (
     <div className="pull-send">
       {!open && (
-        <button className="pull-compose__button" disabled={!!why || !onSendToAgent} onClick={() => setOpen(true)}>
+        <button className="pull-compose__button" disabled={!sendTo} onClick={() => setOpen(true)}>
           Send to agent…
         </button>
       )}
       {!open && why && <span className="pull-node__empty">{why}</span>}
-      {open && !why && <PullSendPanel {...props} agents={agents} onClose={() => setOpen(false)} />}
+      {open && sendTo && <PullSendPanel {...props} sendTo={sendTo} onClose={() => setOpen(false)} />}
     </div>
   )
 }
 
 function PullSendPanel(props: ViewProps & {
-  detail: GitHubPullDetail; checks: PullChecksRead; agents: readonly LinkedAgent[]; onClose: () => void
+  detail: GitHubPullDetail; checks: PullChecksRead; onClose: () => void
+  sendTo: NonNullable<ReturnType<typeof useSendTo>['sendTo']>
 }): React.JSX.Element {
-  const { pull, detail: d, checks, agents, onSendToAgent, onClose } = props
+  const { pull, detail: d, checks, sendTo, onClose } = props
   const conversation = usePullRead(props.api.pullConversation, props)
   // The user's ticks over the defaults (outdated threads start unticked).
   const [ticks, setTicks] = useState<Record<string, boolean>>({})
-  const [target, setTarget] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null)
   if (conversation === 'loading' || conversation.status !== 'ok') return readState(conversation, pull.repository)
   const items = pullFeedbackItems(conversation.lineComments, conversation.resolvedThreads, checks, d.head.sha)
     .map((item) => item.key in ticks ? { ...item, checked: ticks[item.key] } : item)
-  const message = pullFeedbackMessage({ repository: pull.repository, number: pull.pullNumber }, items)
-  // One linked agent needs no pick; with several, only the one picked (still linked) counts.
-  const to = agents.length === 1 ? agents[0] : agents.find((agent) => agent.id === target)
-  const send = async () => {
-    if (busy || !message || !to || !onSendToAgent) return
-    setBusy(true)
-    const refused = await onSendToAgent(to.id, message).catch(() => 'The message could not be sent.')
-    setBusy(false)
-    setOutcome(refused ? { ok: false, text: refused } : { ok: true, text: `Sent to ${to.title}.` })
+  const picked = items.filter((item) => item.checked)
+  const send = () => {
+    const threads = picked.flatMap((item) => item.kind === 'thread' ? [{ id: item.thread.id, path: item.path, line: item.thread.line }] : [])
+    const failing = picked.flatMap((item) => item.kind === 'check' ? [item.name] : [])
     // Sent: untick everything, so a second click cannot send the same items again.
-    if (!refused) setTicks(Object.fromEntries(items.map((item) => [item.key, false])))
+    sendTo({ kind: 'threads', threads, checks: failing }, () => setTicks(Object.fromEntries(items.map((item) => [item.key, false]))))
   }
   return (
     <div className="pull-send__panel">
       <p className="pull-node__empty">
-        Pick what to send. Comment text goes to the agent as quoted data; nothing is written to GitHub.
+        Pick what to send. The agent reads the threads itself; nothing is written to GitHub.
         {conversation.resolvedThreads ? '' : ' Could not read which threads are resolved, so all are listed.'}
       </p>
       {items.length === 0
@@ -82,18 +75,9 @@ function PullSendPanel(props: ViewProps & {
           </ul>
         )}
       <div className="pull-compose__actions">
-        {agents.length > 1 && (
-          <select aria-label="Agent" value={target} onChange={(event) => setTarget(event.target.value)}>
-            <option value="" disabled>Pick an agent…</option>
-            {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.title}</option>)}
-          </select>
-        )}
-        <button className="pull-compose__button" disabled={busy || !message || !to} onClick={() => void send()}>
-          {to && agents.length === 1 ? `Send to ${to.title}` : 'Send'}
-        </button>
-        <button className="pull-compose__button" disabled={busy} onClick={onClose}>Close</button>
+        <button className="pull-compose__button" disabled={picked.length === 0} onClick={send}>Send to…</button>
+        <button className="pull-compose__button" onClick={onClose}>Close</button>
       </div>
-      {outcome && <p className={outcome.ok ? 'pull-node__empty' : 'pull-compose__error'} role={outcome.ok ? 'status' : 'alert'}>{outcome.text}</p>}
     </div>
   )
 }

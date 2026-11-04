@@ -14,6 +14,8 @@ import { linkedAgents, usePullAgent, type LinkedAgent } from '../state/pullAgent
 import { useSettings } from '../state/settings'
 import { guardConcurrentRestart } from '../terminal/agent-restart'
 import { sendPullFeedback } from '../lib/pullFeedbackSend'
+import { requestPullLink, sendTo, SEND_TO_RELAY_TEXT } from '../lib/sendTo'
+import type { SendToHost } from './pull/SendTo'
 import { allowProjectRepo } from '../lib/allowRepo'
 import { PULL_WORK_EVENT, type PullWorkRequest } from '@shared/pull-work'
 import { PULL_WEB_EVENT, type PullWebRequest } from '../lib/openPullNode'
@@ -39,6 +41,21 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const relay = source === 'relay'
   // The node's own session's agent status (CONTRIBUTING: never the global store directly).
   const agentStatus = useSessionStores().agentStatus.store
+  // "Send to…" (F-06): any agent node on this canvas, read at the click; a user click is the only sender.
+  const sendToHost = useMemo<SendToHost>(() => ({
+    unavailable: relay ? SEND_TO_RELAY_TEXT : undefined,
+    pullId: id, nodes: getNodes, edges: getEdges,
+    status: (nodeId) => agentStatus.getState().byId[nodeId],
+    send: (targetId, pr, payload) => sendTo({
+      relay, nodes: getNodes,
+      link: (agentNodeId) => requestPullLink(id, agentNodeId),
+      status: (nodeId) => agentStatus.getState().byId[nodeId] ?? {},
+      paneOwner: (nodeId) => api.pty.paneOwner(nodeId),
+      customAgents: useSettings.getState().settings.customAgents,
+      sendChatPrompt: (nodeId, text, agentId) => api.pty.sendChatPrompt(nodeId, text, agentId),
+      guard: (nodeId, run) => guardConcurrentRestart(nodeId, run)()
+    }, { pullId: id, targetId, pr, payload })
+  }), [id, relay, getNodes, getEdges, agentStatus, api])
   // Lazy-loaded: React Flow measured the Suspense fallback, which has no handle, so its edges had no
   // anchor until the node resized. Re-measure once the real node (and its handle) is mounted.
   const updateNodeInternals = useUpdateNodeInternals()
@@ -138,6 +155,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           onDismiss={() => usePullAgent.getState().dismiss(id)}
           highlight={highlight}
           agents={agents}
+          sendToHost={sendToHost}
           sendUnavailable={relay ? 'Send to agent is not available in a relay tab.' : undefined}
           // A repository not allowed yet (a PR an agent just made): one click allows it, then the node
           // reads again. Not in a relay tab: allowing is the host's own decision.

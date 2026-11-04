@@ -677,6 +677,7 @@ import { planIssueWorktree } from '@shared/issue-worktree'
 import { PULL_WORK_EVENT, planPullWorktree, pullWorkPrompt, type PullWorkRequest } from '@shared/pull-work'
 import { ISSUE_OPEN_EVENT, openIssueInNodes, type IssueOpenRequest } from '../lib/openIssueNode'
 import { isGitHubPage, PULL_OPEN_EVENT, PULL_WEB_EVENT, type PullOpenRequest, type PullWebRequest } from '../lib/openPullNode'
+import { PULL_LINK_EVENT, pullLinkPlan, type PullLinkRequest } from '../lib/sendTo'
 import { sharedBasePathOf, sharedWorktreeLocationRefusal } from '@shared/worktree-location'
 import {
   frameAgentPlacement,
@@ -11830,6 +11831,23 @@ export function Canvas() {
     window.addEventListener(PULL_WEB_EVENT, onOpen)
     return () => window.removeEventListener(PULL_WEB_EVENT, onOpen)
   }, [setNodes, markDirty, placeSpawned, besideNode])
+
+  // A pull node's "Send to…" (F-06): the context link from the picked agent to that pull node,
+  // the open-pr link (the pull end declared readable). Answers in the event's detail.
+  useEffect(() => {
+    const onLink = (e: Event): void => {
+      const req = (e as CustomEvent<PullLinkRequest>).detail
+      if (!req || !nodesRef.current.some((n) => n.id === req.pullId && n.type === 'pull')) return
+      const plan = pullLinkPlan(req.agentNodeId, req.pullId, linkEdgesRef.current, linkEndpointOf)
+      if (plan.edges.length) {
+        setLinkEdges((es) => appendBridgeEdges(es, plan.edges))
+        markDirty()
+      }
+      req.linked = plan.linked.length > 0 || plan.skipped.some((s) => s.why === 'already linked')
+    }
+    window.addEventListener(PULL_LINK_EVENT, onLink)
+    return () => window.removeEventListener(PULL_LINK_EVENT, onLink)
+  }, [nodesRef, linkEdgesRef, linkEndpointOf, setLinkEdges, markDirty])
 
   // The add menu's "Issues…": the open issues of the folder's approved repository. One node per
   // repository: an existing one is framed instead of a second one.
