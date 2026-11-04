@@ -21,7 +21,7 @@ const file = (path: string, over: Partial<PullFile> = {}): PullFile => ({ path, 
 
 class Client implements GitHubIssuesClientLike {
   reads: string[] = []
-  commitPages: (after?: string) => Promise<PullCommitsPage> = async () => ({ commits: [commit(1), commit(2, null)] })
+  commitPages: (after?: string) => Promise<PullCommitsPage> = async () => ({ commits: [commit(1), commit(2, null), { ...commit(3), oid: SHA }] })
   filePages: (page: number) => Promise<PullCommitFilesPage> = async () => ({
     files: [file('a.ts'), file('new.ts', { status: 'added' }), file('gone.ts', { status: 'removed' }),
       file('to.ts', { status: 'renamed', previousPath: 'from.ts' })],
@@ -74,7 +74,7 @@ describe('GitHubIssueService.pullCommits', () => {
     const { service } = harness()
     const result = await service.pullCommits(request)
     expect(result).toMatchObject({ status: 'ok', truncated: false, observedAt: 1_000_000 })
-    expect(result.status === 'ok' && result.commits.map((c) => c.headline)).toEqual(['c1', 'c2'])
+    expect(result.status === 'ok' && result.commits.map((c) => c.headline)).toEqual(['c1', 'c2', 'c3'])
   })
 
   it('follows the cursor and stops after three pages, then says truncated', async () => {
@@ -105,7 +105,7 @@ describe('GitHubIssueService.pullCommits', () => {
     await service.pullCommits(request)
     advance(31_000)
     client.commitPages = async () => { throw new GitHubClientError('rate-limited', 403, 2_000_000) }
-    expect(await service.pullCommits(request)).toMatchObject({ status: 'ok', stale: 'throttled', commits: [{ headline: 'c1' }, { headline: 'c2' }] })
+    expect(await service.pullCommits(request)).toMatchObject({ status: 'ok', stale: 'throttled', commits: [{ headline: 'c1' }, { headline: 'c2' }, { headline: 'c3' }] })
   })
 })
 
@@ -114,7 +114,7 @@ describe('GitHubIssueService.pullCommitFiles', () => {
     const { client, service } = harness()
     const result = await service.pullCommitFiles({ ...request, sha: SHA })
     expect(result).toMatchObject({ status: 'ok', parent: PARENT, truncated: false })
-    expect(client.reads).toEqual(['commit c 1'])
+    expect(client.reads).toEqual(['commits first', 'commit c 1'])
   })
 
   it('follows pages and caps at 300 files', async () => {
@@ -123,7 +123,7 @@ describe('GitHubIssueService.pullCommitFiles', () => {
     const result = await service.pullCommitFiles({ ...request, sha: SHA })
     expect(result).toMatchObject({ status: 'ok', truncated: true })
     expect(result.status === 'ok' && result.files).toHaveLength(300)
-    expect(client.reads).toEqual(['commit c 1', 'commit c 2', 'commit c 3'])
+    expect(client.reads).toEqual(['commits first', 'commit c 1', 'commit c 2', 'commit c 3'])
   })
 
   it('refuses a ref that is not a full commit SHA, and another repository, with no request', async () => {
@@ -132,6 +132,12 @@ describe('GitHubIssueService.pullCommitFiles', () => {
     expect(await service.pullCommitFiles({ ...request, repository: 'evil/other', sha: SHA }))
       .toEqual({ status: 'refused', reason: 'repository-mismatch' })
     expect(client.reads).toEqual([])
+  })
+
+  it('refuses a SHA that is not one of this PR\'s commits, with no commit read', async () => {
+    const { client, service } = harness()
+    expect(await service.pullCommitFiles({ ...request, sha: 'e'.repeat(40) })).toEqual({ status: 'refused', reason: 'not-configured' })
+    expect(client.reads).toEqual(['commits first'])
   })
 })
 
@@ -146,7 +152,7 @@ describe('GitHubIssueService.pullCommitFileContents', () => {
     expect(await service.pullCommitFileContents(contents('to.ts'))).toMatchObject({
       contents: { base: { text: 'from.ts@d' }, head: { text: 'to.ts@c' } }
     })
-    expect(client.reads.filter((read) => read.startsWith('commit'))).toEqual(['commit c 1'])
+    expect(client.reads.filter((read) => read.startsWith('commit '))).toEqual(['commit c 1'])
   })
 
   it('reads no missing side: added, removed, and a root commit', async () => {
@@ -164,6 +170,12 @@ describe('GitHubIssueService.pullCommitFileContents', () => {
     const { service } = harness()
     expect(await service.pullCommitFileContents(contents('other.ts')))
       .toMatchObject({ status: 'ok', contents: { kind: 'unavailable', reason: 'not-in-pull' } })
+  })
+
+  it('refuses a SHA outside the PR before any file read', async () => {
+    const { client, service } = harness()
+    expect(await service.pullCommitFileContents({ ...contents('a.ts'), sha: 'e'.repeat(40) })).toEqual({ status: 'refused', reason: 'not-configured' })
+    expect(client.reads.filter((read) => !read.startsWith('commits'))).toEqual([])
   })
 
   it('refuses a bad SHA or path with no request', async () => {

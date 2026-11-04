@@ -1298,12 +1298,17 @@ export class GitHubIssueService {
   }
 
   /** The files one commit changed and its first parent, for that commit's own diff. Pages and cap
-   *  as `pullFiles`; rules as `pullDetail`. A SHA that is not a full commit SHA is refused, no request. */
+   *  as `pullFiles`; rules as `pullDetail`. A SHA that is not a full commit SHA, or not one of this
+   *  PR's commits (the held `pullCommits` read), is refused with no commit request. */
   async pullCommitFiles(
     request: { projectId: string; repository: string; pullNumber: number; sha: string }
   ): Promise<GitHubPullCommitFilesResult> {
     if (!isCommitSha(request?.sha)) return { status: 'refused', reason: 'not-configured' }
     const { sha } = request
+    const commits = await this.pullCommits(request)
+    if (commits.status !== 'ok') return commits
+    // ponytail: a commit past the `MAX_COMMIT_PAGES` cap is refused too; the Commits tab never lists it.
+    if (!commits.commits.some((commit) => commit.oid === sha)) return { status: 'refused', reason: 'not-configured' }
     return this.pullRead(`commit-files\0${sha}`, request, async (captured, repository) => {
       const { client } = captured
       if (!client.getCommitFiles) return null
