@@ -57,7 +57,9 @@ export const WRITE_TEXT: Record<PullWriteReason, string> = {
   'signed-out': 'GitHub refused the token. Sign in again from the board\'s GitHub settings.',
   'not-approved': 'This repository is not approved on this machine. Approve it in the board\'s GitHub settings.',
   validation: 'GitHub refused the request. Refresh the pull request, then try again.',
-  network: 'GitHub could not be reached. Check the connection, then try again.'
+  network: 'GitHub could not be reached. Check the connection, then try again.',
+  'suggestion-stale': 'The file changed since this suggestion was made, so it was not applied. The pull request has been reloaded: check the new lines.',
+  'from-fork': 'This pull request comes from a fork, so nodeterm cannot commit to its branch. Apply the suggestion on GitHub.'
 }
 
 export const METHOD_TEXT: Record<PullMergeMethod, string> = {

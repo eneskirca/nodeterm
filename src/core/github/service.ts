@@ -69,6 +69,7 @@ import {
   isCommitSha, type GitHubPullCommitFilesResult, type GitHubPullCommitsResult, type PullCommit, type PullCommitFilesPage,
   type PullCommitsPage
 } from '../../shared/github-pull-commits'
+import { suggestionOf, withSuggestion } from './pull-suggestion'
 import type { GitHubHostError } from './host'
 
 const MAX_ISSUES = 10_000
@@ -99,6 +100,13 @@ const MAX_QUERY_SEARCH = 200
 const MAX_QUERY_LABELS = 50
 const MAX_QUERY_LABEL = 100
 export const PULL_CHECKS_PER_MINUTE = 10
+
+/** One review comment as "Apply suggestion" needs it (`GET /pulls/comments/{id}`). `line` null =
+ *  outdated; `startLine` null = a one-line comment; `commitId` = the head its line refers to. */
+export interface PullSuggestionComment {
+  pullNumber: number; path: string; side: 'LEFT' | 'RIGHT'; line: number | null; startLine: number | null
+  commitId: string; body: string; author: string | null
+}
 
 export interface GitHubIssuesClientLike {
   listIssues(repository: string, options: ListIssueOptions): Promise<IssuePageResult>
@@ -143,6 +151,13 @@ export interface GitHubIssuesClientLike {
   disablePullAutoMerge?(repository: string, pullNumber: number): Promise<void>
   pullViewedStates?(repository: string, pullNumber: number): Promise<Record<string, PullViewedState>>
   setFileViewed?(repository: string, pullNumber: number, path: string, viewed: boolean): Promise<void>
+  /** Resolve or unresolve the review thread whose first comment is `threadId`. Optional, as above. */
+  setReviewThreadResolved?(repository: string, pullNumber: number, threadId: number, resolved: boolean): Promise<void>
+  /** "Apply suggestion": the comment, one file with its blob SHA, and a contents-API commit pinned
+   *  to that SHA. Optional, as above. */
+  pullSuggestionComment?(repository: string, commentId: number): Promise<PullSuggestionComment>
+  fileBlobAt?(repository: string, path: string, ref: string): Promise<{ sha: string; text: string }>
+  putFile?(repository: string, file: { path: string; branch: string; sha: string; text: string; message: string }): Promise<void>
   /** Submit one review on a PR (the node's Approve / Request changes). Optional, as above. */
   reviewPull?(
     repository: string, pullNumber: number,
@@ -278,6 +293,7 @@ function pullRefusalOf(error: unknown): PullRefusal | undefined {
 function pullWriteFailure(error: unknown): PullWriteReason {
   const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
   if (code === 'own-pull') return 'own-pull'
+  if (code === 'suggestion-stale' || code === 'from-fork') return code
   // A write the token may not make: a 403 that is not a rate limit, or GitHub's 404 for "no access".
   if (code === 'insufficient-permission' || (code === 'request-failed' && (status === 403 || status === 404))) {
     return 'forbidden'
@@ -1486,6 +1502,57 @@ export class GitHubIssueService {
     })
   }
 
+  /** Resolve or unresolve one review thread, named by its first comment's id (a user click only). */
+  async setReviewThreadResolved(request: {
+    projectId: string; repository: string; pullNumber: number; threadId: number; resolved: boolean
+  }): Promise<PullWriteResult> {
+    const { threadId, resolved } = request ?? {}
+    if (!Number.isSafeInteger(threadId) || threadId < 1 || typeof resolved !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.setReviewThreadResolved) throw new Error('unsupported')
+      return client.setReviewThreadResolved(repository, pullNumber, threadId, resolved)
+    })
+  }
+
+  /**
+   * "Apply suggestion" (a user click only): commit one comment's suggestion block to the head branch
+   * through the contents API, pinned to the file's blob SHA at `headSha` (the head the user saw), so
+   * GitHub refuses it (409, `suggestion-stale`) if the file changed since. A fork head is refused
+   * (`from-fork`) before the comment is read.
+   */
+  async applySuggestion(request: {
+    projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number
+  }): Promise<PullWriteResult> {
+    const { headSha, commentId } = request ?? {}
+    if (typeof headSha !== 'string' || !/^[0-9a-f]{40}$/.test(headSha) || !Number.isSafeInteger(commentId) || commentId < 1) {
+      return { ok: false, reason: 'validation' }
+    }
+    const refuse = (code: string) => Object.assign(new Error(code), code === 'validation' ? { code: 'request-failed', status: 422 } : { code })
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.getPull || !client.pullSuggestionComment || !client.fileBlobAt || !client.putFile) throw new Error('unsupported')
+      const pull = await client.getPull(repository, pullNumber)
+      if (pull.fromFork) throw refuse('from-fork')
+      const comment = await client.pullSuggestionComment(repository, commentId)
+      const lines = suggestionOf(comment.body)
+      if (comment.pullNumber !== pullNumber || comment.side !== 'RIGHT' || comment.line === null || !lines) throw refuse('validation')
+      // The comment's line numbers are for its commit; on any other head they may point elsewhere.
+      if (comment.commitId !== headSha) throw refuse('suggestion-stale')
+      const file = await client.fileBlobAt(repository, comment.path, headSha)
+      const text = withSuggestion(file.text, comment.startLine ?? comment.line, comment.line, lines)
+      if (text === null) throw refuse('suggestion-stale')
+      const message = comment.author ? `Apply suggestion from review by ${comment.author}` : 'Apply suggestion from review'
+      try {
+        await client.putFile(repository, { path: comment.path, branch: pull.head.ref, sha: file.sha, text, message })
+      } catch (error) {
+        const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+        if (code === 'request-failed' && status === 409) throw refuse('suggestion-stale')
+        throw error
+      }
+    })
+  }
+
   /**
    * The merge methods the project's repository allows, for the merge confirmation. Refused like a
    * pull read (another repository is refused before a credential is resolved). Held per repository.
@@ -1590,7 +1657,7 @@ export class GitHubIssueService {
     if (!Number.isSafeInteger(pullNumber) || pullNumber < 1) return { ok: false, reason: 'validation' }
     const result = await this.repoWrite(request, (client, repository) => write(client, repository, pullNumber))
     // The head moved: the node reloads, and that read must not answer from the held one.
-    if (result.ok || result.reason === 'head-moved') this.dropPullReads(projectId, result.repository!, pullNumber)
+    if (result.ok || result.reason === 'head-moved' || result.reason === 'suggestion-stale') this.dropPullReads(projectId, result.repository!, pullNumber)
     if (!result.ok) return { ok: false, reason: result.reason }
     this.afterWrite(projectId)
     return { ok: true }

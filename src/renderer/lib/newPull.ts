@@ -38,7 +38,10 @@ const CREATE_PULL_TEXT: Record<Exclude<PullWriteReason, 'not-approved'>, string>
   network: 'GitHub could not be reached. Try again.',
   'head-moved': 'The branch moved. Try again.',
   'not-mergeable': 'GitHub refused it. Try again on GitHub.',
-  'own-pull': 'GitHub refused it. Try again on GitHub.'
+  'own-pull': 'GitHub refused it. Try again on GitHub.',
+  // A create never gets these two (Apply suggestion only).
+  'suggestion-stale': 'GitHub refused it. Try again on GitHub.',
+  'from-fork': 'GitHub refused it. Try again on GitHub.'
 }
 
 /** Why the form could not start: the core's own reason for the read, never a guess. */

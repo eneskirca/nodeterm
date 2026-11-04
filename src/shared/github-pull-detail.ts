@@ -194,6 +194,8 @@ export type PullReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
 /** Why a write from the node did not land. Each has one sentence in the node (PullNodeView). */
 export type PullWriteReason =
   | 'head-moved' | 'not-mergeable' | 'own-pull' | 'forbidden' | 'throttled' | 'signed-out' | 'not-approved' | 'validation' | 'network'
+  /** Apply suggestion: the file changed since the suggestion was made; a fork head is not ours to commit to. */
+  | 'suggestion-stale' | 'from-fork'
 
 /** How a merge from the node lands. The repository decides which ones it allows. */
 export type PullMergeMethod = 'merge' | 'squash' | 'rebase'
