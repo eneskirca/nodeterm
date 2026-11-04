@@ -19743,7 +19743,8 @@ button.pr-checks__row:focus-visible { outline: 2px solid var(--pr-accent); outli
 .pr-tl__dot--closed { background: var(--pr-closed-em); color: #fff; }
 .pr-tl__dot--reopened { background: var(--pr-open-em); color: #fff; }
 .pr-convo .pull-convo__commits { margin: 2px 0 0; padding: 0; border: 0; }
-.pr-convo .pull-convo__commits li { margin: 2px 0; font-size: 12px; }
+.pr-convo .pull-convo__commits { display: flex; flex-direction: column; }
+.pr-convo .pull-convo__commits li { display: flex; align-items: center; margin: 2px 0; font-size: 12px; }
 .pr-convo .pull-convo__commits code, .pr-convo .pull-convo__event-text code { color: var(--pr-muted); font-family: var(--pr-mono); font-size: 12px; }
 
 /* A review's threads (file:line, comments, Reply / Resolve / Send to…). */

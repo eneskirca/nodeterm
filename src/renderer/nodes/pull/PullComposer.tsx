@@ -75,7 +75,7 @@ export function PullComposer(props: ViewProps & {
           <button className="pull-compose__button" disabled={busy} onClick={() => onDropPending(pending)}>Discard</button>
         </p>
       )}
-      {ownPull && <p className="pull-node__empty">{OWN_PULL_TEXT}</p>}
+      {ownPull && (lifecycle === undefined || lifecycle === 'open' || lifecycle === 'draft') && <p className="pull-node__empty">{OWN_PULL_TEXT}</p>}
     </div>
   )
 }

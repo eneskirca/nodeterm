@@ -85,7 +85,10 @@ export function PullTimeline({ detail, detailAvatars, lineComments, resolvedThre
   }, [cursor, busy])
   const avatars = { ...detailAvatars, ...ok?.avatarDataUrls, ...extra?.avatars }
   const since = after ? Date.parse(after) : NaN
-  const items = (ok ? [...ok.items, ...(extra?.items ?? [])] : []).filter((item) => !(Date.parse(item.at) <= since))
+  const all = ok ? [...ok.items, ...(extra?.items ?? [])] : []
+  // GitHub records a close beside every merge and its own page hides it: a merged PR shows only the merge.
+  const merged = all.some((item) => item.kind === 'merged')
+  const items = all.filter((item) => !(Date.parse(item.at) <= since) && !(merged && item.kind === 'closed'))
   const threads = threadsByReview(lineComments)
   const resolved = resolvedThreads && new Set(resolvedThreads)
   return (

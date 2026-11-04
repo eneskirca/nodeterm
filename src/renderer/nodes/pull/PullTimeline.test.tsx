@@ -73,7 +73,8 @@ describe('PullTimeline', () => {
   it('renders each event type with avatar, actor and time, and groups commits pushed together', async () => {
     const view = await render(vi.fn(async () => ok(everyEvent)))
     const entries = [...view.querySelectorAll('.pull-convo > li')].slice(1)
-    expect(entries).toHaveLength(everyEvent.length - 1)
+    // The description is entry 0; the 2 commits group into one; the close beside the merge is hidden.
+    expect(entries).toHaveLength(everyEvent.length - 2)
     for (const entry of entries) {
       expect(entry.querySelector('.pull-avatar')).not.toBeNull()
     }
@@ -85,10 +86,17 @@ describe('PullTimeline', () => {
     expect(text[2]).toContain('2222222')
     for (const words of [
       'force-pushed from 3333333 to 4444444', 'added the bug label', 'removed the wip label', 'requested a review from bo',
-      'assigned bo', 'unassigned bo', 'closed this', 'reopened this', 'marked this as ready for review',
+      'assigned bo', 'unassigned bo', 'reopened this', 'marked this as ready for review',
       'marked this as a draft', 'merged commit 5555555 into main', 'mentioned this in issue o/r#9 Crash on start'
     ]) expect(text.some((entry) => entry.includes(words) && entry.includes('ana'))).toBe(true)
     expect(text[1]).toContain('Approved')
+  })
+
+  it('hides the close GitHub records beside a merge; a PR closed without merging keeps it', async () => {
+    const merged = await render(vi.fn(async () => ok([ev('merged', 'm'), ev('closed', 'c')])))
+    expect(merged.textContent).not.toContain('closed this')
+    const closed = await render(vi.fn(async () => ok([ev('closed', 'c')])))
+    expect(closed.textContent).toContain('closed this')
   })
 
   it('shows each review line comment with its author\'s avatar', async () => {

@@ -124,7 +124,7 @@ function AgentSection(props: SidebarProps): React.JSX.Element {
           </div>
         )
         : <Empty>No agent linked.</Empty>}
-      <WatchSwitch {...props} linked={!!agent} />
+      {open && <WatchSwitch {...props} linked={!!agent} />}
       {open && (onWork || onSendToAgent || sendTo || why) && (
         <div className="pr-side__actions">
           {onWork && <button className="pr-btn pr-btn--sm" onClick={() => onWork(d)}>Work on this PR</button>}
