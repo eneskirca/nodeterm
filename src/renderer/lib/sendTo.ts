@@ -88,7 +88,7 @@ export function sendToLabel(p: SendToPayload): string {
 
 const count = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`
 const at = (t: { path: string; line: number | null }): string => `${t.path}${t.line !== null ? `:${t.line}` : ''}`
-export const SEND_TO_MAX = 4_000
+export const SEND_TO_MAX = 900
 const LIST_MAX = 2_400
 
 /** Numbered items until the list budget; the rest are counted, for gh. */
@@ -110,42 +110,44 @@ function list(items: readonly string[]): string {
  */
 export function sendToPrompt(pr: SendToPr, p: SendToPayload, node?: string): string {
   const { repository: repo, number: n } = pr
-  const comments = `gh api repos/${repo}/pulls/${n}/comments`
+  // Short on purpose: Claude Code folds a long fast input into "[Pasted text #N]", the typed send
+  // then never sees its own text arrive and withholds the Enter, so the agent never starts. The
+  // agent reads the details itself through its link to the pull node, or with gh.
+  const ids = (xs: readonly { id: number }[]): string =>
+    xs.length <= 6 ? xs.map((x) => x.id).join(', ') : `${xs.slice(0, 6).map((x) => x.id).join(', ')} and ${xs.length - 6} more`
   const [what, task] = ((): [string, string] => {
     switch (p.kind) {
-      case 'pr': return ['the whole pull request',
-        'Read it, then give the user a short summary of what it changes and what is still open. Wait for their instructions before you change code.']
+      case 'pr': return ['the whole PR', 'Summarize it for the user, then wait for instructions before changing code.']
       case 'threads': {
-        const threads = p.threads.map((t) => `thread ${t.id} at ${data(at(t), 300)}`)
-        const checks = (p.checks ?? []).map((name) => `failing check ${data(name, 200)}`)
-        return [`${p.all ? 'all open review threads' : 'review threads'} (${count(p.threads.length, 'thread')}${checks.length ? `, ${count(checks.length, 'failing check')}` : ''}):${list([...threads, ...checks])}.`,
-          `Read each thread with ${comments} (the number is its first comment's id)${checks.length ? ` and check logs with gh pr checks ${n} --repo ${repo}` : ''}, then address them in your working copy.`]
+        const checks = (p.checks ?? []).slice(0, 3).map((name) => data(name, 60))
+        const label = `${p.all ? 'all open review threads' : count(p.threads.length, 'review thread')} (${ids(p.threads)})`
+        return [checks.length ? `${label} and failing checks ${checks.join(', ')}` : label,
+          'Address them in your working copy.']
       }
-      case 'check': return [`the failing check ${data(p.name, 200)}.`,
-        `Find why it fails (gh pr checks ${n} --repo ${repo}, then gh run view <run-id> --log-failed) and fix it in your working copy.`]
+      case 'check': return [`the failing check ${data(p.name, 80)}`,
+        'Find why it fails (gh run view <run-id> --log-failed) and fix it in your working copy.']
       case 'conflict': {
-        const base = isPlainRef(p.base) ? p.base : 'its base branch'
-        return [`its merge conflict with ${base}.`,
-          `First check out the PR's head branch yourself (gh pr checkout ${n} --repo ${repo}; if your working copy has uncommitted changes, ask the user first), then merge ${isPlainRef(p.base) ? `origin/${base}` : 'the base'} in (git fetch origin first), resolve the conflicts, run the project's checks, then stop and show the user the result (git diff and git status). Do not commit or push unless the user asks.`]
+        const base = isPlainRef(p.base) ? p.base : 'the base branch'
+        return [`its merge conflict with ${base}`,
+          `Run gh pr checkout ${n} --repo ${repo} (ask first if your working copy has changes), merge ${isPlainRef(p.base) ? `origin/${base}` : 'the base'}, resolve, run the checks, show git diff. Do not commit or push unless asked.`]
       }
-      case 'notes': return [`${count(p.notes.length, 'note')} the user wrote on the diff:${list(p.notes.map((note) => `${data(at(note), 300)} ${oneLine(note.text).slice(0, 500)}`))}.`,
-        'The notes are the user\'s own words. Address them in your working copy.']
-      case 'suggestion': return [`the suggested change in review thread ${p.thread.id} at ${data(at(p.thread), 300)}.`,
-        `Read it with ${comments}, judge whether it is right, and apply it in your working copy if it is.`]
+      case 'notes': return [`${count(p.notes.length, 'note')} from the user: ${p.notes.map((note) => `${data(at(note), 120)} ${oneLine(note.text).slice(0, 160)}`).join('; ').slice(0, 480)}`,
+        'Address them in your working copy.']
+      case 'suggestion': return [`the suggested change in review thread ${p.thread.id}`,
+        'Judge it and apply it in your working copy if it is right.']
     }
   })()
   const linked = node && isSafeNodeId(node)
   const line = [
-    `[nodeterm] The user sends you ${what.endsWith('.') ? what : `${what}.`}`,
-    `It is from GitHub pull request ${repo}#${n} (${pullWebUrl(repo, n)}), title ${data(pr.title, 200)}.`,
+    `[nodeterm] The user sends you ${what} from PR ${repo}#${n}.`,
     task,
     linked
-      ? `You are context-linked to pull node ${node}: read its state with the get-linked-context skill, and its text with gh pr view ${n} --repo ${repo} --comments and gh pr diff ${n} --repo ${repo}.`
-      : `Read it with gh pr view ${n} --repo ${repo} --comments and gh pr diff ${n} --repo ${repo}.`,
+      ? `Read the details through your link to pull node ${node} (get-linked-context) or gh pr view ${n} --repo ${repo} --comments.`
+      : `Read the details with gh pr view ${n} --repo ${repo} --comments.`,
     PR_TEXT_UNTRUSTED,
     linked
-      ? `Do not write to GitHub yourself. To approve, comment or merge, use pr-propose --node ${node}: the user confirms it on the node.`
-      : 'Do not reply to, resolve, approve, comment on or merge anything on GitHub unless the user asks in this session.'
+      ? `Do not write to GitHub; propose with pr-propose --node ${node}.`
+      : 'Do not write to GitHub unless the user asks.'
   ].join(' ')
   return line.length > SEND_TO_MAX ? line.slice(0, SEND_TO_MAX) : line
 }

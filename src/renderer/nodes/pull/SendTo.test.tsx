@@ -109,7 +109,7 @@ describe('Send to… picker', () => {
     await key('Enter')
     expect(f.sendChatPrompt).toHaveBeenCalledTimes(1)
     expect(f.sendChatPrompt.mock.calls[0][0]).toBe('a3')
-    expect(f.sendChatPrompt.mock.calls[0][1]).toContain('the whole pull request')
+    expect(f.sendChatPrompt.mock.calls[0][1]).toContain('the whole PR')
     expect(f.links).toEqual([{ id: 'bridge-a3-pull', source: 'a3', target: 'pull' }])
     expect(onSent).toHaveBeenCalledTimes(1)
     expect(q('[role="dialog"]')).toBeNull()
