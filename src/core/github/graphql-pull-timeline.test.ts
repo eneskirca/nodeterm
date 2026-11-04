@@ -46,6 +46,15 @@ describe('parsePullTimelineResponse', () => {
     expect(result.items[14]).toMatchObject({ source: { pull: true, number: 8997, repository: 'cli/cli' } })
   })
 
+  it('names a bot or mannequin reviewer, and none when GitHub hides it', () => {
+    expect(PULL_TIMELINE_QUERY).toContain('... on Bot{ login }')
+    const result = parsePullTimelineResponse(page([
+      ev('ReviewRequestedEvent', { requestedReviewer: { __typename: 'Bot', login: 'copilot-pull-request-reviewer' } }),
+      ev('ReviewRequestedEvent', { requestedReviewer: null })
+    ]))
+    expect(result.items.map((item) => item.kind === 'review-requested' && item.reviewer)).toEqual(['copilot-pull-request-reviewer', null])
+  })
+
   it('drops an unknown type, a pending review and an item that does not decode, with no error', () => {
     const result = parsePullTimelineResponse(page([
       ev('SomeFutureEvent'), { ...nodes[1], state: 'PENDING' }, ev('LabeledEvent', { label: { name: 'x', color: 'nope' } }), nodes[0]

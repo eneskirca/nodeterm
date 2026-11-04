@@ -26,7 +26,7 @@ export const PULL_TIMELINE_QUERY = `query($owner:String!,$name:String!,$number:I
           ... on HeadRefForcePushedEvent{ ${EVENT} beforeCommit{ oid } afterCommit{ oid } }
           ... on LabeledEvent{ ${EVENT} label{ name color } }
           ... on UnlabeledEvent{ ${EVENT} label{ name color } }
-          ... on ReviewRequestedEvent{ ${EVENT} requestedReviewer{ __typename ... on User{ login } ... on Team{ name } } }
+          ... on ReviewRequestedEvent{ ${EVENT} requestedReviewer{ __typename ... on User{ login } ... on Team{ name } ... on Bot{ login } ... on Mannequin{ login } } }
           ... on AssignedEvent{ ${EVENT} assignee{ ... on User{ login avatarUrl databaseId } ... on Bot{ login avatarUrl databaseId } } }
           ... on UnassignedEvent{ ${EVENT} assignee{ ... on User{ login avatarUrl databaseId } ... on Bot{ login avatarUrl databaseId } } }
           ... on ClosedEvent{ ${EVENT} }

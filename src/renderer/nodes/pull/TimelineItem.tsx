@@ -19,7 +19,7 @@ function eventText(item: PullTimelineItem): React.ReactNode {
     case 'force-push': return <>force-pushed from <code>{short(item.before)}</code> to <code>{short(item.after)}</code></>
     case 'labeled': return <>added the <LabelChip {...item.label} /> label</>
     case 'unlabeled': return <>removed the <LabelChip {...item.label} /> label</>
-    case 'review-requested': return <>requested a review from <strong>{item.reviewer ?? 'someone'}</strong></>
+    case 'review-requested': return <>{item.reviewer ? <>requested a review from <strong>{item.reviewer}</strong></> : 'requested a review'}</>
     case 'assigned': return <>assigned <strong>{item.assignee?.login ?? 'ghost'}</strong></>
     case 'unassigned': return <>unassigned <strong>{item.assignee?.login ?? 'ghost'}</strong></>
     case 'closed': return 'closed this'
