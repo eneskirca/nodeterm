@@ -18967,6 +18967,7 @@ body.focus-mode .dock:hover {
   font-size: 12px;
 }
 .pull-merge__method { margin: 0; }
+.pull-merge__note { color: var(--muted); }
 .pull-node__tab,
 .pull-node__web {
   padding: 3px 10px;

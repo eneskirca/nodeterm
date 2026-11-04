@@ -509,6 +509,21 @@ describe('PullNodeView merge', () => {
     expect(onWritten).not.toHaveBeenCalled()
   })
 
+  it('says beside Merge why there is no method select when the token may not merge', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.repoMergeMethods.mockResolvedValue({ status: 'ok', methods: [] })
+    const view = await render(api)
+    expect(view.querySelector('select[aria-label="Merge method"]')).toBeNull()
+    expect(view.querySelector('.pull-merge__row')?.textContent).toContain('Merge on GitHub')
+  })
+
+  it('says beside Merge why there is no method select when the methods read failed', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    api.repoMergeMethods.mockResolvedValue({ status: 'failed', reason: 'unreachable' })
+    const view = await render(api)
+    expect(view.querySelector('.pull-merge__note')?.textContent).toBeTruthy()
+  })
+
   it('offers no Confirm when the repository allows no method for this token', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     api.repoMergeMethods.mockResolvedValue({ status: 'ok', methods: [] })

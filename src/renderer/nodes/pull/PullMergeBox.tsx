@@ -62,6 +62,11 @@ export function PullMergeBox(props: ViewProps & {
   const ready = methods !== null && methods !== 'loading' && methods.status === 'ok' ? methods.methods : null
   // The picked method, else the first one the repository allows.
   const method = picked && ready?.includes(picked) ? picked : ready?.[0] ?? null
+  // Why there is no method select: never a silent missing control (a token that may not push gets no methods).
+  const methodsNote = methods === null || methods === 'loading' ? null
+    : methods.status === 'refused' ? REFUSAL_TEXT[methods.reason](pull.repository)
+      : methods.status === 'failed' ? FAILURE_TEXT[methods.reason]
+        : methods.methods.length === 0 ? 'Your GitHub token may not merge in this repository. Merge on GitHub instead.' : null
   const confirmable = !!ready?.length && (open !== 'auto' || (methods as { autoMerge?: true }).autoMerge === true)
   return (
     <section className="pull-mergebox">
@@ -75,6 +80,7 @@ export function PullMergeBox(props: ViewProps & {
             {ready.map((item) => <option key={item} value={item}>{METHOD_TEXT[item]}</option>)}
           </select>
         )}
+        {methodsNote && <span className="pull-merge__note">{methodsNote}</span>}
       </div>
       {offersAuto && (
         <button className="pull-compose__button" disabled={busy} onClick={() => show('auto')}>Merge when ready…</button>
