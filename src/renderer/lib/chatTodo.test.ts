@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatPart } from '@shared/types'
-import { focusHides, latestTodoIndex, staleTodo } from './chatFocus'
+import { latestTodoIndex, staleTodo } from './chatTodo'
 
 const todo = (body?: string): ChatPart => ({ kind: 'tool', name: 'TodoWrite', arg: '', ...(body ? { body } : {}) })
 const msg = (...parts: ChatPart[]): ChatMessage => ({ role: 'assistant', parts })
@@ -31,28 +31,5 @@ describe('staleTodo', () => {
     expect(staleTodo(todo('- [ ] a'), 3, 3)).toBe(false)
     expect(staleTodo({ kind: 'tool', name: 'ExitPlanMode', arg: '', body: 'plan' }, 0, 3)).toBe(false)
     expect(staleTodo({ kind: 'text', text: 'TodoWrite' }, 0, 3)).toBe(false)
-  })
-})
-
-describe('focusHides', () => {
-  const LATEST = 4
-  it.each<[string, ChatPart, number, boolean]>([
-    ['text', { kind: 'text', text: 'answer' }, 0, false],
-    ['an image', { kind: 'image', mediaType: 'image/png', data: 'AAAA' }, 0, false],
-    ['thinking', { kind: 'thinking', text: 'hmm', ms: 1000 }, 0, true],
-    ['a plain tool chip', { kind: 'tool', name: 'Bash', arg: 'ls', result: 'a' }, 0, true],
-    [
-      'an Edit diff chip',
-      { kind: 'tool', name: 'Edit', arg: '/a', diff: { filePath: '/a', oldText: 'a', newText: 'b' } },
-      0,
-      true
-    ],
-    ['a plan card', { kind: 'tool', name: 'ExitPlanMode', arg: '', body: '# Plan' }, 0, false],
-    ['a question card', { kind: 'tool', name: 'AskUserQuestion', arg: '', body: 'Q?', questions: [] }, 0, false],
-    ['the latest todo card', todo('- [ ] a'), LATEST, false],
-    ['an older todo card', todo('- [ ] a'), 1, true],
-    ['a todo without a body', todo(), LATEST, true]
-  ])('%s → %s', (_label, part, at, hidden) => {
-    expect(focusHides(part, at, LATEST)).toBe(hidden)
   })
 })

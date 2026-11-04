@@ -4,7 +4,6 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '@shared/types'
 import { useAgentStatus } from '../state/agentStatus'
-import { useSettings } from '../state/settings'
 
 /**
  * The claude.ai thread look (pure half: lib/chatThread.ts). Pins the glue: the user message is a
@@ -40,13 +39,10 @@ const MIN = 60_000
 let host: HTMLDivElement
 let root: Root
 const writeText = vi.fn()
-// The Focus toggle persists through `useSettings.update`, whose coalesced save reaches this.
-const saveSettings = vi.fn(async (_s: unknown) => undefined)
 
 beforeEach(() => {
   writeText.mockClear()
-  saveSettings.mockClear()
-  ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = { clipboard: { writeText }, settings: { save: saveSettings } }
+  ;(window as unknown as { nodeTerminal: unknown }).nodeTerminal = { clipboard: { writeText } }
   useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'done' } as (typeof s.byId)[string] } }))
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -55,7 +51,6 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
-  useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: false } }))
   useAgentStatus.setState((s) => {
     const byId = { ...s.byId }
     delete byId[NODE]
@@ -413,16 +408,15 @@ describe('⌘M thread look', () => {
   })
 })
 
-describe('⌘M Focus view and the todo-list card', () => {
+describe('⌘M todo-list card', () => {
   const todo = (key: number, body: string, result?: string): ChatMessage => ({
     role: 'assistant',
     parts: [{ kind: 'tool', name: 'TodoWrite', arg: '', body, ...(result ? { result } : {}) }],
     key
   })
   const TODO_RESULT = 'Todos have been modified successfully. Ensure that you continue to use the todo list'
-  const focusOn = (): void => useSettings.setState((s) => ({ settings: { ...s.settings, chatFocusView: true } }))
 
-  it('only the latest todo list is a card; an older one is the plain chip (Focus off too)', async () => {
+  it('only the latest todo list is a card; an older one is the plain chip', async () => {
     await mount([
       { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
       todo(10, '- [ ] a\n- [ ] b'),
@@ -445,7 +439,6 @@ describe('⌘M Focus view and the todo-list card', () => {
     const chips = [...host.querySelectorAll('details.term-chat__tool')]
     expect(chips).toHaveLength(1)
     expect(chips[0].querySelector('.term-chat__tool-name')?.textContent).toBe('TodoWrite')
-    expect(host.querySelector('.term-chat__focus')?.getAttribute('aria-pressed')).toBe('false')
   })
 
   it('a superseded todo list folds into the tool block around it, drawn there as its chip', async () => {
@@ -463,83 +456,5 @@ describe('⌘M Focus view and the todo-list card', () => {
     expect(names).toEqual(['Bash', 'TodoWrite', 'Bash'])
     expect(groups[0].querySelector('.term-chat__tool-card')).toBeNull()
     expect(host.querySelectorAll('.term-chat__tool-card')).toHaveLength(1)
-  })
-
-  it('Focus hides chips, groups and thinking; keeps text, the latest todo card and a question card', async () => {
-    focusOn()
-    await mount([
-      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
-      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'ls' }], key: 10 },
-      { role: 'assistant', parts: [{ kind: 'tool', name: 'Read', arg: '/a' }], key: 20 },
-      { role: 'assistant', parts: [{ kind: 'thinking', text: 'hmm', ms: 2000 }], key: 30 },
-      { role: 'assistant', parts: [{ kind: 'text', text: 'answer' }], key: 40 },
-      todo(50, '- [ ] old'),
-      todo(60, '- [ ] latest'),
-      {
-        role: 'assistant',
-        parts: [
-          {
-            kind: 'tool',
-            name: 'AskUserQuestion',
-            arg: '',
-            body: 'Pick one?',
-            questions: [{ question: 'Pick one?', multiSelect: false, options: [{ label: 'A' }] }]
-          }
-        ],
-        key: 70
-      }
-    ])
-    expect(host.querySelector('.term-chat__tool-group')).toBeNull()
-    expect(host.querySelector('details.term-chat__thinking')).toBeNull()
-    expect(host.querySelector('details.term-chat__tool')).toBeNull()
-    const cards = [...host.querySelectorAll('.term-chat__tool-card')]
-    expect(cards.map((c) => c.querySelector('.term-chat__tool-card-title')?.textContent)).toEqual(['Todo list', 'Question'])
-    expect(cards[0].textContent).toContain('latest')
-    // A message with nothing left to draw is not drawn at all: the answer, the todo card, the question.
-    expect(host.querySelectorAll('.term-chat__msg--assistant')).toHaveLength(3)
-    expect(host.querySelector('.term-chat__msg--assistant')?.textContent).toContain('answer')
-    expect(host.querySelector('.term-chat__focus')?.getAttribute('aria-pressed')).toBe('true')
-  })
-
-  it('in Focus, a turn that ends on a hidden call keeps its action row (the folded wrapper)', async () => {
-    focusOn()
-    await mount([
-      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0, at: now - 3 * MIN },
-      { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 10, at: now - 2 * MIN },
-      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'ls' }], key: 20, at: now - MIN }
-    ])
-    const last = [...host.querySelectorAll('.term-chat__msg--assistant')].at(-1)!
-    expect(last.classList.contains('term-chat__msg--folded')).toBe(true)
-    expect(last.childElementCount).toBe(1)
-    expect(last.querySelector('.term-chat__actions time')?.textContent).toBe('1 min ago')
-    expect(host.querySelector('.term-chat__tool')).toBeNull()
-  })
-
-  it('the bar toggle flips the view and persists the setting', async () => {
-    await mount([
-      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
-      { role: 'assistant', parts: [{ kind: 'thinking', text: 'hmm' }], key: 10 },
-      { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }], key: 20 }
-    ])
-    const toggle = host.querySelector<HTMLButtonElement>('button.term-chat__focus')!
-    expect(toggle.textContent).toBe('Focus')
-    expect(toggle.title).toBe('Focus view: hide tool calls and thinking')
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
-    expect(host.querySelector('details.term-chat__thinking')).not.toBeNull()
-
-    await act(async () => toggle.click())
-    expect(toggle.getAttribute('aria-pressed')).toBe('true')
-    expect(host.querySelector('details.term-chat__thinking')).toBeNull()
-    expect(useSettings.getState().settings.chatFocusView).toBe(true)
-    // The store's coalesced save (300 ms) writes it to disk.
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 350))
-    })
-    expect(saveSettings.mock.calls.at(-1)?.[0]).toMatchObject({ chatFocusView: true })
-
-    await act(async () => toggle.click())
-    expect(toggle.getAttribute('aria-pressed')).toBe('false')
-    expect(host.querySelector('details.term-chat__thinking')).not.toBeNull()
-    expect(useSettings.getState().settings.chatFocusView).toBe(false)
   })
 })

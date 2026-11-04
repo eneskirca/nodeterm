@@ -4205,26 +4205,6 @@ body,
 .term-chat__refresh:hover {
   background: rgba(var(--tint-rgb), 0.1);
 }
-/* The Focus toggle (ChatPanel; settings.chatFocusView): a quiet text button beside ↻ that is FILLED
-   while pressed, so the bar itself says the thread is filtered. */
-.term-chat__focus {
-  padding: 1px 6px;
-  font-size: 11px;
-  line-height: 1.3;
-  color: inherit;
-  background: none;
-  border: 1px solid rgba(var(--tint-rgb), 0.14);
-  border-radius: 4px;
-  cursor: pointer;
-}
-.term-chat__focus:hover {
-  background: rgba(var(--tint-rgb), 0.1);
-}
-.term-chat__focus[aria-pressed='true'] {
-  color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  border-color: var(--accent);
-}
 /* The latest todo list (a TodoWrite card): its disabled checkboxes are the markers, so no bullets. */
 .term-chat__todo ul {
   list-style: none;
