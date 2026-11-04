@@ -167,7 +167,11 @@ jobs:
   # Publishes AppImage + deb + rpm + latest-linux.yml to the SAME tag's GitHub Release; the
   # nodeterm.dev update feed serves latest-linux.yml alongside the mac files.
   release-linux:
-    runs-on: ubuntu-latest
+    # PINNED, and for a different reason than ci.yml's: this job builds the AppImage, deb and rpm,
+    # so the build host sets the glibc floor every Linux user is held to. v0.4.4 and v0.4.5 were
+    # built on 24.04; letting `ubuntu-latest` carry this to 26.04 would raise that floor silently,
+    # in a release whose notes promise nothing of the kind. Raise it on purpose, in its own change.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
