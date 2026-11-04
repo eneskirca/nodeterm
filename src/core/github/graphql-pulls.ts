@@ -50,6 +50,21 @@ function reviewFacts(node: Record<string, unknown>, viewer: string | undefined):
   }
 }
 
+/** The add menu's open PR list facts, decoded LENIENTLY like the review facts: they only label a
+ *  row. `authorUser` needs a `User` with a database id (a bot or a deleted account has none). */
+function listFacts(node: Record<string, unknown>): Pick<PullStatusFacts, 'title' | 'authorUser'> {
+  const login = object(node.author)?.login
+  const user = object(node.authorUser)
+  const id = user?.databaseId
+  const avatarUrl = user?.avatarUrl
+  return {
+    ...(typeof node.title === 'string' && node.title ? { title: node.title.slice(0, 256) } : {}),
+    ...(typeof login === 'string' && login && positive(id) && typeof avatarUrl === 'string'
+      ? { authorUser: { id, login, avatarUrl } }
+      : {})
+  }
+}
+
 export const PULL_STATUS_QUERY = `query($owner:String!,$name:String!){
   rateLimit{ cost remaining limit resetAt }
   viewer{ login }
@@ -59,6 +74,7 @@ export const PULL_STATUS_QUERY = `query($owner:String!,$name:String!){
       nodes{
         number headRefName headRefOid isCrossRepository isDraft mergeable mergeStateStatus
         author{ login } reviewDecision
+        title authorUser: author{ avatarUrl ... on User{ databaseId } }
         reviewRequests(first:${MAX_REVIEW_REQUESTS}){ nodes{ requestedReviewer{ __typename ... on User{ login } } } }
         closingIssuesReferences(first:${MAX_CLOSING_ISSUES}){ nodes{ number repository{ nameWithOwner } } }
         commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state } } } }
@@ -278,7 +294,8 @@ export function parsePullStatusResponse(body: unknown, repository: string): Pull
       rollup,
       rollupOid,
       closes: [...new Set(closes)],
-      ...reviewFacts(node, viewer)
+      ...reviewFacts(node, viewer),
+      ...listFacts(node)
     }
   })
   const recent = list(repositoryValue.recent, RECENT_PULLS_PER_READ).map((entry) => {

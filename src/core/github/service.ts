@@ -940,7 +940,12 @@ export class GitHubIssueService {
   async pullStatus(request: { projectId: string }): Promise<GitHubPullBoard> {
     const context = await this.cacheContext(request.projectId)
     const { key } = await this.cachedState(context)
-    return this.pulls.board(key)
+    const board = this.pulls.board(key)
+    // The add menu's open PR list: avatars of open PR authors, from the hardened fetcher's cache.
+    const avatarDataUrls = await this.pullAvatars(board.pulls
+      .filter((pull) => pull.lifecycle === 'open' || pull.lifecycle === 'draft')
+      .map((pull) => pull.authorUser ?? null))
+    return avatarDataUrls ? { ...board, avatarDataUrls } : board
   }
 
   /**

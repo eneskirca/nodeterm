@@ -293,6 +293,36 @@ describe('review queue facts', () => {
   })
 })
 
+describe('open PR list facts (add menu and Dock)', () => {
+  it('asks for the title and the author avatar in the same list query', () => {
+    expect(PULL_STATUS_QUERY).toContain('title authorUser: author{ avatarUrl ... on User{ databaseId } }')
+  })
+
+  it('reads the title and the author as a user, and carries both onto the board status', () => {
+    const [facts] = parsePullStatusResponse(body([node(1, {
+      title: 'Fix login', author: { login: 'bot' },
+      authorUser: { avatarUrl: 'https://avatars.githubusercontent.com/u/7?v=4', databaseId: 7 }
+    })]), REPO).open
+    expect(facts).toMatchObject({
+      title: 'Fix login', author: 'bot',
+      authorUser: { id: 7, login: 'bot', avatarUrl: 'https://avatars.githubusercontent.com/u/7?v=4' }
+    })
+    expect(pullStatusFrom(facts, { ci: true, merge: true })).toMatchObject({
+      title: 'Fix login', authorUser: { id: 7, login: 'bot' }
+    })
+  })
+
+  it('claims nothing for a missing title, a bot author with no database id, or a deleted author', () => {
+    const read = parsePullStatusResponse(body([
+      node(1, { title: 42, author: { login: 'app' }, authorUser: { avatarUrl: 'https://x' } }),
+      node(2, { author: null, authorUser: null })
+    ]), REPO)
+    expect(read.open[0].title).toBeUndefined()
+    expect(read.open[0].authorUser).toBeUndefined()
+    expect(read.open[1].authorUser).toBeUndefined()
+  })
+})
+
 describe('parsePullResolvedThreads', () => {
   const threads = (nodes: unknown[]) => ({ data: { repository: { pullRequest: { reviewThreads: { nodes } } } } })
   const thread = (isResolved: unknown, databaseId: unknown) => ({ isResolved, comments: { nodes: [{ databaseId }] } })

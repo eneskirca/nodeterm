@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { GitHubIssueCache } from './cache'
+import { GitHubAvatarFetcher } from './avatar-fetcher'
 import { testTmpDir } from '../test-tmp'
 import { GitHubIssueService, type GitHubIssueServiceContext, type GitHubIssuesClientLike } from './service'
 import { GitHubRequestCoordinator } from './request-coordinator'
@@ -84,7 +85,7 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 40))
 }
 
-function harness(client = new PullClient()) {
+function harness(client = new PullClient(), avatarFetcher?: GitHubAvatarFetcher) {
   let now = 1_000_000
   let poll: (() => void) | undefined
   let contexts = 0
@@ -95,7 +96,8 @@ function harness(client = new PullClient()) {
     contextForProject: async () => { contexts += 1; return context(client, revision) },
     now: () => now,
     setInterval: (fn) => { poll = fn; return 1 },
-    clearInterval: () => { poll = undefined }
+    clearInterval: () => { poll = undefined },
+    ...(avatarFetcher ? { avatarFetcher } : {})
   })
   return {
     client, service,
@@ -107,6 +109,27 @@ function harness(client = new PullClient()) {
 }
 
 describe('GitHubIssueService pull status', () => {
+  it('carries the open PR titles and author avatars for the add menu, from the same read', async () => {
+    const client = new PullClient()
+    const author = (id: number) => ({ id, login: `u${id}`, avatarUrl: `https://avatars.githubusercontent.com/u/${id}` })
+    client.open = [facts(1, { title: 'Fix login', authorUser: author(1) }), facts(2, { authorUser: author(2) })]
+    const fetcher = new GitHubAvatarFetcher({
+      fetch: async (input) => {
+        const id = Number(new URL(String(input)).pathname.split('/').pop())
+        return id === 2
+          ? new Response('no', { status: 404 })
+          : new Response(`png-${id}`, { headers: { 'content-type': 'image/png' } })
+      }
+    })
+    const h = harness(client, fetcher)
+    await h.service.subscribe(7, { projectId: 'project-1' })
+    await vi.waitFor(() => expect(h.client.statusReads).toBe(1))
+    const board = await h.service.pullStatus({ projectId: 'project-1' })
+    expect(board.pulls[0]).toMatchObject({ number: 1, title: 'Fix login', authorUser: { id: 1, login: 'u1' } })
+    expect(board.avatarDataUrls).toEqual({ 1: `data:image/png;base64,${Buffer.from('png-1').toString('base64')}` })
+    expect(h.client.statusReads).toBe(1)
+  })
+
   it('reads pull status on the first heartbeat, then only when the heartbeat reports a change', async () => {
     const h = harness()
     await h.service.subscribe(7, { projectId: 'project-1' })

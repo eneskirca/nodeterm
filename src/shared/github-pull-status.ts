@@ -9,6 +9,8 @@
 //  - a rollup counts only when it was taken at the PR's current head commit;
 //  - a failed read keeps the last snapshot and says it is stale, instead of going blank.
 
+import type { GitHubIssueUser } from './github-issues'
+
 /** The PR's checks, summarised. `none` = GitHub reports no rollup at all: the board shows nothing
  *  for CI — not a green tick. */
 export type PullCiState = 'passed' | 'failed' | 'pending' | 'none'
@@ -56,6 +58,10 @@ export interface PullStatusFacts {
   review?: PullReviewDecision
   /** The signed-in user is a requested reviewer (a team request does not count). */
   reviewRequested?: true
+  /** The PR title, for the add menu's open PR list. Absent when GitHub sent none. */
+  title?: string
+  /** The author as a user (id + avatar URL), for the list's avatar. Absent for a bot or a deleted account. */
+  authorUser?: GitHubIssueUser
 }
 
 export type PullReviewDecision = 'approved' | 'changes-requested' | 'required'
@@ -79,6 +85,9 @@ export interface GitHubPullStatus {
   author?: string
   review?: PullReviewDecision
   reviewRequested?: true
+  /** Open PRs only: the title and the author as a user (see `PullStatusFacts`). */
+  title?: string
+  authorUser?: GitHubIssueUser
   /** This machine has seen the PR open or as a draft (remembered across restarts, per repository). */
   openSeen?: true
   /** Epoch ms when this machine first saw the PR merged AFTER having seen it open — an OBSERVED
@@ -106,6 +115,8 @@ export interface GitHubPullBoard {
   undecided: boolean
   /** More open PRs exist than one read covers; the oldest-updated ones carry no status. */
   truncated: boolean
+  /** Open PR authors' avatars as data URLs keyed by user id (`pullStatus` only; absent when none loaded). */
+  avatarDataUrls?: Record<string, string>
 }
 
 export const EMPTY_PULL_BOARD: GitHubPullBoard = {
@@ -184,7 +195,9 @@ export function pullStatusFrom(
     closes: facts.closes,
     ...(facts.author ? { author: facts.author } : {}),
     ...(facts.review ? { review: facts.review } : {}),
-    ...(facts.reviewRequested ? { reviewRequested: true as const } : {})
+    ...(facts.reviewRequested ? { reviewRequested: true as const } : {}),
+    ...(facts.title ? { title: facts.title } : {}),
+    ...(facts.authorUser ? { authorUser: facts.authorUser } : {})
   }
 }
 
