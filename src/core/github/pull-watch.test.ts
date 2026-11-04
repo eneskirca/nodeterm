@@ -262,6 +262,21 @@ describe('pull watch', () => {
     expect(((await status()) as { on: boolean }).on).toBe(false)
   })
 
+  it('forgets a deleted pull node whose watch already turned itself off', async () => {
+    await start()
+    await set(true)
+    await vi.advanceTimersByTimeAsync(0)
+    detailResult = detail({ lifecycle: 'merged' })
+    await tick()
+    expect(await status()).toEqual({ on: false, reason: 'The pull request is merged.' })
+    canvases = [canvas({ nodes: [agent] as PullWatchCanvas['nodes'] })]
+    await tick()
+    canvases = [canvas()]
+    expect(await status()).toEqual({ on: false })
+    await service!.stop()
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'pull-watch.json'), 'utf8')).watches).toEqual([])
+  })
+
   it('pauses while the project is closed', async () => {
     await start()
     await set(true)

@@ -171,16 +171,18 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
     const k = key(r.projectId, r.nodeId)
     // After every await: still this record (not one switched off, or off and on again), still on.
     const live = (): boolean => !stopped && records.get(k) === r && r.on
-    if (!live() || running.has(r)) return
+    if (stopped || records.get(k) !== r || running.has(r)) return
     const canvas = deps.listCanvases().find((c) => c.id === r.projectId)
     // ponytail: a project not listed at all (index still loading, or gone) keeps its record.
     if (!canvas) return
     const node = canvas.nodes.find((n) => n.id === r.nodeId)
+    // Before the on check: a watch that turned itself off is forgotten with its node too.
     if (!node || node.kind !== 'pull' || !node.pull) {
       records.delete(k)
       void persist()
       return
     }
+    if (!r.on) return
     if (deps.projectClosed(r.projectId) || !linkedAgentOf(canvas, r.nodeId)) return
     running.add(r)
     try {
