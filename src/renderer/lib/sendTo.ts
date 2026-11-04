@@ -12,7 +12,7 @@ import { isSafeNodeId } from '@shared/safe-id'
 import { planBridges, type BridgePlan, type LinkEndpoint } from '@shared/canvas-link'
 import { agentProcessInPane } from '../terminal/live-work'
 import { chatSendMode, type ChatGateStatus } from './chatSendGate'
-import { sendToAgentNode, type AgentSendDeps } from './pullFeedbackSend'
+import { SEND_TO_RELAY_TEXT, sendToAgentNode, type AgentSendDeps } from './pullFeedbackSend'
 import { nodesJoined } from '../state/pullAgent'
 
 /** One review thread, by its first comment's id. */
@@ -179,7 +179,7 @@ export interface SendToDeps extends AgentSendDeps {
   link(agentNodeId: string): boolean
 }
 
-export const SEND_TO_RELAY_TEXT = 'Send to agent is not available in a relay tab.'
+export { SEND_TO_RELAY_TEXT }
 
 /** Link (only when the agent can take a message now), then one prompt. Null = sent; else the sentence. */
 export async function sendTo(

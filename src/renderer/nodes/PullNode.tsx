@@ -168,7 +168,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           sendToHost={sendToHost}
           agentState={agentState}
           onCopy={(text) => void api.clipboard.writeText(text)}
-          sendUnavailable={relay ? 'Send to agent is not available in a relay tab.' : undefined}
+          sendUnavailable={relay ? SEND_TO_RELAY_TEXT : undefined}
           // A repository not allowed yet (a PR an agent just made): one click allows it, then the node
           // reads again. Not in a relay tab: allowing is the host's own decision.
           onAllow={pull && projectId && !relay ? async () => {

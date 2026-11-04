@@ -26,12 +26,15 @@ export interface PullFeedbackSendDeps {
   guard(nodeId: string, run: () => Promise<'done'>): Promise<'done' | 'not-eligible'>
 }
 
+/** Why "Send to agent" is off in a relay tab: the pane is another person's machine. */
+export const SEND_TO_RELAY_TEXT = 'Send to agent is not available in a relay tab.'
+
 /** Null = sent; else the sentence the node shows. */
 export async function sendPullFeedback(
   deps: PullFeedbackSendDeps,
   req: { pullId: string; targetId: string; message: string }
 ): Promise<string | null> {
-  if (deps.relay) return 'Send to agent is not available in a relay tab.'
+  if (deps.relay) return SEND_TO_RELAY_TEXT
   const target = linkedAgents(deps.edges(), deps.nodes(), req.pullId).find((agent) => agent.id === req.targetId)
   const agentId = deps.nodes().find((n) => n.id === req.targetId)?.data.agentId
   if (!target || typeof agentId !== 'string') return 'That agent is no longer linked to this pull node. Nothing was sent.'
