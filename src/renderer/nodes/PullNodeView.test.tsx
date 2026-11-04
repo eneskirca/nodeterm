@@ -1100,3 +1100,40 @@ describe('PullNodeView Send to agent', () => {
     expect(refused.view.querySelector('[role="alert"]')?.textContent).toContain('cannot take a message')
   })
 })
+
+describe('PullNodeView avatars', () => {
+  const png = 'data:image/png;base64,iVBORw0KGgo='
+  it('shows the read\'s avatar data URL, and a lettered circle for a user with none', async () => {
+    const reviewer = { id: 5, login: 'bo', avatarUrl: 'https://avatars.githubusercontent.com/u/5' }
+    const api = fakeApi(
+      { status: 'ok', detail: { ...detail, requestedReviewers: [reviewer] }, observedAt: 1, avatarDataUrls: { 2: png } },
+      undefined,
+      { status: 'ok', truncated: false, observedAt: 1, lineComments: [], avatarDataUrls: { 2: png }, items: [
+        { kind: 'comment', id: 1, author, body: 'Hi', at: at(10), url },
+        { kind: 'comment', id: 2, author: null, body: 'Gone', at: at(11), url }
+      ] }
+    )
+    const view = await render(api)
+    const images = [...view.querySelectorAll('img')]
+    expect(images.length).toBeGreaterThan(0)
+    expect(images.every((image) => image.getAttribute('src') === png && image.alt === 'octocat')).toBe(true)
+    expect(view.querySelector('[role="img"][aria-label="bo"]')?.textContent).toBe('B')
+    expect(view.querySelector('[role="img"][aria-label="ghost"]')?.textContent).toBe('G')
+  })
+
+  it('falls back to the letter when the image fails to load, and never renders a remote URL', async () => {
+    const api = fakeApi({
+      status: 'ok', detail, observedAt: 1, avatarDataUrls: { 2: 'https://avatars.githubusercontent.com/u/2' }
+    })
+    const view = await render(api)
+    expect(view.querySelector('img')).toBeNull()
+    expect(view.querySelector('.pull-head [role="img"][aria-label="octocat"]')?.textContent).toBe('O')
+
+    act(() => root.unmount()); host.remove()
+    const broken = await render(fakeApi({ status: 'ok', detail, observedAt: 1, avatarDataUrls: { 2: png } }))
+    const image = broken.querySelector('.pull-head img')!
+    await act(async () => { image.dispatchEvent(new Event('error')) })
+    expect(broken.querySelector('.pull-head img')).toBeNull()
+    expect(broken.querySelector('.pull-head [role="img"][aria-label="octocat"]')?.textContent).toBe('O')
+  })
+})

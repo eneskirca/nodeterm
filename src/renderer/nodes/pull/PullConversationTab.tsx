@@ -29,7 +29,7 @@ export function PullConversationTab(props: ViewProps & {
           {props.onSendToAgent && <PullSendToAgent {...props} detail={d} checks={checks} />}
         </div>
       )}
-      <PullSidebar {...props} detail={d} />
+      <PullSidebar {...props} detail={d} avatars={detailRead.avatarDataUrls} />
       {d.body.trim()
         ? <NoteMarkdown text={d.body} className="sticky-node__md pull-node__md" />
         : <p className="pull-node__empty">No description provided.</p>}

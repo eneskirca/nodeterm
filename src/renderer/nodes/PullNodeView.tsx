@@ -65,7 +65,8 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
     setPending((list) => list.filter((draft) => !sent.includes(draft))), [])
   return (
     <AllowContext.Provider value={props.onAllow}>
-      <PullHeader pull={pull} detail={detail} />
+      <PullHeader pull={pull} detail={detail}
+        avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined} />
       <PullTabBar pull={pull} shown={shownTab} detail={detail} onTab={onTab} onOpenExternal={onOpenExternal} />
       {proposal && (
         <PullProposalBar key={proposal.seq} {...props} proposal={proposal} seen={detail} seenChecks={checks} ownPull={ownPull}

@@ -1,10 +1,11 @@
 // The pull request's people and metadata. Today it holds the requested reviewers; Assignees,
 // Labels, Linked issues and Participants join it here (ticket 06).
 import { useState } from 'react'
-import type { GitHubPullDetail, GitHubRepoCollaboratorsResult, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
+import type { GitHubPullDetail, GitHubRepoCollaboratorsResult, PullAvatarDataUrls, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
+import { Avatar } from './Avatar'
 import { FAILURE_TEXT, REFUSAL_TEXT, WRITE_TEXT, type ViewProps } from './shared'
 
-export function PullSidebar(props: ViewProps & { detail: GitHubPullDetail }): React.JSX.Element {
+export function PullSidebar(props: ViewProps & { detail: GitHubPullDetail; avatars?: PullAvatarDataUrls }): React.JSX.Element {
   return <PullReviewers {...props} />
 }
 
@@ -12,7 +13,7 @@ export function PullSidebar(props: ViewProps & { detail: GitHubPullDetail }): Re
  * The requested reviewers, and "Request review…": a pick from the repository's collaborators (read
  * on the first click), sent only on Request. A user click only; no agent verb reaches it.
  */
-function PullReviewers(props: ViewProps & { detail: GitHubPullDetail }): React.JSX.Element {
+function PullReviewers(props: ViewProps & { detail: GitHubPullDetail; avatars?: PullAvatarDataUrls }): React.JSX.Element {
   const { api, projectId, pull, detail: d, onWritten } = props
   const [people, setPeople] = useState<GitHubRepoCollaboratorsResult | 'loading' | null>(null)
   const [picked, setPicked] = useState('')
@@ -49,7 +50,11 @@ function PullReviewers(props: ViewProps & { detail: GitHubPullDetail }): React.J
     <div className="pull-reviewers">
       <span className="pull-reviewers__label">Reviewers:</span>{' '}
       {requested.length
-        ? requested.map((user) => <span key={user.id} className="pull-node__author">{user.login}</span>)
+        ? requested.map((user) => (
+          <span key={user.id} className="pull-person">
+            <Avatar user={user} avatars={props.avatars} size={16} /><span className="pull-node__author">{user.login}</span>
+          </span>
+        ))
         : <span className="pull-node__empty">No reviewers requested.</span>}
       {open && (people === null || (people !== 'loading' && people.status !== 'ok')) && (
         <button className="pull-compose__button" onClick={show}>Request review…</button>

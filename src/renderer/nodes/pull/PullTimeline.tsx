@@ -1,5 +1,6 @@
 import type { GitHubPullConversationResult, PullReviewVerdict } from '@shared/github-pull-detail'
 import { NoteMarkdown } from '../../components/NoteMarkdown'
+import { Avatar } from './Avatar'
 import { readState, STALE_TEXT, type Read } from './shared'
 
 const VERDICT_TEXT: Record<PullReviewVerdict, string> = {
@@ -23,7 +24,10 @@ export function PullTimeline({ result, repository }: {
             {result.items.map((item) => (
               <li key={`${item.kind}-${item.id}`} className={`pull-convo__item pull-convo__item--${item.kind}`}>
                 <div className="pull-convo__head">
-                  <span className="pull-node__author">{item.author?.login ?? 'ghost'}</span>
+                  <span className="pull-person">
+                    <Avatar user={item.author} avatars={result.avatarDataUrls} />
+                    <span className="pull-node__author">{item.author?.login ?? 'ghost'}</span>
+                  </span>
                   {item.kind === 'review' && (
                     <span className={`pull-convo__verdict pull-convo__verdict--${item.verdict}`}>{VERDICT_TEXT[item.verdict]}</span>
                   )}

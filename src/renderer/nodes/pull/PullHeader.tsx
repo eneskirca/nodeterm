@@ -1,7 +1,9 @@
 import type { GitHubPullDetail } from '@shared/github-pull-detail'
 import type { PullLifecycle } from '@shared/github-pull-status'
 import type { PullNodeRef } from '@shared/pull-node'
+import type { PullAvatarDataUrls } from '@shared/github-pull-detail'
 import { mergeLabel } from '../../components/kanban/PullStatusBadges'
+import { Avatar } from './Avatar'
 
 const LIFECYCLE_TEXT: Record<PullLifecycle, string> = {
   open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed'
@@ -9,7 +11,9 @@ const LIFECYCLE_TEXT: Record<PullLifecycle, string> = {
 
 /** The PR at a glance, above the tabs: title, number, state, author and "base <- head". Before the
  *  detail read lands it names only the repository and number. */
-export function PullHeader({ pull, detail: d }: { pull: PullNodeRef; detail: GitHubPullDetail | undefined }): React.JSX.Element {
+export function PullHeader({ pull, detail: d, avatars }: {
+  pull: PullNodeRef; detail: GitHubPullDetail | undefined; avatars?: PullAvatarDataUrls
+}): React.JSX.Element {
   if (!d) {
     return (
       <header className="pull-head">
@@ -25,7 +29,11 @@ export function PullHeader({ pull, detail: d }: { pull: PullNodeRef; detail: Git
       </h3>
       <div className="pull-node__meta">
         <span className={`pull-node__lifecycle pull-node__lifecycle--${d.lifecycle}`}>{LIFECYCLE_TEXT[d.lifecycle]}</span>
-        {d.author && <span className="pull-node__author">{d.author.login}</span>}
+        {d.author && (
+          <span className="pull-person">
+            <Avatar user={d.author} avatars={avatars} /><span className="pull-node__author">{d.author.login}</span>
+          </span>
+        )}
         <span className="pull-node__branches">
           <code>{d.base.ref}</code> ← <code>{d.head.ref}</code>
         </span>
