@@ -560,12 +560,21 @@ export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullWatchSet
 ])
 
+/** The refusal for an OWNER_ONLY channel that is not a GitHub write. */
+const OWNER_ONLY_LOCAL: Readonly<Record<string, string>> = {
+  [IPC.pullNotesList]: 'Only owners can keep notes for agents here.',
+  [IPC.pullNotesAdd]: 'Only owners can keep notes for agents here.',
+  [IPC.pullNotesDelete]: 'Only owners can keep notes for agents here.',
+  [IPC.pullNotesClear]: 'Only owners can keep notes for agents here.',
+  [IPC.githubIssuesPullWatchSet]: 'Only owners can switch Watch on or off here.'
+}
+
 const ROLE_NAME: Readonly<Record<string, string>> = { owner: 'Owners', editor: 'Editors', commenter: 'Commenters', viewer: 'Viewers' }
 
 export function decideAccess(_kind: 'req' | 'cast', method: string, args: unknown[], ctx: AccessContext): AccessDecision {
   if (typeof method === 'string' && OWNER_ONLY.has(method)) {
     return ctx.role === 'owner' ? OK
-      : no(method.startsWith('pullNotes:') ? 'Only owners can keep notes for agents here.' : 'Only owners can post to GitHub from here.')
+      : no(Object.hasOwn(OWNER_ONLY_LOCAL, method) ? OWNER_ONLY_LOCAL[method] : 'Only owners can post to GitHub from here.')
   }
   if (isEditor(ctx.role)) return OK
   // Own keys only: a method named `constructor` must not find Object.prototype's.

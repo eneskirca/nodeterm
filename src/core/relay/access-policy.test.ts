@@ -53,6 +53,14 @@ describe('access policy', () => {
       }
     }
   })
+  it('the Watch switch is local, so its refusal says Watch, not GitHub', () => {
+    for (const role of ['editor', 'commenter', 'viewer'] as const) {
+      expect(decideAccess('req', IPC.githubIssuesPullWatchSet, [{ projectId: 'P', nodeId: 'n', on: true }], ctx(role)))
+        .toEqual({ allow: false, message: 'Only owners can switch Watch on or off here.' })
+    }
+    expect(decideAccess('req', IPC.githubIssuesPullComment, [{}], ctx('editor')))
+      .toEqual({ allow: false, message: 'Only owners can post to GitHub from here.' })
+  })
   it('a viewer may not write, destroy, send text or mutate the canvas', () => {
     for (const m of [IPC.fsWrite, IPC.ptyDestroy, IPC.ptySendText, IPC.gitCommit, IPC.settingsLoad]) {
       expect(decideAccess('req', m, [], ctx('viewer')).allow).toBe(false)
