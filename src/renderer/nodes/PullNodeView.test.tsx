@@ -49,6 +49,7 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     commentOnPullLine: ReturnType<typeof vi.fn>; updatePullBranch: ReturnType<typeof vi.fn>
     enablePullAutoMerge: ReturnType<typeof vi.fn>; disablePullAutoMerge: ReturnType<typeof vi.fn>
     setFileViewed: ReturnType<typeof vi.fn>
+    setReviewThreadResolved: ReturnType<typeof vi.fn>; applySuggestion: ReturnType<typeof vi.fn>
   } {
   return {
     pullDetail: vi.fn(async () => result),
@@ -72,7 +73,9 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     setFileViewed: vi.fn(async () => ({ ok: true as const })),
     pullCommits: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     pullCommitFiles: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
-    pullCommitFileContents: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const }))
+    pullCommitFileContents: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
+    setReviewThreadResolved: vi.fn(async () => ({ ok: true as const })),
+    applySuggestion: vi.fn(async () => ({ ok: true as const }))
   }
 }
 
@@ -903,6 +906,49 @@ describe('PullNodeView line comments', () => {
     const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
     expect(view.querySelector('.zone script')).toBeNull()
     expect(view.querySelector('.zone img')?.getAttribute('onerror')).toBeNull()
+  })
+
+  it('resolves an open thread and unresolves a resolved one by its first comment, then refreshes', async () => {
+    const api = setup()
+    api.pullConversation.mockResolvedValue({ status: 'ok', truncated: false, observedAt: 1, items: [], lineComments, resolvedThreads: [3] })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), onWritten, 'src/a.ts')
+    const [open, done] = [...view.querySelectorAll<HTMLElement>('.zone')]
+    expect(done.textContent).toContain('Resolved')
+    await act(async () => { button(open, 'Resolve conversation').click() })
+    await act(async () => { button(done, 'Unresolve conversation').click() })
+    expect(api.setReviewThreadResolved.mock.calls).toEqual([
+      [{ projectId: 'p', repository: 'o/r', pullNumber: 7, threadId: 1, resolved: true }],
+      [{ projectId: 'p', repository: 'o/r', pullNumber: 7, threadId: 3, resolved: false }]
+    ])
+    expect(onWritten).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers no Resolve when the read could not say which threads are resolved', async () => {
+    const view = await render(setup(), 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
+    expect(view.textContent).not.toContain('Resolve conversation')
+  })
+
+  it('applies a suggestion on a head line at the head the node read, and says why a stale one was not applied', async () => {
+    const api = setup()
+    const suggestion = 'Try this:\n```suggestion\nconst b = 2\n```'
+    api.pullConversation.mockResolvedValue({
+      status: 'ok', truncated: false, observedAt: 1, items: [],
+      lineComments: [line(1, { body: suggestion }), line(3, { side: 'LEFT', line: 5, body: suggestion }), line(4, { line: null, outdated: true, body: suggestion })]
+    })
+    const onWritten = vi.fn()
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), onWritten, 'src/a.ts')
+    expect([...view.querySelectorAll('button')].filter((b) => b.textContent === 'Apply suggestion')).toHaveLength(1)
+    await act(async () => { button(view, 'Apply suggestion').click() })
+    expect(api.applySuggestion).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, headSha: 'c'.repeat(40), commentId: 1 })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+    api.applySuggestion.mockResolvedValue({ ok: false, reason: 'suggestion-stale' })
+    await act(async () => { button(view, 'Apply suggestion').click() })
+    expect(onWritten).toHaveBeenCalledTimes(2)
+    expect(view.textContent).toContain('The file changed since this suggestion was made')
+    api.applySuggestion.mockResolvedValue({ ok: false, reason: 'from-fork' })
+    await act(async () => { button(view, 'Apply suggestion').click() })
+    expect(view.textContent).toContain('comes from a fork')
   })
 })
 

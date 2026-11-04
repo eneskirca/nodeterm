@@ -19260,6 +19260,7 @@ button.pull-commits__headline:hover { text-decoration: underline; }
   background: color-mix(in srgb, var(--warn) 30%, transparent);
   font-size: 11px;
 }
+.pull-line__resolved { background: color-mix(in srgb, var(--accent) 25%, transparent); }
 .pull-line__pending { margin: 0; color: var(--muted); }
 .pull-line__off { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .pull-convo__lines { margin: 6px 0 0; padding: 0 0 0 10px; list-style: none; border-left: 2px solid var(--border); }

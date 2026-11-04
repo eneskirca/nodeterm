@@ -21,7 +21,8 @@ export type PullNodeApi = Pick<
   GitHubIssuesApi,
   'pullDetail' | 'pullChecks' | 'pullConversation' | 'pullFiles' | 'pullFileContents' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods' |
   'repoCollaborators' | 'requestPullReviewer' | 'commentOnPullLine' | 'updatePullBranch' | 'enablePullAutoMerge' |
-  'disablePullAutoMerge' | 'setFileViewed' | 'pullCommits' | 'pullCommitFiles' | 'pullCommitFileContents'
+  'disablePullAutoMerge' | 'setFileViewed' | 'pullCommits' | 'pullCommitFiles' | 'pullCommitFileContents' |
+  'setReviewThreadResolved' | 'applySuggestion'
 >
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */

@@ -55,6 +55,7 @@ export function PullFilesTab(props: ViewProps & LineProps & {
   // The viewed file whose diff the user opened again.
   const [reopened, setReopened] = useState<string | null>(null)
   const lineComments = conversation !== 'loading' && conversation.status === 'ok' ? conversation.lineComments : []
+  const resolvedThreads = conversation !== 'loading' && conversation.status === 'ok' ? conversation.resolvedThreads : undefined
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   const filesUrl = `${pullWebUrl(pull.repository, pull.pullNumber)}/files`
   const selected = result.files.find((file) => file.path === pull.selectedFile)
@@ -139,7 +140,8 @@ export function PullFilesTab(props: ViewProps & LineProps & {
         )
         : selected
           ? <PullFileDiff key={selected.path} {...props} file={selected} filesUrl={filesUrl}
-              highlight={highlight?.file === selected.path ? highlight : undefined} head={head} lineComments={lineComments} />
+              highlight={highlight?.file === selected.path ? highlight : undefined} head={head} lineComments={lineComments}
+              resolvedThreads={resolvedThreads} />
           : result.files.length > 0 && <p className="pull-node__empty">Select a file to see its diff.</p>}
     </div>
   )
@@ -151,6 +153,7 @@ const SIDE_OF = { LEFT: 'original', RIGHT: 'modified' } as const
 
 function PullFileDiff(props: ViewProps & LineProps & {
   file: PullFile; filesUrl: string; highlight?: PullHighlight; head: string | undefined; lineComments: readonly PullLineComment[]
+  resolvedThreads?: readonly number[]
 }): React.JSX.Element {
   const { api, pull, file, filesUrl, onOpenExternal, highlight, head, lineComments, pending, onAddPending } = props
   const path = file.path
@@ -207,14 +210,26 @@ function PullFileDiff(props: ViewProps & LineProps & {
   )
 }
 
-/** One thread under its line (or below the diff when it is not on a current line), with a reply box. */
-function PullLineThreadView(props: ViewProps & { thread: PullLineThread }): React.JSX.Element {
-  const { api, projectId, pull, thread, onWritten } = props
+/** A comment carries a GitHub suggestion block (the core reads its lines). */
+const SUGGESTION = /^[ \t]*```suggestion[ \t]*\r?$/m
+
+/** One thread under its line (or below the diff when it is not on a current line), with a reply box,
+ *  Resolve / Unresolve (when the read said which threads are resolved) and "Apply suggestion" on a
+ *  suggestion on a current head line. */
+function PullLineThreadView(props: ViewProps & {
+  thread: PullLineThread; head?: string; resolvedThreads?: readonly number[]
+}): React.JSX.Element {
+  const { api, projectId, pull, thread, onWritten, head, resolvedThreads } = props
   const [reply, setReply] = useState('')
   const { busy, refusal, run } = useWrite(() => { setReply(''); onWritten() })
+  const action = useWrite(onWritten)
+  const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
+  const resolved = resolvedThreads?.includes(thread.id)
+  const applies = thread.side === 'RIGHT' && thread.line !== null && !!head
   return (
     <div className="pull-line">
       {thread.outdated && <span className="pull-line__outdated">Outdated</span>}
+      {resolved && <span className="pull-line__outdated pull-line__resolved">Resolved</span>}
       {thread.comments.map((comment) => (
         <div key={comment.id} className="pull-line__comment">
           <div className="pull-convo__head">
@@ -222,16 +237,33 @@ function PullLineThreadView(props: ViewProps & { thread: PullLineThread }): Reac
             <time className="pull-convo__time" dateTime={comment.at}>{new Date(comment.at).toLocaleString()}</time>
           </div>
           <NoteMarkdown text={comment.body} className="sticky-node__md pull-node__md" />
+          {applies && SUGGESTION.test(comment.body) && (
+            <div className="pull-compose__actions">
+              <button className="pull-compose__button" disabled={action.busy} onClick={() => void action.run(async () => {
+                const outcome = await api.applySuggestion({ ...at, headSha: head!, commentId: comment.id })
+                // The core dropped its held reads: read again so the user sees the new lines.
+                if (!outcome.ok && outcome.reason === 'suggestion-stale') onWritten()
+                return outcome
+              })}>Apply suggestion</button>
+            </div>
+          )}
         </div>
       ))}
       <textarea className="pull-compose__box pull-line__box" aria-label="Reply" placeholder="Reply"
         value={reply} onChange={(event) => setReply(event.target.value)} />
       {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
+      {action.refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[action.refusal]}</p>}
       <div className="pull-compose__actions">
         <button className="pull-compose__button" disabled={busy || !reply.trim()} onClick={() => void run(() =>
           api.commentOnPullLine({ projectId, repository: pull.repository, pullNumber: pull.pullNumber, inReplyTo: thread.id, body: reply }))}>
           Reply
         </button>
+        {resolved !== undefined && (
+          <button className="pull-compose__button" disabled={action.busy} onClick={() => void action.run(() =>
+            api.setReviewThreadResolved({ ...at, threadId: thread.id, resolved: !resolved }))}>
+            {resolved ? 'Unresolve conversation' : 'Resolve conversation'}
+          </button>
+        )}
       </div>
     </div>
   )
