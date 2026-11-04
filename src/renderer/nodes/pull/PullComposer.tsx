@@ -1,16 +1,20 @@
 import { useState } from 'react'
-import type { PullLineDraft, PullReviewEvent, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
-import { OWN_PULL_TEXT, WRITE_TEXT, type ViewProps } from './shared'
+import type { GitHubPullDetail, PullLineDraft, PullReviewEvent, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
+import { OWN_PULL_TEXT, useWrite, WRITE_TEXT, type ViewProps } from './shared'
 
-/** The comment box at the end of the Conversation tab: Comment, Approve and Request changes. The
+/** The comment box at the end of the Conversation tab (F1 card): Close or Reopen pull request
+ *  (`lifecycle` given), Request changes, Approve and Comment. The
  *  draft lives here (the tab stays mounted), so it survives a tab switch; it is never persisted.
  *  `reviewPanel`: the Files tab's "Review changes" panel, where the box is the review summary and an
  *  own PR shows Approve and Request changes off, with the reason. */
 export function PullComposer(props: ViewProps & {
   headSha: string; ownPull: boolean; pending: readonly PullLineDraft[]; onDropPending: (sent: readonly PullLineDraft[]) => void
   reviewPanel?: true
+  /** The Conversation tab's box: the PR's state, for its Close or Reopen button. */
+  lifecycle?: GitHubPullDetail['lifecycle']
 }): React.JSX.Element {
-  const { api, projectId, pull, onWritten, headSha, ownPull, pending, onDropPending, reviewPanel } = props
+  const { api, projectId, pull, onWritten, headSha, ownPull, pending, onDropPending, reviewPanel, lifecycle } = props
+  const state = useWrite(onWritten)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
@@ -38,21 +42,31 @@ export function PullComposer(props: ViewProps & {
   return (
     <div className="pull-compose">
       <textarea className="pull-compose__box" aria-label={reviewPanel ? 'Review summary' : 'Comment'}
-        placeholder={reviewPanel ? 'Leave a review summary' : 'Write a comment or a review message'}
+        placeholder={reviewPanel ? 'Leave a review summary' : 'Add a comment'}
         value={draft} onChange={(event) => setDraft(event.target.value)} />
       {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
-      <div className="pull-compose__actions">
-        {/* With pending line comments, Comment submits them as a comment review. */}
-        <button className="pull-compose__button" disabled={busy || (!pending.length && !draft.trim())}
-          onClick={() => void (pending.length ? review('COMMENT') : run(() => api.commentOnPull({ ...at, body: draft })))}>Comment</button>
-        {(!ownPull || reviewPanel) && (
-          <>
-            <button className="pull-compose__button" disabled={busy || ownPull} title={ownPull ? OWN_PULL_TEXT : undefined}
-              onClick={() => void review('APPROVE')}>Approve</button>
-            <button className="pull-compose__button" disabled={busy || ownPull || !draft.trim()} title={ownPull ? OWN_PULL_TEXT : undefined}
-              onClick={() => void review('REQUEST_CHANGES')}>Request changes</button>
-          </>
+      {state.refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[state.refusal]}</p>}
+      <div className="pull-compose__foot">
+        {!reviewPanel && <span className="pull-compose__hint">Markdown · @ to mention</span>}
+        {!reviewPanel && (lifecycle === 'open' || lifecycle === 'draft' || lifecycle === 'closed') && (
+          <button className="pull-compose__button" disabled={busy || state.busy}
+            onClick={() => void state.run(() => api.setPullState({ ...at, open: lifecycle === 'closed' }))}>
+            {lifecycle === 'closed' ? 'Reopen pull request' : 'Close pull request'}
+          </button>
         )}
+        <div className="pull-compose__actions">
+          {(!ownPull || reviewPanel) && (
+            <>
+              <button className="pull-compose__button" disabled={busy || ownPull || !draft.trim()} title={ownPull ? OWN_PULL_TEXT : undefined}
+                onClick={() => void review('REQUEST_CHANGES')}>Request changes</button>
+              <button className="pull-compose__button" disabled={busy || ownPull} title={ownPull ? OWN_PULL_TEXT : undefined}
+                onClick={() => void review('APPROVE')}>Approve</button>
+            </>
+          )}
+          {/* With pending line comments, Comment submits them as a comment review. */}
+          <button className="pull-compose__button pull-compose__button--primary" disabled={busy || (!pending.length && !draft.trim())}
+            onClick={() => void (pending.length ? review('COMMENT') : run(() => api.commentOnPull({ ...at, body: draft })))}>Comment</button>
+        </div>
       </div>
       {pending.length > 0 && (
         <p className="pull-node__empty">

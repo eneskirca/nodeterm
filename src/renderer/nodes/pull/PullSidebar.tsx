@@ -1,62 +1,94 @@
-// The pull request's people and metadata: Reviewers (with state), Assignees, Labels, Linked issues
-// and Participants. One read fills it: `detail.sidebar` (core `pullDetail`). A part the read could
-// not answer is left out; without any sidebar read the requested reviewers still show.
-import { useState } from 'react'
+// The Conversation tab's right column (F1): Agent, Reviewers (with state), Assignees, Labels,
+// Development (linked issues) and Participants. One read fills it: `detail.sidebar` (core
+// `pullDetail`). A part the read could not answer is left out; without any sidebar read the
+// requested reviewers still show. Reviewers, Assignees and Labels edit through an F4 picker.
 import type { GitHubIssueUser } from '@shared/github-issues'
-import type { GitHubPullDetail, GitHubRepoCollaboratorsResult, PullAvatarDataUrls, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
+import type { GitHubPullDetail, PullAvatarDataUrls } from '@shared/github-pull-detail'
 import type { PullClosingIssue, PullReviewer, PullReviewerState } from '@shared/github-pull-sidebar'
+import type { AgentState } from '@shared/agents/normalize'
 import { ISSUE_OPEN_EVENT, type IssueOpenRequest } from '../../lib/openIssueNode'
+import type { PullChecksRead } from '../../lib/pullMergeBlock'
 import { Avatar } from './Avatar'
+import { Icon } from './Icon'
 import { LabelChip } from './LabelChip'
-import { EditRow, type EditChoices } from './PullSidebarEdit'
-import { FAILURE_TEXT, REFUSAL_TEXT, WRITE_TEXT, type ViewProps } from './shared'
+import { PullSendToAgent } from './PullSendToAgent'
+import { EditPicker, type EditChoices } from './PullSidebarEdit'
+import { useWrite, WRITE_TEXT, type ViewProps } from './shared'
 
-type SidebarProps = ViewProps & { detail: GitHubPullDetail; avatars?: PullAvatarDataUrls }
+type SidebarProps = ViewProps & {
+  detail: GitHubPullDetail; avatars?: PullAvatarDataUrls
+  /** For Send review's failing checks. */
+  checks?: PullChecksRead
+  /** The first linked agent's live state. */
+  agentState?: AgentState
+}
 
 const STATE_TEXT: Record<PullReviewerState, string> = {
   approved: 'Approved', 'changes-requested': 'Changes requested', commented: 'Commented', dismissed: 'Dismissed', pending: 'Pending'
 }
 
+const AGENT_TEXT: Record<AgentState, string> = { working: 'working', waiting: 'waiting', blocked: 'blocked', done: 'idle' }
+
 export function PullSidebar(props: SidebarProps): React.JSX.Element {
   const { sidebar } = props.detail
-  const { avatars, api, projectId, pull } = props
+  const { avatars, api, projectId, pull, onWritten } = props
   const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
+  const people = () => api.repoCollaborators(projectId, pull.repository)
+    .then((r): EditChoices => r.status === 'ok' ? { status: 'ok', items: r.users.map((user) => ({ name: user.login, user })) } : r)
   return (
-    <div className="pull-sidebar" data-pull-section="details">
-      <PullReviewers {...props} />
+    <aside className="pr-sidebar" data-pull-section="details" aria-label="Details">
+      <AgentSection {...props} />
+      <PullReviewers {...props} people={people} />
       {sidebar?.assignees && (
-        <EditRow label="Assignees" noun="assignee" items={sidebar.assignees} nameOf={(user) => user.login}
-          render={(user) => <People users={[user]} avatars={avatars} named />} empty="No one assigned." repository={pull.repository}
-          load={() => api.repoCollaborators(projectId, pull.repository)
-            .then((r): EditChoices => r.status === 'ok' ? { status: 'ok', names: r.users.map((user) => user.login) } : r)}
-          write={(login, add) => api.setPullAssignees({ ...at, login, add })} onWritten={props.onWritten} />
+        <Section label="Assignees" edit={
+          <EditPicker label="Assignees" repository={pull.repository} load={people} onWritten={onWritten}
+            state={(login) => ({ checked: sidebar.assignees!.some((user) => user.login === login) })}
+            write={(login, add) => api.setPullAssignees({ ...at, login, add })} />
+        }>
+          {sidebar.assignees.length
+            ? sidebar.assignees.map((user) => <Person key={user.id} user={user} avatars={avatars} />)
+            : <Empty>No one assigned.</Empty>}
+        </Section>
       )}
       {sidebar?.labels && (
-        <EditRow label="Labels" noun="label" items={sidebar.labels} nameOf={(label) => label.name}
-          render={(label) => <LabelChip {...label} />} empty="None yet." repository={pull.repository}
-          load={() => api.repoLabels(projectId, pull.repository)
-            .then((r): EditChoices => r.status === 'ok' ? { status: 'ok', names: r.labels.map((label) => label.name) } : r)}
-          write={(label, add) => api.setPullLabels({ ...at, label, add })} onWritten={props.onWritten} />
+        <Section label="Labels" edit={
+          <EditPicker label="Labels" repository={pull.repository} onWritten={onWritten}
+            load={() => api.repoLabels(projectId, pull.repository)
+              .then((r): EditChoices => r.status === 'ok' ? { status: 'ok', items: r.labels.map(({ name, color }) => ({ name, color })) } : r)}
+            state={(name) => ({ checked: sidebar.labels!.some((label) => label.name === name) })}
+            write={(label, add) => api.setPullLabels({ ...at, label, add })} />
+        }>
+          {sidebar.labels.length
+            ? <div className="pr-side__labels">{sidebar.labels.map((label) => <LabelChip key={label.name} {...label} />)}</div>
+            : <Empty>None yet.</Empty>}
+        </Section>
       )}
       {sidebar?.closingIssues && (
-        <Row label="Linked issues">
+        <Section label="Development">
           {sidebar.closingIssues.length
             ? sidebar.closingIssues.map((issue) => <LinkedIssue key={`${issue.repository}#${issue.number}`} issue={issue} {...props} />)
-            : <Empty>None.</Empty>}
-        </Row>
+            : <Empty>No linked issues.</Empty>}
+        </Section>
       )}
       {sidebar?.participants && sidebar.participants.length > 0 && (
-        <Row label="Participants"><People users={sidebar.participants} avatars={avatars} /></Row>
+        <Section label="Participants">
+          <div className="pr-side__avatars">
+            {sidebar.participants.map((user) => <Avatar key={user.id} user={user} avatars={avatars} size={24} />)}
+          </div>
+        </Section>
       )}
-    </div>
+    </aside>
   )
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }): React.JSX.Element {
+function Section({ label, edit, className, section, children }: {
+  label: string; edit?: React.ReactNode; className?: string; section?: 'agent'; children: React.ReactNode
+}): React.JSX.Element {
   return (
-    <div className="pull-sidebar__row">
-      <span className="pull-reviewers__label">{label}:</span>{' '}{children}
-    </div>
+    <section className={className ? `pr-side ${className}` : 'pr-side'} aria-label={label} data-pull-section={section}>
+      <h3 className="pr-side__title">{label}{edit}</h3>
+      {children}
+    </section>
   )
 }
 
@@ -64,16 +96,45 @@ function Empty({ children }: { children: React.ReactNode }): React.JSX.Element {
   return <span className="pull-node__empty">{children}</span>
 }
 
-function People({ users, avatars, named }: { users: GitHubIssueUser[]; avatars?: PullAvatarDataUrls; named?: true }): React.JSX.Element {
+function Person({ user, avatars, children }: { user: GitHubIssueUser; avatars?: PullAvatarDataUrls; children?: React.ReactNode }): React.JSX.Element {
   return (
-    <>
-      {users.map((user) => (
-        <span key={user.id} className="pull-person">
-          <Avatar user={user} avatars={avatars} size={named ? 16 : 20} />
-          {named && <span className="pull-node__author">{user.login}</span>}
-        </span>
-      ))}
-    </>
+    <div className="pr-side__person">
+      <Avatar user={user} avatars={avatars} size={20} />
+      <span className="pull-node__author">{user.login}</span>
+      {children}
+    </div>
+  )
+}
+
+/** The linked agent and its status, the Watch switch (F-08 wires it), Work on this PR and Send review. */
+function AgentSection(props: SidebarProps): React.JSX.Element {
+  const { agents, agentState, detail: d, onWork, onSendToAgent, checks } = props
+  const agent = agents?.[0]
+  const open = d.lifecycle === 'open' || d.lifecycle === 'draft'
+  return (
+    <Section label="Agent" section="agent">
+      {agent
+        ? (
+          <div className="pr-side__agent">
+            <span className="pr-side__dot" />
+            <span className="pr-side__name">{agent.title}</span>
+            <span className="pr-side__status">{AGENT_TEXT[agentState ?? 'done']}</span>
+          </div>
+        )
+        : <Empty>No agent linked.</Empty>}
+      {/* ponytail: a placeholder until Watch (F-08) wires it. */}
+      <div className="pr-switch">
+        <button className="pr-switch__track" role="switch" aria-checked={false} aria-label="Watch checks and conflicts" disabled
+          title="Watch is not available yet."><span className="pr-switch__knob" /></button>
+        <span>Watch checks and conflicts</span>
+      </div>
+      {open && (onWork || onSendToAgent) && (
+        <div className="pr-side__actions">
+          {onWork && <button className="pr-btn pr-btn--sm" onClick={() => onWork(d)}>Work on this PR</button>}
+          {onSendToAgent && <PullSendToAgent {...props} detail={d} checks={checks ?? null} />}
+        </div>
+      )}
+    </Section>
   )
 }
 
@@ -85,90 +146,65 @@ function LinkedIssue({ issue, pull, onOpenExternal }: SidebarProps & { issue: Pu
     : onOpenExternal(`https://github.com/${issue.repository}/issues/${issue.number}`)
   return (
     <button className="pull-sidebar__issue" onClick={open} title={here ? 'Open in the Issues node' : 'Open on GitHub'}>
-      <span className={`pull-sidebar__issue-state pull-sidebar__issue-state--${issue.state}`}>{issue.state === 'open' ? 'Open' : 'Closed'}</span>
-      {' '}{here ? '' : issue.repository}#{issue.number} {issue.title}
+      <Icon name={issue.state === 'open' ? 'issue' : 'check'} size={14}
+        className={`pull-sidebar__issue-state pull-sidebar__issue-state--${issue.state}`} label={issue.state === 'open' ? 'Open' : 'Closed'} />
+      <span>{here ? '' : issue.repository}#{issue.number} {issue.title}</span>
     </button>
   )
 }
 
+/** The reviewer's state as an icon; the words stay for screen readers and the tooltip. */
+function ReviewState({ state, previous }: Pick<PullReviewer, 'state' | 'previous'>): React.JSX.Element {
+  const text = `${STATE_TEXT[state]}${previous ? ` (was ${STATE_TEXT[previous].toLowerCase()})` : ''}`
+  return (
+    <span className={`pr-side__state pr-side__state--${state}`} title={text}>
+      {state === 'approved' && <Icon name="check" size={14} />}
+      {(state === 'changes-requested' || state === 'dismissed') && <Icon name="x" size={14} />}
+      {state === 'commented' && <Icon name="thread" size={14} />}
+      {state === 'pending' && <span className="pr-side__pending" />}
+      <span className="sr-only">{text}</span>
+    </span>
+  )
+}
+
 /**
- * The reviewers with their latest state, "Re-request" for one who answered, and "Request review…": a pick from the repository's collaborators (read
- * on the first click), sent only on Request. A user click only; no agent verb reaches it.
+ * The reviewers with their latest state and a re-request button for one who answered; Edit picks
+ * from the repository's collaborators (read on the first click). A user click only; no agent verb
+ * reaches it.
  */
-function PullReviewers(props: SidebarProps): React.JSX.Element {
-  const { api, projectId, pull, detail: d, onWritten } = props
-  const [people, setPeople] = useState<GitHubRepoCollaboratorsResult | 'loading' | null>(null)
-  const [picked, setPicked] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
+function PullReviewers(props: SidebarProps & { people: () => Promise<EditChoices> }): React.JSX.Element {
+  const { api, projectId, pull, detail: d, onWritten, people } = props
+  const write = useWrite(onWritten)
   const reviewers: PullReviewer[] = d.sidebar?.reviewers ??
     (d.requestedReviewers ?? []).map((user): PullReviewer => ({ user, state: 'pending' }))
-  // Who already reviewed may be asked again (re-request); a pending request may not be sent twice.
-  const taken = new Set([d.author?.login, ...reviewers.filter((r) => r.state === 'pending').map((r) => r.user.login)])
-  const choices = people !== null && people !== 'loading' && people.status === 'ok'
-    ? people.users.filter((user) => !taken.has(user.login))
-    : []
   const open = d.lifecycle === 'open' || d.lifecycle === 'draft'
-
-  const show = () => {
-    setRefusal(null)
-    setPeople('loading')
-    void api.repoCollaborators(projectId, pull.repository)
-      .catch((): GitHubRepoCollaboratorsResult => ({ status: 'failed', reason: 'unreachable' }))
-      .then(setPeople)
-  }
-  const request = async (login?: string) => {
-    const reviewer = login ?? (picked || choices[0]?.login)
-    if (busy || !reviewer) return
-    setBusy(true)
-    const outcome = await api.requestPullReviewer({ projectId, repository: pull.repository, pullNumber: pull.pullNumber, reviewer })
-      .catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
-    setBusy(false)
-    if (!outcome.ok) { setRefusal(outcome.reason); return }
-    setPeople(null)
-    setPicked('')
-    onWritten()
-  }
-
+  const request = (reviewer: string) => api.requestPullReviewer({ projectId, repository: pull.repository, pullNumber: pull.pullNumber, reviewer })
   return (
-    <div className="pull-reviewers">
-      <span className="pull-reviewers__label">Reviewers:</span>{' '}
+    <Section label="Reviewers" className="pull-reviewers" edit={open && (
+      <EditPicker label="Reviewers" repository={pull.repository} onWritten={onWritten}
+        load={() => people().then((r) => r.status === 'ok' ? { ...r, items: r.items.filter((item) => item.name !== d.author?.login) } : r)}
+        state={(login) => {
+          const r = reviewers.find((x) => x.user.login === login)
+          // Who already reviewed may be asked again (re-request); a pending request may not be sent twice.
+          if (!r) return { checked: false }
+          return r.state === 'pending' ? { checked: true, disabled: true, note: 'requested' } : { checked: true, note: STATE_TEXT[r.state].toLowerCase() }
+        }}
+        write={(login) => request(login)} />
+    )}>
       {reviewers.length
         ? reviewers.map(({ user, state, previous }) => (
-          <span key={user.id} className="pull-person" data-state={state}>
-            <Avatar user={user} avatars={props.avatars} size={16} /><span className="pull-node__author">{user.login}</span>
-            <span className={`pull-reviewer__state pull-reviewer__state--${state}`}>
-              {STATE_TEXT[state]}{previous ? ` (was ${STATE_TEXT[previous].toLowerCase()})` : ''}
-            </span>
+          <Person key={user.id} user={user} avatars={props.avatars}>
+            <ReviewState state={state} previous={previous} />
             {open && state !== 'pending' && user.login !== d.author?.login && (
-              <button className="pull-compose__button" disabled={busy} aria-label={`Re-request review from ${user.login}`}
-                onClick={() => void request(user.login)}>Re-request</button>
+              <button className="pr-btn pr-btn--ghost pr-btn--small" disabled={write.busy} aria-label={`Re-request review from ${user.login}`}
+                title={`Re-request review from ${user.login}`} onClick={() => void write.run(() => request(user.login))}>
+                <Icon name="refresh" size={14} />
+              </button>
             )}
-          </span>
+          </Person>
         ))
-        : <span className="pull-node__empty">No reviewers requested.</span>}
-      {open && (people === null || (people !== 'loading' && people.status !== 'ok')) && (
-        <button className="pull-compose__button" onClick={show}>Request review…</button>
-      )}
-      {people === 'loading' && <span className="pull-node__state">Loading collaborators…</span>}
-      {people !== null && people !== 'loading' && (
-        people.status === 'refused'
-          ? <p className="pull-node__state" role="status">{REFUSAL_TEXT[people.reason](pull.repository)}</p>
-          : people.status === 'failed'
-            ? <p className="pull-node__state" role="status">{FAILURE_TEXT[people.reason]}</p>
-            : choices.length === 0
-              ? <span className="pull-node__empty">Everyone with access is already asked.</span>
-              : (
-                <span className="pull-reviewers__pick">
-                  <select aria-label="Reviewer" value={picked || choices[0].login} onChange={(event) => setPicked(event.target.value)}>
-                    {choices.map((user) => <option key={user.id} value={user.login}>{user.login}</option>)}
-                  </select>
-                  <button className="pull-compose__button" disabled={busy} onClick={() => void request()}>Request</button>
-                  <button className="pull-compose__button" disabled={busy} onClick={() => setPeople(null)}>Cancel</button>
-                </span>
-              )
-      )}
-      {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
-    </div>
+        : <Empty>No reviewers requested.</Empty>}
+      {write.refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[write.refusal]}</p>}
+    </Section>
   )
 }

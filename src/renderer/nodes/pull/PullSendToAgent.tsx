@@ -7,7 +7,7 @@ import { useSendTo } from './SendTo'
 
 export const NO_AGENT_TEXT = 'No agent is linked to this node. Use Work on this PR, or draw a context link from an agent.'
 
-/** "Send to agent…": a checklist of the unresolved line comment threads and the failing checks, then
+/** "Send review" (the sidebar's Agent section): a checklist of the unresolved line comment threads and the failing checks, then
  *  "Send to…", which opens the picker of every agent node in this project (F-06). Nothing is written
  *  to GitHub. */
 export function PullSendToAgent(props: ViewProps & { detail: GitHubPullDetail; checks: PullChecksRead }): React.JSX.Element {
@@ -16,9 +16,7 @@ export function PullSendToAgent(props: ViewProps & { detail: GitHubPullDetail; c
   return (
     <div className="pull-send">
       {!open && (
-        <button className="pull-compose__button" disabled={!sendTo} onClick={() => setOpen(true)}>
-          Send to agent…
-        </button>
+        <button className="pr-btn pr-btn--sm" disabled={!sendTo} onClick={() => setOpen(true)}>Send review</button>
       )}
       {!open && why && <span className="pull-node__empty">{why}</span>}
       {open && sendTo && <PullSendPanel {...props} sendTo={sendTo} onClose={() => setOpen(false)} />}

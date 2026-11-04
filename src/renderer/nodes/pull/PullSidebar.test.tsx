@@ -49,8 +49,13 @@ async function render(d: GitHubPullDetail, onOpenExternal = vi.fn(), onWritten =
   return { view: host, api, onOpenExternal, onWritten }
 }
 
-const rowText = (view: HTMLElement, label: string) =>
-  [...view.querySelectorAll('.pull-sidebar__row')].find((row) => row.textContent?.startsWith(label))?.textContent
+const section = (view: HTMLElement, label: string) => view.querySelector<HTMLElement>(`section[aria-label="${label}"]`)
+const button = (view: HTMLElement, name: string) =>
+  ([...view.querySelectorAll('button')] as HTMLButtonElement[]).find((b) => b.textContent === name || b.getAttribute('aria-label') === name)!
+/** The picker's checkbox rows, by name. */
+const rows = (view: HTMLElement, label: string) => Object.fromEntries(
+  [...view.querySelectorAll(`[role="dialog"][aria-label="${label}"] label.pr-pick__opt`)]
+    .map((row) => [row.querySelector('.pr-pick__name')!.textContent!, row.querySelector('input') as HTMLInputElement]))
 
 describe('PullSidebar', () => {
   it('shows each reviewer state, a re-request as pending, assignees, label chips and participants', async () => {
@@ -58,12 +63,22 @@ describe('PullSidebar', () => {
     const reviewers = view.querySelector('.pull-reviewers')?.textContent
     expect(reviewers).toContain('cyApproved')
     expect(reviewers).toContain('anaPending (was changes requested)')
-    expect(rowText(view, 'Assignees')).toContain('dee')
+    expect(section(view, 'Assignees')?.textContent).toContain('dee')
     const chips = [...view.querySelectorAll('.pull-label')] as HTMLElement[]
     expect(chips.map((chip) => chip.textContent)).toEqual(['bug', 'docs'])
     expect(chips[0].style.color).toBe('rgb(255, 255, 255)')
     expect(chips[1].style.color).toBe('rgb(31, 35, 40)')
-    expect(view.querySelectorAll('.pull-sidebar__row:last-child .pull-avatar')).toHaveLength(2)
+    expect(section(view, 'Participants')!.querySelectorAll('.pull-avatar')).toHaveLength(2)
+  })
+
+  it('puts the Agent section first, marked as the agent jump target, with Watch off until it is wired', async () => {
+    const { view } = await render({ ...detail, sidebar })
+    const agent = view.querySelector('aside > section')!
+    expect(agent.getAttribute('aria-label')).toBe('Agent')
+    expect(agent.getAttribute('data-pull-section')).toBe('agent')
+    expect(agent.textContent).toContain('No agent linked.')
+    const watch = agent.querySelector<HTMLButtonElement>('[role="switch"]')!
+    expect([watch.disabled, watch.getAttribute('aria-checked')]).toEqual([true, 'false'])
   })
 
   it('re-requests a review from a reviewer who answered, with the existing write', async () => {
@@ -79,7 +94,7 @@ describe('PullSidebar', () => {
     const listener = (event: Event) => opened((event as CustomEvent).detail)
     window.addEventListener(ISSUE_OPEN_EVENT, listener)
     const { view, onOpenExternal } = await render({ ...detail, sidebar })
-    const [here, elsewhere] = [...view.querySelectorAll('.pull-sidebar__issue')] as HTMLButtonElement[]
+    const [here, elsewhere] = [...section(view, 'Development')!.querySelectorAll('.pull-sidebar__issue')] as HTMLButtonElement[]
     expect(here.textContent).toContain('#12 Crash on load')
     act(() => here.click())
     expect(opened).toHaveBeenCalledWith({ repository: 'O/R', issueNumber: 12 })
@@ -91,63 +106,76 @@ describe('PullSidebar', () => {
 
   it('hides a part the read could not answer, and falls back to requested reviewers without a sidebar', async () => {
     const { view } = await render({ ...detail, requestedReviewers: [user(2, 'ana')] })
-    expect(view.querySelectorAll('.pull-sidebar__row')).toHaveLength(0)
+    expect([...view.querySelectorAll('aside > section')].map((s) => s.getAttribute('aria-label'))).toEqual(['Agent', 'Reviewers'])
     expect(view.querySelector('.pull-reviewers')?.textContent).toContain('anaPending')
   })
 })
 
-describe('PullSidebar label and assignee edits', () => {
-  const button = (view: HTMLElement, name: string) =>
-    ([...view.querySelectorAll('button')] as HTMLButtonElement[]).find((b) => b.textContent === name || b.getAttribute('aria-label') === name)!
-
-  it('removes a label by name with one call, then reloads the node', async () => {
-    const { view, api, onWritten } = await render({ ...detail, sidebar })
-    await act(async () => { button(view, 'Remove label docs').click() })
-    expect(api.setPullLabels).toHaveBeenCalledTimes(1)
-    expect(api.setPullLabels).toHaveBeenCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, label: 'docs', add: false })
-    expect(onWritten).toHaveBeenCalledTimes(1)
+describe('PullSidebar pickers', () => {
+  it('Edit opens a search picker of the repository labels, the PR\'s own ticked; the filter narrows it', async () => {
+    const { view, api } = await render({ ...detail, sidebar })
+    expect(api.repoLabels).not.toHaveBeenCalled()
+    await act(async () => { button(view, 'Edit labels').click() })
+    expect(api.repoLabels).toHaveBeenCalledWith('p', 'O/R')
+    const picked = rows(view, 'Labels')
+    expect(Object.keys(picked)).toEqual(['bug', 'ui'])
+    expect([picked.bug.checked, picked.ui.checked]).toEqual([true, false])
+    const filter = view.querySelector<HTMLInputElement>('input[aria-label="Filter labels"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(filter, 'UI')
+      filter.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(Object.keys(rows(view, 'Labels'))).toEqual(['ui'])
   })
 
-  it('adds a label from the repository list, offering only labels the PR does not have', async () => {
-    const { view, api } = await render({ ...detail, sidebar })
-    await act(async () => { button(view, 'Add label…').click() })
-    expect(api.repoLabels).toHaveBeenCalledWith('p', 'O/R')
-    const pick = view.querySelector('select[aria-label="Label"]') as HTMLSelectElement
-    expect([...pick.options].map((o) => o.value)).toEqual(['ui'])
-    await act(async () => { button(view, 'Add').click() })
+  it('ticking adds a label and unticking removes one, one call each, then the node reloads', async () => {
+    const { view, api, onWritten } = await render({ ...detail, sidebar })
+    await act(async () => { button(view, 'Edit labels').click() })
+    await act(async () => { rows(view, 'Labels').ui.click() })
     expect(api.setPullLabels).toHaveBeenCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, label: 'ui', add: true })
+    expect(rows(view, 'Labels').ui.checked).toBe(true)
+    await act(async () => { rows(view, 'Labels').bug.click() })
+    expect(api.setPullLabels).toHaveBeenLastCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, label: 'bug', add: false })
+    expect(api.setPullLabels).toHaveBeenCalledTimes(2)
+    expect(onWritten).toHaveBeenCalledTimes(2)
   })
 
   it('adds an assignee from the collaborators and removes one', async () => {
     const { view, api } = await render({ ...detail, sidebar })
     api.repoCollaborators.mockResolvedValueOnce({ status: 'ok', users: [user(4, 'dee'), user(5, 'eve')] } as never)
-    await act(async () => { button(view, 'Add assignee…').click() })
-    const pick = view.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement
-    expect([...pick.options].map((o) => o.value)).toEqual(['eve'])
-    await act(async () => { button(view, 'Add').click() })
+    await act(async () => { button(view, 'Edit assignees').click() })
+    expect(rows(view, 'Assignees').dee.checked).toBe(true)
+    await act(async () => { rows(view, 'Assignees').eve.click() })
     expect(api.setPullAssignees).toHaveBeenCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, login: 'eve', add: true })
-    await act(async () => { button(view, 'Remove assignee dee').click() })
+    await act(async () => { rows(view, 'Assignees').dee.click() })
     expect(api.setPullAssignees).toHaveBeenLastCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, login: 'dee', add: false })
   })
 
-  it('disables the row while its write runs, and shows a plain sentence when it fails', async () => {
+  it('disables every row while its write runs, and shows a plain sentence when it fails', async () => {
     const { view, api, onWritten } = await render({ ...detail, sidebar })
     let land: (result: PullWriteResult) => void = () => undefined
     api.setPullLabels.mockImplementationOnce(() => new Promise((resolve) => { land = resolve }))
-    await act(async () => { button(view, 'Remove label bug').click() })
-    expect(button(view, 'Remove label bug').disabled).toBe(true)
-    expect(button(view, 'Remove label docs').disabled).toBe(true)
-    await act(async () => { button(view, 'Remove label docs').click() })
-    expect(api.setPullLabels).toHaveBeenCalledTimes(1)
+    await act(async () => { button(view, 'Edit labels').click() })
+    await act(async () => { rows(view, 'Labels').bug.click() })
+    expect(Object.values(rows(view, 'Labels')).map((box) => box.disabled)).toEqual([true, true])
     await act(async () => { land({ ok: false, reason: 'forbidden' }) })
     expect(view.querySelector('[role="alert"]')?.textContent).toContain('may not write to this repository')
-    expect(button(view, 'Remove label bug').disabled).toBe(false)
+    expect(rows(view, 'Labels').bug.disabled).toBe(false)
+    expect(rows(view, 'Labels').bug.checked).toBe(true)
     expect(onWritten).not.toHaveBeenCalled()
+  })
+
+  it('Escape closes the picker', async () => {
+    const { view } = await render({ ...detail, sidebar })
+    await act(async () => { button(view, 'Edit labels').click() })
+    const dialog = view.querySelector('[role="dialog"]')!
+    await act(async () => { dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    expect(view.querySelector('[role="dialog"]')).toBeNull()
   })
 
   it('shows no edit controls for a part the read could not answer', async () => {
     const { view } = await render({ ...detail, sidebar: { ...sidebar, labels: undefined, assignees: undefined } })
-    expect(button(view, 'Add label…')).toBeUndefined()
-    expect(button(view, 'Add assignee…')).toBeUndefined()
+    expect(button(view, 'Edit labels')).toBeUndefined()
+    expect(button(view, 'Edit assignees')).toBeUndefined()
   })
 })

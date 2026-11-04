@@ -959,6 +959,52 @@ describe('PullNodeView line comments', () => {
     expect(review.textContent).toContain('Outdated')
   })
 
+  it('embeds each review thread in its card: file:line, Reply, Resolve, Send to…, and counts the open ones', async () => {
+    const api = setup()
+    api.pullConversation.mockResolvedValue({ status: 'ok', truncated: false, observedAt: 1, items: [], lineComments, resolvedThreads: [3] })
+    const send = vi.fn(async (): Promise<string | null> => null)
+    const onWritten = vi.fn()
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    await act(async () => {
+      root.render(<PullNodeView api={api} projectId="p" pull={{ repository: 'o/r', pullNumber: 7, tab: 'conversation' }}
+        refreshTick={0} onTab={vi.fn()} onOpenExternal={vi.fn()} onWritten={onWritten} onSelectFile={vi.fn()}
+        sendToHost={{
+          pullId: 'pull', status: () => ({ state: 'done' as const }), send,
+          nodes: () => [{ id: 'pull', type: 'pull', data: {} }, { id: 'a1', type: 'terminal', data: { title: 'Fixer', agentId: 'claude' } }],
+          edges: () => [{ source: 'pull', target: 'a1' }]
+        }} />)
+    })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
+    const review = host.querySelector<HTMLElement>('.pull-convo__item--review')!
+    expect(review.querySelector('.pr-tl__open')?.textContent).toBe('3 open')
+    const threads = [...review.querySelectorAll<HTMLElement>('.pr-thread')]
+    expect(threads.map((t) => t.querySelector('.pr-thread__head code')?.textContent)).toEqual(['src/a.ts:2', 'src/a.ts:5', 'src/a.ts', 'src/b.ts:2'])
+    const [first, resolved] = threads
+    expect(resolved.textContent).toContain('Resolved')
+    expect(resolved.textContent).not.toContain('line comment 3')
+    expect(button(resolved, 'Send to…')).toBeUndefined()
+
+    await act(async () => { button(first, 'Reply').click() })
+    await act(async () => { type(first.querySelector('textarea[aria-label="Reply"]')!, 'Done') })
+    await act(async () => { button(first, 'Reply').click() })
+    expect(api.commentOnPullLine).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, inReplyTo: 1, body: 'Done' })
+    expect(first.querySelector('textarea')).toBeNull()
+
+    await act(async () => { button(first, 'Resolve').click() })
+    await act(async () => { button(resolved, 'Unresolve').click() })
+    expect(api.setReviewThreadResolved.mock.calls).toEqual([
+      [{ projectId: 'p', repository: 'o/r', pullNumber: 7, threadId: 1, resolved: true }],
+      [{ projectId: 'p', repository: 'o/r', pullNumber: 7, threadId: 3, resolved: false }]
+    ])
+    expect(onWritten).toHaveBeenCalledTimes(3)
+
+    await act(async () => { button(first, 'Send to…').click() })
+    await act(async () => { (host.querySelector('[role="option"]') as HTMLElement).click() })
+    expect(send).toHaveBeenCalledWith('a1', expect.anything(), { kind: 'threads', threads: [{ id: 1, path: 'src/a.ts', line: 2 }] })
+  })
+
   it('never runs script from a line comment', async () => {
     const api = setup()
     api.pullConversation.mockResolvedValue({
@@ -1025,19 +1071,24 @@ describe('PullNodeView reviewers', () => {
     expect(none.querySelector('.pull-reviewers')?.textContent).toContain('No reviewers requested')
   })
 
-  it('offers the collaborators who are neither the author nor already asked, and requests one on click', async () => {
+  const option = (view: HTMLElement, login: string) =>
+    [...view.querySelectorAll('[role="dialog"][aria-label="Reviewers"] label')].find((row) => row.textContent?.includes(login))
+      ?.querySelector('input') as HTMLInputElement | undefined
+
+  it('offers the collaborators but the author in the picker, a pending one ticked and off, and requests one on click', async () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, requestedReviewers: [ana] }, observedAt: 1 })
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
     expect(api.repoCollaborators).not.toHaveBeenCalled()
-    await act(async () => { button(view, 'Request review…').click() })
+    await act(async () => { view.querySelector<HTMLButtonElement>('[aria-label="Edit reviewers"]')!.click() })
     expect(api.repoCollaborators).toHaveBeenCalledWith('p', 'o/r')
-    const select = view.querySelector('select[aria-label="Reviewer"]') as HTMLSelectElement
-    expect([...select.options].map((option) => option.value)).toEqual(['bo'])
+    expect(option(view, 'octocat')).toBeUndefined()
+    expect([option(view, 'ana')!.checked, option(view, 'ana')!.disabled]).toEqual([true, true])
     expect(api.requestPullReviewer).not.toHaveBeenCalled()
-    await act(async () => { button(view, 'Request').click() })
+    await act(async () => { option(view, 'bo')!.click() })
     expect(api.requestPullReviewer).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, reviewer: 'bo' })
     expect(onWritten).toHaveBeenCalledTimes(1)
+    expect(option(view, 'bo')!.checked).toBe(true)
   })
 
   it('names a refused request and does not reload', async () => {
@@ -1045,15 +1096,16 @@ describe('PullNodeView reviewers', () => {
     api.requestPullReviewer.mockResolvedValue({ ok: false, reason: 'forbidden' })
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
-    await act(async () => { button(view, 'Request review…').click() })
-    await act(async () => { button(view, 'Request').click() })
+    await act(async () => { view.querySelector<HTMLButtonElement>('[aria-label="Edit reviewers"]')!.click() })
+    await act(async () => { option(view, 'bo')!.click() })
     expect(view.querySelector('.pull-reviewers [role="alert"]')?.textContent).toContain('may not write')
+    expect(option(view, 'bo')!.checked).toBe(false)
     expect(onWritten).not.toHaveBeenCalled()
   })
 
   it('offers no request on a closed or merged pull request', async () => {
     const view = await render(fakeApi({ status: 'ok', detail: { ...detail, lifecycle: 'merged', merge: undefined }, observedAt: 1 }))
-    expect([...view.querySelectorAll('button')].some((el) => el.textContent === 'Request review…')).toBe(false)
+    expect(view.querySelector('[aria-label="Edit reviewers"]')).toBeNull()
   })
 })
 
@@ -1265,7 +1317,7 @@ describe('PullNodeView Send to agent', () => {
 
   it('lists unresolved threads and failing checks, outdated unticked, and sends only the ticked ones', async () => {
     const { view, send } = await renderSend([{ id: 'a1', title: 'Fixer' }])
-    await act(async () => { button(view, 'Send to agent…').click() })
+    await act(async () => { button(view, 'Send review').click() })
     const boxes = [...view.querySelectorAll('.pull-send__item input')] as HTMLInputElement[]
     expect(boxes.map((box) => box.checked)).toEqual([true, false, true])
     expect(view.textContent).not.toContain('body 3')
@@ -1284,7 +1336,7 @@ describe('PullNodeView Send to agent', () => {
 
   it('with several agents, the user picks one in the picker', async () => {
     const { view, send } = await renderSend([{ id: 'a1', title: 'Fixer' }, { id: 'a2', title: 'Other' }])
-    await act(async () => { button(view, 'Send to agent…').click() })
+    await act(async () => { button(view, 'Send review').click() })
     await act(async () => { button(view, 'Send to…').click() })
     await pick(view, 'Other')
     expect(send.mock.calls[0]?.[0]).toBe('a2')
@@ -1292,14 +1344,51 @@ describe('PullNodeView Send to agent', () => {
 
   it('says why on a relay tab, and shows a refusal', async () => {
     const relay = await renderSend([{ id: 'a1', title: 'Fixer' }], undefined, 'Send to agent is not available in a relay tab.')
-    expect((button(relay.view, 'Send to agent…') as HTMLButtonElement).disabled).toBe(true)
+    expect((button(relay.view, 'Send review') as HTMLButtonElement).disabled).toBe(true)
     expect(relay.view.textContent).toContain('relay tab')
     act(() => root.unmount()); host.remove()
     const refused = await renderSend([{ id: 'a1', title: 'Fixer' }], vi.fn(async (): Promise<string | null> => 'Fixer cannot take a message right now.'))
-    await act(async () => { button(refused.view, 'Send to agent…').click() })
+    await act(async () => { button(refused.view, 'Send review').click() })
     await act(async () => { button(refused.view, 'Send to…').click() })
     await pick(refused.view, 'Fixer')
     expect(refused.view.querySelector('[role="alert"]')?.textContent).toContain('cannot take a message')
+  })
+})
+
+describe('PullNodeView conversation layout', () => {
+  /** A ResizeObserver that reports `width` for every observed element. */
+  const stubWidth = (width: number) => vi.stubGlobal('ResizeObserver', class {
+    constructor(private readonly report: ResizeObserverCallback) {}
+    observe(target: Element) { this.report([{ target, contentRect: { width } } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver) }
+    disconnect() {}
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('wide: the timeline, merge box and composer on the left, the Details sidebar on the right', async () => {
+    stubWidth(1000)
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }))
+    const convo = view.querySelector('.pr-convo')!
+    expect(convo.classList.contains('pr-convo--narrow')).toBe(false)
+    expect([...convo.children].map((child) => child.className)).toEqual(['pr-convo__main', 'pr-sidebar'])
+    const main = convo.querySelector('.pr-convo__main')!
+    expect([...main.querySelectorAll('.pull-convo, .pull-mergebox, .pull-compose')].map((el) => el.className.split(' ')[0]))
+      .toEqual(['pull-convo', 'pull-mergebox', 'pull-compose'])
+    expect(view.querySelector('.pr-fold')).toBeNull()
+  })
+
+  it('narrow: the sidebar folds into one Details row that expands in place', async () => {
+    stubWidth(600)
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }))
+    expect(view.querySelector('.pr-convo')!.classList.contains('pr-convo--narrow')).toBe(true)
+    expect(view.querySelector('.pr-sidebar')).toBeNull()
+    const row = view.querySelector<HTMLButtonElement>('.pr-fold__row')!
+    expect(row.closest('[data-pull-section="details"]')).not.toBeNull()
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    await act(async () => { row.click() })
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    expect(view.querySelector('.pr-fold .pr-sidebar section[aria-label="Reviewers"]')).not.toBeNull()
+    await act(async () => { row.click() })
+    expect(view.querySelector('.pr-sidebar')).toBeNull()
   })
 })
 

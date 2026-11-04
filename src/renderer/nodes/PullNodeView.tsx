@@ -128,7 +128,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
         <div hidden={shownTab !== 'conversation'}>
           <PullConversationTab {...props} detailRead={detailRead} conversation={conversation} checks={checks} ownPull={ownPull} pending={pending}
             onDropPending={dropPending} methods={mergeMethods.methods} onLoadMethods={mergeMethods.load}
-            proposalBar={barAboveMerge ? proposalBar : undefined} />
+            proposalBar={barAboveMerge ? proposalBar : undefined} agentState={agentState} />
         </div>
       )}
       {opened.includes('commits') && (
