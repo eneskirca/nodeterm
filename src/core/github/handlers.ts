@@ -30,7 +30,7 @@ import type {
 } from '../../shared/github-pull-detail'
 import type { GitHubPullCommitFilesResult, GitHubPullCommitsResult } from '../../shared/github-pull-commits'
 import type { GitHubPullSinceReviewResult } from '../../shared/github-pull-since-review'
-import { parsePullNoteInput, type PullNotesStore } from './pull-notes-store'
+import { isPullNoteId, parsePullNoteInput, type PullNotesStore } from './pull-notes-store'
 
 export interface GitHubIssueHandlerService {
   subscribe(uiId: number, request: { projectId: string }): Promise<GitHubIssuePage>
@@ -201,7 +201,6 @@ export function registerGitHubIssueHandlers(
 /** Notes for agents (F-07). Every input is checked here; a bad one throws and writes nothing. */
 export function registerPullNoteHandlers(platform: CorePlatform, store: Pick<PullNotesStore, 'list' | 'add' | 'remove'>): void {
   const bad = (): never => { throw new Error('invalid-note-input') }
-  const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64
   const pullOf = (request: unknown): { repository: string; pullNumber: number } => {
     const r = (request && typeof request === 'object' ? request : {}) as { repository?: unknown; pullNumber?: unknown }
     return typeof r.repository === 'string' && typeof r.pullNumber === 'number'
@@ -214,12 +213,12 @@ export function registerPullNoteHandlers(platform: CorePlatform, store: Pick<Pul
   platform.handle(IPC.pullNotesAdd, (input: unknown) => store.add(parsePullNoteInput(input) ?? bad()))
   platform.handle(IPC.pullNotesDelete, (request: { id?: unknown }) => {
     const pull = pullOf(request)
-    return id(request.id) ? store.remove(pull.repository, pull.pullNumber, [request.id]) : bad()
+    return isPullNoteId(request.id) ? store.remove(pull.repository, pull.pullNumber, [request.id]) : bad()
   })
   platform.handle(IPC.pullNotesClear, (request: { ids?: unknown }) => {
     const pull = pullOf(request)
     const ids = request.ids
-    if (ids !== undefined && !(Array.isArray(ids) && ids.length <= 500 && ids.every(id))) bad()
+    if (ids !== undefined && !(Array.isArray(ids) && ids.length <= 500 && ids.every(isPullNoteId))) bad()
     return store.remove(pull.repository, pull.pullNumber, ids as string[] | undefined)
   })
 }

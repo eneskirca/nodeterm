@@ -38,10 +38,14 @@ export function parsePullNoteInput(value: unknown): PullNoteInput | null {
   }
 }
 
+/** A note id as the store keeps it (a UUID it made; the file and a delete request are checked alike). */
+export const isPullNoteId = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= 64
+
 function validNote(value: unknown): value is PullNote {
   if (!value || typeof value !== 'object') return false
   const note = value as PullNote
-  return typeof note.id === 'string' && note.id.length > 0 && note.id.length <= 64 &&
+  return isPullNoteId(note.id) &&
     Number.isSafeInteger(note.createdAt) &&
     !!parsePullNoteInput({ ...note, repository: 'o/r', pullNumber: 1 })
 }
