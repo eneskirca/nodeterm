@@ -471,6 +471,7 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullCheckLog,
   IPC.githubIssuesPullSinceReview,
   IPC.githubIssuesPullSinceReviewFileContents,
+  IPC.githubIssuesPullWatch,
   IPC.githubIssuesRepoMergeMethods,
   IPC.githubIssuesRepoCollaborators,
   IPC.githubIssuesRepoLabels,
@@ -554,7 +555,9 @@ export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.pullNotesList,
   IPC.pullNotesAdd,
   IPC.pullNotesDelete,
-  IPC.pullNotesClear
+  IPC.pullNotesClear,
+  // Not a GitHub write, but it makes this machine poll with its token and wake an agent (F-08).
+  IPC.githubIssuesPullWatchSet
 ])
 
 const ROLE_NAME: Readonly<Record<string, string>> = { owner: 'Owners', editor: 'Editors', commenter: 'Commenters', viewer: 'Viewers' }

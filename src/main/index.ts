@@ -10,6 +10,7 @@ import { grokHomeDir, grokSessionDir, grokSessionsDir } from '../core/agents/gro
 import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { startTriggerService } from '../core/trigger-service'
+import { startPullWatch } from '../core/github/pull-watch'
 import { readAgentSessionName, type AgentSessionNameDeps } from '../core/agent-session-name'
 import { readFile, readdir as fsReaddir, realpath as fsRealpath, lstat as fsLstat, writeFile as fsWriteFile } from 'fs/promises'
 import { existsSync, statSync, openSync, fstatSync, readFileSync, closeSync } from 'fs'
@@ -2598,6 +2599,20 @@ app.whenReady().then(async () => {
     getNode: (nodeId) => workspaceStore.getNode(nodeId),
     sendText: (nodeId, text) => ptyManager.sendText(nodeId, text),
     paneCommand: (nodeId) => ptyManager.paneCommand(nodeId),
+    handle: (channel, handler) => platform().handle(channel, handler)
+  })
+  // A pull node's Watch switch (F-08): the poller is core (`startPullWatch`) so it runs while the
+  // node is off screen; this shell supplies the reads, the canvases and the messaging delivery (the
+  // pull node is the source, every messaging gate and the deliver-on-idle queue apply). Identical
+  // call in src/server/index.ts.
+  startPullWatch({
+    userDataDir: app.getPath('userData'),
+    listCanvases: () => workspaceStore.persistedCanvases(),
+    projectClosed: (projectId) => !!workspaceStore.linkProjectEntries()?.find((e) => e.id === projectId)?.closed,
+    readDetail: (request) => github.service.pullDetail(request),
+    readChecks: (request) => github.service.pullChecks(request),
+    deliver: async ({ pullNodeId, agentNodeId, body }) =>
+      (await deliverFromControl({ verb: 'send', sourceNodeId: pullNodeId, targetNodeId: agentNodeId, body }, messagingDeps)).outcome,
     handle: (channel, handler) => platform().handle(channel, handler)
   })
   // macOS Notch HUD (docs/notch-hud.md): walking agent mascots by the notch. darwin + setting only;

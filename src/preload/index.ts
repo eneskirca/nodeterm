@@ -323,6 +323,8 @@ const api: NodeTerminalApi = {
     pullCheckLog: (projectId, repository, pullNumber, jobId) =>
       ipcRenderer.invoke(IPC.githubIssuesPullCheckLog, projectId, repository, pullNumber, jobId),
     rerunFailedJobs: (request) => ipcRenderer.invoke(IPC.githubIssuesPullRerunFailed, request),
+    pullWatch: (projectId, nodeId) => ipcRenderer.invoke(IPC.githubIssuesPullWatch, projectId, nodeId),
+    setPullWatch: (request) => ipcRenderer.invoke(IPC.githubIssuesPullWatchSet, request),
     claimPullAutoMove: (request) => ipcRenderer.invoke(IPC.githubIssuesClaimPullAutoMove, request),
     notePullWaits: (request) => ipcRenderer.invoke(IPC.githubIssuesNotePullWaits, request),
     pullNotes: (repository, pullNumber) => ipcRenderer.invoke(IPC.pullNotesList, repository, pullNumber),

@@ -24,6 +24,7 @@ import { IPC } from '../../shared/ipc'
 import { oneLine } from '../../shared/one-line'
 import { isSafeNodeId } from '../../shared/safe-id'
 import type { GitHubPullChecksResult } from '../../shared/github-pull-status'
+import type { PullWatchStatus } from '../../shared/github-issues'
 import type { GitHubPullDetailResult } from '../../shared/github-pull-detail'
 import type { BridgeLink, CanvasNodeState } from '../../shared/types'
 import type { AgentMessageOutcome } from '../agents/agent-message-decide'
@@ -34,9 +35,6 @@ export const PULL_WATCH_WAKE_CAP = 10
 export const PULL_WATCH_NO_AGENT = 'Link an agent first'
 const FILE_NAME = 'pull-watch.json'
 
-/** What the switch shows. `reason` = why it is off (it turned itself off, or cannot turn on);
- *  `note` = why the last wake did not reach the agent. */
-export interface PullWatchStatus { on: boolean; reason?: string; note?: string }
 
 export type PullWatchCanvas = {
   id: string
@@ -94,7 +92,8 @@ export function linkedAgentOf(canvas: PullWatchCanvas, pullNodeId: string): stri
 }
 
 const NOT_SENT: Partial<Record<string, string>> = {
-  'switch-off': 'Watch could not wake the agent: agent messaging is off for this project.'
+  'switch-off': 'Watch could not wake the agent: agent messaging is off for this project.',
+  'unsupported-edition': 'Watch could not wake the agent: agent messaging needs canvas control on this server.'
 }
 
 function noteFor(outcome: AgentMessageOutcome): string {

@@ -626,6 +626,10 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullCheckLog, projectId, repository, pullNumber, jobId) as ReturnType<GitHubIssuesApi['pullCheckLog']>,
     rerunFailedJobs: (request) =>
       client.request(IPC.githubIssuesPullRerunFailed, request) as ReturnType<GitHubIssuesApi['rerunFailedJobs']>,
+    pullWatch: (projectId, nodeId) =>
+      client.request(IPC.githubIssuesPullWatch, projectId, nodeId) as ReturnType<GitHubIssuesApi['pullWatch']>,
+    setPullWatch: (request) =>
+      client.request(IPC.githubIssuesPullWatchSet, request) as ReturnType<GitHubIssuesApi['setPullWatch']>,
     repoLabels: (projectId, repository) =>
       client.request(IPC.githubIssuesRepoLabels, projectId, repository) as ReturnType<GitHubIssuesApi['repoLabels']>,
     enablePullAutoMerge: (request) =>

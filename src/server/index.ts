@@ -4,6 +4,7 @@ import fs from 'fs'
 import { readAgentSessionName } from '../core/agent-session-name'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { startTriggerService } from '../core/trigger-service'
+import { startPullWatch } from '../core/github/pull-watch'
 import path from 'path'
 import http from 'http'
 
@@ -497,6 +498,19 @@ export async function startServer(
     sendText: (nodeId, text) => ptyManager.sendText(nodeId, text),
     paneCommand: (nodeId) => ptyManager.paneCommand(nodeId),
     // The shell's own CorePlatform instance (`platform` is this file's ServerPlatform local).
+    handle: (channel, handler) => platform.handle(channel, handler)
+  })
+  // A pull node's Watch switch (F-08): the same core poller the desktop boots (src/main/index.ts).
+  // Agent messaging exists here only with canvas control on, so without it a wake is refused by
+  // edition and the switch says so. `canvasControl` is read per wake: it comes up later in boot.
+  startPullWatch({
+    userDataDir: config.dataDir,
+    listCanvases: () => workspaceStore.persistedCanvases(),
+    projectClosed: (projectId) => !!workspaceStore.linkProjectEntries()?.find((e) => e.id === projectId)?.closed,
+    readDetail: (request) => github.service.pullDetail(request),
+    readChecks: (request) => github.service.pullChecks(request),
+    deliver: async (request) =>
+      canvasControl ? canvasControl.deliverWatchWake(request) : { kind: 'notPermitted', reason: 'unsupported-edition' },
     handle: (channel, handler) => platform.handle(channel, handler)
   })
   // Advertise launch settings to the mobile companion through the mirror (same provider the

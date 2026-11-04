@@ -1,6 +1,9 @@
 import type { PullNotesApi } from './pull-notes'
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
 import type { GitHubPullCheckLogResult } from './github-pull-check-log'
+
+/** What a pull node's Watch switch shows (F-08). `reason` = why it is off; `note` = why the last wake did not land. */
+export interface PullWatchStatus { on: boolean; reason?: string; note?: string }
 import type { GitHubPullTimelineResult } from './github-pull-timeline'
 import type { GitHubPullSinceReviewResult } from './github-pull-since-review'
 import type { GitHubRepoLabelsResult } from './github-pull-sidebar'
@@ -393,6 +396,10 @@ export interface GitHubIssuesApi extends PullNotesApi {
   pullCheckLog(projectId: string, repository: string, pullNumber: number, jobId: number): Promise<GitHubPullCheckLogResult>
   /** Re-run the failed jobs of one Actions run of the PR's head checks. A user click only, never an agent verb. */
   rerunFailedJobs(request: { projectId: string; repository: string; pullNumber: number; runId: number }): Promise<PullWriteResult>
+  /** A pull node's Watch switch (F-08): machine-local, read from core's poller. */
+  pullWatch(projectId: string, nodeId: string): Promise<PullWatchStatus>
+  /** Turn a pull node's Watch on or off. A user click only; refused without a linked agent. */
+  setPullWatch(request: { projectId: string; nodeId: string; on: boolean }): Promise<PullWatchStatus>
   /** The repository's labels (name and color) for the sidebar's "Add label". Same refusals as `pullDetail`. */
   repoLabels(projectId: string, repository: string): Promise<GitHubRepoLabelsResult>
   /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */
