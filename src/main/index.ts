@@ -2611,6 +2611,7 @@ app.whenReady().then(async () => {
     userDataDir: app.getPath('userData'),
     listCanvases: () => workspaceStore.persistedCanvases(),
     projectClosed: (projectId) => !!workspaceStore.linkProjectEntries()?.find((e) => e.id === projectId)?.closed,
+    messagingRefused: (projectId) => messagingDeps.messagingEnabled(projectId) ? undefined : 'switch-off',
     readDetail: (request) => github.service.pullDetail(request),
     readChecks: (request) => github.service.pullChecks(request),
     deliver: async ({ pullNodeId, agentNodeId, body }) =>

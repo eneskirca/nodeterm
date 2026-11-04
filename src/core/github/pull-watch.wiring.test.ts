@@ -14,13 +14,15 @@ const call = (src: string): string => {
 }
 
 describe('Watch is wired in both shells', () => {
-  for (const [shell, file, userData, deliver, handle] of [
+  for (const [shell, file, userData, deliver, handle, messaging] of [
     ['desktop', 'main/index.ts', "app.getPath('userData')",
       /deliverFromControl\(\{ verb: 'send', sourceNodeId: pullNodeId, targetNodeId: agentNodeId, body \}, messagingDeps\)/,
-      'platform().handle(channel, handler)'],
+      'platform().handle(channel, handler)',
+      "messagingRefused: (projectId) => messagingDeps.messagingEnabled(projectId) ? undefined : 'switch-off'"],
     ['Server Edition', 'server/index.ts', 'config.dataDir',
       /canvasControl \? canvasControl\.deliverWatchWake\(request\) : \{ kind: 'notPermitted', reason: 'unsupported-edition' \}/,
-      'platform.handle(channel, handler)']
+      'platform.handle(channel, handler)',
+      "!canvasControl ? 'unsupported-edition' : canvasControl.watchMessagingEnabled(projectId) ? undefined : 'switch-off'"]
   ] as const) {
     it(`${shell}: machine-local store, the service reads, the canvases, the messaging delivery`, () => {
       const src = call(read(file))
@@ -31,6 +33,7 @@ describe('Watch is wired in both shells', () => {
       expect(src).toContain('readChecks: (request) => github.service.pullChecks(request)')
       expect(src).toMatch(deliver)
       expect(src).toContain(`handle: (channel, handler) => ${handle}`)
+      expect(src, 'the switch warns from the same messaging switch the wake passes').toContain(messaging)
     })
   }
   it('both shells keep the service and stop it on shutdown, next to the other services', () => {
@@ -48,5 +51,6 @@ describe('Watch is wired in both shells', () => {
     expect(src).toMatch(/watchMessaging\.queue = watchQueue/)
     expect(src).toMatch(/if \(event\.state === 'done'\) void watchQueue\.onTargetIdle\(event\.nodeId\)/)
     expect(src).toMatch(/deliverFromControl\(\{ verb: 'send', sourceNodeId: pullNodeId, targetNodeId: agentNodeId, body \}, watchMessaging\)/)
+    expect(src).toContain('watchMessagingEnabled: (projectId) => watchMessaging.messagingEnabled(projectId)')
   })
 })

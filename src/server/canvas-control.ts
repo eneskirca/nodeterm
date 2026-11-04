@@ -96,6 +96,8 @@ export interface ServerCanvasControl {
   stationHandovers: StationHandoverTracker
   /** A pull node's Watch wake (F-08, core/github/pull-watch.ts): the pull node to its linked agent. */
   deliverWatchWake(req: { pullNodeId: string; agentNodeId: string; body: string }): Promise<AgentMessageOutcome>
+  /** The per-project agent messaging switch that wake passes, for the Watch switch's warning. */
+  watchMessagingEnabled(projectId: string): boolean
   stop(): void
 }
 
@@ -394,6 +396,7 @@ export async function initServerCanvasControl(
     stationHandovers,
     deliverWatchWake: async ({ pullNodeId, agentNodeId, body }) =>
       (await deliverFromControl({ verb: 'send', sourceNodeId: pullNodeId, targetNodeId: agentNodeId, body }, watchMessaging)).outcome,
+    watchMessagingEnabled: (projectId) => watchMessaging.messagingEnabled(projectId),
     stop: () => {
       factory.stop()
       queue.resetForTests()

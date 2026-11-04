@@ -507,6 +507,8 @@ export async function startServer(
     userDataDir: config.dataDir,
     listCanvases: () => workspaceStore.persistedCanvases(),
     projectClosed: (projectId) => !!workspaceStore.linkProjectEntries()?.find((e) => e.id === projectId)?.closed,
+    messagingRefused: (projectId) =>
+      !canvasControl ? 'unsupported-edition' : canvasControl.watchMessagingEnabled(projectId) ? undefined : 'switch-off',
     readDetail: (request) => github.service.pullDetail(request),
     readChecks: (request) => github.service.pullChecks(request),
     deliver: async (request) =>

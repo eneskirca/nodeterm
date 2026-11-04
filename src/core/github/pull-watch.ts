@@ -14,6 +14,8 @@
 //  - Delivery is the agent-messaging path (`deliverFromControl` in each shell): every gate, the
 //    per-project switch and the deliver-on-idle queue included. A refused delivery is not a wake;
 //    the next tick tries again and the switch shows why.
+//  - No linked agent, or agent messaging off for the project: nothing can land, so nothing is read,
+//    and every status read (switch-on included) says why at once.
 //  - After PULL_WATCH_WAKE_CAP wakes in a row with no new commit, the watch turns itself off and
 //    says so. ponytail: comment wakes are not built, so "comment-only wakes" is "wakes with no
 //    push in between" (the user's fallback rule); the user's own comments are ignored by construction.
@@ -23,7 +25,8 @@ import path from 'node:path'
 import { IPC } from '../../shared/ipc'
 import { isSafeNodeId } from '../../shared/safe-id'
 import type { GitHubPullChecksResult } from '../../shared/github-pull-status'
-import { PULL_WATCH_NO_AGENT, type PullWatchStatus } from '../../shared/github-issues'
+import { PULL_WATCH_NO_AGENT, PULL_WATCH_UNLINKED, type PullWatchStatus } from '../../shared/github-issues'
+import { PROJECT_CAPABILITY_COPY } from '../../shared/project-capabilities'
 import type { GitHubPullDetailResult } from '../../shared/github-pull-detail'
 import { PR_TEXT_UNTRUSTED, prText } from '../../shared/pull-work'
 import type { BridgeLink, CanvasNodeState } from '../../shared/types'
@@ -49,6 +52,8 @@ export interface PullWatchDeps {
   listCanvases(): PullWatchCanvas[]
   /** The project is closed (kept on disk, not open in a tab). */
   projectClosed(projectId: string): boolean
+  /** Why agent messaging cannot deliver in this project right now, or undefined when it can. */
+  messagingRefused(projectId: string): 'switch-off' | 'unsupported-edition' | undefined
   /** `GitHubIssueService.pullDetail` / `pullChecks`. */
   readDetail(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullDetailResult>
   readChecks(request: { projectId: string; pullNumber: number }): Promise<GitHubPullChecksResult>
@@ -91,8 +96,9 @@ export function linkedAgentOf(canvas: PullWatchCanvas, pullNodeId: string): stri
 }
 
 const NOT_SENT: Partial<Record<string, string>> = {
-  'switch-off': 'Watch could not wake the agent: agent messaging is off for this project.',
-  'unsupported-edition': 'Watch could not wake the agent: agent messaging needs canvas control on this server.'
+  'switch-off': 'Watch cannot wake the agent: agent messaging is off for this project. ' +
+    `Turn on "${PROJECT_CAPABILITY_COPY.agentMessaging.label}" in Settings → Agents.`,
+  'unsupported-edition': 'Watch cannot wake the agent: agent messaging needs canvas control on this server.'
 }
 
 function noteFor(outcome: AgentMessageOutcome): string {
@@ -153,8 +159,18 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
     }
   }
 
-  const statusOf = (r: WatchRecord | undefined): PullWatchStatus =>
-    !r ? { on: false } : { on: r.on, ...(r.reason ? { reason: r.reason } : {}), ...(r.note ? { note: r.note } : {}) }
+  /** Why a wake cannot land now (the agent unlinked, messaging off), read live; undefined when it can. */
+  const blocked = (r: WatchRecord, canvas = deps.listCanvases().find((c) => c.id === r.projectId)): string | undefined => {
+    if (canvas && !linkedAgentOf(canvas, r.nodeId)) return PULL_WATCH_UNLINKED
+    const refused = deps.messagingRefused(r.projectId)
+    return refused && NOT_SENT[refused]
+  }
+
+  const statusOf = (r: WatchRecord | undefined): PullWatchStatus => {
+    if (!r) return { on: false }
+    const note = (r.on && blocked(r)) || r.note
+    return { on: r.on, ...(r.reason ? { reason: r.reason } : {}), ...(note ? { note } : {}) }
+  }
 
   const turnOff = (r: WatchRecord, reason: string): void => {
     r.on = false
@@ -178,7 +194,8 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
       return
     }
     if (!r.on) return
-    if (deps.projectClosed(r.projectId) || !linkedAgentOf(canvas, r.nodeId)) return
+    // Nothing to wake: no read either, so the baseline is taken once a wake can land.
+    if (deps.projectClosed(r.projectId) || blocked(r, canvas)) return
     running.add(r)
     try {
       const { repository, pullNumber } = node.pull

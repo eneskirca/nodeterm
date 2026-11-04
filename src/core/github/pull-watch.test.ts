@@ -9,6 +9,7 @@ import type { GitHubPullDetail, GitHubPullDetailResult } from '../../shared/gith
 import type { AgentMessageOutcome } from '../agents/agent-message-decide'
 import { testTmpDir } from '../test-tmp'
 import { PR_TEXT_UNTRUSTED } from '../../shared/pull-work'
+import { PULL_WATCH_UNLINKED } from '../../shared/github-issues'
 import {
   PULL_WATCH_INTERVAL_MS,
   PULL_WATCH_WAKE_CAP,
@@ -46,6 +47,7 @@ describe('pull watch', () => {
   let dir: string
   let canvases: PullWatchCanvas[]
   let closed: boolean
+  let messaging: ReturnType<PullWatchDeps['messagingRefused']>
   let detailResult: GitHubPullDetailResult
   let checksResult: GitHubPullChecksResult
   let deliver: ReturnType<typeof vi.fn<PullWatchDeps['deliver']>>
@@ -58,6 +60,7 @@ describe('pull watch', () => {
       userDataDir: dir,
       listCanvases: () => canvases,
       projectClosed: () => closed,
+      messagingRefused: () => messaging,
       readDetail,
       readChecks: async () => checksResult,
       deliver,
@@ -75,6 +78,7 @@ describe('pull watch', () => {
     dir = testTmpDir('nt-pull-watch-')
     canvases = [canvas()]
     closed = false
+    messaging = undefined
     detailResult = detail()
     checksResult = checks([check('build', 'pending'), check('lint', 'passed')])
     deliver = vi.fn<PullWatchDeps['deliver']>(async () => delivered)
@@ -259,6 +263,36 @@ describe('pull watch', () => {
     await tick()
     expect(readDetail).not.toHaveBeenCalled()
     expect(deliver).not.toHaveBeenCalled()
+  })
+
+  it('agent messaging off: switch-on is allowed, says at once which setting to turn on, and reads nothing until it is on', async () => {
+    messaging = 'switch-off'
+    await start()
+    const on = (await set(true)) as { on: boolean; note?: string }
+    expect(on.on).toBe(true)
+    expect(on.note).toContain('"Let agents message other agents in this project" in Settings → Agents')
+    expect(await status()).toEqual(on)
+    await vi.advanceTimersByTimeAsync(0)
+    await tick()
+    expect(readDetail).not.toHaveBeenCalled()
+    messaging = undefined
+    expect(await status()).toEqual({ on: true })
+    await tick()
+    expect(readDetail).toHaveBeenCalledTimes(1) // the baseline, taken once a wake can land
+    expect(deliver).not.toHaveBeenCalled()
+  })
+
+  it('no agent messaging on this edition: the status says so', async () => {
+    messaging = 'unsupported-edition'
+    await start()
+    expect(((await set(true)) as { note?: string }).note).toMatch(/canvas control/)
+  })
+
+  it('an agent unlinked while Watch is on: the status says so', async () => {
+    await start()
+    await set(true)
+    canvases = [canvas({ bridges: [] })]
+    expect(await status()).toEqual({ on: true, note: PULL_WATCH_UNLINKED })
   })
 
   it('stops when the pull node is deleted, and forgets it', async () => {

@@ -3,7 +3,7 @@
 // `pullDetail`). A part the read could not answer is left out; without any sidebar read the
 // requested reviewers still show. Reviewers, Assignees and Labels edit through an F4 picker.
 import { useEffect, useState } from 'react'
-import { PULL_WATCH_NO_AGENT, type GitHubIssueUser, type PullWatchStatus } from '@shared/github-issues'
+import { PULL_WATCH_NO_AGENT, PULL_WATCH_UNLINKED, type GitHubIssueUser, type PullWatchStatus } from '@shared/github-issues'
 import type { GitHubPullDetail, PullAvatarDataUrls } from '@shared/github-pull-detail'
 import type { PullClosingIssue, PullReviewer, PullReviewerState } from '@shared/github-pull-sidebar'
 import type { AgentState } from '@shared/agents/normalize'
@@ -150,7 +150,8 @@ function WatchSwitch({ api, projectId, nodeId, linked }: SidebarProps & { linked
     read()
     const timer = setInterval(read, WATCH_STATUS_REFRESH_MS)
     return () => { live = false; clearInterval(timer) }
-  }, [api, projectId, nodeId])
+    // A link change re-reads at once: the core's note follows the link.
+  }, [api, projectId, nodeId, linked])
   if (!nodeId) return null
   // An unlinked node can still switch a running watch off.
   const why = !linked && !status.on ? PULL_WATCH_NO_AGENT : undefined
@@ -161,7 +162,10 @@ function WatchSwitch({ api, projectId, nodeId, linked }: SidebarProps & { linked
       .catch(() => setStatus((s) => ({ ...s, note: 'Watch could not be switched. Try again.' })))
       .finally(() => setBusy(false))
   }
-  const line = why ?? status.reason ?? status.note
+  // The canvas here can be newer than the last read, so the link decides the unlinked note at once.
+  const note = status.note === PULL_WATCH_UNLINKED && linked ? undefined
+    : status.note ?? (status.on && !linked ? PULL_WATCH_UNLINKED : undefined)
+  const line = why ?? status.reason ?? note
   return (
     <div className="pr-switch">
       <button className="pr-switch__track" role="switch" aria-checked={status.on} aria-label="Watch checks and conflicts"

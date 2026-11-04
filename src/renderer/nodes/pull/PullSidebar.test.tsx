@@ -7,7 +7,7 @@ import type { PullSidebar as Sidebar } from '@shared/github-pull-sidebar'
 import { ISSUE_OPEN_EVENT } from '../../lib/openIssueNode'
 import { PullSidebar } from './PullSidebar'
 import type { PullNodeApi } from './shared'
-import type { PullWatchStatus } from '@shared/github-issues'
+import { PULL_WATCH_UNLINKED, type PullWatchStatus } from '@shared/github-issues'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -110,6 +110,24 @@ describe('PullSidebar', () => {
     const watch = on.view.querySelector<HTMLButtonElement>('[role="switch"]')!
     expect([watch.disabled, watch.getAttribute('aria-checked')]).toEqual([false, 'true']) // an unlinked node can still switch it off
     expect(on.view.querySelector('[role="status"]')?.textContent).toBe(note)
+  })
+
+  it('Watch: switched on with agent messaging off, it shows the warning at once', async () => {
+    const note = 'Watch cannot wake the agent: agent messaging is off for this project.'
+    const { view, api } = await render({ ...detail, sidebar }, vi.fn(), vi.fn(), { nodeId: 'pr1', agents: [{ id: 'a1', title: 'Claude' }] })
+    api.setPullWatch.mockResolvedValueOnce({ on: true, note })
+    await act(async () => { view.querySelector<HTMLButtonElement>('[role="switch"]')!.click() })
+    expect(view.querySelector('[role="switch"]')!.getAttribute('aria-checked')).toBe('true')
+    expect(view.querySelector('[role="status"]')?.textContent).toBe(note)
+  })
+
+  it('Watch: an agent unlinked while it is on says so at once, and a relinked one drops a stale unlinked note', async () => {
+    const off = await render({ ...detail, sidebar }, vi.fn(), vi.fn(), { nodeId: 'pr1', watch: { on: true } })
+    expect(off.view.querySelector('[role="status"]')?.textContent).toBe(PULL_WATCH_UNLINKED)
+    act(() => root.unmount()); host.remove()
+    const back = await render({ ...detail, sidebar }, vi.fn(), vi.fn(),
+      { nodeId: 'pr1', agents: [{ id: 'a1', title: 'Claude' }], watch: { on: true, note: PULL_WATCH_UNLINKED } })
+    expect(back.view.querySelector('[role="status"]')).toBeNull()
   })
 
   it('re-requests a review from a reviewer who answered, with the existing write', async () => {
