@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizePullRef, pullPickerChoices } from './pull-node'
+import { normalizePullRef, pullPickerChoices, savedPullRef } from './pull-node'
 import { EMPTY_PULL_BOARD, type GitHubPullStatus } from './github-pull-status'
 
 const pull = (number: number, lifecycle: GitHubPullStatus['lifecycle'], headRefName = `b${number}`): GitHubPullStatus =>
@@ -40,5 +40,15 @@ describe('normalizePullRef tab', () => {
     expect(ref('conversation')).toBe('conversation')
     expect(ref('files')).toBe('files')
     expect(ref('secrets')).toBeUndefined()
+  })
+})
+
+describe('savedPullRef', () => {
+  it('saves Commits and Checks as Conversation, so an older build that knows only overview/files/conversation keeps the node', () => {
+    const saved = (tab: unknown) => savedPullRef({ repository: 'o/r', pullNumber: 7, tab, selectedFile: 'a.ts' })
+    expect(saved('commits')).toEqual({ repository: 'o/r', pullNumber: 7, tab: 'conversation', selectedFile: 'a.ts' })
+    expect(saved('checks')?.tab).toBe('conversation')
+    expect(saved('files')?.tab).toBe('files')
+    expect(saved('secrets')).toBeUndefined()
   })
 })

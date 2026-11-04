@@ -37,7 +37,7 @@ import { sshHostKey } from '@shared/ssh'
 import { normalizeNodeIcon } from '@shared/node-icon'
 import { normalizeIssueRef, type IssueRef } from '@shared/github-issue-ref'
 import { isSafeNodeId } from '@shared/safe-id'
-import { normalizePullRef, type PullNodeRef } from '@shared/pull-node'
+import { normalizePullRef, savedPullRef, type PullNodeRef } from '@shared/pull-node'
 import { normalizeIssuesRef, type IssuesNodeRef } from '@shared/issues-node'
 import { openerByTarget, recordedOpenerOf } from '../lib/teamProgress'
 import { normalizePendingLaunch } from '@shared/pending-launch-shape'
@@ -3118,7 +3118,9 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         whiteboardSource: n.data.whiteboardSource,
         boardRev: n.data.boardRev,
         // Exactly the four reference fields, re-validated on the way OUT: no PR text reaches the file.
-        pull: kind === 'pull' ? normalizePullRef(n.data.pull) : undefined,
+        // ponytail: the remote-host mutation round trip also passes here, so it resets a live
+        // Commits/Checks tab to Conversation. Accepted: the tab is view state.
+        pull: kind === 'pull' ? savedPullRef(n.data.pull) : undefined,
         // Exactly the reference, re-validated on the way OUT: no issue text reaches the file.
         issues: kind === 'issues' ? normalizeIssuesRef(n.data.issues) : undefined,
         url: n.data.url,

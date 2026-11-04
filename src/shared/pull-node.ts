@@ -44,6 +44,15 @@ export function normalizePullRef(value: unknown): PullNodeRef | undefined {
   return { repository, pullNumber, tab: shown, ...(file ? { selectedFile: file } : {}) }
 }
 
+/** The reference as it is written to the git-shared project file. An older build's
+ *  `normalizePullRef` knows only overview/files/conversation and drops the whole ref on any other
+ *  tab, so Commits and Checks are saved as Conversation (CONTRIBUTING: a new board fact must be
+ *  harmless to an older build). The live node keeps its tab until the next load. */
+export function savedPullRef(value: unknown): PullNodeRef | undefined {
+  const ref = normalizePullRef(value)
+  return ref && (ref.tab === 'commits' || ref.tab === 'checks') ? { ...ref, tab: 'conversation' } : ref
+}
+
 /** A node reference from a PR's `html_url` (`https://github.com/o/r/pull/7`), opened on Conversation.
  *  Undefined unless the URL names exactly `expectedNumber`. */
 export function pullRefFromHtmlUrl(htmlUrl: unknown, expectedNumber: number): PullNodeRef | undefined {
