@@ -19,6 +19,7 @@ import { useMergeMethods } from './pull/useMergeMethods'
 import { PullJumpContext } from './pull/PullJumpContext'
 import { SendToProvider, type SendToHost } from './pull/SendTo'
 import { PullZoomCard } from './pull/PullZoomCard'
+import { PullSinceReviewBanner, SINCE_REVIEW, useSinceReview } from './pull/PullSinceReviewBanner'
 
 export type { PullNodeApi } from './pull/shared'
 
@@ -78,6 +79,10 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
   // node opens on another tab; the core holds it 30 s, so the Files tab's same read costs no request.
   const conversation = usePullRead(api.pullConversation, props)
   const openThreads = openThreadCount(conversation)
+  // F-10: one read of the comparison to the viewer's last review, for the banner and Files' Compare.
+  const sinceReview = useSinceReview(props)
+  const [compareTo, setCompareTo] = useState<{ value: string }>()
+  const diffSinceReview = useCallback(() => { setCompareTo({ value: SINCE_REVIEW }); onTab('files') }, [onTab])
   // One read of the allowed merge methods for the merge box's select (once the Conversation tab
   // shows an open PR) and a merge proposal.
   const mergeMethods = useMergeMethods(api, projectId, pull.repository,
@@ -126,6 +131,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
       {!barAboveMerge && proposalBar}
       {opened.includes('conversation') && (
         <div hidden={shownTab !== 'conversation'}>
+          <PullSinceReviewBanner since={sinceReview.since} onDiff={diffSinceReview} />
           <PullConversationTab {...props} detailRead={detailRead} conversation={conversation} checks={checks} ownPull={ownPull} pending={pending}
             onDropPending={dropPending} methods={mergeMethods.methods} onLoadMethods={mergeMethods.load}
             proposalBar={barAboveMerge ? proposalBar : undefined} agentState={agentState} />
@@ -144,7 +150,8 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, sendToH
       {opened.includes('files') && (
         <div hidden={shownTab !== 'files'}>
           <PullFilesTab {...props} head={detail?.head.sha} onSelectFile={onSelectFile} highlight={highlight} pending={pending}
-            onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending} />
+            onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending}
+            compareExtra={sinceReview.compareExtra} compareTo={compareTo} />
         </div>
       )}
     </PullJumpContext.Provider>

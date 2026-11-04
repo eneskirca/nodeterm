@@ -1,0 +1,18 @@
+/* F-10 banner above the Conversation timeline: new commits since the viewer's last review. */
+.pull-node .pr-since {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--pr-line);
+  border-radius: var(--pr-radius-card);
+  background: var(--pr-surface);
+  color: var(--pr-fg);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.pull-node .pr-since > svg { flex: none; color: var(--pr-accent); }
+.pull-node .pr-since--muted { color: var(--pr-muted); }
+.pull-node .pr-since--muted > svg { color: var(--pr-muted); }
+.pull-node .pr-since__diff { margin-left: auto; }

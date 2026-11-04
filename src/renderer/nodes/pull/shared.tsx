@@ -23,6 +23,7 @@ export type PullNodeApi = Pick<
   'pullDetail' | 'pullChecks' | 'pullConversation' | 'pullTimeline' | 'pullFiles' | 'pullFileContents' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods' |
   'repoCollaborators' | 'requestPullReviewer' | 'commentOnPullLine' | 'updatePullBranch' | 'enablePullAutoMerge' |
   'disablePullAutoMerge' | 'setFileViewed' | 'pullCommits' | 'pullCommitFiles' | 'pullCommitFileContents' |
+  'pullSinceReview' | 'pullSinceReviewFileContents' |
   'setReviewThreadResolved' | 'applySuggestion' |
   'setPullLabels' | 'setPullAssignees' | 'repoLabels' |
   'setPullState' | 'markPullReady' | 'deleteHeadBranch' | 'pullForBranch' |

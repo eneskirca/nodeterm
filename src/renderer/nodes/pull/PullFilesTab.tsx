@@ -62,6 +62,8 @@ export type FilesTabProps = ViewProps & LineProps & {
   ownPull: boolean; onDropPending: (sent: readonly PullLineDraft[]) => void
   /** F-10 seam: Compare choices after "All changes", before the commits. */
   compareExtra?: readonly PullCompareOption[]
+  /** Show this `compareExtra` choice (F-10's "Diff since review"); pass a new object per request. */
+  compareTo?: { value: string }
   /** F-07 seam: the line composer's "Note for agent". Absent = the button is off. */
   onNoteForAgent?: (note: PullAgentNote) => void
 }
@@ -77,7 +79,13 @@ export function PullFilesTab(props: FilesTabProps): React.JSX.Element {
   const { api, pull, compareExtra, head } = props
   const all = usePullRead(api.pullFiles, props)
   const commits = usePullRead(api.pullCommits, props)
-  const [compare, setCompare] = useState(ALL)
+  const offered = (asked?: { value: string }) => compareExtra?.some((option) => option.value === asked?.value)
+  const [compare, setCompare] = useState(offered(props.compareTo) ? props.compareTo!.value : ALL)
+  const [asked, setAsked] = useState(props.compareTo)
+  if (props.compareTo !== asked) {
+    setAsked(props.compareTo)
+    if (offered(props.compareTo)) setCompare(props.compareTo!.value)
+  }
   // ponytail: the layout is view state only; saving it in the node ref would widen the persisted shape.
   const [split, setSplit] = useState(true)
   const [finishing, setFinishing] = useState(false)
