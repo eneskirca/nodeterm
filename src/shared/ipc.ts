@@ -589,6 +589,9 @@ export const IPC = {
   githubIssuesPullCommits: 'githubIssues:pull-commits',
   githubIssuesPullCommitFiles: 'githubIssues:pull-commit-files',
   githubIssuesPullCommitFileContents: 'githubIssues:pull-commit-file-contents',
+  // "Since my last review" (F-10): reads, classified like the pull reads above.
+  githubIssuesPullSinceReview: 'githubIssues:pull-since-review',
+  githubIssuesPullSinceReviewFileContents: 'githubIssues:pull-since-review-file-contents',
   // Pull node WRITES: a user click only. Owner-only for relay peers; no canvas-control verb calls them.
   githubIssuesPullComment: 'githubIssues:pull-comment',
   githubIssuesPullReview: 'githubIssues:pull-review',

@@ -56,6 +56,8 @@ import { isPullTimelineCursor, type PullTimelinePage } from '../../shared/github
 import { ISSUE_TIMELINE_QUERY, parseIssueTimelineResponse } from './graphql-issue-timeline'
 import { failingStepTail } from './check-log'
 import { CHECK_LOG_LINES } from '../../shared/github-pull-check-log'
+import { PULL_VIEWER_REVIEW_QUERY, parsePullViewerReview } from './graphql-pull-since-review'
+import type { PullCompare, PullViewerReview } from '../../shared/github-pull-since-review'
 
 const MAX_VIEWED_PAGES = 3
 const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String){
@@ -1270,6 +1272,43 @@ export class GitHubIssuesClient {
     safeRepository(repository)
     if (!positiveInteger(runId, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
     await this.request(`/repos/${repository}/actions/runs/${runId}/rerun-failed-jobs`, { method: 'POST' })
+  }
+
+  /** The viewer's latest submitted review on a PR (graphql-pull-since-review.ts); null = none. */
+  async viewerLatestReview(repository: string, pullNumber: number): Promise<PullViewerReview | null> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const body = await this.graphql(PULL_VIEWER_REVIEW_QUERY, { owner, name, number: pullNumber })
+    try {
+      return parsePullViewerReview(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** `GET /compare/{base}...{head}`: how head relates to base, the commits it is ahead by, and the
+   *  files changed (page 1 carries every file, at most 300; one commit per page keeps it small).
+   *  Null = GitHub has no such comparison: a 404 (the base commit is gone) or a 422 (no merge base),
+   *  both what a force-push leaves. */
+  async compareCommits(repository: string, base: string, head: string): Promise<PullCompare | null> {
+    safeRepository(repository)
+    if (!isCommitSha(base) || !isCommitSha(head)) throw new GitHubClientError('invalid-request')
+    let response: Response
+    try {
+      response = await this.request(`/repos/${repository}/compare/${base}...${head}?per_page=1`, { method: 'GET' })
+    } catch (error) {
+      if (error instanceof GitHubClientError && error.code === 'request-failed' && (error.status === 404 || error.status === 422)) return null
+      throw error
+    }
+    const item = object(await this.json(response))
+    const status = item?.status
+    if (!item || (status !== 'ahead' && status !== 'behind' && status !== 'diverged' && status !== 'identical') ||
+        !Number.isSafeInteger(item.ahead_by) || (item.ahead_by as number) < 0 ||
+        !Array.isArray(item.files) || item.files.length > 300) throw new GitHubClientError('malformed-response')
+    const files = item.files.map(pullFileFrom)
+    if (files.some((file) => !file)) throw new GitHubClientError('malformed-response')
+    return { status, aheadBy: item.ahead_by as number, files: files as PullFile[] }
   }
 
   /**

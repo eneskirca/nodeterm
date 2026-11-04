@@ -72,6 +72,9 @@ import {
   type PullCommitsPage
 } from '../../shared/github-pull-commits'
 import { suggestionOf, withSuggestion } from './pull-suggestion'
+import {
+  MAX_COMPARE_FILES, type GitHubPullSinceReviewResult, type PullCompare, type PullViewerReview
+} from '../../shared/github-pull-since-review'
 import type { GitHubHostError } from './host'
 
 const MAX_ISSUES = 10_000
@@ -198,6 +201,10 @@ export interface GitHubIssuesClientLike {
   pullTimeline?(repository: string, pullNumber: number, after?: string): Promise<PullTimelinePage>
   /** One page of an issue's timeline (GraphQL `timelineItems`). Optional, as above. */
   issueTimeline?(repository: string, issueNumber: number, after?: string): Promise<PullTimelinePage>
+  /** "Since my last review" (F-10): the viewer's latest review, and a compare of two commits
+   *  (null = no such comparison). Optional, as above. */
+  viewerLatestReview?(repository: string, pullNumber: number): Promise<PullViewerReview | null>
+  compareCommits?(repository: string, base: string, head: string): Promise<PullCompare | null>
 }
 
 export interface GitHubIssueProjectContext {
@@ -1367,6 +1374,69 @@ export class GitHubIssueService {
     })
   }
 
+  /**
+   * "Since my last review" (F-10): the viewer's latest submitted review, compared to the head of
+   * the latest `pullDetail` (three-dot compare). The head is part of the key, so a push reads again.
+   * A force-push answers `unavailable` (the reviewed commit is gone, or the head no longer contains
+   * it), never a failure. Same refusals, floor and stale rules as `pullDetail`.
+   */
+  async pullSinceReview(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullSinceReviewResult> {
+    const detail = await this.pullDetail(request)
+    if (detail.status !== 'ok') return detail
+    const head = detail.detail.head.sha
+    return this.pullRead(`since-review\0${head}`, request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.viewerLatestReview || !client.compareCommits) return null
+      const review = await this.readWithEpoch(captured, () => client.viewerLatestReview!(repository, pullNumber))
+      const ok = (since: Extract<GitHubPullSinceReviewResult, { status: 'ok' }>['since']) =>
+        ({ status: 'ok' as const, since, observedAt: this.now() })
+      if (!review) return ok({ kind: 'none' })
+      if (review.commitOid === head) return ok({ kind: 'current', ...review })
+      const compared = await this.readWithEpoch(captured, () => client.compareCommits!(repository, review.commitOid, head))
+      if (!compared) return ok({ kind: 'unavailable', reason: 'commit-gone', ...review })
+      if (compared.status === 'identical') return ok({ kind: 'current', ...review })
+      if (compared.status !== 'ahead') return ok({ kind: 'unavailable', reason: 'history-rewritten', ...review })
+      return ok({
+        kind: 'moved', ...review, head, commits: compared.aheadBy, files: compared.files,
+        truncated: compared.files.length >= MAX_COMPARE_FILES
+      })
+    })
+  }
+
+  /** One file of `pullSinceReview` as a diff: the reviewed commit against the head. With nothing to
+   *  compare, or a path the comparison does not list, it answers `unavailable: not-in-pull`. */
+  async pullSinceReviewFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; path: string }
+  ): Promise<GitHubPullFileContentsResult> {
+    if (typeof request?.path !== 'string') return { status: 'refused', reason: 'not-configured' }
+    const since = await this.pullSinceReview(request)
+    if (since.status !== 'ok') return since
+    const { path } = request
+    const notInPull = { status: 'ok' as const, contents: { kind: 'unavailable' as const, reason: 'not-in-pull' as const }, observedAt: this.now() }
+    if (since.since.kind !== 'moved') return notInPull
+    const { commitOid, head, files } = since.since
+    const file = files.find((item) => item.path === path)
+    if (!file) return notInPull
+    return this.pullRead(`since-review-contents\0${commitOid}\0${head}\0${path}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.getFileAt) return null
+      const side = async (at: string, ref: string): Promise<PullFileRead> =>
+        this.readWithEpoch(captured, () => client.getFileAt!(repository, at, ref))
+      const [before, after] = await Promise.all([
+        file.status === 'added' ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, commitOid),
+        file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, head)
+      ])
+      const unavailable = [before, after].find((item) => item.kind === 'unavailable')
+      return {
+        status: 'ok',
+        contents: unavailable?.kind === 'unavailable'
+          ? { kind: 'unavailable', reason: unavailable.reason }
+          : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
+        observedAt: this.now()
+      }
+    })
+  }
+
   /** The merge base of `base` and `head`, read once per pair through `pullRead`. */
   private async pullMergeBase(
     request: { projectId: string; repository: string; pullNumber: number }, base: string, head: string
@@ -1960,7 +2030,9 @@ export class GitHubIssueService {
       | 'commits' | `commit-files\0${string}` | `commit-contents\0${string}`
       | 'timeline' | `timeline\0${string}`
       | 'issue-timeline' | `issue-timeline\0${string}`
-      | `check-log\0${string}`,
+      | `check-log\0${string}`
+      // `since-review…\0<head>…`: the comparison to the viewer's last review, and one file of it (F-10).
+      | `since-review\0${string}` | `since-review-contents\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {

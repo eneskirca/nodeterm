@@ -1,6 +1,7 @@
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
 import type { GitHubPullCheckLogResult } from './github-pull-check-log'
 import type { GitHubPullTimelineResult } from './github-pull-timeline'
+import type { GitHubPullSinceReviewResult } from './github-pull-since-review'
 import type { GitHubRepoLabelsResult } from './github-pull-sidebar'
 import type {
   GitHubPullConversationResult,
@@ -336,6 +337,12 @@ export interface GitHubIssuesApi {
   pullCommitFiles(projectId: string, repository: string, pullNumber: number, sha: string): Promise<GitHubPullCommitFilesResult>
   pullCommitFileContents(
     projectId: string, repository: string, pullNumber: number, sha: string, path: string
+  ): Promise<GitHubPullFileContentsResult>
+  /** "Since my last review" (F-10): the viewer's latest review compared to the head, and one file
+   *  of that comparison as a diff. Same refusals and floor as `pullDetail`. */
+  pullSinceReview(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullSinceReviewResult>
+  pullSinceReviewFileContents(
+    projectId: string, repository: string, pullNumber: number, path: string
   ): Promise<GitHubPullFileContentsResult>
   /** Post a comment on the PR. A user click only; needs the approved repository, not the mapping. */
   commentOnPull(

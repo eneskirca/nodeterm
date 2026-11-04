@@ -54,6 +54,12 @@ describe('registerGitHubIssueHandlers', () => {
       pullCommitFileContents: async (...args: unknown[]) => {
         calls.push(['commitContents', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
       },
+      pullSinceReview: async (...args: unknown[]) => {
+        calls.push(['sinceReview', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
+      },
+      pullSinceReviewFileContents: async (...args: unknown[]) => {
+        calls.push(['sinceReviewContents', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
+      },
       commentOnPull: async (...args: unknown[]) => { calls.push(['comment', ...args]); return { ok: true as const } },
       reviewPull: async (...args: unknown[]) => { calls.push(['review', ...args]); return { ok: true as const } },
       mergePull: async (...args: unknown[]) => { calls.push(['merge', ...args]); return { ok: true as const } },
@@ -106,6 +112,8 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesPullCommits]('p1', 'o/r', 12)
     await platform.handlers[IPC.githubIssuesPullCommitFiles]('p1', 'o/r', 12, 'c'.repeat(40))
     await platform.handlers[IPC.githubIssuesPullCommitFileContents]('p1', 'o/r', 12, 'c'.repeat(40), 'src/a.ts')
+    await platform.handlers[IPC.githubIssuesPullSinceReview]('p1', 'o/r', 12)
+    await platform.handlers[IPC.githubIssuesPullSinceReviewFileContents]('p1', 'o/r', 12, 'src/a.ts')
     await platform.handlers[IPC.githubIssuesPullComment]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, body: 'b' })
     await platform.handlers[IPC.githubIssuesPullReview]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' })
     await platform.handlers[IPC.githubIssuesPullMerge]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'h' })
@@ -149,6 +157,8 @@ describe('registerGitHubIssueHandlers', () => {
       ['commits', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
       ['commitFiles', { projectId: 'p1', repository: 'o/r', pullNumber: 12, sha: 'c'.repeat(40) }],
       ['commitContents', { projectId: 'p1', repository: 'o/r', pullNumber: 12, sha: 'c'.repeat(40), path: 'src/a.ts' }],
+      ['sinceReview', { projectId: 'p1', repository: 'o/r', pullNumber: 12 }],
+      ['sinceReviewContents', { projectId: 'p1', repository: 'o/r', pullNumber: 12, path: 'src/a.ts' }],
       ['comment', { projectId: 'p1', repository: 'o/r', pullNumber: 12, body: 'b' }],
       ['review', { projectId: 'p1', repository: 'o/r', pullNumber: 12, event: 'APPROVE', body: '', headSha: 'h' }],
       ['merge', { projectId: 'p1', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'h' }],

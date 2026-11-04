@@ -46,6 +46,8 @@ function api(): GitHubIssuesApi {
     pullCommits: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     pullCommitFiles: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     pullCommitFileContents: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
+    pullSinceReview: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
+    pullSinceReviewFileContents: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     commentOnPull: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     reviewPull: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     mergePull: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),

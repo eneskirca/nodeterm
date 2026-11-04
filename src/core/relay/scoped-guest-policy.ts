@@ -490,6 +490,8 @@ export const SCOPED: Readonly<Record<string, Check>> = Object.freeze({
   [IPC.githubIssuesPullCommitFiles]: projectArg0,
   [IPC.githubIssuesPullCommitFileContents]: projectArg0,
   [IPC.githubIssuesPullCheckLog]: projectArg0,
+  [IPC.githubIssuesPullSinceReview]: projectArg0,
+  [IPC.githubIssuesPullSinceReviewFileContents]: projectArg0,
   [IPC.githubIssuesRepoMergeMethods]: projectArg0,
   [IPC.githubIssuesRepoCollaborators]: projectArg0,
   [IPC.githubIssuesRepoLabels]: projectArg0,

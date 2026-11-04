@@ -29,6 +29,7 @@ import type {
   PullWriteResult
 } from '../../shared/github-pull-detail'
 import type { GitHubPullCommitFilesResult, GitHubPullCommitsResult } from '../../shared/github-pull-commits'
+import type { GitHubPullSinceReviewResult } from '../../shared/github-pull-since-review'
 
 export interface GitHubIssueHandlerService {
   subscribe(uiId: number, request: { projectId: string }): Promise<GitHubIssuePage>
@@ -64,6 +65,10 @@ export interface GitHubIssueHandlerService {
   ): Promise<GitHubPullCommitFilesResult>
   pullCommitFileContents(
     request: { projectId: string; repository: string; pullNumber: number; sha: string; path: string }
+  ): Promise<GitHubPullFileContentsResult>
+  pullSinceReview(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullSinceReviewResult>
+  pullSinceReviewFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; path: string }
   ): Promise<GitHubPullFileContentsResult>
   commentOnPull(
     request: { projectId: string; repository: string; pullNumber: number; body: string }
@@ -147,6 +152,11 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesPullCommitFileContents,
     (projectId: string, repository: string, pullNumber: number, sha: string, path: string) =>
       service.pullCommitFileContents({ projectId, repository, pullNumber, sha, path }))
+  platform.handle(IPC.githubIssuesPullSinceReview, (projectId: string, repository: string, pullNumber: number) =>
+    service.pullSinceReview({ projectId, repository, pullNumber }))
+  platform.handle(IPC.githubIssuesPullSinceReviewFileContents,
+    (projectId: string, repository: string, pullNumber: number, path: string) =>
+      service.pullSinceReviewFileContents({ projectId, repository, pullNumber, path }))
   platform.handle(IPC.githubIssuesPullComment, (request) => service.commentOnPull(request))
   platform.handle(IPC.githubIssuesPullReview, (request) => service.reviewPull(request))
   platform.handle(IPC.githubIssuesPullMerge, (request) => service.mergePull(request))

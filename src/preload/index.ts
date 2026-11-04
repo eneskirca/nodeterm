@@ -290,6 +290,10 @@ const api: NodeTerminalApi = {
       ipcRenderer.invoke(IPC.githubIssuesPullCommitFiles, projectId, repository, pullNumber, sha),
     pullCommitFileContents: (projectId, repository, pullNumber, sha, path) =>
       ipcRenderer.invoke(IPC.githubIssuesPullCommitFileContents, projectId, repository, pullNumber, sha, path),
+    pullSinceReview: (projectId, repository, pullNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullSinceReview, projectId, repository, pullNumber),
+    pullSinceReviewFileContents: (projectId, repository, pullNumber, path) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullSinceReviewFileContents, projectId, repository, pullNumber, path),
     commentOnPull: (request) => ipcRenderer.invoke(IPC.githubIssuesPullComment, request),
     reviewPull: (request) => ipcRenderer.invoke(IPC.githubIssuesPullReview, request),
     mergePull: (request) => ipcRenderer.invoke(IPC.githubIssuesPullMerge, request),
