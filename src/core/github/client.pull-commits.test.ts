@@ -37,6 +37,17 @@ describe('parsePullCommits', () => {
     })
   })
 
+  it('reads the co-authors after the first and the commit CI state, leaving out odd ones', () => {
+    const [read] = parsePullCommits(page([node(A, {
+      authors: { nodes: [{ name: 'Octo Cat', user: { login: 'octocat' } }, { name: 'Claude', user: null }, { name: 7 }] },
+      statusCheckRollup: { state: 'FAILURE' }
+    })])).commits
+    expect(read).toMatchObject({ coAuthors: ['Claude'], ci: 'failed' })
+    const [plain] = parsePullCommits(page([node(B, { authors: { nodes: [{ name: 'Octo Cat' }] }, statusCheckRollup: { state: 'NEW' } })])).commits
+    expect(plain.coAuthors).toBeUndefined()
+    expect(plain.ci).toBeUndefined()
+  })
+
   it('drops an avatar from another host, keeping the commit', () => {
     const odd = node(A, { author: { name: 'X', user: { databaseId: 3, login: 'x', avatarUrl: 'https://evil.example/a.png' } } })
     expect(parsePullCommits(page([odd])).commits[0].author).toBeNull()

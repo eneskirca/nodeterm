@@ -15,6 +15,10 @@ export interface PullCommit {
   committedAt: string
   /** GitHub reports a valid signature. */
   verified: boolean
+  /** Co-authors after the first author (login, else git name). Absent when none. */
+  coAuthors?: string[]
+  /** The commit's check rollup. Absent when it has none, or the state is new to this build. */
+  ci?: 'passed' | 'failed' | 'pending'
 }
 
 /** One page of the PR's commits, oldest first. `after` = the cursor of the next page. */

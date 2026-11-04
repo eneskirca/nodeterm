@@ -10,7 +10,7 @@ export const PULL_COMMITS_QUERY = `query($owner:String!,$name:String!,$number:In
     pullRequest(number:$number){
       commits(first:${PULL_COMMITS_PER_PAGE},after:$after){
         pageInfo{ hasNextPage endCursor }
-        nodes{ commit{ oid messageHeadline committedDate signature{ isValid } author{ name user{ databaseId login avatarUrl } } } }
+        nodes{ commit{ oid messageHeadline committedDate signature{ isValid } author{ name user{ databaseId login avatarUrl } } authors(first:4){ nodes{ name user{ login } } } statusCheckRollup{ state } } }
       }
     }
   }
@@ -35,6 +35,24 @@ function commitUser(value: unknown): GitHubIssueUser | null {
   return { id, login: user.login, avatarUrl: avatar.toString() }
 }
 
+const ROLLUP_CI: Record<string, PullCommit['ci']> = {
+  SUCCESS: 'passed', FAILURE: 'failed', ERROR: 'failed', PENDING: 'pending', EXPECTED: 'pending'
+}
+
+/** The co-authors after the first (login, else name) and the commit's CI state. Lenient: display only. */
+function commitExtras(commit: Record<string, unknown>): Pick<PullCommit, 'coAuthors' | 'ci'> {
+  const nodes = object(commit.authors)?.nodes
+  const coAuthors = (Array.isArray(nodes) ? nodes.slice(1) : []).flatMap((entry) => {
+    const author = object(entry)
+    const login = object(author?.user)?.login
+    const name = text(login, 128) && login ? login : author?.name
+    return text(name, 256) && name ? [name] : []
+  })
+  const state = object(commit.statusCheckRollup)?.state
+  const ci = typeof state === 'string' ? ROLLUP_CI[state] : undefined
+  return { ...(coAuthors.length ? { coAuthors } : {}), ...(ci ? { ci } : {}) }
+}
+
 /** Decodes one page. Throws `GraphQLShapeError` for a malformed body or any error. */
 export function parsePullCommits(body: unknown): PullCommitsPage {
   if (graphQLErrors(body).length) throw new GraphQLShapeError()
@@ -53,7 +71,8 @@ export function parsePullCommits(body: unknown): PullCommitsPage {
       author: commitUser(author?.user),
       authorName: text(author?.name, 256) ? author.name : '',
       committedAt: commit.committedDate,
-      verified: object(commit.signature)?.isValid === true
+      verified: object(commit.signature)?.isValid === true,
+      ...commitExtras(commit)
     }
   })
   if (!page.hasNextPage) return { commits }
