@@ -1872,14 +1872,6 @@ export class GitHubIssueService {
     }
   }
 
-  /**
-   * The shared path of every pull node read, run on mount and on Refresh. The node names the
-   * repository it was opened for; anything but the project's approved repository is refused before
-   * a credential is resolved, so a shared project file cannot point this token at another repo. A
-   * read inside `REFRESH_MIN_INTERVAL_MS` of the last good one answers from memory; a failed read
-   * keeps the last good answer, marks it stale, and does not hold the floor. Never throws.
-   * `read` answers null when this client cannot make the read at all.
-   */
   /** The sidebar part of `pullDetail`, reviewers merged. Undefined when this client has no such read
    *  or it failed. ponytail: a failed sidebar hides the sidebar parts and never fails the detail. */
   private async pullSidebar(captured: GitHubIssueServiceContext, repository: string, pullNumber: number): Promise<PullSidebar | undefined> {
@@ -1901,6 +1893,14 @@ export class GitHubIssueService {
     return dataUrls.size ? Object.fromEntries([...dataUrls].map(([id, url]) => [String(id), url])) : undefined
   }
 
+  /**
+   * The shared path of every pull node read, run on mount and on Refresh. The node names the
+   * repository it was opened for; anything but the project's approved repository is refused before
+   * a credential is resolved, so a shared project file cannot point this token at another repo. A
+   * read inside `REFRESH_MIN_INTERVAL_MS` of the last good one answers from memory; a failed read
+   * keeps the last good answer, marks it stale, and does not hold the floor. Never throws.
+   * `read` answers null when this client cannot make the read at all.
+   */
   private async pullRead<O extends PullOk>(
     // `contents\0…` carries the file and SHAs, so a held entry is one file at one head;
     // `merge-base\0…` carries the base and head SHAs.

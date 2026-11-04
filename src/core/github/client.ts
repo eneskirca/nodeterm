@@ -49,6 +49,11 @@ import {
 } from './graphql-pulls'
 import { PULL_SIDEBAR_QUERY, parsePullSidebar } from './graphql-pull-sidebar'
 import type { PullSidebarRead } from '../../shared/github-pull-sidebar'
+import { PULL_COMMITS_QUERY, parsePullCommits } from './graphql-pull-commits'
+import { isCommitSha, type PullCommitFilesPage, type PullCommitsPage } from '../../shared/github-pull-commits'
+import { PULL_TIMELINE_QUERY, parsePullTimelineResponse } from './graphql-pull-timeline'
+import { isPullTimelineCursor, type PullTimelinePage } from '../../shared/github-pull-timeline'
+import { ISSUE_TIMELINE_QUERY, parseIssueTimelineResponse } from './graphql-issue-timeline'
 
 const MAX_VIEWED_PAGES = 3
 const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String){
@@ -56,17 +61,12 @@ const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
     files(first:100,after:$after){ nodes{ path viewerViewedState } pageInfo{ hasNextPage endCursor } }
   } }
 }`
-import { PULL_COMMITS_QUERY, parsePullCommits } from './graphql-pull-commits'
-import { isCommitSha, type PullCommitFilesPage, type PullCommitsPage } from '../../shared/github-pull-commits'
 
 const PULL_THREAD_IDS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){ pullRequest(number:$number){
     reviewThreads(first:100){ nodes{ id comments(first:1){ nodes{ databaseId } } } }
   } }
 }`
-import { PULL_TIMELINE_QUERY, parsePullTimelineResponse } from './graphql-pull-timeline'
-import { isPullTimelineCursor, type PullTimelinePage } from '../../shared/github-pull-timeline'
-import { ISSUE_TIMELINE_QUERY, parseIssueTimelineResponse } from './graphql-issue-timeline'
 
 const API_ORIGIN = 'https://api.github.com'
 const REVIEW_EVENTS: ReadonlySet<unknown> = new Set<PullReviewEvent>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT'])

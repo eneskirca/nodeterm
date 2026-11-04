@@ -4,6 +4,7 @@ import type { PullAvatarDataUrls, PullReviewVerdict } from '@shared/github-pull-
 import type { PullTimelineItem } from '@shared/github-pull-timeline'
 import { NoteMarkdown } from '../../components/NoteMarkdown'
 import { Avatar } from './Avatar'
+import { LabelChip } from './LabelChip'
 
 const VERDICT_TEXT: Record<PullReviewVerdict, string> = {
   approved: 'Approved', 'changes-requested': 'Changes requested', commented: 'Commented', dismissed: 'Dismissed'
@@ -11,18 +12,13 @@ const VERDICT_TEXT: Record<PullReviewVerdict, string> = {
 
 const short = (oid: string | null): string => oid ? oid.slice(0, 7) : 'an unknown commit'
 
-/** A label as a colored chip. ponytail: inline color; the sidebar (ticket 06) may own a shared chip. */
-export function LabelChip({ label }: { label: { name: string; color: string } }): React.JSX.Element {
-  return <span className="pull-label" style={{ background: `#${label.color}` }}>{label.name}</span>
-}
-
 /** What an event says after its actor's login. */
 function eventText(item: PullTimelineItem): React.ReactNode {
   switch (item.kind) {
     case 'commit': return <>added <code>{short(item.oid)}</code> {item.headline}</>
     case 'force-push': return <>force-pushed from <code>{short(item.before)}</code> to <code>{short(item.after)}</code></>
-    case 'labeled': return <>added the <LabelChip label={item.label} /> label</>
-    case 'unlabeled': return <>removed the <LabelChip label={item.label} /> label</>
+    case 'labeled': return <>added the <LabelChip {...item.label} /> label</>
+    case 'unlabeled': return <>removed the <LabelChip {...item.label} /> label</>
     case 'review-requested': return <>requested a review from <strong>{item.reviewer ?? 'someone'}</strong></>
     case 'assigned': return <>assigned <strong>{item.assignee?.login ?? 'ghost'}</strong></>
     case 'unassigned': return <>unassigned <strong>{item.assignee?.login ?? 'ghost'}</strong></>
