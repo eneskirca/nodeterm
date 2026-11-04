@@ -253,7 +253,9 @@ export function SessionMemoryPanel({
   }
 
   return (
-    <div className="sessmem-panel" id="sessmem-panel" role="region" aria-label="Session memory">
+    // `nowheel`: the panel sits inside `.flow-wrap`, whose capture-phase wheel listener zooms the
+    // canvas on a plain wheel when "Scroll wheel zooms" is on — the row list could not scroll.
+    <div className="sessmem-panel nowheel" id="sessmem-panel" role="region" aria-label="Session memory">
       <div className="sessmem-panel__head">
         <span className="sessmem-panel__title">Session memory</span>
         {/* Which machine these numbers describe. The SSH panel is visually identical to the local

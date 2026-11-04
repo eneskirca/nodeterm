@@ -122,3 +122,13 @@ describe('Claude usage failure readout', () => {
     expect(host.querySelector('.usage-popover__empty')).toBeNull()
   })
 })
+
+describe('Usage popover wheel', () => {
+  it('owns the wheel, so a plain wheel scrolls the account list instead of zooming the canvas', async () => {
+    // Mounted inside `.flow-wrap`, whose capture-phase wheel listener (Canvas.tsx) zooms every
+    // plain wheel when Settings → "Scroll wheel zooms" is on, unless the target is under `.nowheel`.
+    await open(snapshot('ok', [limit]))
+    expect(host.querySelector('.usage-popover')?.closest('.nowheel')).not.toBeNull()
+    expect(host.querySelector('.usage-popover__body')?.closest('.nowheel')).not.toBeNull()
+  })
+})
