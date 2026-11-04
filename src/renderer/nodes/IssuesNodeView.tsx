@@ -1,12 +1,21 @@
 import { useEffect, useState } from 'react'
 import type { GitHubIssueCardView, GitHubIssuesApi } from '@shared/github-issues'
 import type {
-  GitHubIssueConversationResult, PullReadFailure, PullRefusal, PullWriteReason, PullWriteResult
+  PullAvatarDataUrls, PullReadFailure, PullRefusal, PullWriteReason, PullWriteResult
 } from '@shared/github-pull-detail'
+import type { GitHubPullTimelineResult, PullTimelineItem } from '@shared/github-pull-timeline'
 import type { IssuesNodeRef } from '@shared/issues-node'
 import { NoteMarkdown } from '../components/NoteMarkdown'
+import { Avatar } from './pull/Avatar'
+import { LabelChip } from './pull/LabelChip'
+import { TimelineItem } from './pull/TimelineItem'
 
-export type IssuesNodeApi = Pick<GitHubIssuesApi, 'refresh' | 'query' | 'issueConversation' | 'commentOnIssue'>
+export type IssuesNodeApi = Pick<GitHubIssuesApi, 'refresh' | 'query' | 'issueTimeline' | 'commentOnIssue'>
+
+/** The timeline kinds an issue shows; anything else a read carries is dropped. */
+const ISSUE_KINDS: ReadonlySet<string> = new Set<PullTimelineItem['kind']>([
+  'comment', 'labeled', 'unlabeled', 'assigned', 'unassigned', 'closed', 'reopened', 'cross-referenced'
+])
 
 type Filter = 'open' | 'mine'
 
@@ -46,6 +55,8 @@ export function IssuesNodeView(props: {
   onSelect: (issueNumber: number) => void
   onWork: (issue: GitHubIssueCardView, worktree: boolean) => void
   onOpenExternal: (url: string) => void
+  /** A PR of this repository the timeline names: open it as a pull node. */
+  onOpenPull: (pullNumber: number) => void
 }): React.JSX.Element {
   const { api, projectId, issues, refreshTick, onSelect } = props
   const [filter, setFilter] = useState<Filter>('open')
@@ -121,6 +132,12 @@ export function IssuesNodeView(props: {
               <button className="issues-node__row" aria-current={item.number === issues.issueNumber}
                 onClick={() => onSelect(item.number)}>
                 <span className="pull-node__number">#{item.number}</span> {item.title}
+                {(item.labels.length > 0 || item.assignees.length > 0) && (
+                  <span className="issues-node__row-meta">
+                    {item.labels.map((l) => <LabelChip key={l.id} name={l.name} color={l.color} />)}
+                    {item.assignees.map((user) => <Avatar key={user.id} user={user} avatars={item.avatarDataUrls} size={16} />)}
+                  </span>
+                )}
               </button>
             </li>
           ))}
@@ -143,6 +160,9 @@ export function IssuesNodeView(props: {
   )
 }
 
+/** The first page read after a mount or a write, and the pages "Load more" added to it. */
+type Timeline = { first: GitHubPullTimelineResult; items: PullTimelineItem[]; next?: string; avatars?: PullAvatarDataUrls }
+
 function IssueDetail(props: {
   api: IssuesNodeApi
   projectId: string
@@ -151,9 +171,10 @@ function IssueDetail(props: {
   refreshTick: number
   onWork: (issue: GitHubIssueCardView, worktree: boolean) => void
   onOpenExternal: (url: string) => void
+  onOpenPull: (pullNumber: number) => void
 }): React.JSX.Element {
-  const { api, projectId, issues, issue, refreshTick, onWork, onOpenExternal } = props
-  const [comments, setComments] = useState<GitHubIssueConversationResult | 'loading'>('loading')
+  const { api, projectId, issues, issue, refreshTick, onWork, onOpenExternal, onOpenPull } = props
+  const [timeline, setTimeline] = useState<Timeline | 'loading'>('loading')
   const [written, setWritten] = useState(0)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -161,12 +182,27 @@ function IssueDetail(props: {
 
   useEffect(() => {
     let live = true
-    setComments('loading')
-    api.issueConversation(projectId, issues.repository, issue.number)
-      .then((result) => { if (live) setComments(result) })
-      .catch(() => { if (live) setComments({ status: 'failed', reason: 'unreachable' }) })
+    setTimeline('loading')
+    const page = (first: GitHubPullTimelineResult): Timeline => first.status === 'ok'
+      ? { first, items: first.items, next: first.next, avatars: first.avatarDataUrls }
+      : { first, items: [] }
+    api.issueTimeline(projectId, issues.repository, issue.number)
+      .then((first) => { if (live) setTimeline(page(first)) })
+      .catch(() => { if (live) setTimeline(page({ status: 'failed', reason: 'unreachable' })) })
     return () => { live = false }
   }, [api, projectId, issues.repository, issue.number, refreshTick, written])
+
+  // ponytail: a failed later page leaves "Load more" in place for another click.
+  const loadMore = () => {
+    if (timeline === 'loading' || !timeline.next) return
+    const before = timeline
+    void api.issueTimeline(projectId, issues.repository, issue.number, before.next).then((page) => {
+      if (page.status !== 'ok') return
+      setTimeline((current) => current === before
+        ? { ...before, items: [...before.items, ...page.items], next: page.next, avatars: { ...before.avatars, ...page.avatarDataUrls } }
+        : current)
+    }, () => undefined)
+  }
 
   const comment = async () => {
     if (busy) return
@@ -180,46 +216,63 @@ function IssueDetail(props: {
     setWritten((n) => n + 1)
   }
 
+  const first = timeline === 'loading' ? undefined : timeline.first
+  const avatars = { ...issue.avatarDataUrls, ...(timeline === 'loading' ? {} : timeline.avatars) }
+  const items = timeline === 'loading' ? [] : timeline.items.filter((item) => ISSUE_KINDS.has(item.kind))
+  const here = (repository: string) => repository.toLowerCase() === issues.repository.toLowerCase()
+
   return (
     <div>
-      <h3 className="pull-node__title">{issue.title} <span className="pull-node__number">#{issue.number}</span></h3>
-      <div className="pull-node__meta">
-        {issue.labels.map((l) => <span key={l.id} className="pull-node__lifecycle">{l.name}</span>)}
-        {issue.assignees.length > 0 && <span>Assigned to {issue.assignees.map((a) => a.login).join(', ')}</span>}
-      </div>
+      <header className="pull-head">
+        <h3 className="pull-node__title">{issue.title} <span className="pull-node__number">#{issue.number}</span></h3>
+        <div className="pull-node__meta">
+          <span className={`pull-node__lifecycle pull-node__lifecycle--${issue.state}`}>{issue.state === 'open' ? 'Open' : 'Closed'}</span>
+          {issue.labels.map((l) => <LabelChip key={l.id} name={l.name} color={l.color} />)}
+        </div>
+        <div className="pull-node__meta">
+          <span className="pull-reviewers__label">Assignees:</span>
+          {issue.assignees.length > 0
+            ? issue.assignees.map((user) => (
+              <span key={user.id} className="pull-person">
+                <Avatar user={user} avatars={avatars} size={16} /><span className="pull-node__author">{user.login}</span>
+              </span>
+            ))
+            : <span className="pull-node__empty">No one assigned.</span>}
+        </div>
+      </header>
       <div className="pull-compose__actions issues-node__work">
         <button className="pull-compose__button" onClick={() => onWork(issue, false)}>Work on this</button>
         <button className="pull-compose__button" onClick={() => onWork(issue, true)}>Work on this in a new worktree</button>
         <button className="pull-compose__button" onClick={() => onOpenExternal(issue.htmlUrl)}>Open on GitHub</button>
       </div>
-      {issue.body.trim()
-        ? <NoteMarkdown text={issue.body} className="sticky-node__md pull-node__md" />
-        : <p className="pull-node__empty">No description.</p>}
-      {comments === 'loading' && <p className="pull-node__state">Loading comments…</p>}
-      {comments !== 'loading' && comments.status !== 'ok' && (
-        <p className="pull-node__state" role="status">{READ_TEXT[comments.reason]}</p>
+      <ol className="pull-convo">
+        <li className="pull-convo__item pull-convo__item--description">
+          <div className="pull-convo__head">
+            <span className="pull-convo__event-text">Opened</span>
+            {first?.status === 'ok' && <time className="pull-convo__time" dateTime={first.openedAt}>{new Date(first.openedAt).toLocaleString()}</time>}
+          </div>
+          {issue.body.trim()
+            ? <NoteMarkdown text={issue.body} className="sticky-node__md pull-node__md" />
+            : <p className="pull-node__empty">No description.</p>}
+        </li>
+        {items.map((item) => item.kind === 'cross-referenced'
+          ? [
+            <TimelineItem key={item.id} item={item} avatars={avatars} />,
+            <li key={`${item.id}-open`} className="pull-convo__event">
+              {item.source.pull && here(item.source.repository)
+                ? <button className="pull-compose__button" onClick={() => onOpenPull(item.source.number)}>Open #{item.source.number} as a pull node</button>
+                : <button className="pull-compose__button" onClick={() => onOpenExternal(item.source.url)}>Open {item.source.repository}#{item.source.number} on GitHub</button>}
+            </li>
+          ]
+          : <TimelineItem key={item.id} item={item} avatars={avatars} />)}
+      </ol>
+      {timeline === 'loading' && <p className="pull-node__state">Loading the timeline…</p>}
+      {first && first.status !== 'ok' && <p className="pull-node__state" role="status">{READ_TEXT[first.reason]}</p>}
+      {first?.status === 'ok' && first.stale && (
+        <p className="pull-node__stale" role="status">{READ_TEXT[first.stale]} Showing the last loaded timeline.</p>
       )}
-      {comments !== 'loading' && comments.status === 'ok' && (
-        <>
-          {comments.stale && <p className="pull-node__stale" role="status">{READ_TEXT[comments.stale]} Showing the last loaded comments.</p>}
-          {comments.truncated && <p className="pull-node__empty">Showing the first comments only. Open on GitHub for the rest.</p>}
-          {comments.items.length === 0
-            ? <p className="pull-node__empty">No comments yet.</p>
-            : (
-              <ol className="pull-convo">
-                {comments.items.map((item) => (
-                  <li key={item.id} className="pull-convo__item pull-convo__item--comment">
-                    <div className="pull-convo__head">
-                      <span className="pull-node__author">{item.author?.login ?? 'ghost'}</span>
-                      <time className="pull-convo__time" dateTime={item.at}>{new Date(item.at).toLocaleString()}</time>
-                    </div>
-                    {item.body.trim() && <NoteMarkdown text={item.body} className="sticky-node__md pull-node__md" />}
-                  </li>
-                ))}
-              </ol>
-            )}
-        </>
-      )}
+      {first?.status === 'ok' && items.length === 0 && <p className="pull-node__empty">No activity yet.</p>}
+      {timeline !== 'loading' && timeline.next && <button className="pull-compose__button" onClick={loadMore}>Load more</button>}
       <div className="pull-compose">
         <textarea className="pull-compose__box" aria-label="Comment" placeholder="Write a comment"
           value={draft} onChange={(event) => setDraft(event.target.value)} />

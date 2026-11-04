@@ -19370,3 +19370,5 @@ button.pull-commits__headline:hover { text-decoration: underline; }
 .issues-node__row:hover { background: rgba(var(--tint-rgb), 0.08); }
 .issues-node__row[aria-current='true'] { color: var(--text-strong); background: rgba(var(--tint-rgb), 0.14); }
 .issues-node__work { margin-bottom: 10px; }
+.issues-node__row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 3px; }
+.issues-node__detail .pull-head .pull-node__meta + .pull-node__meta { margin-top: 6px; }

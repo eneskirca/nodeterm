@@ -10,6 +10,7 @@ import { useOwningProjectId } from '../session/owning-project'
 import { MaximizeButton } from './MaximizeButton'
 import { IssuesNodeView } from './IssuesNodeView'
 import { ISSUE_WORK_EVENT, issuesWebUrl, type IssueWorkRequest } from '@shared/issues-node'
+import { PULL_OPEN_EVENT, type PullOpenRequest } from '../lib/openPullNode'
 
 /**
  * The open issues of the folder's repository, with one issue's detail and comments beside the list.
@@ -100,6 +101,8 @@ export function IssuesNode({ id, data, selected }: NodeProps<CanvasNode>) {
                 window.dispatchEvent(new CustomEvent(ISSUE_WORK_EVENT, { detail }))
               }}
               onOpenExternal={(url) => void api.shell.openExternal(url)}
+              onOpenPull={(pullNumber) =>
+                window.dispatchEvent(new CustomEvent<PullOpenRequest>(PULL_OPEN_EVENT, { detail: { pullNumber } }))}
             />
           )
           : <p className="pull-node__state">This node names no repository. Add the Issues node again.</p>}

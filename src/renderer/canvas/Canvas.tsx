@@ -676,6 +676,7 @@ import type { GitHubIssueCardView as DispatchIssueCard } from '@shared/github-is
 import { planIssueWorktree } from '@shared/issue-worktree'
 import { PULL_WORK_EVENT, planPullWorktree, pullWorkPrompt, type PullWorkRequest } from '@shared/pull-work'
 import { ISSUE_OPEN_EVENT, openIssueInNodes, type IssueOpenRequest } from '../lib/openIssueNode'
+import { PULL_OPEN_EVENT, type PullOpenRequest } from '../lib/openPullNode'
 import { sharedBasePathOf, sharedWorktreeLocationRefusal } from '@shared/worktree-location'
 import {
   frameAgentPlacement,
@@ -11805,6 +11806,17 @@ export function Canvas() {
     },
     [approvedRepoFor, placePullNode]
   )
+
+  // The issues node's cross-referenced PR: the add menu's open-PR path, so a PR with a node is framed.
+  // ponytail: the issues node sends only PRs of its own repository, which the core holds to the approved one.
+  useEffect(() => {
+    const onOpen = (e: Event): void => {
+      const pullNumber = (e as CustomEvent<PullOpenRequest>).detail?.pullNumber
+      if (Number.isSafeInteger(pullNumber) && pullNumber > 0) void openListedPull(pullNumber)
+    }
+    window.addEventListener(PULL_OPEN_EVENT, onOpen)
+    return () => window.removeEventListener(PULL_OPEN_EVENT, onOpen)
+  }, [openListedPull])
 
   // The add menu's "Issues…": the open issues of the folder's approved repository. One node per
   // repository: an existing one is framed instead of a second one.
