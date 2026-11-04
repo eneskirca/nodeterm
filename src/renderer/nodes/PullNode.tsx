@@ -151,6 +151,7 @@ export function PullNode({ id, data, selected }: NodeProps<CanvasNode>) {
           api={api.githubIssues}
           notesApi={api.githubIssues}
           projectId={projectId}
+          nodeId={id}
           pull={pull}
           refreshTick={refreshTick}
           zoomedOut={zoomedOut}

@@ -2,7 +2,8 @@
 // Development (linked issues) and Participants. One read fills it: `detail.sidebar` (core
 // `pullDetail`). A part the read could not answer is left out; without any sidebar read the
 // requested reviewers still show. Reviewers, Assignees and Labels edit through an F4 picker.
-import type { GitHubIssueUser } from '@shared/github-issues'
+import { useEffect, useState } from 'react'
+import { PULL_WATCH_NO_AGENT, type GitHubIssueUser, type PullWatchStatus } from '@shared/github-issues'
 import type { GitHubPullDetail, PullAvatarDataUrls } from '@shared/github-pull-detail'
 import type { PullClosingIssue, PullReviewer, PullReviewerState } from '@shared/github-pull-sidebar'
 import type { AgentState } from '@shared/agents/normalize'
@@ -122,12 +123,7 @@ function AgentSection(props: SidebarProps): React.JSX.Element {
           </div>
         )
         : <Empty>No agent linked.</Empty>}
-      {/* ponytail: a placeholder until Watch (F-08) wires it. */}
-      <div className="pr-switch">
-        <button className="pr-switch__track" role="switch" aria-checked={false} aria-label="Watch checks and conflicts" disabled
-          title="Watch is not available yet."><span className="pr-switch__knob" /></button>
-        <span>Watch checks and conflicts</span>
-      </div>
+      <WatchSwitch {...props} linked={!!agent} />
       {open && (onWork || onSendToAgent) && (
         <div className="pr-side__actions">
           {onWork && <button className="pr-btn pr-btn--sm" onClick={() => onWork(d)}>Work on this PR</button>}
@@ -135,6 +131,45 @@ function AgentSection(props: SidebarProps): React.JSX.Element {
         </div>
       )}
     </Section>
+  )
+}
+
+/** How often the switch re-reads its state while shown, so a watch that turned itself off says so.
+ *  ponytail: a re-read, not a push channel. */
+export const WATCH_STATUS_REFRESH_MS = 60_000
+
+/** Watch (F-08): core polls the PR every 2 minutes and wakes the linked agent on a failing check, a
+ *  conflict or all green. Machine-local; off without a linked agent. */
+function WatchSwitch({ api, projectId, nodeId, linked }: SidebarProps & { linked: boolean }): React.JSX.Element | null {
+  const [status, setStatus] = useState<PullWatchStatus>({ on: false })
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (!nodeId) return
+    let live = true
+    const read = (): void => { api.pullWatch(projectId, nodeId).then((s) => { if (live) setStatus(s) }).catch(() => {}) }
+    read()
+    const timer = setInterval(read, WATCH_STATUS_REFRESH_MS)
+    return () => { live = false; clearInterval(timer) }
+  }, [api, projectId, nodeId])
+  if (!nodeId) return null
+  // An unlinked node can still switch a running watch off.
+  const why = !linked && !status.on ? PULL_WATCH_NO_AGENT : undefined
+  const toggle = (): void => {
+    setBusy(true)
+    api.setPullWatch({ projectId, nodeId, on: !status.on })
+      .then(setStatus)
+      .catch(() => setStatus((s) => ({ ...s, note: 'Watch could not be switched. Try again.' })))
+      .finally(() => setBusy(false))
+  }
+  const line = why ?? status.reason ?? status.note
+  return (
+    <div className="pr-switch">
+      <button className="pr-switch__track" role="switch" aria-checked={status.on} aria-label="Watch checks and conflicts"
+        disabled={busy || !!why} title={why ?? 'Wake the linked agent when a check fails, the PR conflicts, or every check is green.'}
+        onClick={toggle}><span className="pr-switch__knob" /></button>
+      <span>Watch checks and conflicts</span>
+      {line && <span className="pull-node__empty pr-switch__note" role="status">{line}</span>}
+    </div>
   )
 }
 

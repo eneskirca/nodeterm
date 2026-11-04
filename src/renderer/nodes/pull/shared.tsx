@@ -27,7 +27,7 @@ export type PullNodeApi = Pick<
   'setReviewThreadResolved' | 'applySuggestion' |
   'setPullLabels' | 'setPullAssignees' | 'repoLabels' |
   'setPullState' | 'markPullReady' | 'deleteHeadBranch' | 'pullForBranch' |
-  'pullCheckLog' | 'rerunFailedJobs'
+  'pullCheckLog' | 'rerunFailedJobs' | 'pullWatch' | 'setPullWatch'
 >
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
@@ -76,6 +76,8 @@ export const METHOD_TEXT: Record<PullMergeMethod, string> = {
 export type ViewProps = {
   api: PullNodeApi
   projectId: string
+  /** The pull node's own id: what its Watch switch (F-08) is keyed by. Absent = no switch. */
+  nodeId?: string
   pull: PullNodeRef
   refreshTick: number
   onOpenExternal: (url: string) => void

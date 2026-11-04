@@ -7,6 +7,7 @@ import type { PullSidebar as Sidebar } from '@shared/github-pull-sidebar'
 import { ISSUE_OPEN_EVENT } from '../../lib/openIssueNode'
 import { PullSidebar } from './PullSidebar'
 import type { PullNodeApi } from './shared'
+import type { PullWatchStatus } from '@shared/github-issues'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -31,8 +32,11 @@ let host: HTMLDivElement
 let root: ReturnType<typeof createRoot>
 afterEach(() => { act(() => root.unmount()); host.remove() })
 
-async function render(d: GitHubPullDetail, onOpenExternal = vi.fn(), onWritten = vi.fn()) {
+async function render(d: GitHubPullDetail, onOpenExternal = vi.fn(), onWritten = vi.fn(),
+  extra: { nodeId?: string; agents?: { id: string; title: string }[]; watch?: PullWatchStatus } = {}) {
   const api = {
+    pullWatch: vi.fn(async (): Promise<PullWatchStatus> => extra.watch ?? { on: false }),
+    setPullWatch: vi.fn(async (r: { on: boolean }): Promise<PullWatchStatus> => ({ on: r.on })),
     repoCollaborators: vi.fn(async () => ({ status: 'ok' as const, users: [] })),
     requestPullReviewer: vi.fn(async () => ({ ok: true as const })),
     repoLabels: vi.fn(async () => ({ status: 'ok' as const, labels: [{ name: 'bug', color: 'd73a4a' }, { name: 'ui', color: '0e8a16' }] })),
@@ -44,7 +48,7 @@ async function render(d: GitHubPullDetail, onOpenExternal = vi.fn(), onWritten =
   root = createRoot(host)
   await act(async () => {
     root.render(<PullSidebar api={api as unknown as PullNodeApi} projectId="p" pull={{ repository: 'O/R', pullNumber: 7, tab: 'conversation' }}
-      refreshTick={0} onOpenExternal={onOpenExternal} onWritten={onWritten} detail={d} />)
+      refreshTick={0} onOpenExternal={onOpenExternal} onWritten={onWritten} detail={d} nodeId={extra.nodeId} agents={extra.agents} />)
   })
   return { view: host, api, onOpenExternal, onWritten }
 }
@@ -71,14 +75,41 @@ describe('PullSidebar', () => {
     expect(section(view, 'Participants')!.querySelectorAll('.pull-avatar')).toHaveLength(2)
   })
 
-  it('puts the Agent section first, marked as the agent jump target, with Watch off until it is wired', async () => {
-    const { view } = await render({ ...detail, sidebar })
+  it('puts the Agent section first, marked as the agent jump target; without a linked agent Watch is off and says why', async () => {
+    const { view, api } = await render({ ...detail, sidebar }, vi.fn(), vi.fn(), { nodeId: 'pr1' })
     const agent = view.querySelector('aside > section')!
     expect(agent.getAttribute('aria-label')).toBe('Agent')
     expect(agent.getAttribute('data-pull-section')).toBe('agent')
     expect(agent.textContent).toContain('No agent linked.')
     const watch = agent.querySelector<HTMLButtonElement>('[role="switch"]')!
     expect([watch.disabled, watch.getAttribute('aria-checked')]).toEqual([true, 'false'])
+    expect(agent.textContent).toContain('Link an agent first')
+    expect(api.pullWatch).toHaveBeenCalledWith('p', 'pr1')
+  })
+
+  it('Watch: a click turns it on for this node, a second click turns it off', async () => {
+    const { view, api } = await render({ ...detail, sidebar }, vi.fn(), vi.fn(), { nodeId: 'pr1', agents: [{ id: 'a1', title: 'Claude' }] })
+    const watch = view.querySelector<HTMLButtonElement>('[role="switch"]')!
+    expect([watch.disabled, watch.getAttribute('aria-checked')]).toEqual([false, 'false'])
+    await act(async () => { watch.click() })
+    expect(api.setPullWatch).toHaveBeenCalledWith({ projectId: 'p', nodeId: 'pr1', on: true })
+    expect(watch.getAttribute('aria-checked')).toBe('true')
+    await act(async () => { watch.click() })
+    expect(api.setPullWatch).toHaveBeenLastCalledWith({ projectId: 'p', nodeId: 'pr1', on: false })
+    expect(watch.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('Watch: shows why it turned itself off, and why a wake did not land', async () => {
+    const reason = 'Watch stopped after 10 wakes with no new commit. Switch it on to watch again.'
+    const off = await render({ ...detail, sidebar }, vi.fn(), vi.fn(), { nodeId: 'pr1', agents: [{ id: 'a1', title: 'Claude' }], watch: { on: false, reason } })
+    expect(off.view.querySelector('[role="status"]')?.textContent).toBe(reason)
+    expect(off.view.querySelector<HTMLButtonElement>('[role="switch"]')!.disabled).toBe(false)
+    act(() => root.unmount()); host.remove()
+    const note = 'Watch could not wake the agent: agent messaging is off for this project.'
+    const on = await render({ ...detail, sidebar }, vi.fn(), vi.fn(), { nodeId: 'pr1', watch: { on: true, note } })
+    const watch = on.view.querySelector<HTMLButtonElement>('[role="switch"]')!
+    expect([watch.disabled, watch.getAttribute('aria-checked')]).toEqual([false, 'true']) // an unlinked node can still switch it off
+    expect(on.view.querySelector('[role="status"]')?.textContent).toBe(note)
   })
 
   it('re-requests a review from a reviewer who answered, with the existing write', async () => {

@@ -19855,6 +19855,8 @@ button.pr-checks__row:focus-visible { outline: 2px solid var(--pr-accent); outli
 .pr-switch__knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
 .pr-switch__track[aria-checked='true'] { background: var(--pr-open-em); }
 .pr-switch__track[aria-checked='true'] .pr-switch__knob { left: 12px; }
+.pr-switch { flex-wrap: wrap; }
+.pr-switch__note { flex-basis: 100%; }
 .pr-sidebar .pull-sidebar__issue { display: flex; align-items: flex-start; gap: 6px; padding: 0; border: 0; background: none; color: var(--pr-fg-2); font: inherit; text-align: left; cursor: pointer; }
 .pr-sidebar .pull-sidebar__issue .pr-icon { margin-top: 1px; }
 .pr-sidebar .pull-sidebar__issue-state--open { color: var(--pr-open); }

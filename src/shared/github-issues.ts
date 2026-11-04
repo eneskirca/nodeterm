@@ -4,6 +4,8 @@ import type { GitHubPullCheckLogResult } from './github-pull-check-log'
 
 /** What a pull node's Watch switch shows (F-08). `reason` = why it is off; `note` = why the last wake did not land. */
 export interface PullWatchStatus { on: boolean; reason?: string; note?: string }
+/** Why Watch cannot turn on: no agent node is linked to the pull node. */
+export const PULL_WATCH_NO_AGENT = 'Link an agent first'
 import type { GitHubPullTimelineResult } from './github-pull-timeline'
 import type { GitHubPullSinceReviewResult } from './github-pull-since-review'
 import type { GitHubRepoLabelsResult } from './github-pull-sidebar'

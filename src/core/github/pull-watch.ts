@@ -24,7 +24,7 @@ import { IPC } from '../../shared/ipc'
 import { oneLine } from '../../shared/one-line'
 import { isSafeNodeId } from '../../shared/safe-id'
 import type { GitHubPullChecksResult } from '../../shared/github-pull-status'
-import type { PullWatchStatus } from '../../shared/github-issues'
+import { PULL_WATCH_NO_AGENT, type PullWatchStatus } from '../../shared/github-issues'
 import type { GitHubPullDetailResult } from '../../shared/github-pull-detail'
 import type { BridgeLink, CanvasNodeState } from '../../shared/types'
 import type { AgentMessageOutcome } from '../agents/agent-message-decide'
@@ -32,7 +32,6 @@ import { writeFileAtomic } from '../fs-atomic'
 
 export const PULL_WATCH_INTERVAL_MS = 2 * 60_000
 export const PULL_WATCH_WAKE_CAP = 10
-export const PULL_WATCH_NO_AGENT = 'Link an agent first'
 const FILE_NAME = 'pull-watch.json'
 
 
