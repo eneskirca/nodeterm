@@ -21,11 +21,11 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { IPC } from '../../shared/ipc'
-import { oneLine } from '../../shared/one-line'
 import { isSafeNodeId } from '../../shared/safe-id'
 import type { GitHubPullChecksResult } from '../../shared/github-pull-status'
 import { PULL_WATCH_NO_AGENT, type PullWatchStatus } from '../../shared/github-issues'
 import type { GitHubPullDetailResult } from '../../shared/github-pull-detail'
+import { PR_TEXT_UNTRUSTED, prText } from '../../shared/pull-work'
 import type { BridgeLink, CanvasNodeState } from '../../shared/types'
 import type { AgentMessageOutcome } from '../agents/agent-message-decide'
 import { writeFileAtomic } from '../fs-atomic'
@@ -102,23 +102,18 @@ function noteFor(outcome: AgentMessageOutcome): string {
 
 const WOKE: ReadonlySet<string> = new Set(['delivered', 'queued', 'stalled', 'deliveredToReplacedTarget'])
 
-/** A check name as it goes into the message: one line, capped. GitHub text, so never trusted. */
-const checkName = (name: string): string => {
-  const line = oneLine(name).replace(/["`]/g, "'")
-  return line.length > 60 ? `${line.slice(0, 59)}…` : line
-}
-
 function wakeBody(ref: string, sha: string, failing: string[], conflict: boolean, green: boolean): string {
   const parts: string[] = []
   if (failing.length) {
-    const shown = failing.slice(0, 3).map((n) => `"${checkName(n)}"`).join(', ')
+    // A check name is written by whoever controls the PR's workflows: untrusted, so marked.
+    const shown = failing.slice(0, 3).map((n) => prText(n, 60)).join(', ')
     const more = failing.length > 3 ? ` and ${failing.length - 3} more` : ''
     parts.push(`${failing.length === 1 ? 'check' : 'checks'} ${shown}${more} ${failing.length === 1 ? 'is' : 'are'} failing`)
   }
   if (conflict) parts.push('it has a merge conflict with its base branch')
   if (green) parts.push('all checks are green')
   const act = failing.length || conflict ? 'Read the PR through your context link or gh, then fix it.' : 'It may be ready to merge.'
-  return `[nodeterm watch] ${ref} at ${sha.slice(0, 7)}: ${parts.join('; ')}. ${act}`
+  return `[nodeterm watch] ${ref} at ${sha.slice(0, 7)}: ${parts.join('; ')}. ${act} ${PR_TEXT_UNTRUSTED}`
 }
 
 export function startPullWatch(deps: PullWatchDeps): PullWatchService {
