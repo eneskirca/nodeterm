@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { MainUpdateMode } from '@shared/types'
 import { agentStatusForProject, useProjectSession } from '../session/session'
 import { refreshMainDrift, useMainDrift } from '../state/mainDrift'
-import { busyAgentIn, mainDriftText, rememberedUpdateMode, type BusyCheckNode } from '../lib/mainUpdate'
+import { useSettings } from '../state/settings'
+import { guardConcurrentRestart } from '../terminal/agent-restart'
+import { agentsIn, busyAgentIn, mainDriftText, mainUpdatedNote, type BusyCheckNode } from '../lib/mainUpdate'
+import { sendToAgentNode } from '../lib/pullFeedbackSend'
+import { ContextMenu } from './ContextMenu'
 
 const toast = (message: string): void => {
   window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
@@ -19,36 +23,37 @@ export interface MainDriftBadgeProps {
 }
 
 /**
- * "main moved N commits" while the checkout's branch is behind origin/<default>. A click merges or
- * rebases (the project's remembered choice; the first click and a right-click ask). The update
- * runs only from this click, and the core refuses a dirty tree and undoes a conflict.
+ * A small "↓N" chip while the checkout's branch is behind origin/<default>. A click opens Merge and
+ * Rebase; the update runs only from that pick, and the core refuses a dirty tree and undoes a
+ * conflict. Once it landed, every agent in the checkout is told, through the chat view's send gates.
  */
 export function MainDriftBadge({ projectId, cwd, nodes, onUpdated }: MainDriftBadgeProps): JSX.Element | null {
   const session = useProjectSession(projectId)
-  const { git, projectSettings } = session.api
+  const { git, pty } = session.api
   // A relay tab's checkout is the host's: the channels are host-only, so there is nothing to show.
   const drift = useMainDrift(git, session.source === 'relay' ? undefined : cwd)
-  const [mode, setMode] = useState<MainUpdateMode | undefined>()
-  const [choosing, setChoosing] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [running, setRunning] = useState(false)
 
-  const shown = !!cwd && !!drift?.ok && drift.behind > 0
-  useEffect(() => {
-    // Read only once there is a badge to click: nothing is asked of a checkout that is up to date.
-    if (!shown) return
-    let alive = true
-    void projectSettings
-      .read(projectId)
-      .then((snap) => alive && setMode(rememberedUpdateMode(snap?.local)))
-      .catch(() => {})
-    return () => {
-      alive = false
+  if (!cwd || !drift?.ok || drift.behind <= 0) return null
+  const base = drift.base.replace(/^origin\//, '')
+
+  const tellAgents = async (mode: MainUpdateMode): Promise<void> => {
+    const note = mainUpdatedNote({ mode, base: drift.base, branch: drift.branch, behind: drift.behind, cwd })
+    const deps = {
+      status: (id: string) => agentStatusForProject(projectId).store.getState().byId[id] ?? {},
+      paneOwner: (id: string) => pty.paneOwner(id),
+      customAgents: useSettings.getState().settings.customAgents,
+      sendChatPrompt: (id: string, text: string, agentId: string) => pty.sendChatPrompt(id, text, agentId),
+      guard: (id: string, go: () => Promise<'done'>) => guardConcurrentRestart(id, go)()
     }
-  }, [projectSettings, projectId, shown])
+    const refused = await Promise.all(agentsIn(cwd, nodes()).map((n) =>
+      sendToAgentNode(deps, { id: n.id, title: n.title || n.id, agentId: String(n.agentId) }, note).catch(() => 'The message could not be sent.')))
+    const first = refused.find((r) => r !== null)
+    if (first) toast(`${drift.branch} is up to date with ${base}, but an agent was not told: ${first}`)
+  }
 
-  if (!shown || !cwd || !drift?.ok) return null
-
-  const run = async (next: MainUpdateMode): Promise<void> => {
+  const run = async (mode: MainUpdateMode): Promise<void> => {
     const busy = busyAgentIn(cwd, nodes(), (id) => agentStatusForProject(projectId).store.getState().byId[id])
     if (busy) {
       toast(`${busy} is working in this checkout. Update it from main when the agent is done.`)
@@ -56,8 +61,9 @@ export function MainDriftBadge({ projectId, cwd, nodes, onUpdated }: MainDriftBa
     }
     setRunning(true)
     try {
-      const r = await git.updateFromMain(cwd, next)
-      if (!r.ok && r.reason !== 'up-to-date') toast(r.message)
+      const r = await git.updateFromMain(cwd, mode)
+      if (r.ok) await tellAgents(mode)
+      else if (r.reason !== 'up-to-date') toast(r.message)
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e))
     } finally {
@@ -67,57 +73,32 @@ export function MainDriftBadge({ projectId, cwd, nodes, onUpdated }: MainDriftBa
     }
   }
 
-  const choose = (next: MainUpdateMode): void => {
-    setChoosing(false)
-    setMode(next)
-    // Remembered per project in THIS machine's settings overlay, never the git-shared file.
-    void projectSettings
-      .read(projectId)
-      .then((snap) =>
-        projectSettings.updateLocal(projectId, {
-          ...snap?.local,
-          worktree: { ...snap?.local?.worktree, updateMode: next }
-        })
-      )
-      .catch(() => {})
-    void run(next)
-  }
-
-  const title = mode
-    ? `${drift.branch} is ${drift.behind} behind ${drift.base}. Click to ${
-        mode === 'merge' ? `merge ${drift.base} into ${drift.branch}` : `rebase ${drift.branch} onto ${drift.base}`
-      }. Right-click to switch merge / rebase.`
-    : `${drift.branch} is ${drift.behind} behind ${drift.base}. Click to bring it up to date.`
-
+  // The span stops clicks: the menu is portaled, and React still bubbles its clicks to the row.
   return (
-    <span className="main-drift nodrag">
+    <span className="main-drift nodrag" onClick={(e) => e.stopPropagation()}>
       <button
         type="button"
         className="main-drift__badge"
-        title={title}
+        title={`${mainDriftText(drift)} since ${drift.branch} branched. Click to merge or rebase.`}
         disabled={running}
         onClick={(e) => {
-          e.stopPropagation()
-          if (mode) void run(mode)
-          else setChoosing((v) => !v)
-        }}
-        onContextMenu={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          setChoosing((v) => !v)
+          const r = e.currentTarget.getBoundingClientRect()
+          setMenu({ x: r.left, y: r.bottom + 4 })
         }}
       >
-        {running ? 'updating…' : mainDriftText(drift)}
+        {running ? '…' : `↓${drift.behind}`}
       </button>
-      {choosing && !running && (
-        <span className="main-drift__choose">
-          <button type="button" onClick={(e) => (e.stopPropagation(), choose('merge'))}>
-            Merge
-          </button>
-          <button type="button" onClick={(e) => (e.stopPropagation(), choose('rebase'))}>
-            Rebase
-          </button>
-        </span>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            { type: 'label', label: mainDriftText(drift) },
+            { label: `Merge ${base} into ${drift.branch}`, onClick: () => void run('merge') },
+            { label: `Rebase on ${base}`, onClick: () => void run('rebase') }
+          ]}
+        />
       )}
     </span>
   )

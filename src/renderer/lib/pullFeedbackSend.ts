@@ -35,8 +35,21 @@ export async function sendPullFeedback(
   const target = linkedAgents(deps.edges(), deps.nodes(), req.pullId).find((agent) => agent.id === req.targetId)
   const agentId = deps.nodes().find((n) => n.id === req.targetId)?.data.agentId
   if (!target || typeof agentId !== 'string') return 'That agent is no longer linked to this pull node. Nothing was sent.'
+  return sendToAgentNode(deps, { id: target.id, title: target.title, agentId }, req.message)
+}
+
+/** Everything a single send needs besides the pull node's links. */
+export type AgentSendDeps = Omit<PullFeedbackSendDeps, 'edges' | 'nodes' | 'relay'>
+
+/** One message to one agent node through the chat view's gates. Null = sent; else the sentence to show. */
+export async function sendToAgentNode(
+  deps: AgentSendDeps,
+  target: { id: string; title: string; agentId: string },
+  message: string
+): Promise<string | null> {
+  const { agentId } = target
   const mode = chatSendMode(agentId, deps.status(target.id))
-  if (mode === null || (mode === 'queue' && !canQueue(req.message))) {
+  if (mode === null || (mode === 'queue' && !canQueue(message))) {
     return `${target.title} cannot take a message right now (busy, asking you something, or not running). Nothing was sent.`
   }
   const pane = await chatPaneRefusal(agentId, target.id, { paneOwner: deps.paneOwner, customAgents: deps.customAgents })
@@ -44,7 +57,7 @@ export async function sendPullFeedback(
   // The guard's outcome is a word, so the delivery result rides out beside it.
   let result = false as ChatPromptResult
   const held = await deps.guard(target.id, async () => {
-    result = await deps.sendChatPrompt(target.id, req.message, agentId)
+    result = await deps.sendChatPrompt(target.id, message, agentId)
     return 'done' as const
   })
   if (held === 'not-eligible') return `${target.title} is restarting or waking. Nothing was sent. Try again in a moment.`

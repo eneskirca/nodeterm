@@ -1,5 +1,4 @@
 import type { MainUpdateMode } from '@shared/types'
-import type { ProjectLocalSettings } from '@shared/project-settings'
 
 export interface BusyCheckNode {
   id: string
@@ -19,6 +18,16 @@ const norm = (p: string): string => {
   return /^[a-z]:\//i.test(s) ? s.toLowerCase() : s
 }
 
+/** The agent nodes in `dir` or a folder below it. */
+export function agentsIn(dir: string, nodes: readonly BusyCheckNode[]): BusyCheckNode[] {
+  const root = norm(dir)
+  return nodes.filter((n) => {
+    if (!n.agentId || !n.cwd) return false
+    const cwd = norm(n.cwd)
+    return cwd === root || cwd.startsWith(root + '/')
+  })
+}
+
 /**
  * The title of an agent node that is mid-turn in `dir` (or a folder below it), else null. Read at
  * click time from the live nodes and the agent-status store, so the refusal is never stale.
@@ -30,21 +39,20 @@ export function busyAgentIn(
   nodes: readonly BusyCheckNode[],
   statusOf: (nodeId: string) => { state?: string } | undefined
 ): string | null {
-  const root = norm(dir)
-  for (const n of nodes) {
-    if (!n.agentId || !n.cwd) continue
-    const cwd = norm(n.cwd)
-    const inside = cwd === root || cwd.startsWith(root + '/')
-    if (inside && BUSY.has(statusOf(n.id)?.state ?? '')) return n.title || n.id
-  }
-  return null
+  const n = agentsIn(dir, nodes).find((a) => BUSY.has(statusOf(a.id)?.state ?? ''))
+  return n ? n.title || n.id : null
 }
 
 export function mainDriftText({ base, behind }: { base: string; behind: number }): string {
   return `${base.replace(/^origin\//, '')} moved ${behind} commit${behind === 1 ? '' : 's'}`
 }
 
-export function rememberedUpdateMode(local: ProjectLocalSettings | undefined): MainUpdateMode | undefined {
-  const mode = local?.worktree?.updateMode
-  return mode === 'merge' || mode === 'rebase' ? mode : undefined
+/** What an agent in the checkout is told once main landed under it, so it does not edit from a stale read. */
+export function mainUpdatedNote(u: { mode: MainUpdateMode; base: string; branch: string; behind: number; cwd: string }): string {
+  const base = u.base.replace(/^origin\//, '')
+  const what = u.mode === 'merge' ? `merged ${base} into ${u.branch}` : `rebased ${u.branch} onto ${base}`
+  return `nodeterm: the user ${what} in ${u.cwd} (${u.behind} new commit${u.behind === 1 ? '' : 's'} from ${base}). ` +
+    (u.mode === 'rebase' ? 'The branch history was rewritten. ' : '') +
+    'Files here may have changed since you last read them: read a file again before you edit it. ' +
+    'Reply in one line and do not start other work.'
 }

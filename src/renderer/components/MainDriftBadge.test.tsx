@@ -7,20 +7,20 @@ import { MainDriftBadge } from './MainDriftBadge'
 import { agentStatusForProject, createSession, resetSessionsForTest, SessionProvider, setActiveSession } from '../session/session'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
 let root: Root
 let host: HTMLDivElement
 const behind: MainDrift = { ok: true, base: 'origin/main', branch: 'feat', behind: 2, ahead: 1, fetch: 'ok' }
 
-function apiFor(updateMode?: string) {
-  const local = updateMode ? { worktree: { updateMode } } : undefined
+function apiFor() {
   return {
     git: {
       mainDrift: vi.fn(async () => behind),
       updateFromMain: vi.fn(async () => ({ ok: true, message: 'Merged.' }))
     },
-    projectSettings: {
-      read: vi.fn(async () => ({ shared: null, local })),
-      updateLocal: vi.fn(async () => true)
+    pty: {
+      paneOwner: vi.fn(async () => ({ kind: 'agent', agentId: 'claude' })),
+      sendChatPrompt: vi.fn(async () => true)
     }
   } as unknown as NodeTerminalApi
 }
@@ -42,8 +42,8 @@ async function mount(api: NodeTerminalApi) {
   )
 }
 const badge = () => host.querySelector('.main-drift__badge') as HTMLButtonElement
-const button = (text: string) =>
-  [...host.querySelectorAll('button')].find((b) => b.textContent === text) as HTMLButtonElement
+const item = (text: string) =>
+  [...document.querySelectorAll<HTMLElement>('.ctx-menu .ctx-item')].find((b) => b.textContent === text)
 
 beforeEach(() => {
   resetSessionsForTest()
@@ -58,32 +58,37 @@ afterEach(() => {
   resetSessionsForTest()
 })
 
-it('shows how far main moved and runs the remembered update on one click', async () => {
-  const api = apiFor('rebase')
+it('shows a small chip; a click opens merge and rebase, and nothing runs before a pick', async () => {
+  const api = apiFor()
   await mount(api)
-  expect(badge().textContent).toBe('main moved 2 commits')
+  expect(badge().textContent).toBe('↓2')
+  expect(badge().title).toMatch(/main moved 2 commits/)
   await settle(() => badge().click())
+  expect(api.git.updateFromMain).not.toHaveBeenCalled()
+  expect(document.querySelector('.ctx-menu')?.textContent).toContain('main moved 2 commits')
+  await settle(() => item('Rebase on main')?.click())
   expect(api.git.updateFromMain).toHaveBeenCalledWith('/repo/wt', 'rebase')
 })
 
-it('asks merge or rebase the first time and remembers the answer in the local overlay', async () => {
+it('tells the idle agent in the checkout what changed once the update landed', async () => {
   const api = apiFor()
   await mount(api)
+  agentStatusForProject('p').store.setState({ byId: { a: { state: 'done', unread: false } } })
   await settle(() => badge().click())
-  expect(api.git.updateFromMain).not.toHaveBeenCalled()
-  await settle(() => button('Merge').click())
+  await settle(() => item('Merge main into feat')?.click())
   expect(api.git.updateFromMain).toHaveBeenCalledWith('/repo/wt', 'merge')
-  expect(api.projectSettings.updateLocal).toHaveBeenCalledWith('p', { worktree: { updateMode: 'merge' } })
+  expect(api.pty.sendChatPrompt).toHaveBeenCalledWith('a', expect.stringMatching(/^nodeterm: the user merged main into feat/), 'claude')
 })
 
 it('refuses while an agent in the checkout is working, and says why', async () => {
-  const api = apiFor('merge')
+  const api = apiFor()
   await mount(api)
   agentStatusForProject('p').store.setState({ byId: { a: { state: 'working', unread: false } } })
   const toasts: string[] = []
   const onToast = (e: Event) => toasts.push((e as CustomEvent<{ message: string }>).detail.message)
   window.addEventListener('nodeterm:toast', onToast)
   await settle(() => badge().click())
+  await settle(() => item('Merge main into feat')?.click())
   window.removeEventListener('nodeterm:toast', onToast)
   expect(api.git.updateFromMain).not.toHaveBeenCalled()
   expect(toasts[0]).toMatch(/Claude is working/)

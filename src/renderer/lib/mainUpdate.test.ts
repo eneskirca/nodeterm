@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { busyAgentIn, mainDriftText, rememberedUpdateMode } from './mainUpdate'
+import { agentsIn, busyAgentIn, mainDriftText, mainUpdatedNote } from './mainUpdate'
 
 const status = (byId: Record<string, string | undefined>) => (id: string) =>
   byId[id] === undefined ? undefined : { state: byId[id] as 'working' }
@@ -36,11 +36,25 @@ describe('mainDriftText', () => {
   })
 })
 
-describe('rememberedUpdateMode', () => {
-  it('reads merge or rebase from the local overlay, anything else as unset', () => {
-    expect(rememberedUpdateMode({ worktree: { updateMode: 'rebase' } })).toBe('rebase')
-    expect(rememberedUpdateMode({ worktree: { updateMode: 'merge' } })).toBe('merge')
-    expect(rememberedUpdateMode({ worktree: { updateMode: 'reset' } })).toBeUndefined()
-    expect(rememberedUpdateMode(undefined)).toBeUndefined()
+describe('agentsIn', () => {
+  it('lists the agent nodes in the checkout or below it, never a plain terminal or a sibling folder', () => {
+    const nodes = [
+      { id: 'a', agentId: 'claude', cwd: '/repo/wt' },
+      { id: 'b', agentId: 'codex', cwd: '/repo/wt/sub' },
+      { id: 'c', cwd: '/repo/wt' },
+      { id: 'd', agentId: 'claude', cwd: '/repo/wt-two' }
+    ]
+    expect(agentsIn('/repo/wt/', nodes).map((n) => n.id)).toEqual(['a', 'b'])
+  })
+})
+
+describe('mainUpdatedNote', () => {
+  it('tells the agent what changed under it and to read files again before editing', () => {
+    const merge = mainUpdatedNote({ mode: 'merge', base: 'origin/main', branch: 'feat', behind: 2, cwd: '/repo/wt' })
+    expect(merge).toBe('nodeterm: the user merged main into feat in /repo/wt (2 new commits from main). ' +
+      'Files here may have changed since you last read them: read a file again before you edit it. ' +
+      'Reply in one line and do not start other work.')
+    const rebase = mainUpdatedNote({ mode: 'rebase', base: 'origin/main', branch: 'feat', behind: 1, cwd: '/repo/wt' })
+    expect(rebase).toMatch(/^nodeterm: the user rebased feat onto main in \/repo\/wt \(1 new commit from main\)\. The branch history was rewritten\. Files here/)
   })
 })

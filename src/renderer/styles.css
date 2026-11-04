@@ -8113,7 +8113,7 @@ body,
   color: var(--muted);
 }
 
-/* Behind-main badge (MainDriftBadge): project header in the sidebar and worktree frames. */
+/* Behind-main chip (MainDriftBadge): project header in the sidebar and worktree frames; its menu is the shared ContextMenu. */
 .main-drift {
   display: inline-flex;
   align-items: center;
@@ -8138,9 +8138,6 @@ body,
 }
 .main-drift button:disabled {
   cursor: default;
-  color: var(--muted);
-}
-.main-drift__choose button {
   color: var(--muted);
 }
 
