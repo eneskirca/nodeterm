@@ -42,6 +42,29 @@ describe('breadcrumbs', () => {
   it('does not collapse a path that exactly fits', () => {
     expect(breadcrumbs('/a/b/c', 3).map((c) => c.name)).toEqual(['/', 'a', 'b', 'c'])
   })
+
+  // An SSH project's remoteCwd DEFAULTS to `~`, so a remote files node routinely stands on a
+  // `~`-relative path. Prefixing `/` to such crumbs produced `/~/remotion-app` — a literal path
+  // that does not exist on the host — so clicking any crumb but the last answered "Could not
+  // reach this folder." The crumbs must keep the path's own root instead of inventing one.
+  it('keeps a ~-relative path relative (no invented / root)', () => {
+    expect(breadcrumbs('~/remotion-app/OUT-1.0.14')).toEqual([
+      { name: '~', path: '~' },
+      { name: 'remotion-app', path: '~/remotion-app' },
+      { name: 'OUT-1.0.14', path: '~/remotion-app/OUT-1.0.14' }
+    ])
+  })
+
+  it('is just home at a bare ~', () => {
+    expect(breadcrumbs('~')).toEqual([{ name: '~', path: '~' }])
+  })
+
+  it('collapses a deep relative path without an absolute ellipsis target', () => {
+    const crumbs = breadcrumbs('~/one/two/three/four/five', 3)
+    expect(crumbs.map((c) => c.name)).toEqual(['~', '…', 'three', 'four', 'five'])
+    expect(crumbs[1].path).toBe('~/one/two')
+    expect(crumbs[crumbs.length - 1].path).toBe('~/one/two/three/four/five')
+  })
 })
 
 describe('folderTitle', () => {
