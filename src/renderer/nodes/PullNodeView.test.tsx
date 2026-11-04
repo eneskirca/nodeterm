@@ -48,6 +48,7 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     repoCollaborators: ReturnType<typeof vi.fn>; requestPullReviewer: ReturnType<typeof vi.fn>
     commentOnPullLine: ReturnType<typeof vi.fn>; updatePullBranch: ReturnType<typeof vi.fn>
     enablePullAutoMerge: ReturnType<typeof vi.fn>; disablePullAutoMerge: ReturnType<typeof vi.fn>
+    setFileViewed: ReturnType<typeof vi.fn>
   } {
   return {
     pullDetail: vi.fn(async () => result),
@@ -67,7 +68,8 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     commentOnPullLine: vi.fn(async () => ({ ok: true as const })),
     updatePullBranch: vi.fn(async () => ({ ok: true as const })),
     enablePullAutoMerge: vi.fn(async () => ({ ok: true as const })),
-    disablePullAutoMerge: vi.fn(async () => ({ ok: true as const }))
+    disablePullAutoMerge: vi.fn(async () => ({ ok: true as const })),
+    setFileViewed: vi.fn(async () => ({ ok: true as const }))
   }
 }
 
@@ -281,6 +283,10 @@ function type(ta: HTMLTextAreaElement, text: string): void {
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
   setter.call(ta, text)
   ta.dispatchEvent(new Event('input', { bubbles: true }))
+}
+function typeInput(input: HTMLInputElement, text: string): void {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text)
+  input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 const button = (view: HTMLElement, label: string) =>
   [...view.querySelectorAll('button')].find((el) => el.textContent === label) as HTMLButtonElement
@@ -644,7 +650,8 @@ describe('PullNodeView files', () => {
     const rows = [...view.querySelectorAll('.pull-files__file')].map((row) => row.textContent)
     expect(rows).toHaveLength(4)
     expect(rows[0]).toContain('Modified')
-    expect(rows[0]).toContain('src/a.ts')
+    expect(rows[0]).toContain('a.ts')
+    expect(view.querySelector('.pull-files__file')?.getAttribute('title')).toBe('src/a.ts')
     expect(rows[0]).toContain('+3')
     expect(rows[0]).toContain('−1')
     expect(rows[1]).toContain('Renamed')
@@ -672,7 +679,7 @@ describe('PullNodeView files', () => {
     expect(diff.getAttribute('data-path')).toBe('src/a.ts')
     expect(diff.getAttribute('data-original')).toBe('old text')
     expect(diff.getAttribute('data-modified')).toBe('new text')
-    expect(shown.querySelector('.pull-files__file[aria-current="true"]')?.textContent).toContain('src/a.ts')
+    expect(shown.querySelector('.pull-files__file[aria-current="true"]')?.getAttribute('title')).toBe('src/a.ts')
   })
 
   it('diffs an added file against empty', async () => {
@@ -693,6 +700,77 @@ describe('PullNodeView files', () => {
     const link = [...view.querySelectorAll('.pull-files__unavailable button')][0] as HTMLButtonElement
     await act(async () => { link.click() })
     expect(onOpen).toHaveBeenCalledWith('https://github.com/o/r/pull/7/files')
+  })
+
+  it('shows the files as a tree with +/- per folder, and the filter narrows it', async () => {
+    const view = await render(withFiles(), 'o/r', 'files')
+    expect(view.querySelector('.pull-files__folder')?.textContent).toBe('src/+3−1')
+    const filter = view.querySelector<HTMLInputElement>('input[aria-label="Filter files"]')!
+    await act(async () => { typeInput(filter, 'GONE') })
+    expect([...view.querySelectorAll('.pull-files__file')].map((row) => row.getAttribute('title'))).toEqual(['gone.md'])
+    await act(async () => { typeInput(filter, 'zzz') })
+    expect(view.textContent).toContain('No file matches the filter.')
+  })
+
+  it('ticks a file Viewed on GitHub, counts it, and collapses its diff', async () => {
+    const api = withFiles({
+      status: 'ok', observedAt: 1,
+      contents: { kind: 'diff', base: { kind: 'text', text: 'old' }, head: { kind: 'text', text: 'new' } }
+    })
+    api.pullFiles.mockResolvedValue({ ...files, files: files.files.map((f, i) => i === 1 ? { ...f, viewerViewedState: 'VIEWED' as const } : f) })
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
+    expect(view.querySelector('.pull-files__count')?.textContent).toBe('1 of 4 viewed')
+    expect(view.querySelector('.text-diff')).not.toBeNull()
+    const box = view.querySelector<HTMLInputElement>('input[aria-label="Viewed src/a.ts"]')!
+    await act(async () => { box.click() })
+    expect(api.setFileViewed).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, path: 'src/a.ts', viewed: true })
+    expect(view.querySelector('.pull-files__count')?.textContent).toBe('2 of 4 viewed')
+    expect(view.querySelector('.text-diff')).toBeNull()
+    await act(async () => { button(view, 'Show the diff').click() })
+    expect(view.querySelector('.text-diff')).not.toBeNull()
+  })
+
+  it('unticks the box again and says why when GitHub refuses the mark', async () => {
+    const api = withFiles()
+    api.setFileViewed.mockResolvedValue({ ok: false, reason: 'forbidden' })
+    const view = await render(api, 'o/r', 'files')
+    const box = view.querySelector<HTMLInputElement>('input[aria-label="Viewed gone.md"]')!
+    await act(async () => { box.click() })
+    expect(box.checked).toBe(false)
+    expect(view.querySelector('.pull-files__count')?.textContent).toBe('0 of 4 viewed')
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('Pull requests write access')
+  })
+
+  it('the Review changes panel sends the summary and the pending line comments as one review', async () => {
+    const api = withFiles({
+      status: 'ok', observedAt: 1,
+      contents: { kind: 'diff', base: { kind: 'text', text: 'old' }, head: { kind: 'text', text: 'new' } }
+    })
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
+    await act(async () => { button(view, 'line modified 3').click() })
+    await act(async () => { type(view.querySelector<HTMLTextAreaElement>('textarea[aria-label="Line comment"]')!, 'Nit.') })
+    await act(async () => { button(view, 'Add to review').click() })
+    await act(async () => { button(view, 'Review changes').click() })
+    const panel = view.querySelector<HTMLElement>('.pull-files__review')!
+    await act(async () => { type(panel.querySelector<HTMLTextAreaElement>('textarea[aria-label="Review summary"]')!, 'Two nits.') })
+    await act(async () => { button(panel, 'Request changes').click() })
+    expect(api.reviewPull).toHaveBeenCalledWith({
+      projectId: 'p', repository: 'o/r', pullNumber: 7, event: 'REQUEST_CHANGES', body: 'Two nits.', headSha: 'c'.repeat(40),
+      comments: [{ path: 'src/a.ts', side: 'RIGHT', line: 3, body: 'Nit.' }]
+    })
+    expect(view.textContent).not.toContain('Pending')
+  })
+
+  it('the Review changes panel keeps Approve and Request changes off on the viewer\'s own PR, with the reason', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1, ownPull: true })
+    api.pullFiles.mockResolvedValue(files)
+    const view = await render(api, 'o/r', 'files')
+    await act(async () => { button(view, 'Review changes').click() })
+    const panel = view.querySelector<HTMLElement>('.pull-files__review')!
+    expect(button(panel, 'Approve').disabled).toBe(true)
+    expect(button(panel, 'Request changes').disabled).toBe(true)
+    expect(button(panel, 'Approve').title).toContain('your own pull request')
+    expect(panel.textContent).toContain('your own pull request')
   })
 
   it('shows the first 300 files and a GitHub link when the list is truncated', async () => {

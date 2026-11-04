@@ -6,13 +6,17 @@ import type {
   PullFileStatus,
   PullFileUnavailable,
   PullLineComment,
-  PullLineDraft
+  PullLineDraft,
+  PullWriteReason,
+  PullWriteResult
 } from '@shared/github-pull-detail'
 import { pullWebUrl } from '@shared/pull-node'
 import type { PullHighlight } from '@shared/pull-agent-verbs'
 import { NoteMarkdown } from '../../components/NoteMarkdown'
 import { TextDiff, type DiffZone } from '../../editor/TextDiff'
+import { pullFileTree, type PullTreeNode } from '../../lib/pullFileTree'
 import { pullLineThreads, type PullLineThread } from '../../lib/pullLineThreads'
+import { PullComposer } from './PullComposer'
 import { readState, STALE_TEXT, usePullRead, useWrite, WRITE_TEXT, type ViewProps } from './shared'
 
 const FILE_STATUS_TEXT: Record<PullFileStatus, string> = {
@@ -30,51 +34,113 @@ export type LineProps = {
   onAddPending: (draft: PullLineDraft) => void
 }
 
-/** The Files changed tab: the changed files, then the selected one as a side-by-side diff with its
- *  line comments. `head` (the node's detail read) is the commit a new line comment is tied to; the
- *  conversation read gives the comments, from the core's memory inside its floor. */
+/** The Files changed tab: a filter, the "N of M viewed" count and the "Review changes" panel, the
+ *  changed files as a tree with a Viewed box each, then the selected one as a side-by-side diff
+ *  with its line comments (collapsed once viewed). `head` (the node's detail read) is the commit a
+ *  new line comment and the review are tied to; the conversation read gives the comments, from the
+ *  core's memory inside its floor. */
 export function PullFilesTab(props: ViewProps & LineProps & {
   onSelectFile: (path: string) => void; highlight?: PullHighlight; head: string | undefined
+  ownPull: boolean; onDropPending: (sent: readonly PullLineDraft[]) => void
 }): React.JSX.Element {
-  const { api, pull, onOpenExternal, onSelectFile, highlight, head } = props
+  const { api, projectId, pull, onOpenExternal, onSelectFile, highlight, head } = props
   const result = usePullRead(api.pullFiles, props)
   const conversation = usePullRead(api.pullConversation, props)
+  const [filter, setFilter] = useState('')
+  const [reviewing, setReviewing] = useState(false)
+  // The boxes the user ticked here, ahead of the next read. ponytail: no reload after the write (it
+  // would read the whole node again per tick); the core dropped its held list, so the next read is fresh.
+  const [ticked, setTicked] = useState<Readonly<Record<string, boolean>>>({})
+  const [viewRefusal, setViewRefusal] = useState<PullWriteReason | null>(null)
+  // The viewed file whose diff the user opened again.
+  const [reopened, setReopened] = useState<string | null>(null)
   const lineComments = conversation !== 'loading' && conversation.status === 'ok' ? conversation.lineComments : []
   if (result === 'loading' || result.status !== 'ok') return readState(result, pull.repository)
   const filesUrl = `${pullWebUrl(pull.repository, pull.pullNumber)}/files`
   const selected = result.files.find((file) => file.path === pull.selectedFile)
+  const isViewed = (file: PullFile) => ticked[file.path] ?? file.viewerViewedState === 'VIEWED'
+  const viewedCount = result.files.filter(isViewed).length
+  const setViewed = async (path: string, viewed: boolean) => {
+    setTicked((list) => ({ ...list, [path]: viewed }))
+    setViewRefusal(null)
+    const outcome = await api.setFileViewed({ projectId, repository: pull.repository, pullNumber: pull.pullNumber, path, viewed })
+      .catch((): PullWriteResult => ({ ok: false, reason: 'network' }))
+    if (outcome.ok) return
+    setTicked((list) => ({ ...list, [path]: !viewed }))
+    setViewRefusal(outcome.reason)
+  }
+  const tree = pullFileTree(result.files, filter)
+  const rows = (nodes: readonly PullTreeNode[]): React.JSX.Element => (
+    <ul className="pull-files__tree">
+      {nodes.map((node) => node.kind === 'folder'
+        ? (
+          <li key={`d:${node.path}`}>
+            <div className="pull-files__folder">
+              <span className="pull-files__path">{node.name}/</span>
+              <span className="pull-files__add">+{node.additions}</span>
+              <span className="pull-files__del">−{node.deletions}</span>
+            </div>
+            {rows(node.children)}
+          </li>
+        )
+        : (
+          <li key={node.file.path} className={`pull-files__row${isViewed(node.file) ? ' pull-files__row--viewed' : ''}`}>
+            <input type="checkbox" className="pull-files__viewed" aria-label={`Viewed ${node.file.path}`} title="Viewed"
+              checked={isViewed(node.file)} onChange={(event) => void setViewed(node.file.path, event.target.checked)} />
+            <button className="pull-files__file" title={node.file.path} aria-current={node.file === selected ? 'true' : undefined}
+              onClick={() => onSelectFile(node.file.path)}>
+              <span className={`pull-files__status pull-files__status--${node.file.status}`}>{FILE_STATUS_TEXT[node.file.status]}</span>
+              <span className="pull-files__path">
+                {node.file.previousPath && <>{node.file.previousPath} → </>}{node.name}
+              </span>
+              <span className="pull-files__add">+{node.file.additions}</span>
+              <span className="pull-files__del">−{node.file.deletions}</span>
+            </button>
+          </li>
+        ))}
+    </ul>
+  )
   return (
     <div className="pull-files">
       {result.stale && <p className="pull-node__stale" role="status">{STALE_TEXT[result.stale]}</p>}
+      <div className="pull-files__bar">
+        <input type="search" className="pull-files__filter" aria-label="Filter files" placeholder="Filter files"
+          value={filter} onChange={(event) => setFilter(event.target.value)} />
+        <span className="pull-files__count">{`${viewedCount} of ${result.files.length} viewed`}</span>
+        {head && (
+          <button className="pull-compose__button" aria-expanded={reviewing} onClick={() => setReviewing(!reviewing)}>
+            Review changes
+          </button>
+        )}
+      </div>
+      {reviewing && head && (
+        <div className="pull-files__review">
+          <PullComposer {...props} headSha={head} reviewPanel />
+        </div>
+      )}
+      {viewRefusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[viewRefusal]}</p>}
       {result.files.length === 0
         ? <p className="pull-node__empty">No changed files.</p>
-        : (
-          <ul className="pull-files__list">
-            {result.files.map((file) => (
-              <li key={file.path}>
-                <button className="pull-files__file" aria-current={file === selected ? 'true' : undefined}
-                  onClick={() => onSelectFile(file.path)}>
-                  <span className={`pull-files__status pull-files__status--${file.status}`}>{FILE_STATUS_TEXT[file.status]}</span>
-                  <span className="pull-files__path">
-                    {file.previousPath && <>{file.previousPath} → </>}{file.path}
-                  </span>
-                  <span className="pull-files__add">+{file.additions}</span>
-                  <span className="pull-files__del">−{file.deletions}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+        : tree.length === 0
+          ? <p className="pull-node__empty">No file matches the filter.</p>
+          : <div className="pull-files__list">{rows(tree)}</div>}
       {result.truncated && (
         <p className="pull-files__truncated">
           Showing the first 300 files only.{' '}
           <button className="pull-node__web" onClick={() => onOpenExternal(filesUrl)}>Open on GitHub</button> for the rest.
         </p>
       )}
-      {selected
-        ? <PullFileDiff key={selected.path} {...props} file={selected} filesUrl={filesUrl}
-            highlight={highlight?.file === selected.path ? highlight : undefined} head={head} lineComments={lineComments} />
-        : result.files.length > 0 && <p className="pull-node__empty">Select a file to see its diff.</p>}
+      {selected && isViewed(selected) && reopened !== selected.path && highlight?.file !== selected.path
+        ? (
+          <p className="pull-node__empty">
+            {`${selected.path} is marked viewed.`}{' '}
+            <button className="pull-node__web" onClick={() => setReopened(selected.path)}>Show the diff</button>
+          </p>
+        )
+        : selected
+          ? <PullFileDiff key={selected.path} {...props} file={selected} filesUrl={filesUrl}
+              highlight={highlight?.file === selected.path ? highlight : undefined} head={head} lineComments={lineComments} />
+          : result.files.length > 0 && <p className="pull-node__empty">Select a file to see its diff.</p>}
     </div>
   )
 }

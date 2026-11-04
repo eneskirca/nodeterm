@@ -81,7 +81,7 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
       {opened.includes('files') && (
         <div hidden={shownTab !== 'files'}>
           <PullFilesTab {...props} head={detail?.head.sha} onSelectFile={onSelectFile} highlight={highlight} pending={pending}
-            onAddPending={addPending} />
+            onAddPending={addPending} ownPull={ownPull} onDropPending={dropPending} />
         </div>
       )}
     </AllowContext.Provider>

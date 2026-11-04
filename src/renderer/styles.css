@@ -18962,7 +18962,7 @@ body.focus-mode .dock:hover {
 .pull-files__list {
   margin: 0 0 10px;
   padding: 0;
-  max-height: 180px;
+  max-height: 240px;
   overflow: auto;
   list-style: none;
 }
@@ -19002,6 +19002,49 @@ body.focus-mode .dock:hover {
 }
 .pull-files__add { color: var(--success); }
 .pull-files__del { color: var(--danger); }
+.pull-files__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.pull-files__filter {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+}
+.pull-files__count {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pull-files__review { margin: 0 0 10px; }
+.pull-files__tree {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.pull-files__tree .pull-files__tree { padding-left: 14px; }
+.pull-files__folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  color: var(--muted);
+}
+.pull-files__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.pull-files__viewed { flex: none; margin: 0 2px; cursor: pointer; }
+.pull-files__row--viewed .pull-files__file { opacity: 0.55; }
 .pull-files__truncated,
 .pull-files__unavailable {
   margin: 0 0 10px;

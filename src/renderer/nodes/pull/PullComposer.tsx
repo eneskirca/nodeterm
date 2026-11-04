@@ -3,11 +3,14 @@ import type { PullLineDraft, PullReviewEvent, PullWriteReason, PullWriteResult }
 import { OWN_PULL_TEXT, WRITE_TEXT, type ViewProps } from './shared'
 
 /** The comment box at the end of the Conversation tab: Comment, Approve and Request changes. The
- *  draft lives here (the tab stays mounted), so it survives a tab switch; it is never persisted. */
+ *  draft lives here (the tab stays mounted), so it survives a tab switch; it is never persisted.
+ *  `reviewPanel`: the Files tab's "Review changes" panel, where the box is the review summary and an
+ *  own PR shows Approve and Request changes off, with the reason. */
 export function PullComposer(props: ViewProps & {
   headSha: string; ownPull: boolean; pending: readonly PullLineDraft[]; onDropPending: (sent: readonly PullLineDraft[]) => void
+  reviewPanel?: true
 }): React.JSX.Element {
-  const { api, projectId, pull, onWritten, headSha, ownPull, pending, onDropPending } = props
+  const { api, projectId, pull, onWritten, headSha, ownPull, pending, onDropPending, reviewPanel } = props
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
@@ -34,18 +37,19 @@ export function PullComposer(props: ViewProps & {
 
   return (
     <div className="pull-compose">
-      <textarea className="pull-compose__box" aria-label="Comment" placeholder="Write a comment or a review message"
+      <textarea className="pull-compose__box" aria-label={reviewPanel ? 'Review summary' : 'Comment'}
+        placeholder={reviewPanel ? 'Leave a review summary' : 'Write a comment or a review message'}
         value={draft} onChange={(event) => setDraft(event.target.value)} />
       {refusal && <p className="pull-compose__error" role="alert">{WRITE_TEXT[refusal]}</p>}
       <div className="pull-compose__actions">
         {/* With pending line comments, Comment submits them as a comment review. */}
         <button className="pull-compose__button" disabled={busy || (!pending.length && !draft.trim())}
           onClick={() => void (pending.length ? review('COMMENT') : run(() => api.commentOnPull({ ...at, body: draft })))}>Comment</button>
-        {!ownPull && (
+        {(!ownPull || reviewPanel) && (
           <>
-            <button className="pull-compose__button" disabled={busy}
+            <button className="pull-compose__button" disabled={busy || ownPull} title={ownPull ? OWN_PULL_TEXT : undefined}
               onClick={() => void review('APPROVE')}>Approve</button>
-            <button className="pull-compose__button" disabled={busy || !draft.trim()}
+            <button className="pull-compose__button" disabled={busy || ownPull || !draft.trim()} title={ownPull ? OWN_PULL_TEXT : undefined}
               onClick={() => void review('REQUEST_CHANGES')}>Request changes</button>
           </>
         )}
