@@ -31,6 +31,7 @@ import type {
   PullReviewVerdict,
   PullViewedState
 } from '../../shared/github-pull-detail'
+import type { PullSuggestionComment } from './service'
 import {
   GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft, isPullPath
 } from '../../shared/github-pull-detail'
@@ -57,6 +58,12 @@ const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
 }`
 import { PULL_COMMITS_QUERY, parsePullCommits } from './graphql-pull-commits'
 import { isCommitSha, type PullCommitFilesPage, type PullCommitsPage } from '../../shared/github-pull-commits'
+
+const PULL_THREAD_IDS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    reviewThreads(first:100){ nodes{ id comments(first:1){ nodes{ databaseId } } } }
+  } }
+}`
 
 const API_ORIGIN = 'https://api.github.com'
 const REVIEW_EVENTS: ReadonlySet<unknown> = new Set<PullReviewEvent>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT'])
@@ -836,6 +843,81 @@ export class GitHubIssuesClient {
     const mutation = viewed ? 'markFileAsViewed' : 'unmarkFileAsViewed'
     await this.graphqlWrite(
       `mutation($id:ID!,$path:String!){ ${mutation}(input:{pullRequestId:$id,path:$path}){ clientMutationId } }`, { id, path })
+  }
+
+  /** Resolve or unresolve the review thread whose first comment is `threadId` (GraphQL
+   *  `resolveReviewThread` / `unresolveReviewThread`). The thread's GraphQL id is looked up here,
+   *  never taken from a caller. ponytail: the first 100 threads, the same cap the resolved read has. */
+  async setReviewThreadResolved(repository: string, pullNumber: number, threadId: number, resolved: boolean): Promise<void> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !positiveInteger(threadId, Number.MAX_SAFE_INTEGER) ||
+        typeof resolved !== 'boolean') throw new GitHubClientError('invalid-request')
+    const body = await this.graphql(PULL_THREAD_IDS_QUERY, { owner, name, number: pullNumber })
+    const nodes = object(object(object(object(object(body)?.data)?.repository)?.pullRequest)?.reviewThreads)?.nodes
+    if (graphQLErrors(body).length || !Array.isArray(nodes)) throw new GitHubClientError('malformed-response')
+    const thread = nodes.map(object).find((node) => {
+      const comments = object(node?.comments)?.nodes
+      return Array.isArray(comments) && object(comments[0])?.databaseId === threadId
+    })
+    const id = thread?.id
+    // No such thread on this PR: GitHub would refuse it too.
+    if (!string(id, 256) || !id) throw new GitHubClientError('request-failed', 422)
+    const mutation = resolved ? 'resolveReviewThread' : 'unresolveReviewThread'
+    await this.graphqlWrite(`mutation($id:ID!){ ${mutation}(input:{threadId:$id}){ thread{ id } } }`, { id })
+  }
+
+  /** One review comment as "Apply suggestion" needs it (`GET /pulls/comments/{id}`). */
+  async pullSuggestionComment(repository: string, commentId: number): Promise<PullSuggestionComment> {
+    safeRepository(repository)
+    if (!positiveInteger(commentId, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
+    const item = object(await this.json(await this.request(`/repos/${repository}/pulls/comments/${commentId}`, { method: 'GET' })))
+    const pullNumber = Number(/\/pulls\/(\d+)$/.exec(string(item?.pull_request_url, 2_048) ? item!.pull_request_url as string : '')?.[1])
+    const lineOf = (value: unknown): number | null | undefined =>
+      value === null || value === undefined ? null : positiveInteger(Number(value), 1_000_000) ? Number(value) : undefined
+    const line = lineOf(item?.line)
+    const startLine = lineOf(item?.start_line)
+    if (!item || !positiveInteger(pullNumber, 2_147_483_647) || !isPullPath(item.path) || !string(item.body, 262_144) ||
+        typeof item.commit_id !== 'string' || !/^[0-9a-f]{40}$/.test(item.commit_id) ||
+        line === undefined || startLine === undefined) throw new GitHubClientError('malformed-response')
+    const login = object(item.user)?.login
+    return {
+      pullNumber, path: item.path, side: item.side === 'LEFT' ? 'LEFT' : 'RIGHT', line, startLine, commitId: item.commit_id,
+      body: item.body, author: typeof login === 'string' && GITHUB_LOGIN.test(login) ? login : null
+    }
+  }
+
+  /** One text file at one commit with its blob SHA (`GET /contents/{path}?ref=`), for a commit
+   *  pinned to that SHA. A file the contents API sends no text for (binary, over 1 MB) is refused. */
+  async fileBlobAt(repository: string, path: string, ref: string): Promise<{ sha: string; text: string }> {
+    safeRepository(repository)
+    if (!repoPath(path) || typeof ref !== 'string' || !/^[0-9a-f]{40}$/.test(ref)) throw new GitHubClientError('invalid-request')
+    const encoded = path.split('/').map(encodeURIComponent).join('/')
+    const item = object(await this.json(await this.request(`/repos/${repository}/contents/${encoded}?ref=${ref}`, { method: 'GET' })))
+    if (!item || typeof item.sha !== 'string' || !/^[0-9a-f]{40}$/.test(item.sha)) throw new GitHubClientError('malformed-response')
+    if (item.type !== 'file' || item.encoding !== 'base64' || typeof item.content !== 'string') {
+      throw new GitHubClientError('request-failed', 422)
+    }
+    try {
+      return { sha: item.sha, text: new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(item.content, 'base64')) }
+    } catch {
+      throw new GitHubClientError('request-failed', 422)
+    }
+  }
+
+  /** Commit one file to `branch` (`PUT /contents/{path}`), only if its blob is still `sha`: GitHub
+   *  answers 409 when the file changed. */
+  async putFile(repository: string, file: { path: string; branch: string; sha: string; text: string; message: string }): Promise<void> {
+    safeRepository(repository)
+    if (!repoPath(file?.path) || !isPullBranchName(file.branch) || typeof file.sha !== 'string' || !/^[0-9a-f]{40}$/.test(file.sha) ||
+        typeof file.text !== 'string' || !string(file.message, 1_024) || !file.message) throw new GitHubClientError('invalid-request')
+    const encoded = file.path.split('/').map(encodeURIComponent).join('/')
+    // ponytail: a 2xx is the commit; its body (the new blob and commit) is not needed by anyone.
+    await this.request(`/repos/${repository}/contents/${encoded}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        message: file.message, content: Buffer.from(file.text, 'utf8').toString('base64'), sha: file.sha, branch: file.branch
+      })
+    })
   }
 
   /** The PR's GraphQL id, looked up here from the repository and number (never taken from a caller). */
