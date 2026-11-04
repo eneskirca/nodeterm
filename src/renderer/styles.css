@@ -8117,9 +8117,7 @@ body,
 .main-drift {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: none;
 }
 .main-drift button {
   font: inherit;
@@ -8132,9 +8130,6 @@ body,
   color: var(--attention-text);
   cursor: pointer;
   white-space: nowrap;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .main-drift button:disabled {
   cursor: default;
