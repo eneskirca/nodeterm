@@ -22,6 +22,8 @@
   --capsule-bg: #000; /* opaque black — fuses with the physical notch (no seam) */
   --capsule-ease: cubic-bezier(0.22, 1, 0.36, 1); /* spring-ish grow */
   --capsule-dur: 0.22s;
+  /* How much the COLLAPSED capsule grows under the pointer, on each side and downward. */
+  --capsule-hover-grow: 4px;
   /* Placement (from main's hudPlacement — see .hud-capsule below); the defaults only cover the
      instant before the first push. */
   --capsule-x: 50%;
@@ -172,6 +174,36 @@ body {
 .pill .hud-indicator {
   height: var(--pill-height);
   padding-top: 0; /* no notch to clear — center in the pill */
+}
+
+/* HOVER GROW (collapsed only): the capsule swells a few px sideways and down under the pointer, a
+   Dynamic-Island-style "I heard you" before the dwell opens the panel (main.ts toggles `.hovering`).
+   The indicator carries the size, so the capsule's max-height has to make room for it too. The
+   fused capsule is anchored by its RIGHT edge against the notch, so its sideways grow goes left and
+   never creeps over the menu-bar items on the right. */
+.hud-indicator {
+  transition:
+    height var(--capsule-dur) var(--capsule-ease),
+    padding var(--capsule-dur) var(--capsule-ease);
+}
+.hud-capsule.hovering:not(.expanded) {
+  max-height: calc(var(--bar) + var(--capsule-hover-grow));
+}
+.hud-capsule.hovering:not(.expanded) .hud-indicator {
+  height: calc(var(--bar) + var(--capsule-hover-grow));
+  padding-left: calc(10px + var(--capsule-hover-grow));
+  padding-right: calc(8px + var(--capsule-hover-grow));
+}
+.pill .hud-capsule.hovering:not(.expanded) {
+  max-height: calc(var(--pill-height) + var(--capsule-hover-grow));
+}
+.pill .hud-capsule.hovering:not(.expanded) .hud-indicator {
+  height: calc(var(--pill-height) + var(--capsule-hover-grow));
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-indicator {
+    transition: none;
+  }
 }
 
 /* --- Walking mascots (copied from styles.css .term-node__mascot*) --- */

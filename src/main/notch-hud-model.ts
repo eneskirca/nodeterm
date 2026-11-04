@@ -60,19 +60,21 @@ export interface HudRow {
 }
 
 /**
- * Row order tiers, and the ONE reason the HUD does not sort by recency.
+ * Row order: tiers first, then the newest STATE EDGE first inside a tier.
  *
- * `needsYou` → unread `done` → `working` → `idle`: what must be acted on, then what is new for
- * you, then what is merely live, then what has settled. This is the sessions sidebar's own section
- * order (`STATUS_GROUP_ORDER` in renderer/lib/sessionList.ts) — the model the owner asked the notch
- * to follow — so the two surfaces rank a session the same way and can share its vocabulary.
+ * `needsYou` → unread `done` → `working` → `idle`: what must be acted on stays pinned on top, then
+ * what is new for you, then what is merely live, then what has settled. Inside a tier the session
+ * whose state moved most recently comes first, so the turn that just finished (the one whose chime
+ * you just heard) is at the top of the unread rows, and the newest question is at the top of the
+ * needs-you rows. The owner asked for exactly this ("en son biten en yukarı").
  *
- * The rows used to be sorted `updatedAt` descending, and `updatedAt` is bumped by EVERY feed event
- * including `applyNowChange` — the activity/context ticks a working session emits per tool call. So
- * a busy session climbed to the top every few seconds, and since the panel draws only the first
- * `HUD_ROW_CAP` rows, each climb also changed MEMBERSHIP: the last row dropped off and came back.
- * That was the reported bug ("keeps reshuffling — things disappear and come back"). A tick says
- * nothing about a session's importance, so it must not move the row.
+ * The recency is `stateAt`, NOT `updatedAt`, and that split is the whole point. `updatedAt` is bumped
+ * by EVERY feed event including `applyNowChange`, the activity/context ticks a working session
+ * emits per tool call. The rows used to sort on it, so a busy session climbed to the top every few
+ * seconds, and since the panel draws only the first `HUD_ROW_CAP` rows, each climb also changed
+ * MEMBERSHIP: the last row dropped off and came back ("keeps reshuffling — things disappear and
+ * come back"). `stateAt` moves only when the session's state itself changes, which is an event the
+ * user is told about anyway, so a row moves exactly when there is news.
  */
 const ROW_RANK: Record<HudRowState, number> = { needsYou: 0, done: 1, working: 2, idle: 3 }
 
@@ -100,8 +102,11 @@ interface NodeAccum {
   activity?: string
   contextPercent?: number
   subagents: Map<string, HudSubagentRow>
-  /** Last time anything about this node changed — orders rows + gates the stale drop. */
+  /** Last time anything about this node changed — the reltime tag + the stale drop. Ticks bump
+   *  it, so it must never order rows (see `hudRowRank`). */
   updatedAt: number
+  /** When `state` last took its current value — the within-tier row order (newest first). */
+  stateAt: number
   /** Present in the most recent mirror flush (a node absent from it is "gone"). */
   presentInMirror: boolean
   /** The done highlight has been acknowledged (focused / panel opened) → demote to idle. */
@@ -189,6 +194,7 @@ export function createHudModel(): HudModel {
         state: 'idle',
         subagents: new Map(),
         updatedAt: ts,
+        stateAt: ts,
         presentInMirror: false,
         doneSeen: false
       }
@@ -201,6 +207,7 @@ export function createHudModel(): HudModel {
     const a = ensure(c.nodeId, c.ts)
     if (c.agentId) a.agentId = c.agentId
     if (c.sessionId) a.sessionId = c.sessionId
+    if (a.state !== c.state) a.stateAt = c.ts
     a.state = c.state
     a.updatedAt = c.ts
     if (c.state === 'working') {
@@ -245,13 +252,17 @@ export function createHudModel(): HudModel {
       if (n.state) {
         const bucket = bucketState(n.state)
         if (bucket === 'done') {
-          if (a.state !== 'done') a.state = 'done'
+          if (a.state !== 'done') {
+            a.state = 'done'
+            a.stateAt = n.updatedAt
+          }
           // A `done` we learn about from the mirror on FIRST sight is pre-seen: it finished before
           // this HUD existed. Otherwise every app launch (and every re-enable of the setting)
           // resurrected up to 6 h of already-read "finished" sessions as fresh green blobs. Only a
           // live done EDGE — a turn that ends while we're watching — earns the highlight.
           if (firstSighting) a.doneSeen = true
         } else {
+          if (a.state !== bucket) a.stateAt = n.updatedAt
           a.state = bucket
           if (bucket === 'working') a.doneSeen = false
         }
@@ -355,11 +366,10 @@ export function createHudModel(): HudModel {
   function buildRows(now: number, getTitle: (nodeId: string) => string | undefined): HudRow[] {
     // Collected in `nodes` iteration order — a Map iterates in INSERTION order, and an accum is
     // inserted exactly once (`ensure` sets only when the key is absent; nothing re-sets a live
-    // key), so this index is "the order these sessions first appeared to the HUD". That is the
-    // tiebreak below: it is a fact no feed event can change, which is precisely what `updatedAt`
-    // was not. A pruned node that later returns re-enters at the end of its tier — the only way a
-    // row moves within a tier, and it is a genuinely new session as far as the HUD is concerned.
-    const rows: { row: HudRow; seen: number }[] = []
+    // key), so this index is "the order these sessions first appeared to the HUD". It is the LAST
+    // tiebreak below, for two rows whose state moved in the same millisecond (a mirror flush seeds
+    // many at once): a fact no feed event can change, so equal rows never swap places on a rebuild.
+    const rows: { row: HudRow; seen: number; stateAt: number }[] = []
     for (const [nodeId, a] of nodes) {
       const state = displayState(a, now)
       // The HUD shows active sessions only — nothing when a node is idle/seen.
@@ -388,13 +398,16 @@ export function createHudModel(): HudModel {
           unread: state === 'done' && !a.doneSeen,
           updatedAt: a.updatedAt
         },
-        seen: rows.length
+        seen: rows.length,
+        stateAt: a.stateAt
       })
     }
-    // Tier first, first-appearance second. Deliberately NOT `updatedAt` on either axis (see
-    // `hudRowRank`): a row moves only when the SESSION's state moves, so an activity tick can
-    // neither reorder the panel nor push the last row out of the cap and back in.
-    rows.sort((x, y) => hudRowRank(x.row) - hudRowRank(y.row) || x.seen - y.seen)
+    // Tier first, newest state edge second, first appearance last. Deliberately NOT `updatedAt` on
+    // any axis (see `hudRowRank`): a row moves only when the SESSION's state moves, so an activity
+    // tick can neither reorder the panel nor push the last row out of the cap and back in.
+    rows.sort(
+      (x, y) => hudRowRank(x.row) - hudRowRank(y.row) || y.stateAt - x.stateAt || x.seen - y.seen
+    )
     return rows.map((r) => r.row)
   }
 
