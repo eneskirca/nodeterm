@@ -549,14 +549,20 @@ export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullReady,
   IPC.githubIssuesPullDeleteBranch,
   IPC.githubIssuesIssueComment,
-  IPC.githubIssuesPullRerunFailed
+  IPC.githubIssuesPullRerunFailed,
+  // Notes for agents (F-07): not GitHub writes, but they write the owner's own disk.
+  IPC.pullNotesList,
+  IPC.pullNotesAdd,
+  IPC.pullNotesDelete,
+  IPC.pullNotesClear
 ])
 
 const ROLE_NAME: Readonly<Record<string, string>> = { owner: 'Owners', editor: 'Editors', commenter: 'Commenters', viewer: 'Viewers' }
 
 export function decideAccess(_kind: 'req' | 'cast', method: string, args: unknown[], ctx: AccessContext): AccessDecision {
   if (typeof method === 'string' && OWNER_ONLY.has(method)) {
-    return ctx.role === 'owner' ? OK : no('Only owners can post to GitHub from here.')
+    return ctx.role === 'owner' ? OK
+      : no(method.startsWith('pullNotes:') ? 'Only owners can keep notes for agents here.' : 'Only owners can post to GitHub from here.')
   }
   if (isEditor(ctx.role)) return OK
   // Own keys only: a method named `constructor` must not find Object.prototype's.

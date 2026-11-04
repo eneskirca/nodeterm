@@ -43,6 +43,16 @@ describe('access policy', () => {
       }
     }
   })
+  it('notes for agents write the owner\'s disk, so only an owner may send them', () => {
+    for (const m of [IPC.pullNotesList, IPC.pullNotesAdd, IPC.pullNotesDelete, IPC.pullNotesClear]) {
+      const args = [{ repository: 'o/r', pullNumber: 7 }]
+      expect(decideAccess('req', m, args, ctx('owner'))).toEqual({ allow: true })
+      for (const role of ['editor', 'commenter', 'viewer'] as const) {
+        expect(decideAccess('req', m, args, ctx(role)), `${m} ${role}`)
+          .toEqual({ allow: false, message: 'Only owners can keep notes for agents here.' })
+      }
+    }
+  })
   it('a viewer may not write, destroy, send text or mutate the canvas', () => {
     for (const m of [IPC.fsWrite, IPC.ptyDestroy, IPC.ptySendText, IPC.gitCommit, IPC.settingsLoad]) {
       expect(decideAccess('req', m, [], ctx('viewer')).allow).toBe(false)

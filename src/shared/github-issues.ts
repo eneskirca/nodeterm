@@ -1,3 +1,4 @@
+import type { PullNotesApi } from './pull-notes'
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
 import type { GitHubPullCheckLogResult } from './github-pull-check-log'
 import type { GitHubPullTimelineResult } from './github-pull-timeline'
@@ -294,7 +295,8 @@ export interface GitHubControlView {
   }
 }
 
-export interface GitHubIssuesApi {
+/** F-07's notes ride this api too (`PullNotesApi`, shared/pull-notes.ts). */
+export interface GitHubIssuesApi extends PullNotesApi {
   subscribe(projectId: string): Promise<GitHubIssuePage>
   unsubscribe(projectId: string): Promise<void>
   query(request: GitHubIssueQuery): Promise<GitHubIssuePage>

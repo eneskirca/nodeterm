@@ -629,6 +629,12 @@ export const IPC = {
   githubIssuesRepoLabels: 'githubIssues:repo-labels',
   githubIssuesClaimPullAutoMove: 'githubIssues:claim-pull-auto-move',
   githubIssuesNotePullWaits: 'githubIssues:note-pull-waits',
+  // Notes for agents (F-07): machine-local editor actions on the owner's disk, not GitHub writes.
+  // Owner-only for relay peers, refused to a scoped guest.
+  pullNotesList: 'pullNotes:list',
+  pullNotesAdd: 'pullNotes:add',
+  pullNotesDelete: 'pullNotes:delete',
+  pullNotesClear: 'pullNotes:clear',
   githubIssuesChanged: (projectId: string) => `githubIssues:changed:${projectId}`,
   githubProjectAvatar: 'github:projectAvatar',
   githubControlStatus: 'githubControl:status',

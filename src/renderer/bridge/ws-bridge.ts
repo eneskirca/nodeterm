@@ -648,6 +648,11 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesClaimPullAutoMove, request) as Promise<boolean>,
     notePullWaits: (request) =>
       client.request(IPC.githubIssuesNotePullWaits, request) as Promise<number>,
+    pullNotes: (repository, pullNumber) =>
+      client.request(IPC.pullNotesList, repository, pullNumber) as ReturnType<GitHubIssuesApi['pullNotes']>,
+    addPullNote: (input) => client.request(IPC.pullNotesAdd, input) as ReturnType<GitHubIssuesApi['addPullNote']>,
+    deletePullNote: (request) => client.request(IPC.pullNotesDelete, request) as ReturnType<GitHubIssuesApi['deletePullNote']>,
+    clearPullNotes: (request) => client.request(IPC.pullNotesClear, request) as ReturnType<GitHubIssuesApi['clearPullNotes']>,
     projectAvatar: (projectId) =>
       client.request(IPC.githubProjectAvatar, projectId) as ReturnType<
         GitHubIssuesApi['projectAvatar']

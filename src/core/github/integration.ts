@@ -10,7 +10,8 @@ import { GitHubAvatarFetcher } from './avatar-fetcher'
 import { resolveProjectAvatarForProject } from './project-avatar'
 import { GitHubHostController } from './host'
 import { GitHubIssueService } from './service'
-import { registerGitHubIssueHandlers } from './handlers'
+import { registerGitHubIssueHandlers, registerPullNoteHandlers } from './handlers'
+import { PullNotesStore } from './pull-notes-store'
 import { IPC } from '../../shared/ipc'
 
 type Dependencies = {
@@ -74,6 +75,7 @@ export function registerGitHubIntegration(dependencies: Dependencies): {
       dependencies.platform.sendTo(uiId, IPC.githubIssuesChanged(projectId), changedIssueNumbers)
   })
   registerGitHubIssueHandlers(dependencies.platform, service)
+  registerPullNoteHandlers(dependencies.platform, new PullNotesStore(dependencies.userDataDir))
 
   // Project org/user avatar. The handler receives only a projectId: it derives the owner host-side
   // from the project's own GitHub origin (a renderer never supplies a slug/owner) and resolves a

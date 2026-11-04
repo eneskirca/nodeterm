@@ -12,6 +12,7 @@ import {
   filterScopedEvent,
   scopeForTest,
   scopedGuestHooks,
+  SCOPED_REFUSED,
   type ScopedGuestDeps
 } from './scoped-guest-policy'
 import { connectRelayHost, type PeerAttach } from './relay-host'
@@ -64,6 +65,12 @@ describe('scoped guest — refused outright', () => {
   it('refuses an unknown or new channel (fail closed)', () => {
     expect(allowed('some:new-channel')).toBe(false)
     expect(allowed('constructor')).toBe(false)
+  })
+  it('refuses notes for agents: they live on the host owner\'s disk', () => {
+    for (const m of [IPC.pullNotesList, IPC.pullNotesAdd, IPC.pullNotesDelete, IPC.pullNotesClear]) {
+      expect(SCOPED_REFUSED.has(m), m).toBe(true)
+      expect(allowed(m, { repository: 'o/r', pullNumber: 7 }), m).toBe(false)
+    }
   })
   it('refuses the host settings, license and whole-workspace writes', () => {
     expect(allowed(IPC.settingsSave, {})).toBe(false)

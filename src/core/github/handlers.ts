@@ -30,6 +30,7 @@ import type {
 } from '../../shared/github-pull-detail'
 import type { GitHubPullCommitFilesResult, GitHubPullCommitsResult } from '../../shared/github-pull-commits'
 import type { GitHubPullSinceReviewResult } from '../../shared/github-pull-since-review'
+import { parsePullNoteInput, type PullNotesStore } from './pull-notes-store'
 
 export interface GitHubIssueHandlerService {
   subscribe(uiId: number, request: { projectId: string }): Promise<GitHubIssuePage>
@@ -195,4 +196,30 @@ export function registerGitHubIssueHandlers(
     (request: { projectId: string; cardId: string; pulls: number[] }) => service.claimPullAutoMove(request))
   platform.handle(IPC.githubIssuesNotePullWaits,
     (request: { projectId: string; cardId: string; pulls: number[] }) => service.notePullWaits(request))
+}
+
+/** Notes for agents (F-07). Every input is checked here; a bad one throws and writes nothing. */
+export function registerPullNoteHandlers(platform: CorePlatform, store: Pick<PullNotesStore, 'list' | 'add' | 'remove'>): void {
+  const bad = (): never => { throw new Error('invalid-note-input') }
+  const id = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64
+  const pullOf = (request: unknown): { repository: string; pullNumber: number } => {
+    const r = (request && typeof request === 'object' ? request : {}) as { repository?: unknown; pullNumber?: unknown }
+    return typeof r.repository === 'string' && typeof r.pullNumber === 'number'
+      ? { repository: r.repository, pullNumber: r.pullNumber } : bad()
+  }
+  platform.handle(IPC.pullNotesList, (repository: unknown, pullNumber: unknown) => {
+    const pull = pullOf({ repository, pullNumber })
+    return store.list(pull.repository, pull.pullNumber)
+  })
+  platform.handle(IPC.pullNotesAdd, (input: unknown) => store.add(parsePullNoteInput(input) ?? bad()))
+  platform.handle(IPC.pullNotesDelete, (request: { id?: unknown }) => {
+    const pull = pullOf(request)
+    return id(request.id) ? store.remove(pull.repository, pull.pullNumber, [request.id]) : bad()
+  })
+  platform.handle(IPC.pullNotesClear, (request: { ids?: unknown }) => {
+    const pull = pullOf(request)
+    const ids = request.ids
+    if (ids !== undefined && !(Array.isArray(ids) && ids.length <= 500 && ids.every(id))) bad()
+    return store.remove(pull.repository, pull.pullNumber, ids as string[] | undefined)
+  })
 }

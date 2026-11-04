@@ -75,6 +75,10 @@ function api(): GitHubIssuesApi {
     commentOnIssue: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     claimPullAutoMove: vi.fn(async () => false),
     notePullWaits: vi.fn(async () => 0),
+    pullNotes: vi.fn(async () => []),
+    addPullNote: vi.fn(async () => []),
+    deletePullNote: vi.fn(async () => []),
+    clearPullNotes: vi.fn(async () => []),
     projectAvatar: vi.fn(async () => null),
     onChanged: vi.fn(() => () => {})
   }

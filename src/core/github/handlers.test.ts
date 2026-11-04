@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { fakePlatform } from '../platform-fake'
 import { IPC } from '../../shared/ipc'
-import { registerGitHubIssueHandlers } from './handlers'
+import { registerGitHubIssueHandlers, registerPullNoteHandlers } from './handlers'
 
 describe('registerGitHubIssueHandlers', () => {
   it('attributes subscriptions to the sender and exposes only domain operations', async () => {
@@ -190,5 +190,51 @@ describe('registerGitHubIssueHandlers', () => {
       ['rerunFailedJobs', { projectId: 'p1', repository: 'o/r', pullNumber: 12, runId: 56 }]
     ])
     expect(Object.keys(platform.handlers).some((channel) => channel.startsWith('githubControl:'))).toBe(false)
+  })
+})
+
+describe('registerPullNoteHandlers', () => {
+  const setup = () => {
+    const calls: unknown[][] = []
+    const store = {
+      list: async (...args: unknown[]) => { calls.push(['list', ...args]); return [] },
+      add: async (...args: unknown[]) => { calls.push(['add', ...args]); return [] },
+      remove: async (...args: unknown[]) => { calls.push(['remove', ...args]); return [] }
+    }
+    const platform = fakePlatform()
+    registerPullNoteHandlers(platform, store)
+    return { calls, h: platform.handlers }
+  }
+  const note = { repository: 'o/r', pullNumber: 7, path: 'a.ts', side: 'LEFT', line: 2, text: 'why' }
+
+  it('passes checked input to the store', async () => {
+    const { calls, h } = setup()
+    await h[IPC.pullNotesList]('o/r', 7)
+    await h[IPC.pullNotesAdd]({ ...note, extra: 'dropped' })
+    await h[IPC.pullNotesDelete]({ repository: 'o/r', pullNumber: 7, id: 'n1' })
+    await h[IPC.pullNotesClear]({ repository: 'o/r', pullNumber: 7, ids: ['n1', 'n2'] })
+    await h[IPC.pullNotesClear]({ repository: 'o/r', pullNumber: 7 })
+    expect(calls).toEqual([
+      ['list', 'o/r', 7],
+      ['add', note],
+      ['remove', 'o/r', 7, ['n1']],
+      ['remove', 'o/r', 7, ['n1', 'n2']],
+      ['remove', 'o/r', 7, undefined]
+    ])
+  })
+
+  it('refuses bad input before the store sees it', async () => {
+    const { calls, h } = setup()
+    const refused = [
+      () => h[IPC.pullNotesList]('o/r', '7'),
+      () => h[IPC.pullNotesAdd]({ ...note, line: 'x' }),
+      () => h[IPC.pullNotesAdd]({ ...note, text: 'a'.repeat(5_000) }),
+      () => h[IPC.pullNotesAdd]({ ...note, repository: 'nope' }),
+      () => h[IPC.pullNotesDelete]({ repository: 'o/r', pullNumber: 7 }),
+      () => h[IPC.pullNotesDelete](null),
+      () => h[IPC.pullNotesClear]({ repository: 'o/r', pullNumber: 7, ids: [1] })
+    ]
+    for (const call of refused) await expect(Promise.resolve().then(call)).rejects.toThrow('invalid-note-input')
+    expect(calls).toEqual([])
   })
 })
