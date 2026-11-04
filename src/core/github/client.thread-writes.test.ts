@@ -61,9 +61,19 @@ describe('GitHubIssuesClient apply suggestion calls', () => {
       }
     }])
     expect(await github.pullSuggestionComment('o/r', 91)).toEqual({
-      pullNumber: 7, path: 'src/a.ts', side: 'RIGHT', line: 4, startLine: 2, commitId: head, body: '```suggestion\nx\n```', author: 'ana'
+      pullNumber: 7, path: 'src/a.ts', side: 'RIGHT', startSide: 'RIGHT', line: 4, startLine: 2, commitId: head, body: '```suggestion\nx\n```', author: 'ana'
     })
     expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/comments/91')
+  })
+
+  it('reads the side a multi-line comment starts on', async () => {
+    const { github } = client([{
+      body: {
+        pull_request_url: 'https://api.github.com/repos/o/r/pulls/7', path: 'src/a.ts', side: 'RIGHT', line: 4, start_line: 2,
+        start_side: 'LEFT', commit_id: head, body: '```suggestion\nx\n```', user: { login: 'ana' }
+      }
+    }])
+    expect(await github.pullSuggestionComment('o/r', 91)).toMatchObject({ side: 'RIGHT', startSide: 'LEFT' })
   })
 
   it('reads a file with its blob SHA, and refuses one with no text', async () => {

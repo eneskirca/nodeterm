@@ -931,7 +931,9 @@ export class GitHubIssuesClient {
         line === undefined || startLine === undefined) throw new GitHubClientError('malformed-response')
     const login = object(item.user)?.login
     return {
-      pullNumber, path: item.path, side: item.side === 'LEFT' ? 'LEFT' : 'RIGHT', line, startLine, commitId: item.commit_id,
+      pullNumber, path: item.path, side: item.side === 'LEFT' ? 'LEFT' : 'RIGHT',
+      startSide: item.start_side === 'LEFT' ? 'LEFT' : 'RIGHT',
+      line, startLine, commitId: item.commit_id,
       body: item.body, author: typeof login === 'string' && GITHUB_LOGIN.test(login) ? login : null
     }
   }

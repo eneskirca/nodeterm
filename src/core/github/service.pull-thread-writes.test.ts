@@ -18,7 +18,7 @@ class Client implements GitHubIssuesClientLike {
   putFail?: unknown
   detail: Partial<GitHubPullDetail> = { head: { ref: 'feat/x', sha: head } }
   comment: PullSuggestionComment = {
-    pullNumber: 7, path: 'src/a.ts', side: 'RIGHT', line: 3, startLine: 2, commitId: head,
+    pullNumber: 7, path: 'src/a.ts', side: 'RIGHT', startSide: 'RIGHT', line: 3, startLine: 2, commitId: head,
     body: 'Nit:\n```suggestion\nconst b = 2\n```', author: 'ana'
   }
   async listIssues(): Promise<never> { throw new Error('unused') }
@@ -133,6 +133,13 @@ describe('GitHubIssueService applySuggestion', () => {
     client.comment = { ...client.comment, commitId: 'd'.repeat(40) }
     expect(await service.applySuggestion(apply)).toEqual({ ok: false, reason: 'suggestion-stale' })
     client.comment = { ...client.comment, commitId: head, startLine: null, line: 9 }
+    expect(await service.applySuggestion(apply)).toEqual({ ok: false, reason: 'suggestion-stale' })
+    expect(client.calls.some((call) => Array.isArray(call) && call[0] === 'put')).toBe(false)
+  })
+
+  it('answers suggestion-stale for a range that starts on the base side, with no write', async () => {
+    const { client, service } = harness()
+    client.comment = { ...client.comment, startSide: 'LEFT' }
     expect(await service.applySuggestion(apply)).toEqual({ ok: false, reason: 'suggestion-stale' })
     expect(client.calls.some((call) => Array.isArray(call) && call[0] === 'put')).toBe(false)
   })

@@ -103,9 +103,10 @@ const MAX_QUERY_LABEL = 100
 export const PULL_CHECKS_PER_MINUTE = 10
 
 /** One review comment as "Apply suggestion" needs it (`GET /pulls/comments/{id}`). `line` null =
- *  outdated; `startLine` null = a one-line comment; `commitId` = the head its line refers to. */
+ *  outdated; `startLine` null = a one-line comment; `startSide` = the side `startLine` counts on;
+ *  `commitId` = the head its line refers to. */
 export interface PullSuggestionComment {
-  pullNumber: number; path: string; side: 'LEFT' | 'RIGHT'; line: number | null; startLine: number | null
+  pullNumber: number; path: string; side: 'LEFT' | 'RIGHT'; startSide: 'LEFT' | 'RIGHT'; line: number | null; startLine: number | null
   commitId: string; body: string; author: string | null
 }
 
@@ -1596,6 +1597,8 @@ export class GitHubIssueService {
       if (comment.pullNumber !== pullNumber || comment.side !== 'RIGHT' || comment.line === null || !lines) throw refuse('validation')
       // The comment's line numbers are for its commit; on any other head they may point elsewhere.
       if (comment.commitId !== headSha) throw refuse('suggestion-stale')
+      // A range that starts on the base side counts its first line in the old file, not this one.
+      if (comment.startLine !== null && comment.startSide !== 'RIGHT') throw refuse('suggestion-stale')
       const file = await client.fileBlobAt(repository, comment.path, headSha)
       const text = withSuggestion(file.text, comment.startLine ?? comment.line, comment.line, lines)
       if (text === null) throw refuse('suggestion-stale')
