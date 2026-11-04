@@ -19,7 +19,9 @@ import {
   type AddItem,
   PULL_RELAY_HINT,
   type AddHandlers,
-  type AgentAddEntry
+  type AgentAddEntry,
+  type OpenPullSection,
+  openPullMenuRows
 } from './addMenuSpec'
 
 /** The SSH-gated row's label, spelled once so the assertions below read cleanly. */
@@ -607,5 +609,55 @@ describe('buildGroupedAddMenu', () => {
       'web',
       'whiteboard'
     ])
+  })
+})
+
+describe('open pull requests first', () => {
+  const ctx = { hasCwd: true, isSshProject: false }
+  const user = { id: 7, login: 'ann', avatarUrl: '' }
+  const pulls: OpenPullSection = {
+    branch: 'feat/x',
+    rows: [
+      { number: 12, title: 'Fix login', headRefName: 'feat/login', draft: false, author: user },
+      { number: 9, headRefName: 'wip', draft: true, author: null }
+    ]
+  }
+  const labels = (items: MenuItem[]): (string | null)[] =>
+    items.map((i) => (i.type === 'separator' ? '---' : 'label' in i ? i.label : null))
+
+  it('puts the PRs, then Pull request…, New pull request from <branch> and Issues… above everything', () => {
+    const items = buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), { ...ctx, pulls }, [])
+    expect(labels(items).slice(0, 7)).toEqual([
+      '#12 Fix login · feat/login',
+      '#9 · wip (draft)',
+      'Pull request…',
+      'New pull request from feat/x',
+      'Issues…',
+      '---',
+      'New terminal'
+    ])
+    const view = items.find((i) => i.type === 'submenu' && i.label === ADD_GROUP_LABEL.view)
+    const viewLabels = view && view.type === 'submenu' ? labels(view.children) : []
+    expect(viewLabels).not.toContain('Issues…')
+    expect(viewLabels).not.toContain('Pull request…')
+  })
+
+  it('one click opens that PR at the menu position, from the menu and the Dock rows alike', () => {
+    const calls: unknown[] = []
+    const h = handlers({ openPull: (n, at) => calls.push([n, at ?? 'dock']) })
+    const [row] = buildGroupedAddMenu(CONTENT_ADD_ITEMS, h, { ...ctx, pulls }, [], { x: 1, y: 2 })
+    if ('onClick' in row) row.onClick()
+    openPullMenuRows(pulls, h)[1].onClick()
+    expect(calls).toEqual([[12, { x: 1, y: 2 }], [9, 'dock']])
+  })
+
+  it('shows the reason as one disabled row, never an empty list', () => {
+    const items = buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), { ...ctx, pulls: { reason: 'Sign in first.' } }, [])
+    expect(items[0]).toMatchObject({ label: 'Sign in first.', disabled: true })
+    expect(labels(items).slice(1, 4)).toEqual(['Pull request…', 'New pull request…', 'Issues…'])
+  })
+
+  it('keeps the old layout when no section is given', () => {
+    expect(labels(buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), ctx, []))[0]).toBe('New terminal')
   })
 })

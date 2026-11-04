@@ -31,7 +31,9 @@ import type { ReactNode } from 'react'
 import type { MenuItem } from '../components/ContextMenu'
 import { ACCOUNT_CAPABLE_AGENT_IDS } from '@shared/agents/account-binding'
 import { SIMULATOR_SSH_HINT } from '@shared/simulator'
+import type { GitHubIssueUser } from '@shared/github-issues'
 import { isBrowserRuntime } from '../bridge/runtime'
+import { Avatar } from '../nodes/pull/Avatar'
 import {
   IconAgent,
   IconBranch,
@@ -118,7 +120,28 @@ export interface AddCtx {
   /** Whether the active project is a relay tab (another machine's core). Disables "New simulator":
    *  the node would show THIS machine's devices inside the host's project. Absent = not relay. */
   isRelayTab?: boolean
+  /** The open PR section (see {@link OpenPullSection}). Present = the grouped menu and the Dock list
+   *  it first, with "Pull request…", "New pull request" and "Issues" below it. Absent = old layout. */
+  pulls?: OpenPullSection
 }
+
+/** One open PR of the project's approved repository, from the board's pull status read. */
+export interface OpenPullRow {
+  number: number
+  title?: string
+  headRefName: string
+  draft: boolean
+  /** null = a deleted account. A user with id 0 has a login only: the avatar is its letter. */
+  author: GitHubIssueUser | null
+}
+
+/** The add menu's open PR list, or the one sentence that says why there is none. */
+export type OpenPullSection = {
+  /** The project folder's current branch, for "New pull request from <branch>". */
+  branch?: string
+  /** Author avatars as data URLs keyed by user id (the board's `avatarDataUrls`). */
+  avatars?: Record<string, string>
+} & ({ rows: OpenPullRow[] } | { reason: string })
 
 /**
  * The bag of creation callbacks every surface already has. Passed in (not imported) so the spec
@@ -141,6 +164,8 @@ export interface AddHandlers {
   files: (at?: AddPos) => void
   /** Opens the pull request picker; the chosen PR's node lands at `at`. */
   pull: (at?: AddPos) => void
+  /** Opens one listed open PR as a node at `at`, or focuses its node when it is already on the canvas. */
+  openPull?: (pullNumber: number, at?: AddPos) => void
   /** Opens "New pull request" for the folder's current branch; its node lands at `at`. */
   newPull: (at?: AddPos) => void
   /** Adds the issues node for the project's approved repository at `at`. */
@@ -495,6 +520,46 @@ export function contentAddItemsToDockRows(
   return out
 }
 
+// ─── Open pull requests first (the pane right-click, the sidebar "+" and the Dock) ───────────
+
+/** The rows that move up under the open PR list when a section is present. */
+export const PULL_SECTION_KINDS: ReadonlySet<AddItem['kind']> = new Set(['pull', 'new-pull', 'issues'])
+
+const PULL_TITLE_MAX = 60
+
+/** One open PR row, or the reason row. Shared by the menu and the Dock adapters. */
+export interface OpenPullMenuRow {
+  key: string
+  label: string
+  icon: ReactNode
+  onClick: () => void
+  disabled?: boolean
+  hint?: string
+}
+
+/** "#12 Fix login · feat/login" with the author's avatar. A reason renders as one disabled row
+ *  that says it, never as an empty list. */
+export function openPullMenuRows(section: OpenPullSection, handlers: AddHandlers, at?: AddPos): OpenPullMenuRow[] {
+  if ('reason' in section) {
+    return [{ key: 'pull-reason', label: section.reason, icon: <IconBranch />, disabled: true, hint: section.reason, onClick: () => {} }]
+  }
+  return section.rows.map((row) => {
+    const title = row.title && row.title.length > PULL_TITLE_MAX ? `${row.title.slice(0, PULL_TITLE_MAX - 1)}…` : row.title
+    return {
+      key: `pull-${row.number}`,
+      label: `#${row.number}${title ? ` ${title}` : ''} · ${row.headRefName}${row.draft ? ' (draft)' : ''}`,
+      icon: <Avatar user={row.author} avatars={section.avatars} size={18} />,
+      hint: [row.title, row.author?.login].filter(Boolean).join(' · ') || undefined,
+      onClick: () => handlers.openPull?.(row.number, at)
+    }
+  })
+}
+
+/** "New pull request from <branch>" when the branch is known, else the row's own label. */
+export function newPullLabel(section: OpenPullSection | undefined): string | undefined {
+  return section?.branch ? `New pull request from ${section.branch}` : undefined
+}
+
 // ─── Grouping (the pane right-click and the sidebar "+") ─────────────────────────────────────
 //
 // Both of those surfaces used to render the whole flat list — 18 "New …" rows before the four
@@ -635,11 +700,19 @@ export function buildGroupedAddMenu(
     files: [],
     orchestrate: []
   }
+  const pulls: MenuItem[] = ctx.pulls
+    ? openPullMenuRows(ctx.pulls, handlers, at).map(({ key: _key, ...row }) => row)
+    : []
   for (const item of items) {
     // Built one at a time through the SHARED mapper rather than re-implemented here: a second
     // copy of the per-kind rows is exactly how these surfaces drifted apart before this module.
     const [row] = contentAddItemsToMenuItems([item], handlers, ctx, at, screenPos)
     if (!row) continue
+    if (ctx.pulls && PULL_SECTION_KINDS.has(item.kind)) {
+      const label = item.kind === 'new-pull' ? newPullLabel(ctx.pulls) : undefined
+      pulls.push(label && 'label' in row ? { ...row, label } as MenuItem : row)
+      continue
+    }
     const group = ADD_ITEM_GROUP[item.kind]
     if (group === 'top') top.push(row)
     else buckets[group].push(row)
@@ -656,6 +729,7 @@ export function buildGroupedAddMenu(
         ]
       : []
   return [
+    ...(pulls.length ? [...pulls, { type: 'separator' } as MenuItem] : []),
     ...top,
     ...agentEntriesToMenuItems(agents),
     ...submenu('view'),
