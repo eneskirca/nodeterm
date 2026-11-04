@@ -4,7 +4,7 @@ import { GitHubClientError } from './client'
 import { GitHubIssueService, type GitHubIssueServiceContext, type GitHubIssuesClientLike } from './service'
 import { GitHubRequestCoordinator } from './request-coordinator'
 import type { NormalisedProjectKanbanGitHub } from '../../shared/github-issues'
-import type { GitHubPullDetail, PullFile, PullFileRead, PullFilesPage } from '../../shared/github-pull-detail'
+import type { GitHubPullDetail, PullFile, PullFileRead, PullFilesPage, PullViewedState } from '../../shared/github-pull-detail'
 
 const config: NormalisedProjectKanbanGitHub = {
   repository: 'o/r', columnMappings: [], completionColumnId: undefined, revision: 'mapping-1'
@@ -53,6 +53,12 @@ class Client implements GitHubIssuesClientLike {
   async getFileAt(_r: string, path: string, ref: string): Promise<PullFileRead> {
     this.reads.push(`file ${path}@${ref[0]}`); return this.contents(path, ref)
   }
+  viewed: () => Promise<Record<string, PullViewedState>> = async () => ({ 'src/a.ts': 'VIEWED', 'src/new.ts': 'DISMISSED' })
+  async pullViewedStates(): Promise<Record<string, PullViewedState>> { this.reads.push('viewed'); return this.viewed() }
+  marks: unknown[] = []
+  async setFileViewed(repository: string, pullNumber: number, path: string, viewed: boolean): Promise<void> {
+    this.marks.push([repository, pullNumber, path, viewed])
+  }
 }
 
 function harness(contextError?: { code: string }) {
@@ -92,7 +98,7 @@ describe('GitHubIssueService.pullFiles', () => {
     const result = await service.pullFiles(request)
     expect(result).toMatchObject({ status: 'ok', truncated: true })
     expect(result.status === 'ok' && result.files).toHaveLength(300)
-    expect(client.reads).toEqual(['files 1', 'files 2', 'files 3'])
+    expect(client.reads).toEqual(['files 1', 'files 2', 'files 3', 'viewed'])
   })
 
   it('says not truncated when exactly the last page ends the list', async () => {
@@ -121,6 +127,41 @@ describe('GitHubIssueService.pullFiles', () => {
     const retryAt = now() + 60_000
     client.pages = async () => { throw new GitHubClientError('rate-limited', 403, retryAt) }
     expect(await service.pullFiles(request)).toEqual({ ...first, stale: 'throttled', retryAt })
+  })
+})
+
+describe('GitHubIssueService viewed files', () => {
+  it('carries the viewer\'s Viewed mark on each file it knows', async () => {
+    const { service } = harness()
+    const result = await service.pullFiles(request)
+    expect(result.status === 'ok' && result.files.slice(0, 3).map((f) => f.viewerViewedState))
+      .toEqual(['VIEWED', 'DISMISSED', undefined])
+  })
+
+  it('a failed viewed read leaves the marks unknown and never fails the list', async () => {
+    const { client, service } = harness()
+    client.viewed = async () => { throw new GitHubClientError('malformed-response') }
+    const result = await service.pullFiles(request)
+    expect(result.status === 'ok' && result.files.every((f) => f.viewerViewedState === undefined)).toBe(true)
+  })
+
+  it('sets the mark on the approved repository, then reads the list again', async () => {
+    const { client, service } = harness()
+    await service.pullFiles(request)
+    expect(await service.setFileViewed({ ...request, path: 'src/a.ts', viewed: false })).toEqual({ ok: true })
+    expect(client.marks).toEqual([['o/r', 7, 'src/a.ts', false]])
+    await service.pullFiles(request)
+    expect(client.reads.filter((read) => read === 'files 1')).toHaveLength(2)
+  })
+
+  it('refuses a bad path, a non-boolean and another repository with no request', async () => {
+    const { client, service } = harness()
+    expect(await service.setFileViewed({ ...request, path: '', viewed: true })).toEqual({ ok: false, reason: 'validation' })
+    expect(await service.setFileViewed({ ...request, path: 'a.ts', viewed: 'yes' as unknown as boolean }))
+      .toEqual({ ok: false, reason: 'validation' })
+    expect(await service.setFileViewed({ ...request, repository: 'evil/other', path: 'a.ts', viewed: true }))
+      .toEqual({ ok: false, reason: 'not-approved' })
+    expect(client.marks).toEqual([])
   })
 })
 
@@ -198,7 +239,7 @@ describe('GitHubIssueService.pullFileContents', () => {
     await service.pullFileContents(contents('src/a.ts'))
     advance(10_000)
     await service.pullFileContents(contents('src/a.ts'))
-    expect(client.reads).toEqual(['detail', 'files 1', 'compare b...c', 'file src/a.ts@d', 'file src/a.ts@c'])
+    expect(client.reads).toEqual(['detail', 'files 1', 'viewed', 'compare b...c', 'file src/a.ts@d', 'file src/a.ts@c'])
   })
 
   it('goes through the request coordinator: a held budget sends nothing and says throttled', async () => {

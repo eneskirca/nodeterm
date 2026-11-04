@@ -56,11 +56,12 @@ import type {
   PullMergeMethod,
   PullRefusal,
   PullReviewEvent,
+  PullViewedState,
   PullWriteReason,
   PullWriteResult
 } from '../../shared/github-pull-detail'
 import {
-  GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft
+  GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft, isPullPath
 } from '../../shared/github-pull-detail'
 import { parseGitHubRepository } from './config'
 import type { GitHubHostError } from './host'
@@ -135,6 +136,8 @@ export interface GitHubIssuesClientLike {
   /** "Merge when ready": GitHub's auto-merge on (tied to the head `sha`) and off. Optional, as above. */
   enablePullAutoMerge?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
   disablePullAutoMerge?(repository: string, pullNumber: number): Promise<void>
+  pullViewedStates?(repository: string, pullNumber: number): Promise<Record<string, PullViewedState>>
+  setFileViewed?(repository: string, pullNumber: number, path: string, viewed: boolean): Promise<void>
   /** Submit one review on a PR (the node's Approve / Request changes). Optional, as above. */
   reviewPull?(
     repository: string, pullNumber: number,
@@ -1141,8 +1144,17 @@ export class GitHubIssueService {
         files.push(...result.files)
         page = result.nextPage
       }
+      // Only the Viewed boxes use it: a failed read leaves them unknown, never fails the tab.
+      const readViewed = client.pullViewedStates?.bind(client)
+      const viewed = readViewed
+        ? await this.readWithEpoch(captured, () => readViewed(repository, pullNumber)).catch(() => undefined)
+        : undefined
+      const listed = files.slice(0, MAX_PULL_FILES).map((file) => {
+        const state = viewed && Object.hasOwn(viewed, file.path) ? viewed[file.path] : undefined
+        return state ? { ...file, viewerViewedState: state } : file
+      })
       return {
-        status: 'ok', files: files.slice(0, MAX_PULL_FILES), truncated: !!page || files.length > MAX_PULL_FILES,
+        status: 'ok', files: listed, truncated: !!page || files.length > MAX_PULL_FILES,
         observedAt: this.now()
       }
     })
@@ -1349,6 +1361,19 @@ export class GitHubIssueService {
       // ponytail: as above.
       if (!client.disablePullAutoMerge) throw new Error('unsupported')
       return client.disablePullAutoMerge(repository, pullNumber)
+    })
+  }
+
+  /** Tick or clear GitHub's own "Viewed" mark on one changed file (a user click only). */
+  async setFileViewed(request: {
+    projectId: string; repository: string; pullNumber: number; path: string; viewed: boolean
+  }): Promise<PullWriteResult> {
+    const { path, viewed } = request ?? {}
+    if (!isPullPath(path) || typeof viewed !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.setFileViewed) throw new Error('unsupported')
+      return client.setFileViewed(repository, pullNumber, path, viewed)
     })
   }
 
