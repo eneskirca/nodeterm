@@ -7321,6 +7321,18 @@ body,
   border-top-color: var(--warn);
 }
 
+/* Edge to edge at the top of the box, and never cropped: it can be a design with words in it. The
+   admin console's preview draws it with the same numbers. */
+.announce-popup__image {
+  display: block;
+  flex: none;
+  width: calc(100% + 36px); /* the box's 18px padding, both sides */
+  max-height: min(320px, 40vh);
+  object-fit: contain;
+  margin: -18px -18px 14px;
+  border-radius: 11px 11px 0 0; /* the box's 14px, less its 3px top border */
+}
+
 .announce-popup__title {
   margin: 0 0 10px;
   font-size: 15px;

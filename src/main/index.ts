@@ -178,7 +178,7 @@ import {
 } from '../core/commit-message'
 import { initUpdater, type UpdaterHandle } from './updater'
 import { requestRendererFlush } from './renderer-flush'
-import { configureCheck, fetchCheck } from '../core/check'
+import { configureCheck, fetchCheck, fetchPopupImage } from '../core/check'
 import {
   hookServer,
   OPEN_PROJECT_CONTROL_REFUSAL,
@@ -2065,6 +2065,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle(IPC.announcementsFetch, async () => (await fetchCheck()).messages)
   ipcMain.handle(IPC.announcementsPopups, async () => (await fetchCheck()).popups)
+  ipcMain.handle(IPC.announcementsPopupImage, (_e, sha256: string) => fetchPopupImage(String(sha256)))
   ipcMain.handle(IPC.appUpdatePolicy, async () => (await fetchCheck()).update)
 
   // Writable base dir for app-managed files (e.g. default git worktree location). On the platform:

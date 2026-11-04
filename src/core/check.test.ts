@@ -136,6 +136,21 @@ describe('/v1/check sanitize — popups', () => {
     ])
   })
 
+  it('keeps a picture only as a hash: the feed names no URL', () => {
+    const hash = 'a'.repeat(64)
+    const r = sanitize({
+      popups: [
+        { id: 'ok', title: 'A', image: hash },
+        { id: 'url', title: 'B', image: `https://evil.test/${hash}` },
+        { id: 'path', title: 'C', image: `../${hash}` },
+        { id: 'num', title: 'D', image: 7 }
+      ],
+      update: {}
+    })
+    expect(r.popups.map((p) => p.image)).toEqual([hash, undefined, undefined, undefined])
+    expect(r.popups.slice(1).every((p) => !('image' in p))).toBe(true)
+  })
+
   it('drops what it cannot show and never guesses an action', () => {
     const r = sanitize({
       popups: [

@@ -387,6 +387,7 @@ export const IPC = {
   appRestartToUpdate: 'app:restart-to-update',
   announcementsFetch: 'announcements:fetch',
   announcementsPopups: 'announcements:popups',
+  announcementsPopupImage: 'announcements:popup-image',
   usageFetch: 'usage:fetch',
   usageRefresh: 'usage:refresh',
   usageUpdate: 'usage:update',
