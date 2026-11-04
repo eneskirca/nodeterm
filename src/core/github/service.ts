@@ -65,6 +65,10 @@ import {
 } from '../../shared/github-pull-detail'
 import { parseGitHubRepository } from './config'
 import { mergePullReviewers, type PullSidebar, type PullSidebarRead } from '../../shared/github-pull-sidebar'
+import {
+  isCommitSha, type GitHubPullCommitFilesResult, type GitHubPullCommitsResult, type PullCommit, type PullCommitFilesPage,
+  type PullCommitsPage
+} from '../../shared/github-pull-commits'
 import type { GitHubHostError } from './host'
 
 const MAX_ISSUES = 10_000
@@ -147,6 +151,9 @@ export interface GitHubIssuesClientLike {
   /** The review comments on diff lines, one page, and one new line comment or reply. Optional, as above. */
   listPullLineComments?(repository: string, pullNumber: number, page: number): Promise<PullLineCommentsPage>
   pullResolvedThreads?(repository: string, pullNumber: number): Promise<number[]>
+  /** The Commits tab: one page of a PR's commits, and one page of one commit's files. Optional, as above. */
+  listPullCommits?(repository: string, pullNumber: number, after?: string): Promise<PullCommitsPage>
+  getCommitFiles?(repository: string, sha: string, page: number): Promise<PullCommitFilesPage>
   createPullLineComment?(
     repository: string, pullNumber: number,
     comment: PullLineCommentWrite
@@ -322,6 +329,8 @@ const MAX_CONVERSATION_PAGES = 10
 
 /** Files the Files tab lists (3 pages of 100); past it the node says the rest is on GitHub. */
 const MAX_PULL_FILES = 300
+/** Pages of 100 commits the Commits tab reads; GitHub lists at most 250 commits of a PR anyway. */
+const MAX_COMMIT_PAGES = 3
 
 function repositoryKey(context: GitHubIssueServiceContext): string {
   return `${context.userId}\0${context.repository}`
@@ -1210,6 +1219,91 @@ export class GitHubIssueService {
     })
   }
 
+  /**
+   * One PR's commits, oldest first, for the Commits tab: GraphQL pages of 100 by cursor, at most
+   * `MAX_COMMIT_PAGES`, past which `truncated` is set. Same refusals, floor and stale rules as `pullDetail`.
+   */
+  async pullCommits(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullCommitsResult> {
+    return this.pullRead('commits', request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.listPullCommits) return null
+      const commits: PullCommit[] = []
+      let after: string | undefined
+      for (let read = 0; read < MAX_COMMIT_PAGES; read += 1) {
+        const cursor = after
+        const page = await this.readWithEpoch(captured, () => client.listPullCommits!(repository, pullNumber, cursor))
+        commits.push(...page.commits)
+        after = page.after
+        if (!after) break
+      }
+      const avatarDataUrls = await this.pullAvatars(commits.map((commit) => commit.author))
+      return {
+        status: 'ok', commits, truncated: !!after, observedAt: this.now(), ...(avatarDataUrls ? { avatarDataUrls } : {})
+      }
+    })
+  }
+
+  /** The files one commit changed and its first parent, for that commit's own diff. Pages and cap
+   *  as `pullFiles`; rules as `pullDetail`. A SHA that is not a full commit SHA is refused, no request. */
+  async pullCommitFiles(
+    request: { projectId: string; repository: string; pullNumber: number; sha: string }
+  ): Promise<GitHubPullCommitFilesResult> {
+    if (!isCommitSha(request?.sha)) return { status: 'refused', reason: 'not-configured' }
+    const { sha } = request
+    return this.pullRead(`commit-files\0${sha}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.getCommitFiles) return null
+      const files: PullFile[] = []
+      let parent: string | undefined
+      let page: number | undefined = 1
+      while (page && files.length < MAX_PULL_FILES) {
+        const next: number = page
+        const result = await this.readWithEpoch(captured, () => client.getCommitFiles!(repository, sha, next))
+        files.push(...result.files)
+        parent ??= result.parent
+        page = result.nextPage
+      }
+      return {
+        status: 'ok', files: files.slice(0, MAX_PULL_FILES), truncated: !!page || files.length > MAX_PULL_FILES,
+        ...(parent ? { parent } : {}), observedAt: this.now()
+      }
+    })
+  }
+
+  /**
+   * One file of one commit as a diff: its first parent against the commit, the Files tab's path and
+   * answer (`pullFileContents`). A root commit's base side is `empty`; a path the commit did not
+   * change answers `unavailable: not-in-pull`.
+   */
+  async pullCommitFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; sha: string; path: string }
+  ): Promise<GitHubPullFileContentsResult> {
+    if (typeof request?.path !== 'string') return { status: 'refused', reason: 'not-configured' }
+    const listed = await this.pullCommitFiles(request)
+    if (listed.status !== 'ok') return listed
+    const { sha, path } = request
+    const file = listed.files.find((item) => item.path === path)
+    return this.pullRead(`commit-contents\0${sha}\0${path}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.getFileAt) return null
+      if (!file) return { status: 'ok', contents: { kind: 'unavailable', reason: 'not-in-pull' }, observedAt: this.now() }
+      const side = async (at: string, ref: string): Promise<PullFileRead> =>
+        this.readWithEpoch(captured, () => client.getFileAt!(repository, at, ref))
+      const [before, after] = await Promise.all([
+        file.status === 'added' || !listed.parent ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, listed.parent),
+        file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, sha)
+      ])
+      const unavailable = [before, after].find((item) => item.kind === 'unavailable')
+      return {
+        status: 'ok',
+        contents: unavailable?.kind === 'unavailable'
+          ? { kind: 'unavailable', reason: unavailable.reason }
+          : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
+        observedAt: this.now()
+      }
+    })
+  }
+
   /** The merge base of `base` and `head`, read once per pair through `pullRead`. */
   private async pullMergeBase(
     request: { projectId: string; repository: string; pullNumber: number }, base: string, head: string
@@ -1589,7 +1683,9 @@ export class GitHubIssueService {
   private async pullRead<O extends PullOk>(
     // `contents\0…` carries the file and SHAs, so a held entry is one file at one head;
     // `merge-base\0…` carries the base and head SHAs.
-    kind: 'detail' | 'conversation' | 'files' | 'issue-conversation' | `contents\0${string}` | `merge-base\0${string}`,
+    kind: 'detail' | 'conversation' | 'files' | 'issue-conversation' | `contents\0${string}` | `merge-base\0${string}`
+      // `commit-…\0<sha>…`: one commit's files or one file of it (07).
+      | 'commits' | `commit-files\0${string}` | `commit-contents\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {

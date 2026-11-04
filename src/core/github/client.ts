@@ -55,6 +55,8 @@ const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$afte
     files(first:100,after:$after){ nodes{ path viewerViewedState } pageInfo{ hasNextPage endCursor } }
   } }
 }`
+import { PULL_COMMITS_QUERY, parsePullCommits } from './graphql-pull-commits'
+import { isCommitSha, type PullCommitFilesPage, type PullCommitsPage } from '../../shared/github-pull-commits'
 
 const API_ORIGIN = 'https://api.github.com'
 const REVIEW_EVENTS: ReadonlySet<unknown> = new Set<PullReviewEvent>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT'])
@@ -1026,6 +1028,40 @@ export class GitHubIssuesClient {
       if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
       throw error
     }
+  }
+
+  /** One page of a PR's commits, oldest first (graphql-pull-commits.ts). `after` = the cursor of the
+   *  page before; absent = the first page. */
+  async listPullCommits(repository: string, pullNumber: number, after?: string): Promise<PullCommitsPage> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647) || (after !== undefined && !string(after, 1_024))) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const body = await this.graphql(PULL_COMMITS_QUERY, { owner, name, number: pullNumber, ...(after ? { after } : {}) })
+    try {
+      return parsePullCommits(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** One page of one commit's changed files and its first parent (`GET /commits/{sha}`), for a
+   *  commit's own diff in the Commits tab. */
+  async getCommitFiles(repository: string, sha: string, page: number): Promise<PullCommitFilesPage> {
+    safeRepository(repository)
+    if (!isCommitSha(sha) || !positiveInteger(page, 100_000)) throw new GitHubClientError('invalid-request')
+    const response = await this.request(`/repos/${repository}/commits/${sha}?per_page=100&page=${page}`, { method: 'GET' })
+    const item = object(await this.json(response))
+    if (!item || !Array.isArray(item.files) || item.files.length > 100 || !Array.isArray(item.parents)) {
+      throw new GitHubClientError('malformed-response')
+    }
+    const files = item.files.map(pullFileFrom)
+    if (files.some((file) => !file)) throw new GitHubClientError('malformed-response')
+    const parent = object(item.parents[0])?.sha
+    if (item.parents.length && !isCommitSha(parent)) throw new GitHubClientError('malformed-response')
+    const next = nextPage(response.headers.get('link'))
+    return { files: files as PullFile[], ...(isCommitSha(parent) ? { parent } : {}), ...(next ? { nextPage: next } : {}) }
   }
 
   /**
