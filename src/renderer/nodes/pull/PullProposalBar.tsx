@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import type { GitHubPullDetail, GitHubRepoMergeMethodsResult, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
+import type { GitHubPullDetail, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
 import type { PullProposal } from '@shared/pull-agent-verbs'
 import { mergeBlock, type PullChecksRead } from '../../lib/pullMergeBlock'
 import { FAILURE_TEXT, METHOD_TEXT, OWN_PULL_TEXT, REFUSAL_TEXT, WRITE_TEXT, type ViewProps } from './shared'
+import type { MergeMethodsRead } from './useMergeMethods'
 
 const PROPOSAL_TEXT: Record<PullProposal['action'], string> = {
   approve: 'Approve', 'request-changes': 'Request changes on', comment: 'Comment on', merge: 'Merge'
@@ -15,34 +16,29 @@ const PROPOSAL_ARM_MS = 1_000
 
 
 /**
- * The linked agent's proposed action (`pr-propose`), shown above the tab content. It names exactly what will
+ * The linked agent's proposed action (`pr-propose`), shown right above the merge box (above the tab
+ * content on another tab, or before the detail read landed). It names exactly what will
  * be sent; nothing is sent until Confirm, which runs the same write, behind the same guards, as the
  * node's own buttons. A review and a merge are tied to the head the node shows, as there.
  */
 export function PullProposalBar(props: ViewProps & {
   proposal: PullProposal; seen: GitHubPullDetail | undefined; seenChecks: PullChecksRead
   ownPull: boolean; onDismiss: () => void
+  /** The shell's one read of the allowed methods, shared with the merge box (null = not asked yet). */
+  methods: MergeMethodsRead
 }): React.JSX.Element {
   const { api, projectId, pull, proposal, seen, seenChecks, ownPull, onDismiss, onWritten } = props
   const [busy, setBusy] = useState(false)
   const [armed, setArmed] = useState(false)
   const [refusal, setRefusal] = useState<PullWriteReason | null>(null)
-  const [methods, setMethods] = useState<GitHubRepoMergeMethodsResult | 'loading'>('loading')
   const isMerge = proposal.action === 'merge'
   // The bar remounts per proposal (keyed by its seq), so this runs once per shown proposal.
   useEffect(() => {
     const timer = setTimeout(() => setArmed(true), PROPOSAL_ARM_MS)
     return () => clearTimeout(timer)
   }, [])
-  // One read of the allowed methods serves both a proposal that names one and one that does not.
-  useEffect(() => {
-    if (!isMerge) return
-    let live = true
-    void api.repoMergeMethods(projectId, pull.repository)
-      .catch((): GitHubRepoMergeMethodsResult => ({ status: 'failed', reason: 'unreachable' }))
-      .then((result) => { if (live) setMethods(result) })
-    return () => { live = false }
-  }, [isMerge, api, projectId, pull.repository])
+  // One read of the allowed methods (the shell's) serves both a proposal that names one and one that does not.
+  const methods = props.methods ?? 'loading'
   const allowed = methods !== 'loading' && methods.status === 'ok' ? methods.methods : null
   const method = proposal.action !== 'merge' || !allowed
     ? null

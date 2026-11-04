@@ -1,26 +1,31 @@
-import { useId, useState } from 'react'
-import type { GitHubPullDetail, GitHubRepoMergeMethodsResult, PullMergeMethod, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
+import { useState } from 'react'
+import type { GitHubPullDetail, PullMergeMethod, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
 import { isPlainRef } from '@shared/pull-work'
 import { PullChecks } from '../../components/kanban/GitHubIssueSummaryModal'
 import { mergeBlock, type PullChecksRead } from '../../lib/pullMergeBlock'
 import { FAILURE_TEXT, METHOD_TEXT, REFUSAL_TEXT, useWrite, WRITE_TEXT, type ViewProps } from './shared'
+import type { MergeMethodsRead } from './useMergeMethods'
 
 const AUTO_MOVED_TEXT = 'GitHub did not turn on auto-merge: the pull request changed since you loaded it, or it can merge now. It has been reloaded: check it, then try again.'
 
 const UPDATE_MOVED_TEXT = 'The pull request changed since you loaded it, so the branch was not updated. It has been reloaded: check it, then update again.'
 
 /**
- * The merge box: the Merge button and its confirmation, a modal over the node. Nothing merges
- * without Confirm. The merge is tied to the head the node shows, so GitHub refuses it (head-moved)
+ * The merge box, at the end of the Conversation tab: the head's checks (result, name, duration), why
+ * Merge is off (draft, closed, conflict, behind, blocked) with its fix, the method select (only the
+ * methods the repository allows) and the Merge button, whose confirmation is a modal over the node.
+ * Nothing merges without Confirm. The merge is tied to the head the node shows, so GitHub refuses it (head-moved)
  * if the PR moved; the node then says so and reloads.
  */
-export function PullMergeBox(props: ViewProps & { detail: GitHubPullDetail; checks: PullChecksRead }): React.JSX.Element {
-  const { api, projectId, pull, detail: d, checks, onWritten, onWork } = props
-  const name = useId()
+export function PullMergeBox(props: ViewProps & {
+  detail: GitHubPullDetail; checks: PullChecksRead
+  /** The shell's one read of the allowed methods; `onLoadMethods` reads again after a failed one. */
+  methods: MergeMethodsRead; onLoadMethods: () => void
+}): React.JSX.Element {
+  const { api, projectId, pull, detail: d, checks, methods, onWritten, onWork } = props
   // Which confirmation is open: a merge now, or "Merge when ready" (GitHub's auto-merge).
   const [open, setOpen] = useState<'merge' | 'auto' | null>(null)
-  const [methods, setMethods] = useState<GitHubRepoMergeMethodsResult | 'loading' | null>(null)
-  const [method, setMethod] = useState<PullMergeMethod | null>(null)
+  const [picked, setPicked] = useState<PullMergeMethod | null>(null)
   const [busy, setBusy] = useState(false)
   // The confirmation's refused write: a merge, or (`auto`) turning on auto-merge.
   const [refusal, setRefusal] = useState<{ reason: PullWriteReason; auto: boolean } | null>(null)
@@ -38,16 +43,8 @@ export function PullMergeBox(props: ViewProps & { detail: GitHubPullDetail; chec
   const show = (mode: 'merge' | 'auto') => {
     setOpen(mode)
     setRefusal(null)
-    // ponytail: the allowed methods are read once per node (the Conversation tab stays mounted); only a
-    // failed read is read again, on the next open.
-    if (methods === 'loading' || methods?.status === 'ok') return
-    setMethods('loading')
-    void api.repoMergeMethods(projectId, pull.repository)
-      .catch((): GitHubRepoMergeMethodsResult => ({ status: 'failed', reason: 'unreachable' }))
-      .then((result) => {
-        setMethods(result)
-        if (result.status === 'ok') setMethod(result.methods[0] ?? null)
-      })
+    // The allowed methods are read once per node; only a failed read is read again, on the next open.
+    props.onLoadMethods()
   }
   const confirm = async () => {
     if (busy || !method || !open) return
@@ -62,12 +59,22 @@ export function PullMergeBox(props: ViewProps & { detail: GitHubPullDetail; chec
   }
 
   const ready = methods !== null && methods !== 'loading' && methods.status === 'ok' ? methods.methods : null
+  // The picked method, else the first one the repository allows.
+  const method = picked && ready?.includes(picked) ? picked : ready?.[0] ?? null
   const confirmable = !!ready?.length && (open !== 'auto' || (methods as { autoMerge?: true }).autoMerge === true)
   return (
     <section className="pull-mergebox">
     <PullChecks result={checks} expectedHead={d.head.sha} onOpen={props.onOpenExternal} />
     <div className="pull-merge">
-      <button className="pull-compose__button" disabled={!!block || busy} onClick={() => show('merge')}>Merge…</button>
+      <div className="pull-merge__row">
+        <button className="pull-compose__button" disabled={!!block || busy} onClick={() => show('merge')}>Merge…</button>
+        {!!ready?.length && (
+          <select className="pull-merge__select" aria-label="Merge method" value={method ?? ''} disabled={busy}
+            onChange={(event) => setPicked(event.target.value as PullMergeMethod)}>
+            {ready.map((item) => <option key={item} value={item}>{METHOD_TEXT[item]}</option>)}
+          </select>
+        )}
+      </div>
       {offersAuto && (
         <button className="pull-compose__button" disabled={busy} onClick={() => show('auto')}>Merge when ready…</button>
       )}
@@ -130,18 +137,7 @@ export function PullMergeBox(props: ViewProps & { detail: GitHubPullDetail; chec
                     ? <p className="pull-node__state" role="status">
                         This repository allows no merge method for your GitHub token. Merge on GitHub instead.
                       </p>
-                    : (
-                      <fieldset className="pull-merge__methods">
-                        <legend>Merge method</legend>
-                        {methods.methods.map((item) => (
-                          <label key={item} className="pull-merge__method">
-                            <input type="radio" name={name} value={item} checked={method === item}
-                              onChange={() => setMethod(item)} />
-                            {METHOD_TEXT[item]}
-                          </label>
-                        ))}
-                      </fieldset>
-                    )}
+                    : method && <p className="pull-merge__method">Method: <strong>{METHOD_TEXT[method]}</strong></p>}
             <div className="pull-compose__actions">
               {confirmable && (
                 <button className="pull-compose__button pull-merge__confirm" disabled={busy || !method}

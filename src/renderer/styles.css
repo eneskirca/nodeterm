@@ -18946,6 +18946,18 @@ body.focus-mode .dock:hover {
   border-radius: var(--radius);
 }
 .pull-mergebox .pull-merge { margin: 8px 0 0; }
+.pull-merge__row { display: flex; align-items: center; gap: 6px; }
+.pull-merge__select {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.pull-merge__method { margin: 0; }
 .pull-node__tab,
 .pull-node__web {
   padding: 3px 10px;
@@ -19308,9 +19320,6 @@ button.pull-commits__headline:hover { text-decoration: underline; }
   box-shadow: 0 8px 24px rgba(0, 0, 0, calc(0.35 * var(--shadow-k)));
 }
 .pull-merge__what { margin: 0; color: var(--text-strong); line-height: 1.5; }
-.pull-merge__methods { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; }
-.pull-merge__methods legend { margin-bottom: 4px; color: var(--muted); }
-.pull-merge__method { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .pull-merge__confirm { border-color: var(--success); background: color-mix(in srgb, var(--success) 25%, transparent); }
 
 /* Issues node (nodes/IssuesNode.tsx): the list beside one issue's detail. Reuses the pull node's frame,

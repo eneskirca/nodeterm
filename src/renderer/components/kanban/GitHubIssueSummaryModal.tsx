@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { GitHubIssueCardView } from '@shared/github-issues'
-import type {
-  GitHubPullChecksResult,
-  GitHubPullStatus,
-  PullStatusFreshness
+import {
+  checkDuration,
+  type GitHubPullChecksResult,
+  type GitHubPullStatus,
+  type PullStatusFreshness
 } from '@shared/github-pull-status'
 import { PullRefChip, PullStatusLine } from './PullStatusBadges'
 import type { KanbanColumn } from '@shared/types'
@@ -301,6 +302,7 @@ export function PullChecks({
           {check.url
             ? <button className="pull-checks__name" onClick={() => onOpen(check.url!)}>{check.name}</button>
             : <span className="pull-checks__name">{check.name}</span>}
+          {checkDuration(check) && <span className="pull-checks__state">{checkDuration(check)}</span>}
           <span className="pull-checks__state">{check.state}</span>
         </li>
       ))}

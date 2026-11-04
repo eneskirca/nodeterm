@@ -406,6 +406,12 @@ describe('PullNodeView composer', () => {
   })
 })
 
+const pickMethod = (view: HTMLElement, value: string) => act(async () => {
+  const select = view.querySelector('select[aria-label="Merge method"]') as HTMLSelectElement
+  select.value = value
+  select.dispatchEvent(new Event('change', { bubbles: true }))
+})
+
 describe('PullNodeView merge', () => {
   const dialog = () => host.querySelector('[role="dialog"]')
   const openMerge = async (api: PullNodeApi, onWritten = vi.fn()) => {
@@ -427,24 +433,43 @@ describe('PullNodeView merge', () => {
     expect(view.querySelector('.pull-merge__reason')?.textContent?.toLowerCase()).toContain(words)
   })
 
-  it('opens a confirmation naming the PR, its title and the target branch, with only the allowed methods', async () => {
+  it('lists each check in the merge box with its result, name and duration', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 }, {
+      status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [
+        { name: 'windows', state: 'failed', startedAt: '2026-11-01T10:00:00Z', completedAt: '2026-11-01T10:02:05Z' },
+        { name: 'lint', state: 'pending', startedAt: '2026-11-01T10:00:00Z' }
+      ]
+    })
+    const view = await render(api)
+    const rows = [...view.querySelectorAll('.pull-mergebox .pull-checks__row')].map((row) => row.textContent)
+    expect(rows).toEqual(['✗windows2m 5sfailed', '●lintpending'])
+  })
+
+  it('the method select beside Merge offers only the allowed methods', async () => {
+    const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
+    const view = await render(api)
+    const options = [...view.querySelectorAll('select[aria-label="Merge method"] option')].map((el) => (el as HTMLOptionElement).value)
+    expect(options).toEqual(['squash', 'rebase'])
+    expect(api.repoMergeMethods).toHaveBeenCalledWith('p', 'o/r')
+  })
+
+  it('opens a confirmation naming the PR, its title, the target branch and the method', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     await openMerge(api)
     expect(dialog()?.textContent).toContain('#7')
     expect(dialog()?.textContent).toContain('Add the pull node')
     expect(dialog()?.textContent).toContain('main')
-    const methods = [...dialog()!.querySelectorAll('input[type="radio"]')].map((el) => (el as HTMLInputElement).value)
-    expect(methods).toEqual(['squash', 'rebase'])
-    expect(api.repoMergeMethods).toHaveBeenCalledWith('p', 'o/r')
+    expect(dialog()?.textContent).toContain('Method: Squash and merge')
     expect(api.mergePull).not.toHaveBeenCalled()
   })
 
   it('merges only on Confirm, with the picked method and the head the Overview showed, then reloads', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     const onWritten = vi.fn()
-    await openMerge(api, onWritten)
-    const rebase = dialog()!.querySelector('input[value="rebase"]') as HTMLInputElement
-    await act(async () => { rebase.click() })
+    const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
+    await pickMethod(view, 'rebase')
+    await act(async () => { button(view, 'Merge…').click() })
+    expect(dialog()?.textContent).toContain('Method: Rebase and merge')
     await act(async () => { button(host, 'Confirm merge').click() })
     expect(api.mergePull).toHaveBeenCalledWith({
       projectId: 'p', repository: 'o/r', pullNumber: 7, method: 'rebase', headSha: 'c'.repeat(40)
@@ -586,11 +611,10 @@ describe('PullNodeView auto-merge', () => {
     const api = fakeApi({ status: 'ok', detail: { ...detail, merge: 'blocked' }, observedAt: 1 })
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'conversation', vi.fn(), vi.fn(), onWritten)
+    await pickMethod(view, 'rebase')
     await act(async () => { button(view, 'Merge when ready…').click() })
     expect(dialog()?.textContent).toContain('when ready')
     expect(api.enablePullAutoMerge).not.toHaveBeenCalled()
-    const rebase = dialog()!.querySelector('input[value="rebase"]') as HTMLInputElement
-    await act(async () => { rebase.click() })
     await act(async () => { button(host, 'Enable auto-merge').click() })
     expect(api.enablePullAutoMerge).toHaveBeenCalledWith({
       projectId: 'p', repository: 'o/r', pullNumber: 7, method: 'rebase', headSha: 'c'.repeat(40)
@@ -1037,6 +1061,15 @@ describe('PullNodeView agent proposal', () => {
     })
     expect(onWritten).toHaveBeenCalledTimes(1)
     expect(onDismiss).toHaveBeenCalledTimes(1)
+  })
+
+  it('sits right above the merge box on the Conversation tab, and under the tab bar on another tab', async () => {
+    await renderProposal({ action: 'approve', message: 'LGTM' })
+    expect(bar()?.nextElementSibling?.classList.contains('pull-mergebox')).toBe(true)
+    act(() => root.unmount()); host.remove()
+    await renderProposal({ action: 'approve', message: 'LGTM' }, undefined, 'files')
+    expect(bar()?.closest('.pull-node__conversation')).toBeNull()
+    expect(bar()?.previousElementSibling?.getAttribute('role')).toBe('tablist')
   })
 
   it('arms Confirm only a second after a proposal is shown or replaced', async () => {

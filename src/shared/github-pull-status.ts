@@ -302,6 +302,17 @@ export function sortChecks(checks: GitHubPullCheck[]): GitHubPullCheck[] {
     CHECK_ORDER[a.state] - CHECK_ORDER[b.state] || a.name.localeCompare(b.name))
 }
 
+/** A finished check run's duration in words ("42s", "2m 5s", "1h 3m"). Undefined while it runs, for
+ *  a commit status (no times), or for times that do not add up. */
+export function checkDuration(check: Pick<GitHubPullCheck, 'startedAt' | 'completedAt'>): string | undefined {
+  if (!check.startedAt || !check.completedAt) return undefined
+  const seconds = Math.round((Date.parse(check.completedAt) - Date.parse(check.startedAt)) / 1000)
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}
+
 /** A check run's `status` + `conclusion`, or a commit status context's `state`, as one of ours. */
 export function checkRunState(status: string, conclusion: string | null): PullCheckState {
   if (status !== 'COMPLETED') return 'pending'

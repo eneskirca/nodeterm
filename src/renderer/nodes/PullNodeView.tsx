@@ -10,6 +10,7 @@ import { PullHeader } from './pull/PullHeader'
 import { PullProposalBar } from './pull/PullProposalBar'
 import { PullTabBar, shownPullTab } from './pull/PullTabBar'
 import { AllowContext, usePullRead, type ViewProps } from './pull/shared'
+import { useMergeMethods } from './pull/useMergeMethods'
 
 export type { PullNodeApi } from './pull/shared'
 
@@ -57,6 +58,10 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   const ownPull = detailRead !== 'loading' && detailRead.status === 'ok' && detailRead.ownPull === true
   const readsChecks = detail && (detail.lifecycle === 'open' || detail.lifecycle === 'draft')
   const checks = usePullChecks(api, readsChecks ? projectId : undefined, pull.pullNumber, detail?.head.sha, props.refreshTick)
+  // One read of the allowed merge methods for the merge box's select (once the Conversation tab
+  // shows an open PR) and a merge proposal.
+  const mergeMethods = useMergeMethods(api, projectId, pull.repository,
+    (opened.includes('conversation') && detail?.lifecycle === 'open') || proposal?.action === 'merge')
   // New line comments waiting for the next review submit. ponytail: kept in memory only; closing
   // the node drops them (nothing was sent).
   const [pending, setPending] = useState<readonly PullLineDraft[]>([])
@@ -64,19 +69,25 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
   // Drops only the drafts named: one added while a review was on its way stays for the next.
   const dropPending = useCallback((sent: readonly PullLineDraft[]) =>
     setPending((list) => list.filter((draft) => !sent.includes(draft))), [])
+  const proposalBar = proposal && (
+    <PullProposalBar key={proposal.seq} {...props} proposal={proposal} seen={detail} seenChecks={checks} ownPull={ownPull}
+      methods={mergeMethods.methods} onDismiss={() => onDismiss?.()} />
+  )
+  // The bar sits right above the merge box, where the user acts. On another tab, or before the
+  // detail read landed (no merge box yet), it sits under the tab bar so it is never out of sight.
+  // ponytail: a move between the two spots remounts the bar, which restarts its one-second arm delay.
+  const barAboveMerge = shownTab === 'conversation' && !!detail
   return (
     <AllowContext.Provider value={props.onAllow}>
       <PullHeader pull={pull} detail={detail}
         avatars={detailRead !== 'loading' && detailRead.status === 'ok' ? detailRead.avatarDataUrls : undefined} />
       <PullTabBar pull={pull} shown={shownTab} detail={detail} onTab={onTab} onOpenExternal={onOpenExternal} />
-      {proposal && (
-        <PullProposalBar key={proposal.seq} {...props} proposal={proposal} seen={detail} seenChecks={checks} ownPull={ownPull}
-          onDismiss={() => onDismiss?.()} />
-      )}
+      {!barAboveMerge && proposalBar}
       {opened.includes('conversation') && (
         <div hidden={shownTab !== 'conversation'}>
           <PullConversationTab {...props} detailRead={detailRead} checks={checks} ownPull={ownPull} pending={pending}
-            onDropPending={dropPending} />
+            onDropPending={dropPending} methods={mergeMethods.methods} onLoadMethods={mergeMethods.load}
+            proposalBar={barAboveMerge ? proposalBar : undefined} />
         </div>
       )}
       {opened.includes('commits') && (
