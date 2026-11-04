@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { GitHubPullDetail } from '@shared/github-pull-detail'
+import type { GitHubPullDetail, PullWriteResult } from '@shared/github-pull-detail'
 import type { PullSidebar as Sidebar } from '@shared/github-pull-sidebar'
 import { ISSUE_OPEN_EVENT } from '../../lib/openIssueNode'
 import { PullSidebar } from './PullSidebar'
@@ -34,7 +34,10 @@ afterEach(() => { act(() => root.unmount()); host.remove() })
 async function render(d: GitHubPullDetail, onOpenExternal = vi.fn(), onWritten = vi.fn()) {
   const api = {
     repoCollaborators: vi.fn(async () => ({ status: 'ok' as const, users: [] })),
-    requestPullReviewer: vi.fn(async () => ({ ok: true as const }))
+    requestPullReviewer: vi.fn(async () => ({ ok: true as const })),
+    repoLabels: vi.fn(async () => ({ status: 'ok' as const, labels: [{ name: 'bug', color: 'd73a4a' }, { name: 'ui', color: '0e8a16' }] })),
+    setPullLabels: vi.fn(async (): Promise<PullWriteResult> => ({ ok: true })),
+    setPullAssignees: vi.fn(async (): Promise<PullWriteResult> => ({ ok: true }))
   }
   host = document.createElement('div')
   document.body.append(host)
@@ -90,5 +93,61 @@ describe('PullSidebar', () => {
     const { view } = await render({ ...detail, requestedReviewers: [user(2, 'ana')] })
     expect(view.querySelectorAll('.pull-sidebar__row')).toHaveLength(0)
     expect(view.querySelector('.pull-reviewers')?.textContent).toContain('anaPending')
+  })
+})
+
+describe('PullSidebar label and assignee edits', () => {
+  const button = (view: HTMLElement, name: string) =>
+    ([...view.querySelectorAll('button')] as HTMLButtonElement[]).find((b) => b.textContent === name || b.getAttribute('aria-label') === name)!
+
+  it('removes a label by name with one call, then reloads the node', async () => {
+    const { view, api, onWritten } = await render({ ...detail, sidebar })
+    await act(async () => { button(view, 'Remove label docs').click() })
+    expect(api.setPullLabels).toHaveBeenCalledTimes(1)
+    expect(api.setPullLabels).toHaveBeenCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, label: 'docs', add: false })
+    expect(onWritten).toHaveBeenCalledTimes(1)
+  })
+
+  it('adds a label from the repository list, offering only labels the PR does not have', async () => {
+    const { view, api } = await render({ ...detail, sidebar })
+    await act(async () => { button(view, 'Add label…').click() })
+    expect(api.repoLabels).toHaveBeenCalledWith('p', 'O/R')
+    const pick = view.querySelector('select[aria-label="Label"]') as HTMLSelectElement
+    expect([...pick.options].map((o) => o.value)).toEqual(['ui'])
+    await act(async () => { button(view, 'Add').click() })
+    expect(api.setPullLabels).toHaveBeenCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, label: 'ui', add: true })
+  })
+
+  it('adds an assignee from the collaborators and removes one', async () => {
+    const { view, api } = await render({ ...detail, sidebar })
+    api.repoCollaborators.mockResolvedValueOnce({ status: 'ok', users: [user(4, 'dee'), user(5, 'eve')] } as never)
+    await act(async () => { button(view, 'Add assignee…').click() })
+    const pick = view.querySelector('select[aria-label="Assignee"]') as HTMLSelectElement
+    expect([...pick.options].map((o) => o.value)).toEqual(['eve'])
+    await act(async () => { button(view, 'Add').click() })
+    expect(api.setPullAssignees).toHaveBeenCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, login: 'eve', add: true })
+    await act(async () => { button(view, 'Remove assignee dee').click() })
+    expect(api.setPullAssignees).toHaveBeenLastCalledWith({ projectId: 'p', repository: 'O/R', pullNumber: 7, login: 'dee', add: false })
+  })
+
+  it('disables the row while its write runs, and shows a plain sentence when it fails', async () => {
+    const { view, api, onWritten } = await render({ ...detail, sidebar })
+    let land: (result: PullWriteResult) => void = () => undefined
+    api.setPullLabels.mockImplementationOnce(() => new Promise((resolve) => { land = resolve }))
+    await act(async () => { button(view, 'Remove label bug').click() })
+    expect(button(view, 'Remove label bug').disabled).toBe(true)
+    expect(button(view, 'Remove label docs').disabled).toBe(true)
+    await act(async () => { button(view, 'Remove label docs').click() })
+    expect(api.setPullLabels).toHaveBeenCalledTimes(1)
+    await act(async () => { land({ ok: false, reason: 'forbidden' }) })
+    expect(view.querySelector('[role="alert"]')?.textContent).toContain('may not write to this repository')
+    expect(button(view, 'Remove label bug').disabled).toBe(false)
+    expect(onWritten).not.toHaveBeenCalled()
+  })
+
+  it('shows no edit controls for a part the read could not answer', async () => {
+    const { view } = await render({ ...detail, sidebar: { ...sidebar, labels: undefined, assignees: undefined } })
+    expect(button(view, 'Add label…')).toBeUndefined()
+    expect(button(view, 'Add assignee…')).toBeUndefined()
   })
 })

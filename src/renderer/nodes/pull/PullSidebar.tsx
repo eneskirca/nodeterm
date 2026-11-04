@@ -8,6 +8,7 @@ import type { PullClosingIssue, PullReviewer, PullReviewerState } from '@shared/
 import { ISSUE_OPEN_EVENT, type IssueOpenRequest } from '../../lib/openIssueNode'
 import { Avatar } from './Avatar'
 import { LabelChip } from './LabelChip'
+import { EditRow, type EditChoices } from './PullSidebarEdit'
 import { FAILURE_TEXT, REFUSAL_TEXT, WRITE_TEXT, type ViewProps } from './shared'
 
 type SidebarProps = ViewProps & { detail: GitHubPullDetail; avatars?: PullAvatarDataUrls }
@@ -18,19 +19,24 @@ const STATE_TEXT: Record<PullReviewerState, string> = {
 
 export function PullSidebar(props: SidebarProps): React.JSX.Element {
   const { sidebar } = props.detail
-  const avatars = props.avatars
+  const { avatars, api, projectId, pull } = props
+  const at = { projectId, repository: pull.repository, pullNumber: pull.pullNumber }
   return (
     <div className="pull-sidebar">
       <PullReviewers {...props} />
       {sidebar?.assignees && (
-        <Row label="Assignees">
-          {sidebar.assignees.length ? <People users={sidebar.assignees} avatars={avatars} named /> : <Empty>No one assigned.</Empty>}
-        </Row>
+        <EditRow label="Assignees" noun="assignee" items={sidebar.assignees} nameOf={(user) => user.login}
+          render={(user) => <People users={[user]} avatars={avatars} named />} empty="No one assigned." repository={pull.repository}
+          load={() => api.repoCollaborators(projectId, pull.repository)
+            .then((r): EditChoices => r.status === 'ok' ? { status: 'ok', names: r.users.map((user) => user.login) } : r)}
+          write={(login, add) => api.setPullAssignees({ ...at, login, add })} onWritten={props.onWritten} />
       )}
       {sidebar?.labels && (
-        <Row label="Labels">
-          {sidebar.labels.length ? sidebar.labels.map((label) => <LabelChip key={label.name} {...label} />) : <Empty>None yet.</Empty>}
-        </Row>
+        <EditRow label="Labels" noun="label" items={sidebar.labels} nameOf={(label) => label.name}
+          render={(label) => <LabelChip {...label} />} empty="None yet." repository={pull.repository}
+          load={() => api.repoLabels(projectId, pull.repository)
+            .then((r): EditChoices => r.status === 'ok' ? { status: 'ok', names: r.labels.map((label) => label.name) } : r)}
+          write={(label, add) => api.setPullLabels({ ...at, label, add })} onWritten={props.onWritten} />
       )}
       {sidebar?.closingIssues && (
         <Row label="Linked issues">

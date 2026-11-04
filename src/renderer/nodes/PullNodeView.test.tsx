@@ -79,7 +79,10 @@ timeline: GitHubPullTimelineResult = { status: 'ok', items: [], openedAt: '2026-
     pullCommitFiles: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     pullCommitFileContents: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     setReviewThreadResolved: vi.fn(async () => ({ ok: true as const })),
-    applySuggestion: vi.fn(async () => ({ ok: true as const }))
+    applySuggestion: vi.fn(async () => ({ ok: true as const })),
+    setPullLabels: vi.fn(async () => ({ ok: true as const })),
+    setPullAssignees: vi.fn(async () => ({ ok: true as const })),
+    repoLabels: vi.fn(async () => ({ status: 'ok' as const, labels: [] }))
   }
 }
 

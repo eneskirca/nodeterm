@@ -19200,6 +19200,11 @@ button.pull-commits__headline:hover { text-decoration: underline; }
 .pull-sidebar__issue-state { font-size: 11px; font-weight: 600; }
 .pull-sidebar__issue-state--open { color: var(--success); }
 .pull-sidebar__issue-state--closed { color: var(--muted); }
+.pull-sidebar__item { display: inline-flex; align-items: center; gap: 2px; }
+.pull-sidebar__item .pull-person { margin-right: 0; }
+.pull-sidebar__remove { padding: 0 4px; border: 0; background: none; color: var(--muted); font: inherit; line-height: 1; cursor: pointer; }
+.pull-sidebar__remove:hover:not(:disabled) { color: var(--danger); }
+.pull-sidebar__remove:disabled { opacity: 0.5; cursor: default; }
 /* "Send to agent…": review threads and failing checks to send to the linked agent. */
 .pull-send { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 10px 0; }
 .pull-send .pull-node__empty, .pull-send .pull-node__state { margin: 0; }

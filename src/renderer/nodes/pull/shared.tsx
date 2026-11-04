@@ -23,7 +23,8 @@ export type PullNodeApi = Pick<
   'pullDetail' | 'pullChecks' | 'pullConversation' | 'pullTimeline' | 'pullFiles' | 'pullFileContents' | 'commentOnPull' | 'reviewPull' | 'mergePull' | 'repoMergeMethods' |
   'repoCollaborators' | 'requestPullReviewer' | 'commentOnPullLine' | 'updatePullBranch' | 'enablePullAutoMerge' |
   'disablePullAutoMerge' | 'setFileViewed' | 'pullCommits' | 'pullCommitFiles' | 'pullCommitFileContents' |
-  'setReviewThreadResolved' | 'applySuggestion'
+  'setReviewThreadResolved' | 'applySuggestion' |
+  'setPullLabels' | 'setPullAssignees' | 'repoLabels'
 >
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
