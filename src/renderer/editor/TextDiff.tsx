@@ -38,7 +38,7 @@ export interface DiffZone {
  * A read-only diff of two texts. The language comes from `path`'s extension, as in the Diff node.
  * A new text pair builds a new editor (one file per mount in the Files tab).
  */
-export function TextDiff({ path, original, modified, className, highlight, zones = [], onLineClick }: {
+export function TextDiff({ path, original, modified, className, highlight, zones = [], onLineClick, sideBySide = true }: {
   path: string
   original: string
   modified: string
@@ -49,6 +49,8 @@ export function TextDiff({ path, original, modified, className, highlight, zones
   zones?: DiffZone[]
   /** A click on a line number. */
   onLineClick?: (side: 'original' | 'modified', line: number) => void
+  /** False = one unified column (the Files tab's Split/Unified toggle). */
+  sideBySide?: boolean
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   const editorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null)
@@ -107,6 +109,9 @@ export function TextDiff({ path, original, modified, className, highlight, zones
       editorRef.current = null
     }
   }, [path, original, modified, key])
+  useEffect(() => {
+    editorRef.current?.updateOptions({ renderSideBySide: sideBySide })
+  }, [path, original, modified, key, sideBySide])
   const { start, end, seq } = highlight ?? {}
   useEffect(() => {
     const editor = editorRef.current?.getModifiedEditor()

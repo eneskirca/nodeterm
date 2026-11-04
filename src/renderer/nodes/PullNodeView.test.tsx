@@ -305,6 +305,11 @@ function typeInput(input: HTMLInputElement, text: string): void {
 }
 const button = (view: HTMLElement, label: string) =>
   [...view.querySelectorAll('button')].find((el) => el.textContent === label) as HTMLButtonElement
+/** The Files tab's "Finish review N" button, whatever N is. */
+const finish = (view: HTMLElement) =>
+  [...view.querySelectorAll('button')].find((el) => el.textContent?.startsWith('Finish review')) as HTMLButtonElement
+const radio = (view: HTMLElement, label: string) =>
+  [...view.querySelectorAll('label')].find((el) => el.textContent?.startsWith(label))!.querySelector('input')!
 
 /** The Conversation tab, whose detail read gives the head a review is tied to. */
 const renderSeen = (api: PullNodeApi, onWritten = vi.fn()): Promise<HTMLDivElement> =>
@@ -698,11 +703,11 @@ describe('PullNodeView files', () => {
     const api = withFiles()
     const view = await render(api, 'o/r', 'files')
     expect(api.pullFiles).toHaveBeenCalledWith('p', 'o/r', 7)
-    const rows = [...view.querySelectorAll('.pull-files__file')].map((row) => row.textContent)
+    const rows = [...view.querySelectorAll('.pf-file')].map((row) => row.textContent)
     expect(rows).toHaveLength(4)
     expect(rows[0]).toContain('Modified')
     expect(rows[0]).toContain('a.ts')
-    expect(view.querySelector('.pull-files__file')?.getAttribute('title')).toBe('src/a.ts')
+    expect(view.querySelector('.pf-file')?.getAttribute('title')).toBe('src/a.ts')
     expect(rows[0]).toContain('+3')
     expect(rows[0]).toContain('−1')
     expect(rows[1]).toContain('Renamed')
@@ -719,7 +724,7 @@ describe('PullNodeView files', () => {
       contents: { kind: 'diff', base: { kind: 'text', text: 'old text' }, head: { kind: 'text', text: 'new text' } }
     })
     const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), undefined, onSelect)
-    const row = [...view.querySelectorAll<HTMLButtonElement>('.pull-files__file')][0]
+    const row = [...view.querySelectorAll<HTMLButtonElement>('.pf-file')][0]
     await act(async () => { row.click() })
     expect(onSelect).toHaveBeenCalledWith('src/a.ts')
     act(() => root.unmount()); host.remove()
@@ -730,7 +735,7 @@ describe('PullNodeView files', () => {
     expect(diff.getAttribute('data-path')).toBe('src/a.ts')
     expect(diff.getAttribute('data-original')).toBe('old text')
     expect(diff.getAttribute('data-modified')).toBe('new text')
-    expect(shown.querySelector('.pull-files__file[aria-current="true"]')?.getAttribute('title')).toBe('src/a.ts')
+    expect(shown.querySelector('.pf-file[aria-current="true"]')?.getAttribute('title')).toBe('src/a.ts')
   })
 
   it('diffs an added file against empty', async () => {
@@ -747,18 +752,18 @@ describe('PullNodeView files', () => {
     const api = withFiles({ status: 'ok', observedAt: 1, contents: { kind: 'unavailable', reason: 'binary' } })
     const view = await render(api, 'o/r', 'files', vi.fn(), onOpen, vi.fn(), 'logo.png')
     expect(view.querySelector('.text-diff')).toBeNull()
-    expect(view.querySelector('.pull-files__unavailable')?.textContent).toContain('Cannot show this file')
-    const link = [...view.querySelectorAll('.pull-files__unavailable button')][0] as HTMLButtonElement
+    expect(view.querySelector('.pf-unavailable')?.textContent).toContain('Cannot show this file')
+    const link = [...view.querySelectorAll('.pf-unavailable button')][0] as HTMLButtonElement
     await act(async () => { link.click() })
     expect(onOpen).toHaveBeenCalledWith('https://github.com/o/r/pull/7/files')
   })
 
   it('shows the files as a tree with +/- per folder, and the filter narrows it', async () => {
     const view = await render(withFiles(), 'o/r', 'files')
-    expect(view.querySelector('.pull-files__folder')?.textContent).toBe('src/+3−1')
+    expect(view.querySelector('.pf-dir')?.textContent).toBe('src')
     const filter = view.querySelector<HTMLInputElement>('input[aria-label="Filter files"]')!
     await act(async () => { typeInput(filter, 'GONE') })
-    expect([...view.querySelectorAll('.pull-files__file')].map((row) => row.getAttribute('title'))).toEqual(['gone.md'])
+    expect([...view.querySelectorAll('.pf-file')].map((row) => row.getAttribute('title'))).toEqual(['gone.md'])
     await act(async () => { typeInput(filter, 'zzz') })
     expect(view.textContent).toContain('No file matches the filter.')
   })
@@ -770,12 +775,12 @@ describe('PullNodeView files', () => {
     })
     api.pullFiles.mockResolvedValue({ ...files, files: files.files.map((f, i) => i === 1 ? { ...f, viewerViewedState: 'VIEWED' as const } : f) })
     const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
-    expect(view.querySelector('.pull-files__count')?.textContent).toBe('1 of 4 viewed')
+    expect(view.querySelector('.pf-progress__count')?.textContent).toBe('1 of 4 viewed')
     expect(view.querySelector('.text-diff')).not.toBeNull()
     const box = view.querySelector<HTMLInputElement>('input[aria-label="Viewed src/a.ts"]')!
     await act(async () => { box.click() })
     expect(api.setFileViewed).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, path: 'src/a.ts', viewed: true })
-    expect(view.querySelector('.pull-files__count')?.textContent).toBe('2 of 4 viewed')
+    expect(view.querySelector('.pf-progress__count')?.textContent).toBe('2 of 4 viewed')
     expect(view.querySelector('.text-diff')).toBeNull()
     await act(async () => { button(view, 'Show the diff').click() })
     expect(view.querySelector('.text-diff')).not.toBeNull()
@@ -784,15 +789,15 @@ describe('PullNodeView files', () => {
   it('unticks the box again and says why when GitHub refuses the mark', async () => {
     const api = withFiles()
     api.setFileViewed.mockResolvedValue({ ok: false, reason: 'forbidden' })
-    const view = await render(api, 'o/r', 'files')
+    const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'gone.md')
     const box = view.querySelector<HTMLInputElement>('input[aria-label="Viewed gone.md"]')!
     await act(async () => { box.click() })
     expect(box.checked).toBe(false)
-    expect(view.querySelector('.pull-files__count')?.textContent).toBe('0 of 4 viewed')
+    expect(view.querySelector('.pf-progress__count')?.textContent).toBe('0 of 4 viewed')
     expect(view.querySelector('[role="alert"]')?.textContent).toContain('Pull requests write access')
   })
 
-  it('the Review changes panel sends the summary and the pending line comments as one review', async () => {
+  it('the Finish review panel sends the summary and the pending line comments as one review', async () => {
     const api = withFiles({
       status: 'ok', observedAt: 1,
       contents: { kind: 'diff', base: { kind: 'text', text: 'old' }, head: { kind: 'text', text: 'new' } }
@@ -801,10 +806,11 @@ describe('PullNodeView files', () => {
     await act(async () => { button(view, 'line modified 3').click() })
     await act(async () => { type(view.querySelector<HTMLTextAreaElement>('textarea[aria-label="Line comment"]')!, 'Nit.') })
     await act(async () => { button(view, 'Add to review').click() })
-    await act(async () => { button(view, 'Review changes').click() })
-    const panel = view.querySelector<HTMLElement>('.pull-files__review')!
+    await act(async () => { finish(view).click() })
+    const panel = view.querySelector<HTMLElement>('[role="dialog"][aria-label="Finish your review"]')!
     await act(async () => { type(panel.querySelector<HTMLTextAreaElement>('textarea[aria-label="Review summary"]')!, 'Two nits.') })
-    await act(async () => { button(panel, 'Request changes').click() })
+    await act(async () => { radio(panel, 'Request changes').click() })
+    await act(async () => { button(panel, 'Submit review').click() })
     expect(api.reviewPull).toHaveBeenCalledWith({
       projectId: 'p', repository: 'o/r', pullNumber: 7, event: 'REQUEST_CHANGES', body: 'Two nits.', headSha: 'c'.repeat(40),
       comments: [{ path: 'src/a.ts', side: 'RIGHT', line: 3, body: 'Nit.' }]
@@ -812,15 +818,16 @@ describe('PullNodeView files', () => {
     expect(view.textContent).not.toContain('Pending')
   })
 
-  it('the Review changes panel keeps Approve and Request changes off on the viewer\'s own PR, with the reason', async () => {
+  it('the Finish review panel keeps Approve and Request changes off on the viewer\'s own PR, with the reason', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1, ownPull: true })
     api.pullFiles.mockResolvedValue(files)
     const view = await render(api, 'o/r', 'files')
-    await act(async () => { button(view, 'Review changes').click() })
-    const panel = view.querySelector<HTMLElement>('.pull-files__review')!
-    expect(button(panel, 'Approve').disabled).toBe(true)
-    expect(button(panel, 'Request changes').disabled).toBe(true)
-    expect(button(panel, 'Approve').title).toContain('your own pull request')
+    await act(async () => { finish(view).click() })
+    const panel = view.querySelector<HTMLElement>('[role="dialog"][aria-label="Finish your review"]')!
+    expect(radio(panel, 'Approve').disabled).toBe(true)
+    expect(radio(panel, 'Request changes').disabled).toBe(true)
+    expect(radio(panel, 'Comment').disabled).toBe(false)
+    expect(radio(panel, 'Approve').closest('label')?.title).toContain('your own pull request')
     expect(panel.textContent).toContain('your own pull request')
   })
 
@@ -828,7 +835,7 @@ describe('PullNodeView files', () => {
     const api = withFiles()
     api.pullFiles.mockResolvedValue({ ...files, truncated: true })
     const view = await render(api, 'o/r', 'files')
-    expect(view.querySelector('.pull-files__truncated')?.textContent).toContain('first 300 files')
+    expect(view.querySelector('.pf-truncated')?.textContent).toContain('first 300 files')
   })
 })
 
@@ -869,7 +876,7 @@ describe('PullNodeView line comments', () => {
     expect(zones[0].textContent).toContain('line comment 1')
     expect(zones[0].textContent).toContain('line comment 2')
     expect(zones[0].textContent).not.toContain('line comment 5')
-    const off = view.querySelector('.pull-line__off')!
+    const off = view.querySelector('.pf-off')!
     expect(off.textContent).toContain('Outdated')
     expect(off.textContent).toContain('old news')
   })
@@ -879,7 +886,7 @@ describe('PullNodeView line comments', () => {
     const read = await api.pullConversation('p', 'o/r', 7)
     api.pullConversation.mockResolvedValue({ ...read, avatarDataUrls: { [String(author.id)]: 'data:image/png;base64,AA==' } } as never)
     const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
-    const comment = view.querySelector('.zone .pull-line__comment')!
+    const comment = view.querySelector('.zone .pf-card__comment')!
     expect(comment.querySelector('img.pull-avatar')?.getAttribute('src')).toBe('data:image/png;base64,AA==')
   })
 
@@ -888,6 +895,7 @@ describe('PullNodeView line comments', () => {
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), onWritten, 'src/a.ts')
     const thread = view.querySelector('.zone')!
+    await act(async () => { button(thread as HTMLElement, 'Reply').click() })
     await act(async () => { type(thread.querySelector('textarea')!, 'Done.') })
     await act(async () => { button(thread as HTMLElement, 'Reply').click() })
     expect(api.commentOnPullLine).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, inReplyTo: 1, body: 'Done.' })
@@ -901,7 +909,7 @@ describe('PullNodeView line comments', () => {
     const box = view.querySelector<HTMLTextAreaElement>('textarea[aria-label="Line comment"]')!
     expect(box.closest('.zone')?.getAttribute('data-at')).toBe('original:3')
     await act(async () => { type(box, 'Why remove this?') })
-    await act(async () => { button(box.closest('.zone') as HTMLElement, 'Comment').click() })
+    await act(async () => { button(box.closest('.zone') as HTMLElement, 'Comment now').click() })
     expect(api.commentOnPullLine).toHaveBeenCalledWith({
       projectId: 'p', repository: 'o/r', pullNumber: 7, headSha: 'c'.repeat(40),
       comment: { path: 'src/a.ts', side: 'LEFT', line: 3, body: 'Why remove this?' }
@@ -969,8 +977,8 @@ describe('PullNodeView line comments', () => {
     const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), onWritten, 'src/a.ts')
     const [open, done] = [...view.querySelectorAll<HTMLElement>('.zone')]
     expect(done.textContent).toContain('Resolved')
-    await act(async () => { button(open, 'Resolve conversation').click() })
-    await act(async () => { button(done, 'Unresolve conversation').click() })
+    await act(async () => { button(open, 'Resolve').click() })
+    await act(async () => { button(done, 'Unresolve').click() })
     expect(api.setReviewThreadResolved.mock.calls).toEqual([
       [{ projectId: 'p', repository: 'o/r', pullNumber: 7, threadId: 1, resolved: true }],
       [{ projectId: 'p', repository: 'o/r', pullNumber: 7, threadId: 3, resolved: false }]
@@ -980,7 +988,7 @@ describe('PullNodeView line comments', () => {
 
   it('offers no Resolve when the read could not say which threads are resolved', async () => {
     const view = await render(setup(), 'o/r', 'files', vi.fn(), vi.fn(), vi.fn(), 'src/a.ts')
-    expect(view.textContent).not.toContain('Resolve conversation')
+    expect(button(view, 'Resolve')).toBeUndefined()
   })
 
   it('applies a suggestion on a head line at the head the node read, and says why a stale one was not applied', async () => {
@@ -992,16 +1000,16 @@ describe('PullNodeView line comments', () => {
     })
     const onWritten = vi.fn()
     const view = await render(api, 'o/r', 'files', vi.fn(), vi.fn(), onWritten, 'src/a.ts')
-    expect([...view.querySelectorAll('button')].filter((b) => b.textContent === 'Apply suggestion')).toHaveLength(1)
-    await act(async () => { button(view, 'Apply suggestion').click() })
+    expect([...view.querySelectorAll('button')].filter((b) => b.textContent === 'Commit suggestion')).toHaveLength(1)
+    await act(async () => { button(view, 'Commit suggestion').click() })
     expect(api.applySuggestion).toHaveBeenCalledWith({ projectId: 'p', repository: 'o/r', pullNumber: 7, headSha: 'c'.repeat(40), commentId: 1 })
     expect(onWritten).toHaveBeenCalledTimes(1)
     api.applySuggestion.mockResolvedValue({ ok: false, reason: 'suggestion-stale' })
-    await act(async () => { button(view, 'Apply suggestion').click() })
+    await act(async () => { button(view, 'Commit suggestion').click() })
     expect(onWritten).toHaveBeenCalledTimes(2)
     expect(view.textContent).toContain('The file changed since this suggestion was made')
     api.applySuggestion.mockResolvedValue({ ok: false, reason: 'from-fork' })
-    await act(async () => { button(view, 'Apply suggestion').click() })
+    await act(async () => { button(view, 'Commit suggestion').click() })
     expect(view.textContent).toContain('comes from a fork')
   })
 })
