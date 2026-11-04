@@ -5,6 +5,7 @@
 import type { GitHubIssueUser } from '../../shared/github-issues'
 import type { PullReviewVerdict } from '../../shared/github-pull-detail'
 import type { PullClosingIssue, PullLabel, PullSidebarRead } from '../../shared/github-pull-sidebar'
+import { parseRepository } from '../../shared/github-issue-ref'
 import { GraphQLShapeError, graphQLErrors } from './graphql-pulls'
 
 const MAX = 100
@@ -70,7 +71,7 @@ export function parsePullSidebar(body: unknown): PullSidebarRead {
   const closingIssues = part('closingIssuesReferences', (node): PullClosingIssue | null => {
     const repository = object(node.repository)?.nameWithOwner
     return typeof node.number === 'number' && Number.isSafeInteger(node.number) && node.number > 0 &&
-      typeof node.title === 'string' && typeof repository === 'string' && (node.state === 'OPEN' || node.state === 'CLOSED')
+      typeof node.title === 'string' && typeof repository === 'string' && parseRepository(repository) && (node.state === 'OPEN' || node.state === 'CLOSED')
       ? { repository, number: node.number, title: node.title, state: node.state === 'OPEN' ? 'open' : 'closed' } : null
   })
   const participants = part('participants', user)

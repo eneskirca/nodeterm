@@ -22,7 +22,10 @@ const pullRequest = {
   latestReviews: { nodes: [{ state: 'APPROVED', author: person(3) }, { state: 'PENDING', author: person(4) }] },
   assignees: { nodes: [person(1)] },
   labels: { nodes: [{ name: 'bug', color: 'D73A4A' }, { name: 'bad', color: 'red' }] },
-  closingIssuesReferences: { nodes: [{ number: 12, title: 'Crash', state: 'OPEN', repository: { nameWithOwner: 'o/r' } }] },
+  closingIssuesReferences: { nodes: [
+    { number: 12, title: 'Crash', state: 'OPEN', repository: { nameWithOwner: 'o/r' } },
+    { number: 13, title: 'Bad', state: 'OPEN', repository: { nameWithOwner: 'evil.example/../x/y' } }
+  ] },
   participants: { nodes: [person(1), person(3), { databaseId: 9, login: 'evil', avatarUrl: 'https://evil.example/a.png' }] }
 }
 
