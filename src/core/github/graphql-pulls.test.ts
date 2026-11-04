@@ -166,6 +166,23 @@ describe('parsePullChecksResponse', () => {
     })
   })
 
+  it('carries a check run\'s start and finish time, for its duration; a bad or missing time is left out', () => {
+    const result = parsePullChecksResponse(checks(HEAD, { state: 'PENDING', contexts: { totalCount: 3, nodes: [
+      { __typename: 'CheckRun', name: 'done', status: 'COMPLETED', conclusion: 'SUCCESS',
+        startedAt: '2026-11-01T10:00:00Z', completedAt: '2026-11-01T10:02:05Z' },
+      { __typename: 'CheckRun', name: 'running', status: 'IN_PROGRESS', conclusion: null,
+        startedAt: '2026-11-01T10:00:00Z', completedAt: null },
+      { __typename: 'CheckRun', name: 'odd', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: 'yesterday', completedAt: 7 }
+    ] } }))
+    expect(result).toEqual({
+      status: 'ok', headRefOid: HEAD, truncated: false, checks: [
+        { name: 'running', state: 'pending', startedAt: '2026-11-01T10:00:00Z' },
+        { name: 'done', state: 'passed', startedAt: '2026-11-01T10:00:00Z', completedAt: '2026-11-01T10:02:05Z' },
+        { name: 'odd', state: 'passed' }
+      ]
+    })
+  })
+
   it('says "no checks" for a null rollup, "moved" for another commit, "hidden" when refused', () => {
     expect(parsePullChecksResponse(checks(HEAD, null))).toEqual({ status: 'no-checks' })
     expect(parsePullChecksResponse(checks('b'.repeat(40), { state: 'SUCCESS', contexts: { totalCount: 0, nodes: [] } })))

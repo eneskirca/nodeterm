@@ -181,6 +181,17 @@ describe('GitHubIssueService pull status', () => {
     expect(await h.service.pullChecks({ projectId: 'project-1', pullNumber: -3 })).toEqual({ status: 'unavailable' })
   })
 
+  it('check detail carries each run\'s start, finish and GitHub URL, for the merge box and the Checks tab', async () => {
+    const h = harness()
+    const run = {
+      name: 'test', state: 'passed' as const, url: 'https://github.com/o/r/actions/runs/1',
+      startedAt: '2026-11-01T10:00:00Z', completedAt: '2026-11-01T10:02:05Z'
+    }
+    h.client.checks = { status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [run] }
+    expect(await h.service.pullChecks({ projectId: 'project-1', pullNumber: 1 }))
+      .toEqual({ status: 'ok', headRefOid: 'c'.repeat(40), truncated: false, checks: [run] })
+  })
+
   it('bounds check-detail reads: one per PR per 15 s, ten per project per minute', async () => {
     const h = harness()
     h.client.checks = { status: 'no-checks' }

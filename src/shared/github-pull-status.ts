@@ -276,6 +276,9 @@ export interface GitHubPullCheck {
   state: PullCheckState
   /** https only; absent when GitHub gave none or it was not an https URL. */
   url?: string
+  /** ISO times of a check run (a commit status has none), for its duration. */
+  startedAt?: string
+  completedAt?: string
 }
 
 export type GitHubPullChecksResult =

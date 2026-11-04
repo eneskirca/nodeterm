@@ -94,7 +94,7 @@ export const PULL_CHECKS_QUERY = `query($owner:String!,$name:String!,$number:Int
       commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state
         contexts(first:${MAX_CHECKS}){ totalCount nodes{
           __typename
-          ... on CheckRun{ name status conclusion detailsUrl }
+          ... on CheckRun{ name status conclusion detailsUrl startedAt completedAt }
           ... on StatusContext{ context state targetUrl }
         } }
       } } } }
@@ -333,6 +333,15 @@ function checkName(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : null
 }
 
+/** A check run's start and finish time, for its duration. Lenient: a bad time is left out, never a
+ *  failed read. */
+function runTimes(node: Record<string, unknown>): { startedAt?: string; completedAt?: string } {
+  const time = (value: unknown) => typeof value === 'string' && value.length <= 64 && Number.isFinite(Date.parse(value)) ? value : undefined
+  const startedAt = time(node.startedAt)
+  const completedAt = time(node.completedAt)
+  return { ...(startedAt ? { startedAt } : {}), ...(completedAt ? { completedAt } : {}) }
+}
+
 /** Decodes the per-PR checks read. Throws `GraphQLShapeError` for a malformed body or an error it
  *  cannot classify. */
 export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
@@ -360,7 +369,7 @@ export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
       if (!name || typeof node.status !== 'string' ||
           !(node.conclusion === null || typeof node.conclusion === 'string')) throw new GraphQLShapeError()
       const url = httpsUrl(node.detailsUrl)
-      return [{ name, state: checkRunState(node.status, node.conclusion), ...(url ? { url } : {}) }]
+      return [{ name, state: checkRunState(node.status, node.conclusion), ...(url ? { url } : {}), ...runTimes(node) }]
     }
     if (node.__typename === 'StatusContext') {
       const name = checkName(node.context)
