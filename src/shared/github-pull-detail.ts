@@ -28,6 +28,8 @@ export interface GitHubPullDetail {
   fromFork?: true
   /** Reviewers with state, assignees, labels, closing issues, participants. Absent = not read. */
   sidebar?: PullSidebar
+  /** How many commits the PR has (the Commits tab's count). Absent = not reported. */
+  commits?: number
 }
 
 /** A GitHub login: letters, digits and single hyphens, at most 39 characters. */

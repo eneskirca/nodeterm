@@ -19057,6 +19057,40 @@ body.focus-mode .dock:hover {
   margin: 0 -14px;
   border-top: 1px solid var(--border);
 }
+/* Commits tab (07): days, then one row per commit; a commit opens its own diff in place. */
+.pull-commits__day { margin-bottom: 12px; }
+.pull-commits__date { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.pull-commits__list { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: 8px; }
+.pull-commits__list li + li { border-top: 1px solid var(--border); }
+.pull-commits__row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; }
+.pull-commits__headline {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  color: var(--text-strong);
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.pull-commits__headline { cursor: pointer; }
+button.pull-commits__headline:hover { text-decoration: underline; }
+.pull-commits__author { flex: none; color: var(--muted); font-size: 12px; }
+.pull-commits__verified {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--success) 60%, transparent);
+  border-radius: 999px;
+  color: var(--success);
+  font-size: 11px;
+}
+.pull-commits__sha { flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+.pull-commits__open { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 10px; }
+.pull-commits__open .pull-commits__row { align-self: stretch; padding: 0; }
 .pull-convo {
   margin: 0;
   padding: 0;

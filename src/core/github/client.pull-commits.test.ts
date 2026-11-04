@@ -78,6 +78,20 @@ describe('GitHubIssuesClient.listPullCommits', () => {
   })
 })
 
+describe('GitHubIssuesClient.getPull commits count', () => {
+  it('reads the PR\'s commit count for the tab, and leaves out an odd one', async () => {
+    const pull = (commits: unknown) => ({
+      number: 7, title: 'T', body: '', state: 'open', draft: false, merged: false, user: null,
+      base: { ref: 'main', sha: A }, head: { ref: 'feat', sha: B }, mergeable: true, mergeable_state: 'clean',
+      additions: 1, deletions: 0, changed_files: 1, html_url: 'https://github.com/o/r/pull/7', commits
+    })
+    const read = (commits: unknown) =>
+      new GitHubIssuesClient({ token: 'secret', fetch: async () => json(pull(commits)) }).getPull('o/r', 7)
+    expect((await read(4)).commits).toBe(4)
+    expect((await read('4')).commits).toBeUndefined()
+  })
+})
+
 describe('GitHubIssuesClient.getCommitFiles', () => {
   it('reads one page of the files a commit changed, its first parent and the next page', async () => {
     const calls: string[] = []

@@ -3,8 +3,9 @@ import { pullWebUrl, type PullNodeRef, type PullNodeTab } from '@shared/pull-nod
 
 /** The tabs the node shows, in order, each with its label and count. Commits (07) and Checks (08)
  *  add a row here and a panel in PullNodeView. */
-export const PULL_TABS: ReadonlyArray<{ tab: PullNodeTab; label: string; count?: (detail: GitHubPullDetail) => number }> = [
+export const PULL_TABS: ReadonlyArray<{ tab: PullNodeTab; label: string; count?: (detail: GitHubPullDetail) => number | undefined }> = [
   { tab: 'conversation', label: 'Conversation' },
+  { tab: 'commits', label: 'Commits', count: (detail) => detail.commits },
   { tab: 'files', label: 'Files changed', count: (detail) => detail.changedFiles }
 ]
 
@@ -21,7 +22,7 @@ export function PullTabBar({ pull, shown, detail, onTab, onOpenExternal }: {
       {PULL_TABS.map(({ tab, label, count }) => (
         <button key={tab} role="tab" aria-selected={tab === shown} className="pull-node__tab" onClick={() => onTab(tab)}>
           {label}
-          {count && detail && <> <span className="pull-node__count">{count(detail)}</span></>}
+          {count && detail && count(detail) !== undefined && <> <span className="pull-node__count">{count(detail)}</span></>}
         </button>
       ))}
       <span className="term-node__spacer" />

@@ -19,11 +19,11 @@ import { pullLineThreads, type PullLineThread } from '../../lib/pullLineThreads'
 import { PullComposer } from './PullComposer'
 import { readState, STALE_TEXT, usePullRead, useWrite, WRITE_TEXT, type ViewProps } from './shared'
 
-const FILE_STATUS_TEXT: Record<PullFileStatus, string> = {
+export const FILE_STATUS_TEXT: Record<PullFileStatus, string> = {
   added: 'Added', modified: 'Modified', removed: 'Removed', renamed: 'Renamed'
 }
 
-const UNAVAILABLE_TEXT: Record<PullFileUnavailable, string> = {
+export const UNAVAILABLE_TEXT: Record<PullFileUnavailable, string> = {
   binary: 'Cannot show this file: it is a binary file.',
   'too-large': 'Cannot show this file: it is larger than 1 MB.',
   'not-in-pull': 'Cannot show this file: the pull request no longer changes it. Refresh the file list.'

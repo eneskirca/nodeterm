@@ -238,7 +238,9 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
     url: url.toString(),
     ...(requested.length ? { requestedReviewers: requested } : {}),
     ...(autoMerge ? { autoMerge: { method: autoMerge } } : {}),
-    ...(fromFork ? { fromFork: true as const } : {})
+    ...(fromFork ? { fromFork: true as const } : {}),
+    // ponytail: display only (the tab count), so an odd value is left out rather than failing the overview.
+    ...(Number.isSafeInteger(item.commits) && (item.commits as number) >= 0 ? { commits: item.commits as number } : {})
   }
 }
 

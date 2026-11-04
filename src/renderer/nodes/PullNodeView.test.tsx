@@ -69,7 +69,10 @@ function fakeApi(result: GitHubPullDetailResult, checks: GitHubPullChecksResult 
     updatePullBranch: vi.fn(async () => ({ ok: true as const })),
     enablePullAutoMerge: vi.fn(async () => ({ ok: true as const })),
     disablePullAutoMerge: vi.fn(async () => ({ ok: true as const })),
-    setFileViewed: vi.fn(async () => ({ ok: true as const }))
+    setFileViewed: vi.fn(async () => ({ ok: true as const })),
+    pullCommits: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
+    pullCommitFiles: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
+    pullCommitFileContents: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const }))
   }
 }
 
@@ -227,8 +230,8 @@ describe('PullNodeView conversation', () => {
   it('names the tabs Conversation and Files changed N, where N is the changed file count', async () => {
     const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'files')
     const tabs = [...view.querySelectorAll('[role="tab"]')]
-    expect(tabs.map((el) => el.textContent)).toEqual(['Conversation', 'Files changed 3'])
-    expect(tabs.map((el) => el.getAttribute('aria-selected'))).toEqual(['false', 'true'])
+    expect(tabs.map((el) => el.textContent)).toEqual(['Conversation', 'Commits', 'Files changed 3'])
+    expect(tabs.map((el) => el.getAttribute('aria-selected'))).toEqual(['false', 'false', 'true'])
   })
 
   it.each([
@@ -242,7 +245,7 @@ describe('PullNodeView conversation', () => {
   })
 
   it('shows Conversation for a tab this build has no panel for', async () => {
-    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'commits')
+    const view = await render(fakeApi({ status: 'ok', detail, observedAt: 1 }), 'o/r', 'checks')
     expect(view.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Conversation')
     expect(view.textContent).toContain('No comments or reviews yet.')
   })

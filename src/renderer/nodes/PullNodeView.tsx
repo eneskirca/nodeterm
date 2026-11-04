@@ -3,6 +3,7 @@ import type { PullLineDraft } from '@shared/github-pull-detail'
 import type { PullNodeRef, PullNodeTab } from '@shared/pull-node'
 import type { PullHighlight, ShownProposal } from '@shared/pull-agent-verbs'
 import { usePullChecks } from '../components/kanban/GitHubIssueSummaryModal'
+import { PullCommitsTab } from './pull/PullCommitsTab'
 import { PullConversationTab } from './pull/PullConversationTab'
 import { PullFilesTab } from './pull/PullFilesTab'
 import { PullHeader } from './pull/PullHeader'
@@ -76,6 +77,11 @@ function PullTabs({ onTab, onSelectFile, proposal, onDismiss, highlight, ...prop
         <div hidden={shownTab !== 'conversation'}>
           <PullConversationTab {...props} detailRead={detailRead} checks={checks} ownPull={ownPull} pending={pending}
             onDropPending={dropPending} />
+        </div>
+      )}
+      {opened.includes('commits') && (
+        <div hidden={shownTab !== 'commits'}>
+          <PullCommitsTab {...props} />
         </div>
       )}
       {opened.includes('files') && (

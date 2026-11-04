@@ -26,8 +26,8 @@ export type PullHighlight = { file: string; start: number; end: number; seq: num
 type Parsed<T> = ({ ok: true; node: string } & T) | { ok: false; error: string }
 
 const SHOW_FLAGS = new Set(['node', 'tab', 'file', 'lines'])
-// The tabs the node shows today; Commits (07) and Checks (08) join when their panels land.
-const SHOW_TABS: readonly PullNodeTab[] = ['conversation', 'files']
+// The tabs the node shows today; Checks (08) joins when its panel lands.
+const SHOW_TABS: readonly PullNodeTab[] = ['conversation', 'commits', 'files']
 const PROPOSE_FLAGS = new Set(['node', 'action', 'message', 'method'])
 const ACTIONS = ['approve', 'request-changes', 'comment', 'merge'] as const
 const METHODS: readonly PullMergeMethod[] = ['merge', 'squash', 'rebase']
@@ -48,7 +48,7 @@ export function parsePrShow(args: Record<string, string | undefined>): Parsed<{ 
   // `overview` is the old name of Conversation, which agents may still send.
   const tab = SHOW_TABS.find((t) => t === pullTab(args.tab))
   if (args.tab !== undefined && !tab) {
-    return { ok: false, error: 'pr-show: --tab is conversation or files' }
+    return { ok: false, error: 'pr-show: --tab is conversation, commits or files' }
   }
   if (file !== undefined) {
     // eslint-disable-next-line no-control-regex
