@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { GitHubIssuesClient } from './client'
+import { PULL_SIDEBAR_QUERY } from './graphql-pull-sidebar'
 
 const person = (id: number) => ({ databaseId: id, login: `u${id}`, avatarUrl: `https://avatars.githubusercontent.com/u/${id}?v=4` })
 const user = (id: number) => ({ id, login: `u${id}`, avatarUrl: `https://avatars.githubusercontent.com/u/${id}?v=4` })
@@ -26,6 +27,12 @@ const pullRequest = {
 }
 
 describe('GitHubIssuesClient pullSidebar', () => {
+  it('spreads a Bot fragment only where the field is an Actor, so GitHub accepts the query', () => {
+    const line = (field: string) => PULL_SIDEBAR_QUERY.split('\n').find((text) => text.trim().startsWith(field)) ?? ''
+    for (const field of ['reviewRequests', 'assignees', 'participants']) expect(line(field)).not.toContain('on Bot')
+    expect(line('latestReviews')).toContain('... on Bot{ databaseId }')
+  })
+
   it('reads the whole sidebar in one GraphQL request', async () => {
     const { github, calls } = client({ data: { repository: { pullRequest } } })
     const read = await github.pullSidebar('o/r', 7)

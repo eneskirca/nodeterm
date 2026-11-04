@@ -8,13 +8,16 @@ import type { PullClosingIssue, PullLabel, PullSidebarRead } from '../../shared/
 import { GraphQLShapeError, graphQLErrors } from './graphql-pulls'
 
 const MAX = 100
-const USER = 'login avatarUrl ... on User{ databaseId } ... on Bot{ databaseId }'
+// A User spot (reviewRequests' `... on User`, assignees, participants) takes the fields directly: GitHub
+// refuses the whole query if a Bot fragment is spread inside User. Only a review author is an Actor.
+const USER = 'login avatarUrl databaseId'
+const ACTOR = 'login avatarUrl ... on User{ databaseId } ... on Bot{ databaseId }'
 
 export const PULL_SIDEBAR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
       reviewRequests(first:${MAX}){ nodes{ requestedReviewer{ __typename ... on User{ ${USER} } } } }
-      latestReviews(first:${MAX}){ nodes{ state author{ ${USER} } } }
+      latestReviews(first:${MAX}){ nodes{ state author{ ${ACTOR} } } }
       assignees(first:${MAX}){ nodes{ ${USER} } }
       labels(first:${MAX}){ nodes{ name color } }
       closingIssuesReferences(first:50){ nodes{ number title state repository{ nameWithOwner } } }
