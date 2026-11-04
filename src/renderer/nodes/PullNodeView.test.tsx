@@ -88,7 +88,9 @@ timeline: GitHubPullTimelineResult = { status: 'ok', items: [], openedAt: '2026-
     setPullState: vi.fn(async () => ({ ok: true as const })),
     markPullReady: vi.fn(async () => ({ ok: true as const })),
     deleteHeadBranch: vi.fn(async () => ({ ok: true as const })),
-    pullForBranch: vi.fn(async () => ({ status: 'ok' as const, defaultBranch: 'main' }))
+    pullForBranch: vi.fn(async () => ({ status: 'ok' as const, defaultBranch: 'main' })),
+    pullCheckLog: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
+    rerunFailedJobs: vi.fn(async () => ({ ok: true as const }))
   }
 }
 

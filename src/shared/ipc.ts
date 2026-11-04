@@ -610,6 +610,10 @@ export const IPC = {
   githubIssuesPullState: 'githubIssues:pull-state',
   githubIssuesPullReady: 'githubIssues:pull-ready',
   githubIssuesPullDeleteBranch: 'githubIssues:pull-delete-branch',
+  // The Checks tab (F-05): a failed Actions job's log tail (a read, classified like the pull reads)
+  // and "Re-run failed" (a write like the ones above: a user click only, owner-only for relay peers).
+  githubIssuesPullCheckLog: 'githubIssues:pull-check-log',
+  githubIssuesPullRerunFailed: 'githubIssues:pull-rerun-failed',
   // The issues node: one issue's comments (a read, classified like the pull reads) and a comment on
   // it (a write like the pull writes: a user click only, owner-only for relay peers).
   githubIssuesIssueConversation: 'githubIssues:issue-conversation',

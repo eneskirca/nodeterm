@@ -1,4 +1,5 @@
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
+import type { GitHubPullCheckLogResult } from './github-pull-check-log'
 import type { GitHubPullTimelineResult } from './github-pull-timeline'
 import type { GitHubRepoLabelsResult } from './github-pull-sidebar'
 import type {
@@ -379,6 +380,10 @@ export interface GitHubIssuesApi {
   markPullReady(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
   /** Delete the head branch of a merged PR from this repository (never the default branch). A user click only. */
   deleteHeadBranch(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
+  /** The failing step's last lines of one Actions job of the PR's head checks. Same refusals as `pullDetail`. */
+  pullCheckLog(projectId: string, repository: string, pullNumber: number, jobId: number): Promise<GitHubPullCheckLogResult>
+  /** Re-run the failed jobs of one Actions run of the PR's head checks. A user click only, never an agent verb. */
+  rerunFailedJobs(request: { projectId: string; repository: string; pullNumber: number; runId: number }): Promise<PullWriteResult>
   /** The repository's labels (name and color) for the sidebar's "Add label". Same refusals as `pullDetail`. */
   repoLabels(projectId: string, repository: string): Promise<GitHubRepoLabelsResult>
   /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */

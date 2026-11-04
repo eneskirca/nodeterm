@@ -30,6 +30,7 @@ import type { PullStatusRead } from './graphql-pulls'
 import { isPullTimelineCursor, type GitHubPullTimelineResult, type PullTimelinePage } from '../../shared/github-pull-timeline'
 import { GitHubPullStatusTracker } from './pull-status-tracker'
 import type { GitHubPullBoard, GitHubPullChecksResult, PullLifecycle } from '../../shared/github-pull-status'
+import { actionsJobOf, type GitHubPullCheckLogResult } from '../../shared/github-pull-check-log'
 import type {
   GitHubPullConversationResult,
   GitHubIssueConversationResult,
@@ -185,6 +186,9 @@ export interface GitHubIssuesClientLike {
   setPullState?(repository: string, pullNumber: number, open: boolean): Promise<void>
   markPullReady?(repository: string, pullNumber: number): Promise<void>
   deleteBranchRef?(repository: string, branch: string): Promise<void>
+  /** The Checks tab's Actions extras: a failed job's log tail, and re-run a run's failed jobs. Optional, as above. */
+  jobLogTail?(repository: string, jobId: number): Promise<string[]>
+  rerunFailedJobs?(repository: string, runId: number): Promise<void>
   /** "New pull request": the form's start, and the create. Optional, as above. */
   pullForBranch?(repository: string, head: string): Promise<{ defaultBranch: string; existing?: number }>
   createPull?(repository: string, pull: PullCreateDraft): Promise<{ number: number }>
@@ -1777,6 +1781,53 @@ export class GitHubIssueService {
     return !result.ok && refusedDelete ? { ok: false, reason: 'branch-protected' } : result
   }
 
+  /** The head checks' Actions run and job ids (only checks of `repository`). */
+  private async headActionsJobs(request: { projectId: string; repository: string; pullNumber: number }) {
+    const checks = await this.pullChecks(request)
+    if (checks.status !== 'ok') return []
+    return checks.checks.flatMap((check) => {
+      const job = actionsJobOf(check.url, request.repository)
+      return job ? [{ ...job, failed: check.state === 'failed' }] : []
+    })
+  }
+
+  /** The failing step's last lines of one Actions job, for the Checks tab's inline excerpt. A job that
+   *  is not one of this PR's head checks is refused with no log request. Rules as `pullDetail`. */
+  async pullCheckLog(
+    request: { projectId: string; repository: string; pullNumber: number; jobId: number }
+  ): Promise<GitHubPullCheckLogResult> {
+    const jobId = request?.jobId
+    if (!Number.isSafeInteger(jobId) || jobId < 1 || typeof request.repository !== 'string') {
+      return { status: 'refused', reason: 'not-configured' }
+    }
+    if (!(await this.headActionsJobs(request)).some((job) => job.jobId === jobId)) {
+      return { status: 'refused', reason: 'not-configured' }
+    }
+    return this.pullRead(`check-log\0${jobId}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.jobLogTail) return null
+      const lines = await this.readWithEpoch(captured, () => client.jobLogTail!(repository, jobId))
+      return { status: 'ok', lines, observedAt: this.now() }
+    })
+  }
+
+  /** "Re-run failed" from the Checks tab (a user click only): GitHub re-runs the failed jobs of one
+   *  Actions run, which must hold a failed check of this PR's head. */
+  async rerunFailedJobs(
+    request: { projectId: string; repository: string; pullNumber: number; runId: number }
+  ): Promise<PullWriteResult> {
+    const runId = request?.runId
+    if (!Number.isSafeInteger(runId) || runId < 1) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository) => {
+      // ponytail: as above.
+      if (!client.rerunFailedJobs) throw new Error('unsupported')
+      if (!(await this.headActionsJobs(request)).some((job) => job.runId === runId && job.failed)) {
+        throw Object.assign(new Error('validation'), { code: 'request-failed', status: 422 })
+      }
+      await client.rerunFailedJobs(repository, runId)
+    })
+  }
+
   /** The repository's labels for the sidebar's "Add label", name and color. Held per repository like
    *  the collaborators (ponytail: first 100 labels only; a label made on GitHub shows after a restart). */
   async repoLabels(request: { projectId: string; repository: string }): Promise<GitHubRepoLabelsResult> {
@@ -1908,7 +1959,8 @@ export class GitHubIssueService {
       // `commit-…\0<sha>…`: one commit's files or one file of it (07).
       | 'commits' | `commit-files\0${string}` | `commit-contents\0${string}`
       | 'timeline' | `timeline\0${string}`
-      | 'issue-timeline' | `issue-timeline\0${string}`,
+      | 'issue-timeline' | `issue-timeline\0${string}`
+      | `check-log\0${string}`,
     request: { projectId: string; repository: string; pullNumber: number },
     read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
   ): Promise<PullResult<O>> {

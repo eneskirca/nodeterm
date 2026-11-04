@@ -62,6 +62,8 @@ function api(): GitHubIssuesApi {
     setPullState: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     markPullReady: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     deleteHeadBranch: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
+    pullCheckLog: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
+    rerunFailedJobs: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     repoLabels: vi.fn(async () => ({ status: 'refused' as const, reason: 'not-approved' as const })),
     enablePullAutoMerge: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),
     updatePullBranch: vi.fn(async () => ({ ok: false as const, reason: 'not-approved' as const })),

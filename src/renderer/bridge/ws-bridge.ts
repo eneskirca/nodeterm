@@ -616,6 +616,10 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullReady, request) as ReturnType<GitHubIssuesApi['markPullReady']>,
     deleteHeadBranch: (request) =>
       client.request(IPC.githubIssuesPullDeleteBranch, request) as ReturnType<GitHubIssuesApi['deleteHeadBranch']>,
+    pullCheckLog: (projectId, repository, pullNumber, jobId) =>
+      client.request(IPC.githubIssuesPullCheckLog, projectId, repository, pullNumber, jobId) as ReturnType<GitHubIssuesApi['pullCheckLog']>,
+    rerunFailedJobs: (request) =>
+      client.request(IPC.githubIssuesPullRerunFailed, request) as ReturnType<GitHubIssuesApi['rerunFailedJobs']>,
     repoLabels: (projectId, repository) =>
       client.request(IPC.githubIssuesRepoLabels, projectId, repository) as ReturnType<GitHubIssuesApi['repoLabels']>,
     enablePullAutoMerge: (request) =>

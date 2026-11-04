@@ -9,6 +9,7 @@ import type {
   GitHubMutationResult
 } from '../../shared/github-issues'
 import type { GitHubPullBoard, GitHubPullChecksResult } from '../../shared/github-pull-status'
+import type { GitHubPullCheckLogResult } from '../../shared/github-pull-check-log'
 import type { GitHubPullTimelineResult } from '../../shared/github-pull-timeline'
 import type {
   GitHubPullConversationResult,
@@ -88,6 +89,8 @@ export interface GitHubIssueHandlerService {
   setPullState(request: { projectId: string; repository: string; pullNumber: number; open: boolean }): Promise<PullWriteResult>
   markPullReady(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
   deleteHeadBranch(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
+  pullCheckLog(request: { projectId: string; repository: string; pullNumber: number; jobId: number }): Promise<GitHubPullCheckLogResult>
+  rerunFailedJobs(request: { projectId: string; repository: string; pullNumber: number; runId: number }): Promise<PullWriteResult>
   repoLabels(request: { projectId: string; repository: string }): Promise<GitHubRepoLabelsResult>
   mergePull(request: {
     projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
@@ -168,6 +171,9 @@ export function registerGitHubIssueHandlers(
   platform.handle(IPC.githubIssuesPullState, (request) => service.setPullState(request))
   platform.handle(IPC.githubIssuesPullReady, (request) => service.markPullReady(request))
   platform.handle(IPC.githubIssuesPullDeleteBranch, (request) => service.deleteHeadBranch(request))
+  platform.handle(IPC.githubIssuesPullCheckLog, (projectId: string, repository: string, pullNumber: number, jobId: number) =>
+    service.pullCheckLog({ projectId, repository, pullNumber, jobId }))
+  platform.handle(IPC.githubIssuesPullRerunFailed, (request) => service.rerunFailedJobs(request))
   platform.handle(IPC.githubIssuesRepoLabels, (projectId: string, repository: string) =>
     service.repoLabels({ projectId, repository }))
   platform.handle(IPC.githubIssuesRepoCollaborators, (projectId: string, repository: string) =>

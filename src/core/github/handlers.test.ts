@@ -76,6 +76,10 @@ describe('registerGitHubIssueHandlers', () => {
       setPullState: async (...args: unknown[]) => { calls.push(['setPullState', ...args]); return { ok: true as const } },
       markPullReady: async (...args: unknown[]) => { calls.push(['markPullReady', ...args]); return { ok: true as const } },
       deleteHeadBranch: async (...args: unknown[]) => { calls.push(['deleteHeadBranch', ...args]); return { ok: true as const } },
+      pullCheckLog: async (...args: unknown[]) => {
+        calls.push(['checkLog', ...args]); return { status: 'refused' as const, reason: 'not-approved' as const }
+      },
+      rerunFailedJobs: async (...args: unknown[]) => { calls.push(['rerunFailedJobs', ...args]); return { ok: true as const } },
       repoLabels: async (...args: unknown[]) => { calls.push(['repoLabels', ...args]); return { status: 'ok' as const, labels: [] } },
       pullForBranch: async (...args: unknown[]) => { calls.push(['branch', ...args]); return { status: 'ok' as const, defaultBranch: 'main' } },
       createPull: async (...args: unknown[]) => { calls.push(['create', ...args]); return { ok: true as const, pullNumber: 3 } },
@@ -129,6 +133,8 @@ describe('registerGitHubIssueHandlers', () => {
     await platform.handlers[IPC.githubIssuesNotePullWaits]({ projectId: 'p1', cardId: 'n', pulls: [3] })
     await platform.handlers[IPC.githubIssuesPullTimeline]('p1', 'o/r', 12, 'Y3Vy')
     await platform.handlers[IPC.githubIssuesIssueTimeline]('p1', 'o/r', 5, 'Y3Vy')
+    await platform.handlers[IPC.githubIssuesPullCheckLog]('p1', 'o/r', 12, 34)
+    await platform.handlers[IPC.githubIssuesPullRerunFailed]({ projectId: 'p1', repository: 'o/r', pullNumber: 12, runId: 56 })
     expect(calls).toEqual([
       ['subscribe', 7, { projectId: 'p1' }],
       ['unsubscribe', 7, 'p1'],
@@ -169,7 +175,9 @@ describe('registerGitHubIssueHandlers', () => {
       ['claim', { projectId: 'p1', cardId: 'n', pulls: [3] }],
       ['wait', { projectId: 'p1', cardId: 'n', pulls: [3] }],
       ['timeline', { projectId: 'p1', repository: 'o/r', pullNumber: 12, after: 'Y3Vy' }],
-      ['issueTimeline', { projectId: 'p1', repository: 'o/r', issueNumber: 5, after: 'Y3Vy' }]
+      ['issueTimeline', { projectId: 'p1', repository: 'o/r', issueNumber: 5, after: 'Y3Vy' }],
+      ['checkLog', { projectId: 'p1', repository: 'o/r', pullNumber: 12, jobId: 34 }],
+      ['rerunFailedJobs', { projectId: 'p1', repository: 'o/r', pullNumber: 12, runId: 56 }]
     ])
     expect(Object.keys(platform.handlers).some((channel) => channel.startsWith('githubControl:'))).toBe(false)
   })

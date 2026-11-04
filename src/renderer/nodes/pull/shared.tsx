@@ -25,7 +25,8 @@ export type PullNodeApi = Pick<
   'disablePullAutoMerge' | 'setFileViewed' | 'pullCommits' | 'pullCommitFiles' | 'pullCommitFileContents' |
   'setReviewThreadResolved' | 'applySuggestion' |
   'setPullLabels' | 'setPullAssignees' | 'repoLabels' |
-  'setPullState' | 'markPullReady' | 'deleteHeadBranch' | 'pullForBranch'
+  'setPullState' | 'markPullReady' | 'deleteHeadBranch' | 'pullForBranch' |
+  'pullCheckLog' | 'rerunFailedJobs'
 >
 
 /** Each refusal names what is wrong and the one step that fixes it. No request was made. */
