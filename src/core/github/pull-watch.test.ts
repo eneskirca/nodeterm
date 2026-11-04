@@ -320,6 +320,26 @@ describe('pull watch', () => {
     expect(readDetail).toHaveBeenCalledTimes(2)
   })
 
+  it('off and on during a tick: the old tick wakes nobody, and the new switch-on still takes its baseline', async () => {
+    await start()
+    await set(true)
+    await vi.advanceTimersByTimeAsync(0)
+    let answer!: (r: GitHubPullDetailResult) => void
+    readDetail.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
+    checksResult = checks([check('build', 'failed')])
+    await tick()
+    expect(readDetail).toHaveBeenCalledTimes(2)
+    await set(false)
+    await set(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(readDetail).toHaveBeenCalledTimes(3) // the new record's baseline, not blocked by the old tick
+    answer(detail())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(deliver).not.toHaveBeenCalled()
+    await tick()
+    expect(deliver).not.toHaveBeenCalled() // build was already failing at the new switch-on
+  })
+
   it('switching off forgets the node; bad input is refused at the boundary', async () => {
     await start()
     await set(true)
