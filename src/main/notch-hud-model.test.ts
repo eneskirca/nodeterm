@@ -268,7 +268,7 @@ describe('6h drop', () => {
 
 // The collapsed-indicator aggregation is NOT here: it is the renderer's pure `buildIndicator`
 // (src/renderer/hud/indicator.ts + indicator.test.ts), the only side that draws it.
-describe('row ordering — state priority, never recency', () => {
+describe('row ordering — state priority, then newest state edge', () => {
   it('ranks needsYou → unread done → working → idle (the sidebar’s section order)', () => {
     expect(hudRowRank({ state: 'needsYou', unread: false })).toBeLessThan(
       hudRowRank({ state: 'done', unread: true })
@@ -284,16 +284,16 @@ describe('row ordering — state priority, never recency', () => {
     expect(hudRowRank({ state: 'done', unread: false })).toBe(hudRowRank({ state: 'idle', unread: false }))
   })
 
-  it('orders the built rows by tier, regardless of how recently each moved', () => {
+  it('orders the built rows by tier before recency', () => {
     const m = createHudModel()
-    // Deliberately created oldest-tier-first and with recency running the OTHER way: under the old
-    // `updatedAt` sort this came out exactly reversed.
+    // Created oldest-tier-first with recency running the OTHER way: the tier still wins, and only
+    // the two working rows (same tier) come out newest-first.
     m.applyStateChange(stateChange({ nodeId: 'w1', state: 'working', agentId: 'claude', ts: T0 + 1 }))
     m.applyStateChange(stateChange({ nodeId: 'd1', state: 'done', agentId: 'gemini', ts: T0 + 2 }))
     m.applyStateChange(stateChange({ nodeId: 'w2', state: 'working', agentId: 'codex', ts: T0 + 3 }))
     m.applyStateChange(stateChange({ nodeId: 'n1', state: 'needsYou', agentId: 'claude', ts: T0 + 4 }))
     const rows = m.buildRows(T0 + 10, titleOf)
-    expect(rows.map((r) => r.nodeId)).toEqual(['n1', 'd1', 'w1', 'w2'])
+    expect(rows.map((r) => r.nodeId)).toEqual(['n1', 'd1', 'w2', 'w1'])
     expect(rows.map((r) => r.state)).toEqual(['needsYou', 'done', 'working', 'working'])
   })
 
@@ -312,20 +312,38 @@ describe('row ordering — state priority, never recency', () => {
     expect(rowFor(m.buildRows(T0 + 10_000, titleOf), 'c')?.updatedAt).toBe(T0 + 5_000)
   })
 
-  it('breaks ties by first appearance, which no feed event can change', () => {
+  it('puts the newest state edge first inside a tier (the turn that just finished on top)', () => {
+    const m = createHudModel()
+    m.applyStateChange(stateChange({ nodeId: 'old', state: 'done', ts: T0 + 100 }))
+    m.applyStateChange(stateChange({ nodeId: 'new', state: 'done', ts: T0 + 300 }))
+    m.applyStateChange(stateChange({ nodeId: 'mid', state: 'done', ts: T0 + 200 }))
+    m.applyStateChange(stateChange({ nodeId: 'q1', state: 'needsYou', ts: T0 + 50 }))
+    m.applyStateChange(stateChange({ nodeId: 'q2', state: 'needsYou', ts: T0 + 60 }))
+    // needs-you stays pinned above every finished turn, however old it is; newest first inside both.
+    expect(m.buildRows(T0 + 400, titleOf).map((r) => r.nodeId)).toEqual(['q2', 'q1', 'new', 'mid', 'old'])
+    // A session that finishes AGAIN (working → done) jumps back to the top of the unread rows.
+    m.applyStateChange(stateChange({ nodeId: 'old', state: 'working', ts: T0 + 500 }))
+    m.applyStateChange(stateChange({ nodeId: 'old', state: 'done', ts: T0 + 600 }))
+    expect(m.buildRows(T0 + 700, titleOf).map((r) => r.nodeId)).toEqual(['q2', 'q1', 'old', 'new', 'mid'])
+  })
+
+  it('only a STATE move reorders: ticks, subagents and a same-state update do not', () => {
     const m = createHudModel()
     m.applyStateChange(stateChange({ nodeId: 'first', state: 'working', ts: T0 + 100 }))
-    m.applyStateChange(stateChange({ nodeId: 'second', state: 'working', ts: T0 + 50 }))
-    m.applyStateChange(stateChange({ nodeId: 'third', state: 'working', ts: T0 + 75 }))
-    // Timestamps are shuffled; appearance order is not.
-    expect(m.buildRows(T0 + 200, titleOf).map((r) => r.nodeId)).toEqual(['first', 'second', 'third'])
-    // A subagent burst + a new turn on the youngest row still doesn't hoist it.
-    m.applyAgentEvent({ nodeId: 'third', agentId: 'claude', kind: 'subagent-start', toolUseId: 't1' } as never)
-    m.applyAgentEvent({ nodeId: 'third', agentId: 'claude', kind: 'state', newTurn: true, task: 'go' } as never)
-    expect(m.buildRows(T0 + 300, titleOf).map((r) => r.nodeId)).toEqual(['first', 'second', 'third'])
-    // Only a real STATE move relocates a row — and then only to its new tier.
-    m.applyStateChange(stateChange({ nodeId: 'third', state: 'needsYou', ts: T0 + 400 }))
-    expect(m.buildRows(T0 + 400, titleOf).map((r) => r.nodeId)).toEqual(['third', 'first', 'second'])
+    m.applyStateChange(stateChange({ nodeId: 'second', state: 'working', ts: T0 + 200 }))
+    expect(m.buildRows(T0 + 300, titleOf).map((r) => r.nodeId)).toEqual(['second', 'first'])
+    m.applyAgentEvent({ nodeId: 'first', agentId: 'claude', kind: 'subagent-start', toolUseId: 't1' } as never)
+    m.applyAgentEvent({ nodeId: 'first', agentId: 'claude', kind: 'state', newTurn: true, task: 'go' } as never)
+    m.applyNowChange(nowChange({ nodeId: 'first', ts: T0 + 400, activity: 'Editing a.ts' }))
+    // A repeated `working` edge for a node already working is not news either.
+    m.applyStateChange(stateChange({ nodeId: 'first', state: 'working', ts: T0 + 450 }))
+    expect(m.buildRows(T0 + 500, titleOf).map((r) => r.nodeId)).toEqual(['second', 'first'])
+  })
+
+  it('breaks an exact tie on first appearance', () => {
+    const m = createHudModel()
+    for (const id of ['a', 'b', 'c']) m.applyStateChange(stateChange({ nodeId: id, state: 'done', ts: T0 }))
+    expect(m.buildRows(T0 + 10, titleOf).map((r) => r.nodeId)).toEqual(['a', 'b', 'c'])
   })
 
   it('keeps the panel’s first 6 rows STABLE across ticks (what the cap used to churn)', () => {

@@ -110,12 +110,18 @@ let showAllRows = false
 const HOVER_OPEN_MS = 180
 let hoverTimer: number | undefined
 
+// A small grow under the pointer (owner: "üzerine gelince biraz daha genişlesin"), so the capsule
+// answers the hover before the dwell opens the panel — and is the only feedback when hover-expand
+// is off. A class, not `:hover`: the window is click-through until this very event, and forwarded
+// moves are what we can rely on, not the CSS hover state. Drawn by `.hud-capsule.hovering`.
 capsule.addEventListener('pointerenter', () => {
+  capsule.classList.add('hovering')
   window.hud.setIgnoreMouse(false)
   window.clearTimeout(hoverTimer)
   if (hoverExpand) hoverTimer = window.setTimeout(() => setExpanded(true), HOVER_OPEN_MS)
 })
 capsule.addEventListener('pointerleave', () => {
+  capsule.classList.remove('hovering')
   window.clearTimeout(hoverTimer)
   window.hud.setIgnoreMouse(true)
   if (expanded) setExpanded(false)

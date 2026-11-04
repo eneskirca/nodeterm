@@ -96,16 +96,23 @@ Row shape sent to the HUD:
   prompt?, activity?, contextPercent?, unread,
   subagents: [{ id, label?, state: 'working'|'done' }], updatedAt }
 ```
-- **row order = STATE PRIORITY, not recency** (`hudRowRank`): `needsYou` → unread `done` →
-  `working` → `idle`, the sessions sidebar's own section order (`STATUS_GROUP_ORDER`,
-  renderer/lib/sessionList.ts) — the owner asked the notch to follow the sidebar's model. Ties
-  inside a tier break on **first appearance** (the accum Map's insertion order), a fact no feed
-  event can change. The rows used to sort on `updatedAt` DESC, and `updatedAt` is bumped by every
-  event including the `onNodeNowChange` activity/context ticks, so a busy session climbed to the
-  top every few seconds and — because the panel draws only the first `HUD_ROW_CAP` rows — each
-  climb also evicted the last row and handed it back: the reported "keeps reshuffling, things
-  disappear and come back". `updatedAt` still drives the row's reltime tag and the staleness
-  watchdog; it is simply no longer doing double duty as the row's position.
+- **row order = STATE PRIORITY, then the newest STATE EDGE** (`hudRowRank`, then `stateAt` DESC):
+  `needsYou` → unread `done` → `working` → `idle`, the sessions sidebar's own section order
+  (`STATUS_GROUP_ORDER`, renderer/lib/sessionList.ts), so needs-you stays pinned on top. Inside a
+  tier the session whose state moved most recently comes first — the turn that just finished (the
+  chime you just heard) heads the unread rows (owner: "en son biten en yukarı"). An exact tie falls
+  back to first appearance (the accum Map's insertion order). `stateAt` is set only when the
+  state VALUE changes (a live edge, or a mirror flush that moves the bucket), never by a tick. That
+  split is load-bearing: the rows once sorted on `updatedAt` DESC, and `updatedAt` is bumped by
+  every event including the `onNodeNowChange` activity/context ticks, so a busy session climbed to
+  the top every few seconds and — because the panel draws only the first `HUD_ROW_CAP` rows — each
+  climb also evicted the last row and handed it back ("keeps reshuffling, things disappear and
+  come back"). `updatedAt` still drives the row's reltime tag and the staleness watchdog only.
+- **hover grow**: the collapsed capsule swells `--capsule-hover-grow` (4 px) sideways and down
+  while the pointer is on it (`.hovering`, toggled on pointerenter/leave in main.ts — not `:hover`,
+  the window is click-through until that event). Fused, it grows LEFT only (right edge pinned to the
+  notch). It is the feedback before the hover dwell opens the panel, and the only one when
+  hover-expand is off.
 - **`unread`** is the done latch said out loud (`state === 'done' && !doneSeen`) — the same mark
   the sidebar carries. It was previously readable only as "the row exists at all", which is
   invisible beside five other rows and looks like a glitch when a phone-side read-ack retires the
