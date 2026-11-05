@@ -1,5 +1,6 @@
 import type { CorePlatform } from '../platform'
 import { IPC } from '../../shared/ipc'
+import { isRecord } from '../../shared/is-record'
 import type { GitHubRepoLabelsResult } from '../../shared/github-pull-sidebar'
 import type {
   CreateMappedLabelsResult,
@@ -202,7 +203,7 @@ export function registerGitHubIssueHandlers(
 export function registerPullNoteHandlers(platform: CorePlatform, store: Pick<PullNotesStore, 'list' | 'add' | 'remove'>): void {
   const bad = (): never => { throw new Error('invalid-note-input') }
   const pullOf = (request: unknown): { repository: string; pullNumber: number } => {
-    const r = (request && typeof request === 'object' ? request : {}) as { repository?: unknown; pullNumber?: unknown }
+    const r = (isRecord(request) ? request : {}) as { repository?: unknown; pullNumber?: unknown }
     return typeof r.repository === 'string' && typeof r.pullNumber === 'number'
       ? { repository: r.repository, pullNumber: r.pullNumber } : bad()
   }

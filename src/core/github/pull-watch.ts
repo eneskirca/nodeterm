@@ -1,6 +1,7 @@
 // Watch (F-08): a pull node's Watch switch, the core half. While a node's watch is on, one poller
-// reads the PR every 2 minutes (the existing `pullDetail` and `pullChecks` reads, so their rate
-// budget, floor and refusals apply) and wakes the node's LINKED agent with one short message on a new
+// reads the PR every 2 minutes (the existing `pullDetail` and `pullChecks` reads, so their floor and
+// refusals apply; the detail read is a BACKGROUND read, so below the rate budget's floor the tick
+// sends nothing, like the board poll) and wakes the node's LINKED agent with one short message on a new
 // event: a check moves to failing, the PR becomes conflicting, or every check turns green. Each event
 // fires once per head SHA. The poller runs here, not in the renderer, so it keeps going while the
 // node is off screen or its project is not the active tab.
@@ -55,7 +56,7 @@ export interface PullWatchDeps {
   /** Why agent messaging cannot deliver in this project right now, or undefined when it can. */
   messagingRefused(projectId: string): 'switch-off' | 'unsupported-edition' | undefined
   /** `GitHubIssueService.pullDetail` / `pullChecks`. */
-  readDetail(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullDetailResult>
+  readDetail(request: { projectId: string; repository: string; pullNumber: number; background: true }): Promise<GitHubPullDetailResult>
   readChecks(request: { projectId: string; pullNumber: number }): Promise<GitHubPullChecksResult>
   /** The shell's agent-messaging delivery, the pull node as the source. */
   deliver(request: { projectId: string; pullNodeId: string; agentNodeId: string; body: string }): Promise<AgentMessageOutcome>
@@ -199,7 +200,7 @@ export function startPullWatch(deps: PullWatchDeps): PullWatchService {
     running.add(r)
     try {
       const { repository, pullNumber } = node.pull
-      const read = await deps.readDetail({ projectId: r.projectId, repository, pullNumber })
+      const read = await deps.readDetail({ projectId: r.projectId, repository, pullNumber, background: true })
       if (!live() || read.status !== 'ok' || read.stale) return
       const d = read.detail
       if (d.lifecycle === 'merged' || d.lifecycle === 'closed') {

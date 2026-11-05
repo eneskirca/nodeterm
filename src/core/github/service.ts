@@ -1123,8 +1123,22 @@ export class GitHubIssueService {
     }
   }
 
-  /** One PR's overview for the pull request node (`pullRead` holds the refusal, floor and stale rules). */
-  async pullDetail(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullDetailResult> {
+  /** One PR's overview for the pull request node (`pullRead` holds the refusal, floor and stale rules).
+   *  `background` (the Watch poller) is held by the rate budget below the floor, like the board poll
+   *  (`refreshWithinFloor`): it asks `core` (the REST read) and `graphql` (the sidebar, and the
+   *  checks Watch reads next) before anything is sent. A user-opened read never sets it. */
+  async pullDetail(request: { projectId: string; repository: string; pullNumber: number; background?: boolean }): Promise<GitHubPullDetailResult> {
+    if (request?.background === true) {
+      let userId: string
+      try {
+        userId = (await this.options.contextForProject(request.projectId)).userId
+      } catch (error) {
+        return this.pullContextFailure(error)
+      }
+      const throttle = this.options.coordinator.throttle(userId) ??
+        this.options.coordinator.throttle(userId, this.now(), 'graphql')
+      if (throttle) return { status: 'failed', reason: 'throttled', retryAt: throttle.until }
+    }
     return this.pullRead('detail', request, async (captured, repository, pullNumber) => {
       if (!captured.client.getPull) return null
       const [read, sidebar] = await Promise.all([

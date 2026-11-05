@@ -105,6 +105,14 @@ describe('pull watch', () => {
     expect(deliver).not.toHaveBeenCalled()
   })
 
+  it('every read is a background read, so the rate budget floor pauses it', async () => {
+    await start()
+    await set(true)
+    await vi.advanceTimersByTimeAsync(PULL_WATCH_INTERVAL_MS)
+    expect(readDetail).toHaveBeenCalledTimes(2)
+    for (const [request] of readDetail.mock.calls) expect(request).toMatchObject({ background: true })
+  })
+
   it('reads nothing while off', async () => {
     await start()
     await tick()

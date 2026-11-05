@@ -3,6 +3,7 @@
 import type { GitHubIssueUser } from './github-issues'
 import type { PullLifecycle, PullMergeState } from './github-pull-status'
 import type { PullSidebar } from './github-pull-sidebar'
+import { isRecord } from './is-record'
 
 export interface GitHubPullDetail {
   number: number
@@ -130,8 +131,8 @@ export interface PullCreateDraft { head: string; base: string; title: string; bo
 
 /** Checked at the main/core boundary and again in the client. */
 export function isPullCreateDraft(value: unknown): value is PullCreateDraft {
-  const d = value as Partial<PullCreateDraft> | null
-  return typeof d === 'object' && d !== null && isPullBranchName(d.head) && isPullBranchName(d.base) &&
+  const d = value as Partial<PullCreateDraft>
+  return isRecord(value) && isPullBranchName(d.head) && isPullBranchName(d.base) &&
     typeof d.title === 'string' && d.title.trim().length > 0 && d.title.length <= MAX_PULL_TITLE &&
     typeof d.body === 'string' && d.body.length <= MAX_PULL_COMMENT_BODY && typeof d.draft === 'boolean'
 }
@@ -158,8 +159,8 @@ export function isPullCommentBody(value: unknown): value is string {
 
 /** Checked at the main/core boundary and again in the client: path, line, side and body. */
 export function isPullLineDraft(value: unknown): value is PullLineDraft {
-  const draft = value as Partial<PullLineDraft> | null
-  return typeof draft === 'object' && draft !== null && isPullPath(draft.path) &&
+  const draft = value as Partial<PullLineDraft>
+  return isRecord(value) && isPullPath(draft.path) &&
     Number.isSafeInteger(draft.line) && (draft.line as number) >= 1 && (draft.line as number) <= 1_000_000 &&
     (draft.side === 'LEFT' || draft.side === 'RIGHT') && isPullCommentBody(draft.body)
 }

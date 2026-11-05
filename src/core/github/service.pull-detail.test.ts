@@ -72,6 +72,25 @@ describe('GitHubIssueService.pullDetail', () => {
     expect(signedOut.client.reads).toBe(0)
   })
 
+  it('a background read (Watch) below the floor sends nothing; a foreground read still reads', async () => {
+    for (const resource of ['core', 'graphql']) {
+      const { client, coordinator, service, now } = harness()
+      coordinator.noteRateSample('user-1', { resource, limit: 5_000, remaining: 10, resetAt: now() + 60_000 })
+      expect(await service.pullDetail({ ...request, background: true }))
+        .toEqual({ status: 'failed', reason: 'throttled', retryAt: now() + 60_000 })
+      expect(client.reads).toBe(0)
+      expect((await service.pullDetail(request)).status).toBe('ok')
+      expect(client.reads).toBe(1)
+    }
+  })
+
+  it('a background read above the floor reads as usual', async () => {
+    const { client, coordinator, service, now } = harness()
+    coordinator.noteRateSample('user-1', { resource: 'core', limit: 5_000, remaining: 4_000, resetAt: now() + 60_000 })
+    expect((await service.pullDetail({ ...request, background: true })).status).toBe('ok')
+    expect(client.reads).toBe(1)
+  })
+
   it('refuses a node whose repository is not the project repository, with no request', async () => {
     const { client, service } = harness()
     expect(await service.pullDetail({ ...request, repository: 'evil/other' }))
