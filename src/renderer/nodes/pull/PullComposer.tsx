@@ -3,7 +3,7 @@ import type { GitHubPullDetail, PullLineDraft, PullReviewEvent, PullWriteReason,
 import { OWN_PULL_TEXT, useWrite, WRITE_TEXT, type ViewProps } from './shared'
 
 /** The comment box at the end of the Conversation tab (F1 card): Close or Reopen pull request
- *  (`lifecycle` given), Request changes, Approve and Comment. The
+ *  (`lifecycle` given), Request changes and Approve (open or draft PRs only) and Comment. The
  *  draft lives here (the tab stays mounted), so it survives a tab switch; it is never persisted.
  *  `reviewPanel`: the Files tab's "Review changes" panel, where the box is the review summary and an
  *  own PR shows Approve and Request changes off, with the reason. */
@@ -14,6 +14,8 @@ export function PullComposer(props: ViewProps & {
   lifecycle?: GitHubPullDetail['lifecycle']
 }): React.JSX.Element {
   const { api, projectId, pull, onWritten, headSha, ownPull, pending, onDropPending, reviewPanel, lifecycle } = props
+  // GitHub takes no approval on a merged or closed PR; Comment stays.
+  const reviewable = lifecycle === undefined || lifecycle === 'open' || lifecycle === 'draft'
   const state = useWrite(onWritten)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -55,7 +57,7 @@ export function PullComposer(props: ViewProps & {
           </button>
         )}
         <div className="pull-compose__actions">
-          {(!ownPull || reviewPanel) && (
+          {reviewable && (!ownPull || reviewPanel) && (
             <>
               <button className="pull-compose__button" disabled={busy || ownPull || !draft.trim()} title={ownPull ? OWN_PULL_TEXT : undefined}
                 onClick={() => void review('REQUEST_CHANGES')}>Request changes</button>
@@ -75,7 +77,7 @@ export function PullComposer(props: ViewProps & {
           <button className="pull-compose__button" disabled={busy} onClick={() => onDropPending(pending)}>Discard</button>
         </p>
       )}
-      {ownPull && (lifecycle === undefined || lifecycle === 'open' || lifecycle === 'draft') && <p className="pull-node__empty">{OWN_PULL_TEXT}</p>}
+      {ownPull && reviewable && <p className="pull-node__empty">{OWN_PULL_TEXT}</p>}
     </div>
   )
 }

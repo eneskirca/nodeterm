@@ -27,7 +27,7 @@ function methodHint(method: PullMergeMethod, d: GitHubPullDetail): string {
  * The merge box (F1), one card at the end of the Conversation tab: a state header for a draft, merged
  * or closed PR, the status rows (review, checks, unresolved threads, merge state), each with a link
  * that jumps to where it is acted on, and a footer with the method split button (its menu lists only
- * the methods the repository allows) and "Merge when ready". Nothing merges without Confirm in the
+ * the methods the repository allows) and, beside it, "Merge when ready" (once, not also in the menu). Nothing merges without Confirm in the
  * modal over the node. The merge is tied to the head the node shows, so GitHub refuses it
  * (head-moved) if the PR moved; the node then says so and reloads.
  */
@@ -153,13 +153,6 @@ export function PullMergeBox(props: ViewProps & {
                     <span>{METHOD_TEXT[item]}<small>{methodHint(item, d)}</small></span>
                   </button>
                 ))}
-                {offersAuto && <>
-                  <div className="pr-menu__sep" role="separator" />
-                  <button type="button" role="menuitem" className="pr-menu__item" onClick={() => show('auto')}>
-                    <Icon name="merge" />
-                    <span>Merge when ready<small>Merges itself once checks and reviews pass.</small></span>
-                  </button>
-                </>}
               </div>
             )}
           </span>

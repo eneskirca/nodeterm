@@ -142,11 +142,13 @@ describe('PullMergeBox method menu', () => {
     expect(onWritten).toHaveBeenCalledTimes(1)
   })
 
-  it('offers Merge when ready in the menu for a blocked PR, which opens the auto-merge confirmation', async () => {
+  it('offers Merge when ready once, beside the method menu, for a blocked PR; it opens the auto-merge confirmation', async () => {
     const { view, api } = await mount({ merge: 'blocked' })
     expect(view.querySelector<HTMLButtonElement>('.pr-split__main')!.disabled).toBe(true)
     await click(view.querySelector<HTMLButtonElement>('[aria-label="Choose merge method"]'))
-    await click([...view.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((el) => el.textContent?.startsWith('Merge when ready')))
+    expect([...view.querySelectorAll('[role="menuitem"]')].some((el) => el.textContent?.startsWith('Merge when ready'))).toBe(false)
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
+    await click(button(view, 'Merge when ready'))
     await click(button(view, 'Enable auto-merge'))
     expect(api.enablePullAutoMerge).toHaveBeenCalledWith({ ...at, method: 'squash', headSha: HEAD })
   })

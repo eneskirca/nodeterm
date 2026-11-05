@@ -345,6 +345,13 @@ describe('PullNodeView composer', () => {
     expect(api.pullDetail).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['merged', 'closed'] as const)('a %s PR offers Comment but no Approve or Request changes', async (lifecycle) => {
+    const view = await render(fakeApi({ status: 'ok', detail: { ...detail, lifecycle, merge: undefined }, observedAt: 1 }), 'o/r', 'conversation')
+    expect(button(view, 'Comment')).toBeDefined()
+    expect(button(view, 'Approve')).toBeUndefined()
+    expect(button(view, 'Request changes')).toBeUndefined()
+  })
+
   it('offers no review before the detail read showed a head commit', async () => {
     const api = fakeApi({ status: 'ok', detail, observedAt: 1 })
     api.pullDetail.mockImplementation(() => new Promise(() => {}))
