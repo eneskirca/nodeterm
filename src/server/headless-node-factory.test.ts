@@ -591,6 +591,14 @@ describe('HeadlessNodeFactory', () => {
     expect(pty.sends).toEqual([])
   })
 
+  it('open-terminal links the terminal to its opener one-way, so only the opener reads its screen', async () => {
+    const opened = await factory.openTerminal('term-source', {}, true)
+    const id = (opened.result as { id: string }).id
+    expect((await store.load({ sideline: false })).projects[0].bridges).toEqual([
+      expect.objectContaining({ source: 'term-source', target: id, reader: 'term-source' })
+    ])
+  })
+
   it('link --one-way persists a reader so only --from reads (issue #852)', async () => {
     const workspace = await store.load({ sideline: false })
     workspace.projects[0].nodes.push(terminal('term-third', 'Third', 'gemini', 900))

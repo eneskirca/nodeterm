@@ -17,8 +17,53 @@ export interface LinkEndpoint {
 // just to improve this diagnostic: that would turn a refusal into an existence oracle.
 export const LINK_PROJECT_ONLY = 'cross-project linking is not supported'
 export const LINK_ENDPOINT_NOT_FOUND = `node not found in this project; ${LINK_PROJECT_ONLY}`
+export const LINK_NOT_LINKABLE =
+  'not linkable (needs two context-capable agents, an agent + a terminal, or a sticky + terminal)'
 
-export type LinkKind = 'context' | 'note'
+/** 'pane': a context-capable agent reads a plain terminal's screen (`terminal --node <id>`). It is
+ *  always one-way toward the agent — the terminal has no agent to read anything back with. */
+export type LinkKind = 'context' | 'note' | 'pane'
+
+/**
+ * Which plain terminals an AGENT may link itself to with the `link` verb (`settings.agentTerminalLinks`,
+ * machine-local, never settable from the canvas CLI). A pane link lets an agent read a terminal's
+ * screen, and a screen can show anything a person ran there, so an agent needs no more than the
+ * terminals it opened itself — `open-terminal` links those automatically. A link a PERSON draws on
+ * the canvas is never subject to this; nor is the Server Edition, whose `link` already requires the
+ * caller to have opened every endpoint (a stricter rule than any value here).
+ *   own     — only a terminal whose recorded opener (`data.openedBy`) is the calling agent
+ *   confirm — any terminal of the project; a link to one the agent did not open asks first
+ *   any     — no limit
+ */
+export type AgentTerminalLinks = 'own' | 'confirm' | 'any'
+export const AGENT_TERMINAL_LINKS_DEFAULT: AgentTerminalLinks = 'own'
+export const AGENT_TERMINAL_LINK_CHOICES: readonly AgentTerminalLinks[] = ['own', 'confirm', 'any']
+export const AGENT_TERMINAL_LINK_LABELS: Record<AgentTerminalLinks, string> = {
+  own: 'Only terminals the agent opened',
+  confirm: 'Any terminal in the project, after I confirm',
+  any: 'Any terminal in the project'
+}
+/** settings.json is hand-editable: anything but a known value reads as the safe default. */
+export function resolveAgentTerminalLinks(value: unknown): AgentTerminalLinks {
+  return value === 'own' || value === 'confirm' || value === 'any' ? value : AGENT_TERMINAL_LINKS_DEFAULT
+}
+export const AGENT_TERMINAL_LINK_REFUSED =
+  'you did not open this terminal: this machine lets an agent link itself only to terminals it opened ' +
+  '(Settings → Agents → "Agents may link to terminals"); a person can draw the link on the canvas'
+/** One agent-made pane link: may it be drawn, must the person confirm it, or is it refused? The
+ *  opener is the terminal node's `data.openedBy`, which is git-shared text: only an exact match on
+ *  the caller's own id counts; anything else (absent, another id, not a string) is not proof. */
+export function agentTerminalLinkVerdict(
+  mode: AgentTerminalLinks,
+  callerId: string,
+  terminalOpenedBy: unknown
+): 'allow' | 'confirm' | 'refuse' {
+  if (mode === 'any') return 'allow'
+  if (typeof terminalOpenedBy === 'string' && terminalOpenedBy !== '' && terminalOpenedBy === callerId) {
+    return 'allow'
+  }
+  return mode === 'confirm' ? 'confirm' : 'refuse'
+}
 
 /** The endpoints of a context link, plus its optional one-way reader (issue #852). */
 export interface LinkEdge {
@@ -77,7 +122,15 @@ export function gainedReaders(before: LinkEdge, after: LinkEdge): string[] {
 /** Decide what kind of link (if any) a new edge between two nodes forms. */
 export function classifyLink(a: LinkEndpoint, b: LinkEndpoint): LinkKind | null {
   const stickies = (a.kind === 'sticky' ? 1 : 0) + (b.kind === 'sticky' ? 1 : 0)
-  if (stickies === 0) return a.contextCapable && b.contextCapable ? 'context' : null
+  if (stickies === 0) {
+    if (a.contextCapable && b.contextCapable) return 'context'
+    // Without this an orchestrator could open a terminal (a test run, a build, a sandbox) and
+    // never see what happened in it — the owner had to paste the output back by hand.
+    if (a.contextCapable !== b.contextCapable && (a.contextCapable ? b : a).kind === 'terminal') {
+      return 'pane'
+    }
+    return null
+  }
   if (stickies === 2) return null
   const other = a.kind === 'sticky' ? b : a
   return other.kind === 'terminal' ? 'note' : null
@@ -136,7 +189,7 @@ export function planBridges(
     if (!kind) {
       skipped.push({
         id: targetId,
-        why: 'not linkable (needs two context-capable agents, or a sticky + terminal)'
+        why: LINK_NOT_LINKABLE
       })
       continue
     }
@@ -147,10 +200,19 @@ export function planBridges(
       continue
     }
     // `oneWay` (issue #852): `fromId` reads the targets, never the reverse. Note links are
-    // already one-way (the terminal reads the sticky) and never carry a reader.
+    // already one-way (the terminal reads the sticky) and never carry a reader. A pane link is
+    // one-way whatever was asked: only its agent end can read.
+    const reader =
+      kind === 'pane'
+        ? se.contextCapable
+          ? fromId
+          : targetId
+        : kind === 'context' && options.oneWay
+          ? fromId
+          : undefined
     edges.push(
-      kind === 'context' && options.oneWay
-        ? { id: `bridge-${source}-${target}`, source, target, reader: fromId }
+      reader !== undefined
+        ? { id: `bridge-${source}-${target}`, source, target, reader }
         : { id: `bridge-${source}-${target}`, source, target }
     )
     linked.push(targetId)

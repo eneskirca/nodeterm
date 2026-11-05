@@ -154,6 +154,9 @@ export const SETTINGS_VERB_FORBIDDEN = new Set<keyof Settings | keyof Project>([
   // The machine default for messaging: a grant over EVERY project on this machine at once, cloned
   // ones included. The per-project switch is the narrower, confirmable thing an agent may ask for.
   'agentMessagingDefault',
+  // Which terminals an agent may link itself to (and so read the screen of). An agent that could
+  // widen it would grant itself every terminal in its project; only the person widens it.
+  'agentTerminalLinks',
   // Telemetry.
   'telemetryEnabled',
   // Consent to license and allowance calls while DO_NOT_TRACK is set. A privacy decision:

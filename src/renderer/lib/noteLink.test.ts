@@ -27,9 +27,13 @@ describe('classifyLink', () => {
   it('two context-capable terminals form a context link', () => {
     expect(classifyLink(term(true), term(true))).toBe('context')
   })
-  it('terminals that are not both context-capable form nothing', () => {
-    expect(classifyLink(term(true), term(false))).toBeNull()
+  it('an agent and a plain terminal form a pane link, in either direction', () => {
+    expect(classifyLink(term(true), term(false))).toBe('pane')
+    expect(classifyLink(term(false), term(true))).toBe('pane')
+  })
+  it('two plain terminals, or an agent and a non-terminal, form nothing', () => {
     expect(classifyLink(term(false), term(false))).toBeNull()
+    expect(classifyLink(term(true), { kind: 'editor', contextCapable: false })).toBeNull()
   })
   it('sticky ↔ terminal forms a note link in either direction', () => {
     expect(classifyLink(sticky(), term(false))).toBe('note')
@@ -62,11 +66,27 @@ describe('planBridges', () => {
     ])
   })
 
-  it('skips a target that is not linkable, without losing the ones that are', () => {
+  it('links a plain terminal one-way, so only the agent end reads it', () => {
     const plan = planBridges('n1', ['p1', 'n2'], lookup, [])
-    expect(plan.linked).toEqual(['n2'])
+    expect(plan.linked).toEqual(['p1', 'n2'])
+    expect(plan.edges).toEqual([
+      { id: 'bridge-n1-p1', source: 'n1', target: 'p1', reader: 'n1' },
+      { id: 'bridge-n1-n2', source: 'n1', target: 'n2' }
+    ])
+    // Linked FROM the terminal, the agent is still the reader.
+    expect(planBridges('p1', ['n2'], lookup, []).edges).toEqual([
+      { id: 'bridge-p1-n2', source: 'p1', target: 'n2', reader: 'n2' }
+    ])
+  })
+
+  it('skips a target that is not linkable, without losing the ones that are', () => {
+    const plan = planBridges('p1', ['s1', 'n2'], (id) => (id === 'n2' ? term(false) : canvas[id]), [])
+    expect(plan.linked).toEqual(['s1'])
     expect(plan.skipped).toEqual([
-      { id: 'p1', why: 'not linkable (needs two context-capable agents, or a sticky + terminal)' }
+      {
+        id: 'n2',
+        why: 'not linkable (needs two context-capable agents, an agent + a terminal, or a sticky + terminal)'
+      }
     ])
   })
 
