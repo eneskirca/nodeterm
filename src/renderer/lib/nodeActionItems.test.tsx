@@ -476,3 +476,29 @@ describe('board allowlist carries the session sections', () => {
     for (const id of mod.BOARD_MODAL_ACTION_IDS) expect(BOARD_NODE_ACTION_IDS).toContain(id)
   })
 })
+
+describe('buildNodeActionItems — the Codex system account row', () => {
+  const codexNode = term('c1', { agentId: 'codex' })
+  const withAccounts = (): void =>
+    useSettings.setState((s) => ({
+      settings: {
+        ...s.settings,
+        codexAccounts: [{ id: 'cx1', label: 'Team codex' }] as never
+      }
+    }))
+
+  it('names the local system row with the user’s own label from settings', () => {
+    withAccounts()
+    useSettings.setState((s) => ({ settings: { ...s.settings, systemCodexAccountLabel: 'Home codex' } }))
+    const items = buildNodeActionItems(['c1'], undefined, fakeCtx([codexNode]))
+    const sub = row(items, 'Switch Codex account')
+    expect(sub?.type).toBe('submenu')
+    expect(row(items, '✓ Home codex')).toBeTruthy()
+  })
+
+  it('falls back to the generic name while no label is set', () => {
+    withAccounts()
+    const items = buildNodeActionItems(['c1'], undefined, fakeCtx([codexNode]))
+    expect(row(items, '✓ System account')).toBeTruthy()
+  })
+})
