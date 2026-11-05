@@ -12,6 +12,7 @@ import { hostOsFromNavigator, sshServerCopy } from '@shared/ssh-server'
 import {
   pairingEndedMessage,
   pairingGate,
+  pairingNetworkHint,
   relayGateMessage,
   relayOnlyExplanation
 } from '@shared/pairing-gate'
@@ -280,6 +281,7 @@ export function PhoneSection({ isActive }: { isActive: boolean }): React.JSX.Ele
                     className="rounded-lg bg-white p-2"
                   />
                   <p className="text-sm text-muted">Waiting for your phone… (10 min)</p>
+                  <p className="text-sm text-muted">{pairingNetworkHint(relayPlan === 'ok')}</p>
                   {/* eneskirca/nodeterm#745: the default QR encodes the payload as raw JSON,
                       which the iPhone's Camera app can only show as text — there is nothing in
                       it to open. This switches the SAME live token to the app's URL scheme so

@@ -8,6 +8,7 @@ import { hostOsFromNavigator, sshServerCopy } from '@shared/ssh-server'
 import {
   pairingEndedMessage,
   pairingGate,
+  pairingNetworkHint,
   relayGateMessage,
   relayOnlyExplanation
 } from '@shared/pairing-gate'
@@ -118,6 +119,7 @@ export function PhonePairPopover({
             <>
               <img src={qr} width={208} height={208} alt="Pairing QR code" className="phone-pair__qr" />
               <div className="phone-pair__hint">Scan with the nodeterm mobile app · waiting (10 min)</div>
+              <div className="phone-pair__hint">{pairingNetworkHint(relayPlan === 'ok')}</div>
               {!sshKey ? (
                 <div className="phone-pair__hint">{relayOnlyExplanation(windowsKeyFile)}</div>
               ) : relayPlan === 'dev' ? (

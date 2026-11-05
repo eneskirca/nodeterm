@@ -50,6 +50,18 @@ export function relayGateMessage(gate: 'relay-off' | 'relay-dev', toggle: string
     : `On Windows your phone connects only through remote access. Turn on “${toggle}” and the code appears here.`
 }
 
+/**
+ * The line beside a live QR. Pairing is one direct request from the phone to this computer's LAN
+ * address, and the relay only starts from its answer — so a phone on cellular can only time out,
+ * and neither side could say why. `remoteAccess` = this code mints a relay identity: only then is
+ * "just this once" true (a LAN-only code keeps the phone on this network for good).
+ */
+export function pairingNetworkHint(remoteAccess: boolean): string {
+  const base =
+    'To pair, your phone has to be on the same Wi-Fi network as this computer, with any VPN turned off.'
+  return remoteAccess ? `${base} You only need this once: after pairing, it connects from anywhere.` : base
+}
+
 /** Copy for a pairing that ended without pairing. `windows` = relay-only host. */
 export function pairingEndedMessage(end: {
   reason?: 'timeout' | 'relay-failed'
@@ -62,7 +74,7 @@ export function pairingEndedMessage(end: {
   if (end.windows && end.reached === false)
     return (
       base +
-      ' Your phone never reached this computer: if it did scan the code, Windows Defender Firewall is probably blocking nodeterm on this network — allow it for Private networks (or set this Wi-Fi to Private) and try again.'
+      ' Your phone never reached this computer: to pair, it has to be on the same Wi-Fi network. If it was, Windows Defender Firewall is probably blocking nodeterm on this network — allow it for Private networks (or set this Wi-Fi to Private) and try again.'
     )
   return base
 }

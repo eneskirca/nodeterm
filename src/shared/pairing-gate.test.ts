@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { pairingEndedMessage, pairingGate, relayGateMessage, relayOnlyExplanation } from './pairing-gate'
+import {
+  pairingEndedMessage,
+  pairingGate,
+  pairingNetworkHint,
+  relayGateMessage,
+  relayOnlyExplanation
+} from './pairing-gate'
 
 describe('pairingGate', () => {
   it('gates an SSH host on sshd alone — the relay plan does not matter there', () => {
@@ -28,6 +34,19 @@ describe('copy', () => {
     expect(relayOnlyExplanation('administrators')).toContain('administrators_authorized_keys')
     expect(relayOnlyExplanation('profile')).not.toContain('administrators_authorized_keys')
     expect(relayOnlyExplanation(undefined)).not.toContain('administrators_authorized_keys')
+  })
+
+  it('says pairing needs the same network, and promises "anywhere" only with the relay on', () => {
+    expect(pairingNetworkHint(true)).toMatch(/same Wi-Fi network/)
+    expect(pairingNetworkHint(true)).toMatch(/connects from anywhere/)
+    expect(pairingNetworkHint(false)).toMatch(/same Wi-Fi network/)
+    expect(pairingNetworkHint(false)).not.toMatch(/anywhere/)
+  })
+
+  it('asks about the network before it blames the firewall', () => {
+    const text = pairingEndedMessage({ reason: 'timeout', reached: false, windows: true })
+    expect(text.indexOf('same Wi-Fi network')).toBeGreaterThan(-1)
+    expect(text.indexOf('same Wi-Fi network')).toBeLessThan(text.indexOf('Firewall'))
   })
 
   it('blames the firewall only for a Windows timeout that nothing reached', () => {
