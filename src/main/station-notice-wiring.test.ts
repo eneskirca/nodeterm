@@ -68,8 +68,9 @@ describe('every canvas-control open path records the opener beside its rope', ()
   it('the off-canvas and cold-open writes stamp the node they rope', () => {
     expect(canvas).toContain('node: flowToNodeStates([withOpenedBy(placed, sourceNodeId)])[0]')
     // The cold open stamps the node as it is built, right where `--after` (and any `--after-pr`
-    // / `--after-success` hold, via withPrHold / withSuccessHold) is folded into its hold.
-    expect(canvas).toMatch(/const node = withOpenedBy\(\s*(?:withSuccessHold\(\s*)?(?:withPrHold\(\s*)?held && coldAfterIds\.length[\s\S]{0,500}?sourceNodeId\s*\)/)
+    // / `--after-success` hold, via withPrHold / withSuccessHold) is folded into its hold, beside
+    // the worktree setup gate (`coldSetupHold`) of a frame that is still preparing.
+    expect(canvas).toMatch(/const node = withOpenedBy\(\s*(?:withSuccessHold\(\s*)?(?:withPrHold\(\s*)?held && \(?coldAfterIds\.length[\s\S]{0,800}?sourceNodeId\s*\)/)
   })
 
   it('the renderer mirrors the list and reports DROPPED on the app api', () => {
