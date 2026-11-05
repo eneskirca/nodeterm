@@ -322,7 +322,29 @@ describe.skipIf(!SHELL || process.platform === 'win32')('publishing under a non-
     const bin = mkdtempSync(path.join(os.tmpdir(), 'nt-bsd-chmod-'))
     roots.push(bin)
     const real = execFileSync(SHELL!, ['-c', 'command -v chmod'], { encoding: 'utf8' }).trim()
-    writeFileSync(path.join(bin, 'chmod'), `#!/bin/sh\nPOSIXLY_CORRECT=1 exec '${real}' "$@"\n`)
+    // Ubuntu 26.04 (`ubuntu-latest`) ships Rust `uutils-coreutils` as `/usr/bin/chmod`, whose clap
+    // parser ignores `POSIXLY_CORRECT=1` and still strips `--` after the mode operand. Enforce BSD
+    // non-permuting semantics directly in the stand-in: every argument after `<mode>` is a literal
+    // file operand, so `--` (or any `-*` operand after `<mode>`) must exist as `./$arg`.
+    const script = [
+      '#!/bin/sh',
+      'mode=$1',
+      'shift',
+      'for arg do',
+      '  case "$arg" in',
+      '    -*)',
+      '      if [ ! -e "./$arg" ]; then',
+      '        echo "chmod: $arg: No such file or directory" >&2',
+      '        exit 1',
+      '      fi',
+      '      ;;',
+      '  esac',
+      'done',
+      'export POSIXLY_CORRECT=1',
+      `exec '${real}' "$mode" "$@"`,
+      ''
+    ].join('\n')
+    writeFileSync(path.join(bin, 'chmod'), script)
     chmodSync(path.join(bin, 'chmod'), 0o755)
     return `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`
   }
