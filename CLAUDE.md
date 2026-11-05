@@ -6693,6 +6693,80 @@ principle. Per-agent write-ups: `docs/grok-agent.md`, `docs/gemini-agent.md`.
     group (a typed `/exit` can land in the agent composer as prompt text), recycle the persistent
     session, and let cold restore resume with the new model under the newly injected environment.
 
+## Project secrets (pasted or fetched by the person, held in memory, injected into agent nodes)
+
+A project declares, in `.nodeterm/settings.json` → `agents.secrets`, the environment variables its
+agents need; per variable either nothing more (the person PASTES the value) or an argv `command`
+whose standard output is the value (FETCHED). Resolved local-over-shared like every other field,
+though no screen edits the local overlay's `secrets` today, so in practice it is the shared file.
+The person pastes or fetches from the project tab menu → **Secrets…**; main holds the values in
+memory (a fetch runs each command once), and `PtyManager` injects them into the project's agent
+nodes. Shapes: `@shared/project-secrets`; holder
+and runner: `core/project-secrets.ts`; desktop leg: `main/project-secrets-ipc.ts`; user doc:
+`docs/project-secrets.md`. The design follows established practice and invents no rule — each one
+below names its source:
+
+- **A declaration with no `command` is PASTED** (owner decision, 2026-11-02): the dialog's
+  **Paste value…** asks main (`project-secrets:paste`) to open `main/secret-entry-window.ts`, a
+  separate window modal to the main one, with its own sandboxed preload (`preload/secret-entry.ts`,
+  four channels, never `window.nodeTerminal`), its own renderer entry (`secret-entry.html`, plain DOM,
+  imports nothing but its CSS — guard-tested), `devTools: false`, `spellcheck: false` and an
+  IN-MEMORY session (`partition` without `persist:`). The canvas window never holds the value; main
+  listens only to that window's `webContents.id`, normalizes (line endings at the ends), checks
+  (`valueProblem(v, 'paste')`: a refusal keeps the window open) and closes it on accept. A present
+  but malformed `command` drops the entry; it never becomes a paste. Fetch runs only the command
+  entries and keeps pasted values whose declaration still asks for a paste. The clipboard is left
+  alone (owner decision).
+
+- **The protocol is askpass** (git `GIT_ASKPASS`, ssh `SSH_ASKPASS`): run a program, read the value
+  from its stdout, once; one trailing newline stripped; a second line, NUL, invalid UTF-8, an empty
+  value, a non-zero exit, more than 64 KiB or 120 s are refused, and the error names the variable
+  and the exit code, never the output. **No shell**: `execFile` with the argv, Windows `.cmd` shims
+  through `directExecutableInvocation`, cwd = the project folder. The declaration is NOT
+  trust-store gated: nothing runs until the person sees the exact argv (`displayCommand` escapes
+  bidi/zero-width/control characters) twice — the in-app dialog and main's native
+  `showMessageBox` (default Cancel) — so a compromised renderer cannot start a fetch alone.
+- **Nothing on disk, in any form** (stricter than CWE-312's encryption mitigations and than
+  Doppler's encrypted fallback file, the one `run`-style tool that persists): values are `Buffer`s in
+  main, zeroed (OWASP: overwritable types, zero after use) on Clear, re-authorization, project close
+  /delete/folder re-bind (`WorkspaceStore.onSaved` → `retainProjects`) and quit. A JS string exists
+  only while one spawn's env is built. Never logged (OWASP §8.3, CWE-532; the guard test greps the
+  holder and the main leg for `console.`).
+- **One fetch per authorization** (rate limits, OWASP §4.4): nothing refetches on its own — not at
+  project open, restart or cold restore.
+- **Who receives a value is `spawnEnv`, and nowhere else**: `agentId` set (plain terminals never —
+  owner decision), `ownerProjectId` = the declaring project, a LOCAL spawn, for this app's own
+  client (`platform().isOwnerClient`, or `HEADLESS_CLIENT` 0 for a Run now / `--run-now` this app
+  asked for) and never with `sinks` (relay host attach), `joinOnly` or a watcher; the held value's
+  `secretDeclKey` must equal the CURRENT declaration's (a pulled commit that changes the command
+  injects nothing until the person pastes or fetches again). Reserved names: Infisical's never-injected list,
+  spawn-critical names and `NODETERM_*`, case-insensitively, plus `isReservedSpawnEnvKey` at the
+  merge; `__proto__` refused by name. On Windows a differently-cased inherited duplicate is dropped.
+- **Never on an argv** (CWE-214): tmux gets the value through the client env and
+  `update-environment` (`ensureUpdateEnvKeys` adds the NAMES), exactly as the gateway key. Residual,
+  stated: a tmux server STARTED by such a client keeps it in its own environment for its lifetime;
+  the Windows session host holds the spawn env (and an in-memory fingerprint of it) for the
+  session's lifetime. Neither writes it — verified by reading every writer (host log lines carry
+  names/pids/errors; the state file pid/endpoint/token).
+- **Cross-project opens** (`--project` from another project's agent) stamp `openedByOtherProject:
+  true` on the node (only a literal `true` survives both serializer seams; it can only WITHHOLD) and
+  the spawn carries `secretsCrossProject`. Machine-local `settings.projectSecretsCrossProject`:
+  `deny` (default) / `allow` / `ask`. Under `ask` the node's terminal waits in
+  `TerminalNode` (before `transport.create`, only when `sessionAge` says no session exists) for the
+  person's answer in `SecretsGatePrompt`; main records it per node for this app run; the opener's
+  reply says to ask the person (`crossProjectAskReplyClause`), and `--run-now` does not start such a
+  node headless. The policy is forbidden to the `settings` control verb by the `secret` term.
+- **Scrollback snapshots are redacted** in `writeScrollbackIfChanged`, the one path into the
+  scrollback store (owner decision: redact rather than skip). Stated limit: a value split by a line
+  wrap, or printed after a restart (no longer held), is not caught. An agent CLI's own transcript is
+  the agent's file, not ours.
+- **Surfaces**: Desktop full (local folder projects). **SSH projects refused by name** (the remote
+  env path writes an env FILE on the host). **Server Edition**: not wired (`setProjectSecrets` is
+  never called there; the bridge stub answers `unsupported` and the menu row is hidden). **Relay
+  tabs**: the stub (their projects are the host's). **Mobile**: N/A — the phone has no project
+  settings surface. No canvas-control verb fetches, reveals, sets or clears; agents learn of the
+  feature from `projectSecretsGuidanceLines` in both generated bodies.
+
 ## Open recent (resume a past agent conversation from its history)
 
 Past conversations live in each CLI's own history, and nodeterm used to resume only what a node

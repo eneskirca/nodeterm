@@ -1,4 +1,6 @@
 import { registerUpdatePrepIpc } from './update-prep'
+import { registerProjectSecretsIpc } from './project-secrets-ipc'
+import type { ProjectSecretsService } from '../core/project-secrets'
 import { installOpenLinks } from './open-link-wiring'
 import { nodetermUrlFromArgv } from '../shared/open-link'
 import { createRemoteContextEnsure } from '../core/remote-context-ensure'
@@ -934,6 +936,8 @@ function noteBackgroundHide(): void {
 
 // Keep-awake tracker (created in whenReady next to the notch HUD, disposed in before-quit).
 let keepAwake: KeepAwakeTracker | undefined
+// Project secrets holder (registered in whenReady, its values zeroed in before-quit).
+let projectSecrets: ProjectSecretsService | undefined
 
 // Browser <webview> guest webContents id → the browser node (and which of its two surfaces) it
 // belongs to. Used today for new-window capture; every entry is proven to BE a <webview> before it
@@ -2530,6 +2534,16 @@ app.whenReady().then(async () => {
       backgroundTray?.update({ ...trayState })
     }
   })
+  // Project secrets (docs/project-secrets.md): values the person pastes into a window of main's own,
+  // or fetched only after the person's click AND a native confirmation; held in this process's
+  // memory, injected by PtyManager into agent nodes of the declaring project. Desktop only: the
+  // Server Edition never wires it.
+  projectSecrets = registerProjectSecretsIpc({
+    workspace: workspaceStore,
+    settings: () => settingsStore.get(),
+    mainWindow: () => getMainWindow() as unknown as BrowserWindow | null
+  })
+  ptyManager.setProjectSecrets(projectSecrets)
   // Prepare-for-update (Windows session host, issue #829). The user confirmed the whole flow in
   // its own dialog, so the quit at its end skips the ordinary quit confirmation, like the
   // restart-to-update above.
@@ -5613,6 +5627,9 @@ app.on('before-quit', (e) => {
   destroyNotchHud()
   backgroundTray?.destroy()
   backgroundTray = undefined
+  // Project secrets: zero every held value now. The quit flush below spawns nothing new, and
+  // running agents keep the environment they were started with (that is the process's, not ours).
+  projectSecrets?.dispose()
   // Electron releases power assertions at exit anyway; disposing keeps the hold/release log
   // honest. Clearing the ref too keeps a hook edge that lands during the quit flush (the pty
   // teardown window below) from re-holding an assertion nothing will ever release.

@@ -217,6 +217,23 @@ const api: NodeTerminalApi = {
     launchInfo: (projectId: string) => ipcRenderer.invoke(IPC.projectSettingsLaunchInfo, projectId),
     onTrustChanged: subscribeProjectTrustChanged
   },
+  // Project secrets: names and states cross this bridge, never a value (main holds them).
+  projectSecrets: {
+    status: (projectId) => ipcRenderer.invoke(IPC.projectSecretsStatus, projectId),
+    authorize: (projectId) => ipcRenderer.invoke(IPC.projectSecretsAuthorize, projectId),
+    paste: (projectId, env) => ipcRenderer.invoke(IPC.projectSecretsPaste, projectId, env),
+    clear: (projectId) => ipcRenderer.invoke(IPC.projectSecretsClear, projectId),
+    crossProjectGate: (projectId, nodeId) => ipcRenderer.invoke(IPC.projectSecretsCrossGate, projectId, nodeId),
+    decideCrossProject: (projectId, nodeId, grant) =>
+      ipcRenderer.invoke(IPC.projectSecretsCrossDecide, projectId, nodeId, grant),
+    onChanged: (listener) => {
+      const handler = (_e: unknown, projectId: unknown): void => {
+        if (typeof projectId === 'string') listener(projectId)
+      }
+      ipcRenderer.on(IPC.projectSecretsChanged, handler)
+      return () => ipcRenderer.removeListener(IPC.projectSecretsChanged, handler)
+    }
+  },
   projectSetup: {
     // Wire carries exactly `(projectId, kind, worktreePath?)` — no rootPath/projectName/ssh: main
     // derives those itself from its own workspace index by projectId and never trusts what crosses

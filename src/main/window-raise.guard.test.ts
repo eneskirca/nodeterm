@@ -87,6 +87,15 @@ const ALLOWED = new Map<string, { calls: number; why: string }>([
     }
   ],
   [
+    'secret-entry-window.ts',
+    {
+      calls: 1,
+      why:
+        'show() of the project-secret paste window, once, on its first paint — it is opened only ' +
+        'by the person clicking "Paste value…" in the Secrets dialog, and is modal to the main window'
+    }
+  ],
+  [
     'dock-presence.ts',
     {
       calls: 1,

@@ -217,6 +217,10 @@ export function buildRelayApi(
     // the inert stub (create answers `unsupported`). Never the local preload's real member, which
     // `...local` would otherwise hand it: that would offer to publish a node id this core does not run.
     watchLink: stub.watchLink,
+    // Project secrets belong to THIS machine's own projects and its person; a relay tab's projects
+    // are the host's. `...local` would aim a host project id at this machine's holder, so the inert
+    // stub answers `unsupported` (docs/project-secrets.md).
+    projectSecrets: stub.projectSecrets,
     // Share with team drives THIS machine's ssh for one of THIS machine's SSH projects; a relay
     // tab's projects are the host's, so `...local` would aim a host project id at the local ssh
     // manager. The stub answers E_UNSUPPORTED instead.

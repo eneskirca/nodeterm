@@ -104,6 +104,16 @@ export const HOST_ONLY_CHANNELS: ReadonlySet<string> = new Set([
   // Prepare-for-update ends EVERY session on this machine's session host and quits the app. Only
   // the host's own user may do that. Raw ipcMain handlers (no peer reaches them); listed here too
   // so moving them onto the platform table later cannot quietly open them.
+  // Project secrets: running a declared fetch command and deciding who receives the values are the
+  // host's person's acts alone. Main also refuses any sender that is not its own main window.
+  IPC.projectSecretsStatus,
+  IPC.projectSecretsAuthorize,
+  IPC.projectSecretsClear,
+  IPC.projectSecretsCrossGate,
+  IPC.projectSecretsCrossDecide,
+  IPC.projectSecretsPaste,
+  IPC.secretEntrySubmit,
+  IPC.secretEntryCancel,
   IPC.appUpdatePrepInspect,
   IPC.appUpdatePrepShutdown,
   IPC.appUpdatePrepQuit,

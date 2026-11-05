@@ -213,6 +213,9 @@ import {
   clearEnvEligibility,
   restartEligibility,
   restartSessionId,
+  noteRestartRefusal,
+  refusalForIneligible,
+  type RestartRefusal,
   RESTART_EXIT_TIMEOUT_MS,
   RESTART_LATE_EXIT_MS,
   settleRecycledNode,
@@ -256,6 +259,8 @@ import { createBoardPauseSlot } from '../terminal/board-render-pause'
 import { ContextMeter } from '../components/ContextMeter'
 import { isZoomModifierHeld } from '../lib/zoomModifier'
 import { HoverGuard } from './HoverGuard'
+import { SecretsGatePrompt } from '../components/SecretsGatePrompt'
+import { answerCrossProjectSecrets, askCrossProjectSecrets } from '../state/secretsGate'
 import {
   dwellBlursForeignTerminal,
   focusDrivesGuard,
@@ -3681,6 +3686,29 @@ export function TerminalNode({
         return
       }
       setCo(termKey, { offline: false })
+      // PROJECT SECRETS, policy 'ask' (docs/project-secrets.md): an agent node an agent of ANOTHER
+      // project opened waits here, before its terminal starts, for the person's answer in this node.
+      // Asked only when no session exists yet (a warm reattach's process already has its env), and
+      // only on this machine's own canvas. Main decides from the answer; "proceed" never grants.
+      if (data.openedByOtherProject === true && data.agentId && !sshRemoteTmux && session.source === 'local') {
+        const secretsProjectId = owningProjectRef.current ?? useProjects.getState().activeProjectId
+        const live = await api.pty.sessionAge(id).then((age) => age !== null, () => false)
+        if (disposed) return
+        const gate = live
+          ? { kind: 'proceed' as const }
+          : await window.nodeTerminal.projectSecrets
+              .crossProjectGate(secretsProjectId, id)
+              .catch(() => ({ kind: 'proceed' as const }))
+        if (disposed) return
+        if (gate.kind === 'ask') {
+          const projectName = useProjects.getState().getProject(secretsProjectId)?.name ?? 'this project'
+          cleanups.push(() => answerCrossProjectSecrets(id, false))
+          const grant = await askCrossProjectSecrets(id, projectName, gate.names)
+          if (disposed) return
+          await window.nodeTerminal.projectSecrets.decideCrossProject(secretsProjectId, id, grant).catch(() => undefined)
+          if (disposed) return
+        }
+      }
       sentCols = term.cols
       sentRows = term.rows
       // A remote spawn can now WAIT, and a terminal that waits in silence reads as broken — the
@@ -3727,7 +3755,10 @@ export function TerminalNode({
           requireRemote: sshRemoteTmux,
           // The one local terminal an SSH project's canvas may hold (issue #1186): core refuses
           // every other local spawn owned by an SSH project. In-memory mark, never node data.
-          ...(isLocalOnSshCanvas(id) ? { localOnSshCanvas: true } : {})
+          ...(isLocalOnSshCanvas(id) ? { localOnSshCanvas: true } : {}),
+          // Opened by another project's agent: its project's secrets follow the cross-project
+          // policy main applies (the flag only withholds; docs/project-secrets.md).
+          ...(data.openedByOtherProject === true ? { secretsCrossProject: true } : {})
         })
         .then(
         async ({
@@ -4515,6 +4546,12 @@ export function TerminalNode({
     const unregisterRestart = registerAgentRestart(
       id,
       guardConcurrentRestart(id, async (targetAgentId?: AgentId, targetModel?: string, restartShell?: boolean, clearEnv?: boolean, beforeRecycle?: () => Promise<RecyclePatch | void>) => {
+        // Every refusal below records WHY, for the notice (see `RestartRefusal`).
+        const refuse = (why: RestartRefusal): 'not-eligible' => {
+          noteRestartRefusal(id, why)
+          return 'not-eligible'
+        }
+        const onRefusal = (why: RestartRefusal): void => noteRestartRefusal(id, why)
         const st = agentStatusStore.getState().byId[id]
         const currentNode = getNode(id)
         const agentSessionId = restartSessionId(st?.sessionId, currentNode?.data.agentSessionId)
@@ -4539,14 +4576,15 @@ export function TerminalNode({
         // impossible when the gateway is down. `clearEnvEligibility` permits busy for that reason;
         // `restartEligibility` must NOT, because its `/exit` would answer a permission dialog.
         if (clearEnv) {
-          if (session.source === 'relay') return 'not-eligible'
+          if (session.source === 'relay') return refuse('remote-session')
           const clearGate = clearEnvEligibility(sourceAgentId, agentSessionId)
-          if (!clearGate.ok || !sourceAgentId) return 'not-eligible'
+          if (!clearGate.ok) return refuse(refusalForIneligible(clearGate.reason))
+          if (!sourceAgentId) return refuse('not-resumable')
           // Identity-gated (same as a model switch): core SIGTERMs the foreground group ONLY if
           // this agent still owns it, so a stale menu can never kill vim or a build in this pane.
           const stopped = await api.pty.terminateForeground(id, sourceAgentId)
           if (stopped === 'unsupported') return 'host-unsupported'
-          if (!stopped) return 'not-eligible'
+          if (!stopped) return refuse('agent-not-in-pane')
           transport.recycle(id)
           // `clearEnv` rides the respawn's `transport.create` (read from data above) to strip env at
           // spawn; the cold-restore auto-resume relaunches the same agent against the default provider.
@@ -4565,8 +4603,10 @@ export function TerminalNode({
           return 'restarted'
         }
         const gate = restartEligibility(sourceAgentId, st?.state, agentSessionId)
-        if (!gate.ok || !sourceAgentId || !agentSessionId || !restartTarget())
-          return 'not-eligible'
+        if (!gate.ok) return refuse(refusalForIneligible(gate.reason))
+        if (!sourceAgentId) return refuse('not-resumable')
+        if (!agentSessionId) return refuse('no-session')
+        if (!restartTarget()) return refuse('not-attached')
         const target = targetAgentId ?? sourceAgentId
         const settings = useSettings.getState().settings
         const builtinTarget = agentConfig(target)
@@ -4579,7 +4619,7 @@ export function TerminalNode({
           (!builtinTarget && !customTarget) ||
           capabilityAgentId(target) !== capabilityAgentId(sourceAgentId)
         )
-          return 'not-eligible'
+          return refuse('agent-changed')
         const selectedModel = targetModel
           ? normalizedAgentModel(target, targetModel)
           : normalizedAgentModel(
@@ -4593,12 +4633,13 @@ export function TerminalNode({
         // replacement shell the current gateway env. Relay sessions belong to another
         // core/settings store, so a local gateway must never be pushed into one.
         if (targetModel) {
-          if (!selectedModel || session.source === 'relay') return 'not-eligible'
+          if (session.source === 'relay') return refuse('remote-session')
+          if (!selectedModel) return refuse('agent-changed')
           // Identity-gated: core SIGTERMs the foreground group ONLY if `target`'s harness still
           // owns it, so a stale model-switch menu can never kill vim or a build in this pane.
           const stopped = await api.pty.terminateForeground(id, target)
           if (stopped === 'unsupported') return 'host-unsupported'
-          if (!stopped) return 'not-eligible'
+          if (!stopped) return refuse('agent-not-in-pane')
           transport.recycle(id)
           updateNodeData(id, (node) => ({
             agentId: target,
@@ -4615,7 +4656,7 @@ export function TerminalNode({
         // Relay sessions are excluded for the same reason a model switch is: their shell env belongs
         // to another core/settings store, and recycling here would respawn against this Mac's env.
         if (restartShell) {
-          if (session.source === 'relay') return 'not-eligible'
+          if (session.source === 'relay') return refuse('remote-session')
           // Read NOW, before the first await: this node is on the active canvas at call time, and
           // the project may be switched while the CLI quits (see `settleRecycledNode`).
           const ownerProjectId = owningProjectId()
@@ -4627,7 +4668,8 @@ export function TerminalNode({
             // A user-asked restart, like performRestartResume: a CLI that is slow to quit is
             // waited on rather than left to quit unwatched (issue #899 was this exact action).
             lateExitMs: RESTART_LATE_EXIT_MS,
-            isLive: restartTarget
+            isLive: restartTarget,
+            onRefusal
           })
           if (exited !== 'exited') return exited
           // Swallowed: a failed step must not strand the pane at a bare shell — the recycle below
@@ -4689,7 +4731,7 @@ export function TerminalNode({
         // Never type a knowingly mangled launch line (for example `--token ''`) into the pane.
         // Settings already surfaces these missing names in its preview; a stale menu after an env
         // change degrades to the ordinary not-eligible notice and leaves the shell untouched.
-        if (missingEnv.length) return 'not-eligible'
+        if (missingEnv.length) return refuse('launch-env')
         return performRestartResume({
           // Source and target were proven to share one capability base above, so this resolves to
           // the same exit + resume grammar while the explicit command selects the target binary.
@@ -4713,7 +4755,8 @@ export function TerminalNode({
             if (life.dead) cancel()
             else cleanups.push(cancel)
           },
-          onResumed: markRelaunched
+          onResumed: markRelaunched,
+          onRefusal
         })
       })
     )
@@ -7017,6 +7060,7 @@ export function TerminalNode({
         {armed && !mdMode && (
           <HoverGuard onPress={onGuardPress} onClick={onGuardClick} onDragEnd={onBodyEnter} />
         )}
+        <SecretsGatePrompt nodeId={id} />{/* project secrets, policy 'ask' */}
         {mdMode &&
           (useChat ? (
             <Suspense fallback={<ChatPanelFallback />}>

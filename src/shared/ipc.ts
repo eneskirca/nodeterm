@@ -358,6 +358,21 @@ export const IPC = {
   appUserDataDir: 'app:user-data-dir',
   appUpdatePolicy: 'app:update-policy',
   // Prepare-for-update (Windows, issue #829). Raw ipcMain handlers, main-window senders only.
+  projectSecretsStatus: 'project-secrets:status',
+  projectSecretsAuthorize: 'project-secrets:authorize',
+  projectSecretsClear: 'project-secrets:clear',
+  projectSecretsCrossGate: 'project-secrets:cross-project-gate',
+  projectSecretsCrossDecide: 'project-secrets:cross-project-decide',
+  projectSecretsPaste: 'project-secrets:paste',
+  /** main → paste window: which project and variable it asks for. */
+  secretEntryInit: 'secret-entry:init',
+  /** main → paste window: why the last value was refused (the window stays open). */
+  secretEntryError: 'secret-entry:error',
+  /** paste window → main (ipcMain.on, only from that window's webContents). */
+  secretEntrySubmit: 'secret-entry:submit',
+  secretEntryCancel: 'secret-entry:cancel',
+  /** main → renderer: a project's held state changed (payload: projectId). */
+  projectSecretsChanged: 'project-secrets:changed',
   appUpdatePrepInspect: 'app:update-prep-inspect',
   appUpdatePrepShutdown: 'app:update-prep-shutdown',
   appUpdatePrepQuit: 'app:update-prep-quit',

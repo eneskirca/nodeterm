@@ -44,7 +44,9 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/preload/index.ts'),
           // Tiny HUD-only preload for the macOS Notch HUD window (src/main/notch-hud.ts).
-          hud: resolve(__dirname, 'src/preload/hud.ts')
+          hud: resolve(__dirname, 'src/preload/hud.ts'),
+          // The project-secret paste window's own preload (src/main/secret-entry-window.ts).
+          'secret-entry': resolve(__dirname, 'src/preload/secret-entry.ts')
         },
         external: ['electron'],
         output: {
@@ -73,7 +75,9 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
           // Second renderer entry: the macOS Notch HUD overlay window (src/main/notch-hud.ts).
-          hud: resolve(__dirname, 'src/renderer/hud.html')
+          hud: resolve(__dirname, 'src/renderer/hud.html'),
+          // Third entry: the window a person pastes a project secret into (no app code in it).
+          'secret-entry': resolve(__dirname, 'src/renderer/secret-entry.html')
         }
       }
     }
