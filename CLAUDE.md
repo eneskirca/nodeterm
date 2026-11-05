@@ -8802,22 +8802,6 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   board belongs to the other machine). Check detail is bounded for relay guests: one read per PR per
   15 s, ten per project per minute, both decided before a credential is resolved. **Mobile: follow-up** — the phone board carries session
   cards only; showing PR CI there means carrying `GitHubPullBoard` over the relay dialect.
-  **Pull node Watch** (F-08, `core/github/pull-watch.ts`, one core poller both shells boot and stop).
-  Rules: a watched node is read every 2 min through `pullDetail` and `pullChecks` (their budget and
-  refusals apply); the switch-on read is a baseline that wakes nobody; a failing check, a new
-  conflict or all green wakes the linked agent once per head SHA; after `PULL_WATCH_WAKE_CAP` (10)
-  wakes with no new commit it turns itself off and says why; a merged or closed PR or a deleted node
-  stops it. State is machine-local (`<userData>/pull-watch.json`), never in project.json. A wake is
-  an agent message from the pull node, so it **needs agent messaging on for the project**; without
-  it, or without a linked agent, nothing is read and the switch says why at once. Check names go in
-  as PR TEXT (`prText` + `PR_TEXT_UNTRUSTED`, `@shared/pull-work`). **Server Edition exception:** the
-  wake skips the creator check (`callerOwnsTarget`), because a pull node created nothing and could
-  never pass it, and uses its own delivery queue (`watchMessaging` in `server/canvas-control.ts`),
-  flushed on the agent's `done`. Every other messaging gate applies. Boundary: the toggle
-  (`githubIssues:pull-watch-set`) and notes for agents (`pullNotes:*`) are local writes, owner-only
-  and scoped-refused; `githubIssues:pull-rerun-failed` is a GitHub write, owner-only and
-  scoped-refused; the reads `:pull-watch`, `:pull-check-log`, `:pull-since-review*` are classified
-  like the other pull reads (CONTRIBUTING.md has the list).
   **Start with agent — a GitHub issue card starts a bound session** (2026-09-28). An issue card's
   right-click menu and its summary modal offer **Start with agent ▸**, whose rows are the canvas's
   own agent + account picker (`agentCreationEntries`, which takes an optional `pick` so the same
