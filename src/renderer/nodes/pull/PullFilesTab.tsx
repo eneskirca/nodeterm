@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { GitHubPullCommitFilesResult } from '@shared/github-pull-commits'
 import type {
   GitHubPullConversationResult,
@@ -27,6 +27,7 @@ import { Icon } from './Icon'
 import { PullNoteCard } from './PullNotes'
 import { PullReviewPanel } from './PullReviewPanel'
 import { useSendTo } from './SendTo'
+import { useDismiss } from './useDismiss'
 import { readState, STALE_TEXT, usePullRead, useWrite, WRITE_TEXT, type Read, type ViewProps } from './shared'
 import './pull-files.css'
 
@@ -97,6 +98,8 @@ export function PullFilesTab(props: FilesTabProps): React.JSX.Element {
   // ponytail: the layout is view state only; saving it in the node ref would widen the persisted shape.
   const [split, setSplit] = useState(true)
   const [finishing, setFinishing] = useState(false)
+  const finishRef = useRef<HTMLSpanElement>(null)
+  useDismiss(finishing, finishRef, useCallback(() => setFinishing(false), []))
   const extra = compareExtra?.find((option) => option.value === compare)
   const sha = compare.startsWith(COMMIT) ? compare.slice(COMMIT.length) : undefined
   const commitFiles = useCallback(
@@ -130,7 +133,7 @@ export function PullFilesTab(props: FilesTabProps): React.JSX.Element {
         <button className="pf-seg__btn" aria-pressed={!split} onClick={() => setSplit(false)}>Unified</button>
       </span>
       {head && (
-        <span className="pf-toolbar__finish">
+        <span ref={finishRef} className="pf-toolbar__finish">
           <button className="pr-btn pr-btn--primary pf-small" aria-expanded={finishing} onClick={() => setFinishing(!finishing)}>
             Finish review <span className="pf-count">{props.pending.length}</span><Icon name="chevron" size={14} />
           </button>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { BUILTIN_AGENT_IDS } from '@shared/agents/config'
 import { AgentIcon } from '../../lib/agentIcons'
 import { Icon } from './Icon'
@@ -23,6 +23,9 @@ export interface SendToApi {
   /** The one linked agent's name, for labels ("Send to Claude"); undefined = generic labels. */
   name?: string
 }
+
+/** How long the "Sent to …" receipt stays up. */
+export const SENT_TOAST_MS = 4_000
 
 const SendToContext = createContext<SendToApi>({ sendTo: undefined, why: undefined })
 
@@ -49,6 +52,12 @@ export function SendToProvider({ host, pr, agents, children }: {
 }): React.JSX.Element {
   const [open, setOpen] = useState<Open | null>(null)
   const [sent, setSent] = useState<string | null>(null)
+  // The receipt is a toast: it goes on its own (the timer is the outside system).
+  useEffect(() => {
+    if (!sent) return
+    const timer = setTimeout(() => setSent(null), SENT_TOAST_MS)
+    return () => clearTimeout(timer)
+  }, [sent])
   const name = soleAgentName(agents)
   const api = useMemo<SendToApi>(() => !host || host.unavailable
     ? { sendTo: undefined, why: host?.unavailable, name }

@@ -88,7 +88,9 @@ function PullCommitRow({ commit, avatars, selected, onOpen }: {
   const short = commit.oid.slice(0, 7)
   const at = Date.parse(commit.committedAt)
   return (
-    <div className={selected ? 'pr-commits__row pr-commits__row--selected' : 'pr-commits__row'}>
+    // The whole row opens the diff (GitHub's own list does); its buttons keep their own click.
+    <div className={selected ? 'pr-commits__row pr-commits__row--selected' : 'pr-commits__row'}
+      onClick={(event) => { if (!(event.target as Element).closest('button, a')) onOpen() }}>
       {/* ponytail: an unlinked git author gets a stand-in user (id 0 has no avatar), so its letter is the name's. */}
       <Avatar user={commit.author ?? { id: 0, login: name, avatarUrl: '' }} avatars={avatars} size={24} />
       <span className="pr-commits__main">

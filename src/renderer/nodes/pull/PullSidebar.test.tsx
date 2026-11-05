@@ -222,6 +222,26 @@ describe('PullSidebar pickers', () => {
     expect(view.querySelector('[role="dialog"]')).toBeNull()
   })
 
+  it('closes on Escape and on a press outside even when the canvas stops both from bubbling', async () => {
+    const { view } = await render({ ...detail, sidebar })
+    // The canvas pane: d3-zoom stops a press from bubbling, and a focused node can swallow Escape.
+    const pane = document.createElement('div')
+    document.body.append(pane)
+    const swallow = (event: Event) => event.stopPropagation()
+    pane.addEventListener('pointerdown', swallow)
+    pane.addEventListener('keydown', swallow)
+    try {
+      await act(async () => { button(view, 'Edit labels').click() })
+      await act(async () => { pane.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+      expect(view.querySelector('[role="dialog"]')).toBeNull()
+      await act(async () => { button(view, 'Edit labels').click() })
+      await act(async () => { view.querySelector('[role="dialog"]')!.dispatchEvent(new Event('pointerdown', { bubbles: true })) })
+      expect(view.querySelector('[role="dialog"]')).not.toBeNull()
+      await act(async () => { pane.dispatchEvent(new Event('pointerdown', { bubbles: true })) })
+      expect(view.querySelector('[role="dialog"]')).toBeNull()
+    } finally { pane.remove() }
+  })
+
   it('shows no edit controls for a part the read could not answer', async () => {
     const { view } = await render({ ...detail, sidebar: { ...sidebar, labels: undefined, assignees: undefined } })
     expect(button(view, 'Edit labels')).toBeUndefined()

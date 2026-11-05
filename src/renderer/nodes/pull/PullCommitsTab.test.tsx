@@ -96,6 +96,16 @@ describe('PullNodeView Commits tab', () => {
     expect(unsigned.textContent).not.toContain('Verified')
   })
 
+  it('opens a commit from anywhere on its row, but Copy only copies', async () => {
+    Object.assign(window, { nodeTerminal: { clipboard: { writeText: vi.fn() } } })
+    const api = fakeApi()
+    const view = await render(api)
+    await click(view.querySelector('[aria-label="Copy the full SHA of bbbbbbb"]'))
+    expect(api.pullCommitFiles).not.toHaveBeenCalled()
+    await click(view.querySelectorAll('.pr-commits__meta')[1])
+    expect(api.pullCommitFiles).toHaveBeenCalledTimes(1)
+  })
+
   it('copies the full SHA in one click', async () => {
     const writeText = vi.fn()
     Object.assign(window, { nodeTerminal: { clipboard: { writeText } } })

@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatGateStatus } from '../../lib/chatSendGate'
 import { pullLinkPlan, sendTo, type SendToPayload } from '../../lib/sendTo'
-import { SendToProvider, useSendTo, type SendToHost } from './SendTo'
+import { SENT_TOAST_MS, SendToProvider, useSendTo, type SendToHost } from './SendTo'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -121,6 +121,18 @@ describe('Send to… picker', () => {
     await click(host.querySelectorAll('[role="option"]')[1])
     expect(f.sendChatPrompt).toHaveBeenCalledTimes(2)
     expect(f.links).toHaveLength(1)
+  })
+
+  it('takes the "Sent to" receipt down on its own', async () => {
+    await mount(fakeHost().host, { kind: 'pr' })
+    vi.useFakeTimers()
+    try {
+      await click(q('button'))
+      await key('Enter')
+      expect(q('[role="status"]').textContent).toContain('Sent to')
+      await act(async () => { vi.advanceTimersByTime(SENT_TOAST_MS) })
+      expect(q('[role="status"]')).toBeNull()
+    } finally { vi.useRealTimers() }
   })
 
   it('shows the refusal for a busy agent, keeps the picker open, and links nothing', async () => {

@@ -1,12 +1,13 @@
 // A sidebar section's "Edit" (F1) and its search picker (F4): Reviewers, Assignees or Labels. The
 // choices are read on the first click; ticking or unticking a row sends that one change. One write at
 // a time: every row is off while it runs. A user click only; no agent verb reaches it.
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { GitHubIssueUser } from '@shared/github-issues'
 import type { PullReadFailure, PullRefusal, PullWriteReason, PullWriteResult } from '@shared/github-pull-detail'
 import { Avatar } from './Avatar'
 import { Icon } from './Icon'
 import { FAILURE_TEXT, REFUSAL_TEXT, WRITE_TEXT } from './shared'
+import { useDismiss } from './useDismiss'
 
 /** One choice: a label (with its color) or a person. */
 export interface PickItem { name: string; color?: string; user?: GitHubIssueUser }
@@ -46,7 +47,10 @@ export function EditPicker({ label, repository, load, state, write, onWritten }:
     setChoices('loading')
     void load().catch((): EditChoices => ({ status: 'failed', reason: 'unreachable' })).then(setChoices)
   }
-  const close = () => setChoices(null)
+  const close = useCallback(() => setChoices(null), [])
+  // The button and the picker are one inside: a press on Edit toggles, it does not dismiss first.
+  const box = useRef<HTMLSpanElement>(null)
+  useDismiss(choices !== null, box, close)
   const send = async (name: string, add: boolean) => {
     if (busy) return
     setBusy(true)
@@ -63,14 +67,12 @@ export function EditPicker({ label, repository, load, state, write, onWritten }:
     : []
 
   return (
-    <>
+    <span ref={box} className="contents">
       <button className="pr-side__edit" aria-label={`Edit ${noun}`} aria-expanded={choices !== null}
         onClick={() => (choices === null ? show() : close())}>Edit</button>
       {choices !== null && (
         <>
-          <div className="pr-pick__backdrop" onMouseDown={close} />
-          <div className="pr-pick" role="dialog" aria-label={label}
-            onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close() } }}>
+          <div className="pr-pick" role="dialog" aria-label={label}>
             {choices === 'loading' && <p className="pr-pick__state">Loading…</p>}
             {choices !== 'loading' && choices.status === 'refused' && (
               <p className="pr-pick__state" role="status">{REFUSAL_TEXT[choices.reason](repository)}</p>
@@ -115,6 +117,6 @@ export function EditPicker({ label, repository, load, state, write, onWritten }:
           </div>
         </>
       )}
-    </>
+    </span>
   )
 }

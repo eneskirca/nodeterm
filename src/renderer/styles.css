@@ -19122,6 +19122,7 @@ button.pr-checks__row:focus-visible { outline: 2px solid var(--pr-accent); outli
   display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: center;
   margin: 0 8px; padding: 10px 12px; border-radius: 8px;
 }
+.pr-commits__row { cursor: pointer; }
 .pr-commits__row:hover, .pr-commits__row--selected { background: var(--pr-surface); }
 .pr-commits__main { display: flex; flex-direction: column; min-width: 0; }
 .pr-commits__headline {
@@ -19638,21 +19639,25 @@ button.pr-checks__row:focus-visible { outline: 2px solid var(--pr-accent); outli
 .pr-tone--agent .pr-icon { color: var(--pr-agent); }
 
 /* Zoomed-out card (F4, under 50% canvas zoom): the node becomes its status. */
-.pr-zoom { display: flex; flex-direction: column; gap: 12px; padding: 6px 4px; color: var(--pr-fg); }
-.pr-zoom__top { display: flex; align-items: center; gap: 10px; }
-.pr-zoom__state { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: #fff; }
-.pr-zoom__number { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+/* Sizes follow the node's width (cqi), so the card stays readable however far the canvas zooms out;
+   fixed px shrank with the canvas to about 9px on screen at 38%. */
+.pr-zoom { container-type: inline-size; display: flex; flex-direction: column; padding: 6px 4px; color: var(--pr-fg); }
+.pr-zoom > * + * { margin-top: 0.5em; }
+.pr-zoom svg { width: 1em; height: 1em; }
+.pr-zoom__top { display: flex; align-items: center; gap: 0.4em; font-size: clamp(25px, 7cqi, 90px); }
+.pr-zoom__state { display: grid; place-items: center; width: 1.4em; height: 1.4em; border-radius: 50%; color: #fff; }
+.pr-zoom__number { font-weight: 700; letter-spacing: -0.01em; }
 .pr-zoom__title {
   display: -webkit-box;
   overflow: hidden;
-  font-size: 20px;
+  font-size: clamp(20px, 5.75cqi, 74px);
   font-weight: 500;
   line-height: 1.25;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
-.pr-zoom__line { display: flex; align-items: center; gap: 8px; font-size: 18px; }
+.pr-zoom__line { display: flex; align-items: center; gap: 0.4em; font-size: clamp(18px, 5cqi, 64px); }
 .pr-zoom__line--ok { color: var(--pr-open); }
 .pr-zoom__line--attention { color: var(--pr-attention); }
 .pr-zoom__line--danger { color: var(--pr-closed); }
@@ -19865,7 +19870,6 @@ button.pr-checks__row:focus-visible { outline: 2px solid var(--pr-accent); outli
 .pr-sidebar .pull-compose__error { margin: 6px 0 0; font-size: 12px; }
 
 /* F4 picker. */
-.pr-pick__backdrop { position: fixed; inset: 0; z-index: 9; }
 .pr-pick {
   position: absolute;
   top: 34px;

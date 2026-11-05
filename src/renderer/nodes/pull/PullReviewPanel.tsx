@@ -32,8 +32,7 @@ export function PullReviewPanel(props: ViewProps & {
     }))
   }
   return (
-    <div role="dialog" aria-label="Finish your review" className="pf-review"
-      onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }}>
+    <div role="dialog" aria-label="Finish your review" className="pf-review">
       <strong className="pf-review__title">Finish your review</strong>
       <textarea className="pf-box" rows={3} aria-label="Review summary" placeholder="Summary (optional)" autoFocus
         value={body} onChange={(e) => setBody(e.target.value)} />
