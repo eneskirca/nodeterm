@@ -1,5 +1,12 @@
 import type { ChatPromptBlocked, ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from '../shared/text-delivery'
-import { claudeScreenBlocksInput, readClaudeComposer, readClaudeDraft, readClaudeScreen } from '../shared/agents/claude-screen'
+import {
+  claudeScreenBlocksInput,
+  readClaudeComposer,
+  readClaudeDraft,
+  readClaudeScreen,
+  readClaudeSuggestion,
+  type ChatScreenRead
+} from '../shared/agents/claude-screen'
 import os from 'os'
 import fs from 'fs'
 import path from 'path'
@@ -2282,6 +2289,10 @@ export class PtyManager {
     platform().handle(IPC.ptySendToEmptyPrompt, (persistKey: string, text: string, agentId: unknown) =>
       // Like `agentId` above: it only picks the composer reader, and a non-string picks none.
       this.sendToEmptyPrompt(persistKey, text, typeof agentId === 'string' ? agentId : '')
+    )
+    platform().handle(IPC.ptyReadChatScreen, (persistKey: string, agentId: unknown) =>
+      // Like the chat-prompt handler: `agentId` only picks the screen reader, and a non-string picks none.
+      this.readChatScreen(persistKey, typeof agentId === 'string' ? agentId : '')
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string, opts?: { resolveUnmounted?: boolean }) =>
@@ -6825,6 +6836,19 @@ export class PtyManager {
       if (delivered === true) return { sent: true }
       return { sent: false, reason: delivered === 'pasted-not-submitted' ? 'not-submitted' : 'failed' }
     })
+  }
+
+  /**
+   * One read of the pane for the ⌘M chat view's screen poll: the dialog check the poll always made,
+   * plus the prompt the agent suggests next. A STYLED capture, because only the styling tells
+   * Claude's dim suggestion from typed text (`readClaudeSuggestion`). Where no styled capture exists
+   * (a native Windows pane), the plain capture still answers the dialog check, with no suggestion.
+   */
+  async readChatScreen(persistKey: string, agentId: string): Promise<ChatScreenRead> {
+    if (!readsScreenDialogs(agentId)) return { screen: { kind: 'unknown' }, suggestion: null }
+    const styled = await this.captureStyledScreen(persistKey)
+    if (styled === '') return { screen: readClaudeScreen(await this.captureSession(persistKey)), suggestion: null }
+    return { screen: readClaudeScreen(styled), suggestion: readClaudeSuggestion(styled) }
   }
 
   /** The visible screen WITH its SGR, for `readClaudeComposer`: an ssh-project node's capture already

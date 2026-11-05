@@ -1,4 +1,5 @@
 import type { ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
+import type { ChatScreenRead } from './agents/claude-screen'
 import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from './push-webhook'
 import type { IdentitySeedEntry } from './agent-identity-seed'
 import type { AgentStatusSnapshotEntry } from './agent-status-snapshot'
@@ -1423,6 +1424,10 @@ export interface PtyApi {
    *  (issue #1144 — the app's own link notes). Refused, with the reason, before anything is written
    *  when the composer holds a draft, a dialog owns the keyboard, or emptiness cannot be proven. */
   sendToEmptyPrompt(persistKey: string, text: string, agentId: string): Promise<EmptyPromptResult>
+  /** One read of an agent's screen for the ⌘M chat view's poll: who owns the keyboard, and the
+   *  prompt the agent suggests next (claude: `readClaudeSuggestion`). An agent with no measured
+   *  reader, or a pane that could not be read, answers `{ screen: { kind: 'unknown' }, suggestion: null }`. */
+  readChatScreen(persistKey: string, agentId: string): Promise<ChatScreenRead>
   /** Is tmux available on this host (else the silent plain-shell fallback), plus a suggested
    *  install command for the "tmux not found" banner. */
   tmuxStatus(): Promise<TmuxStatus>

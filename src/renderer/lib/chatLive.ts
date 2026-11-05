@@ -51,6 +51,27 @@ export function turnEndReloadCarries(s: { final: boolean; working: boolean }): b
 export const CHAT_SCREEN_POLL_MS = 2000
 
 /**
+ * When Claude draws its suggested next prompt. MEASURED on Claude Code 2.1.318 (5 turns, Haiku, a
+ * sandboxed tmux server): 1.1-2.2 s after the turn ended; one more turn got none.
+ *
+ * Locally, the regular 2 s poll added up to 2 s on top, which read as a lag after the reply. So for
+ * a few seconds after a turn ends the panel reads faster, and stops at the first suggestion: about
+ * 15 more local screen reads per turn, at most.
+ */
+export const SUGGESTION_BURST_MS = 300
+export const SUGGESTION_BURST_WINDOW_MS = 5000
+
+/** Did this state change end a turn? Only then is a suggestion on its way (`SUGGESTION_BURST_MS`). */
+export function endsTurn(prev: string | undefined, next: string | undefined): boolean {
+  return next === 'done' && (prev === 'working' || prev === 'waiting' || prev === 'blocked')
+}
+
+/** When an SSH node's chat view reads the pane for the suggestion, counted from the turn's end. An
+ *  SSH pane is never polled (each read is a round trip to the host), so it is read twice instead,
+ *  after the measured window above and once more later. */
+export const REMOTE_SUGGESTION_READ_DELAYS_MS: readonly number[] = [2500, 6000]
+
+/**
  * Should the panel poll the pane's screen? Only for an agent whose screen we can read, only for a
  * LOCAL pane (each read of an SSH or relay pane is a network round trip, every two seconds, for as
  * long as the view is open — those rely on the check at send time alone), and only while no other

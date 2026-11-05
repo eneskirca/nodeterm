@@ -46,6 +46,12 @@ export interface ChatComposerProps {
   /** Enter (not Shift+Enter, not an IME commit). ChatPanel's send re-checks the gate itself. */
   onSend: () => void
   placeholder: string
+  /**
+   * The prompt the agent suggests next (`readClaudeSuggestion`), already shown as the placeholder by
+   * ChatPanel. With an empty draft, → fills the draft with it and puts the caret at the end, as →
+   * does in Claude Code's own TUI. It is never sent: Enter stays the user's.
+   */
+  suggestion?: string | null
   /** Read-only session or a send-gate refusal: the whole composer stands down with the textarea.
    *  Not while the agent merely works — see `agentBusy`. */
   disabled: boolean
@@ -93,6 +99,7 @@ export function ChatComposer({
   onChange,
   onSend,
   placeholder,
+  suggestion = null,
   disabled,
   agentBusy = false,
   onWriteRefused,
@@ -398,6 +405,24 @@ export function ChatComposer({
         if (trigger) setDismissedAt(trigger.start)
         return
       }
+    }
+    if (
+      e.key === 'ArrowRight' &&
+      !composing &&
+      !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey &&
+      value === '' &&
+      suggestion !== null &&
+      suggestion !== '' &&
+      !disabled
+    ) {
+      e.preventDefault()
+      onChange(suggestion)
+      requestAnimationFrame(() => {
+        const el = inputRef.current
+        if (!el) return
+        el.setSelectionRange(suggestion.length, suggestion.length)
+      })
+      return
     }
     if (menuOpen && e.key === 'Enter') closeMenu()
     // Shift+Enter falls through to the textarea's own newline; an IME commit is not a send.

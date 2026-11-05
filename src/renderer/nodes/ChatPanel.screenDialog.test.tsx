@@ -4,7 +4,12 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatPromptResult } from '@shared/text-delivery'
 import { useAgentStatus } from '../state/agentStatus'
-import { CHAT_SCREEN_POLL_MS } from '../lib/chatLive'
+import {
+  CHAT_SCREEN_POLL_MS,
+  REMOTE_SUGGESTION_READ_DELAYS_MS,
+  SUGGESTION_BURST_MS,
+  SUGGESTION_BURST_WINDOW_MS
+} from '../lib/chatLive'
 
 /**
  * The agent's OWN dialogs (folder trust, /model, setup questions) fire no hook, so the chat view
@@ -23,13 +28,17 @@ const TRUST = [RULE, ' Accessing workspace:', ' ❯ No, exit', '   Yes, I trust 
 
 const { screen, capture, sendChatPrompt, session } = vi.hoisted(() => {
   const screen = { now: '' }
-  const capture = vi.fn(async (_id: string) => screen.now)
+  // The panel's one screen read (`pty.readChatScreen`), answered by the REAL readers over the screen.
+  const capture = vi.fn(async (_id: string, _agent: string) => {
+    const { readClaudeScreen, readClaudeSuggestion } = await import('@shared/agents/claude-screen')
+    return { screen: readClaudeScreen(screen.now), suggestion: readClaudeSuggestion(screen.now) }
+  })
   const sendChatPrompt = vi.fn(async (_id: string, _t: string, _a: string): Promise<ChatPromptResult> => true)
   const session = {
     source: 'local',
     api: {
       chat: { readTranscript: async () => ({ messages: [], found: true, olderCursor: null, unmatchedResults: [] }) },
-      pty: { capture, sendChatPrompt, sendText: vi.fn() }
+      pty: { readChatScreen: capture, sendChatPrompt, sendText: vi.fn() }
     }
   }
   return { screen, capture, sendChatPrompt, session }
@@ -116,12 +125,12 @@ describe('ChatPanel — the agent\'s own dialog on screen', () => {
     expect(notice()).toBeNull()
   })
 
-  it('never polls a remote pane', async () => {
+  it('never polls a remote pane: it reads it only twice after a turn, for the suggestion', async () => {
     await mount({ remote: true })
-    await tick()
-    await tick()
 
-    expect(capture).not.toHaveBeenCalled()
+    for (let i = 0; i < 20; i++) await tick()
+
+    expect(capture).toHaveBeenCalledTimes(REMOTE_SUGGESTION_READ_DELAYS_MS.length)
   })
 
   it('never polls a relay tab (the pane is on the peer)', async () => {
@@ -218,5 +227,130 @@ describe('ChatPanel — the agent\'s own dialog on screen', () => {
 
     expect(capture).toHaveBeenCalled()
     expect(textarea().disabled).toBe(true)
+  })
+})
+
+describe('ChatPanel — the prompt Claude suggests next', () => {
+  const SUGGESTING = [RULE, `\x1b[39m❯ \x1b[2mrun it in the background\x1b[0m`, RULE, '  ? for shortcuts'].join('\n')
+  const TIP = [RULE, `\x1b[39m❯ \x1b[2mTry "fix lint errors"\x1b[0m`, RULE, '  ? for shortcuts'].join('\n')
+  const arrowRight = (): KeyboardEvent => {
+    const e = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    textarea().dispatchEvent(e)
+    return e
+  }
+
+  it('shows the suggestion as the placeholder, and → puts it in the composer with the caret at the end', async () => {
+    screen.now = SUGGESTING
+    await mount()
+    await tick()
+    expect(textarea().placeholder).toBe('run it in the background')
+
+    let e: KeyboardEvent | undefined
+    await act(async () => {
+      e = arrowRight()
+    })
+    await tick()
+
+    expect(e?.defaultPrevented).toBe(true)
+    expect(textarea().value).toBe('run it in the background')
+    expect(textarea().selectionStart).toBe('run it in the background'.length)
+    expect(sendChatPrompt).not.toHaveBeenCalled()
+  })
+
+  it('leaves → alone with a draft in the composer', async () => {
+    screen.now = SUGGESTING
+    await mount()
+    await tick()
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea(), 'my own')
+      textarea().dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    let e: KeyboardEvent | undefined
+    await act(async () => {
+      e = arrowRight()
+    })
+
+    expect(e?.defaultPrevented).toBe(false)
+    expect(textarea().value).toBe('my own')
+  })
+
+  it('does not offer a fresh-session tip', async () => {
+    screen.now = TIP
+    await mount()
+    await tick()
+
+    expect(textarea().placeholder).not.toContain('fix lint errors')
+  })
+
+  it('hides the suggestion while the agent works', async () => {
+    screen.now = SUGGESTING
+    await mount()
+    await tick()
+
+    await act(async () => {
+      useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'working' } as (typeof s.byId)[string] } }))
+    })
+
+    expect(textarea().placeholder).not.toBe('run it in the background')
+  })
+
+  const endTurn = async (): Promise<void> => {
+    await act(async () => {
+      useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'working' } as (typeof s.byId)[string] } }))
+    })
+    await act(async () => {
+      useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'done' } as (typeof s.byId)[string] } }))
+    })
+  }
+  const advance = async (ms: number): Promise<void> => {
+    await act(async () => {
+      vi.advanceTimersByTime(ms)
+    })
+  }
+
+  it('reads fast right after a turn ends, so the suggestion shows within one fast read', async () => {
+    await mount()
+    await endTurn()
+    screen.now = SUGGESTING
+
+    await advance(SUGGESTION_BURST_MS)
+
+    expect(textarea().placeholder).toBe('run it in the background')
+  })
+
+  it('goes back to the regular poll once the fast window is over', async () => {
+    await mount()
+    await endTurn()
+    await advance(SUGGESTION_BURST_WINDOW_MS + SUGGESTION_BURST_MS)
+    capture.mockClear()
+
+    for (let i = 0; i < 3; i++) await advance(CHAT_SCREEN_POLL_MS)
+
+    expect(capture).toHaveBeenCalledTimes(3)
+  })
+
+  it('stops reading fast at the first suggestion', async () => {
+    await mount()
+    await endTurn()
+    screen.now = SUGGESTING
+    await advance(SUGGESTION_BURST_MS)
+    capture.mockClear()
+
+    await advance(CHAT_SCREEN_POLL_MS - SUGGESTION_BURST_MS)
+
+    // Only the regular poll's tick, not a fast read every 300 ms.
+    expect(capture.mock.calls.length).toBeLessThanOrEqual(1)
+  })
+
+  it('drops the suggestion once a message is sent', async () => {
+    screen.now = SUGGESTING
+    await mount()
+    await tick()
+
+    await typeAndEnter('something else')
+
+    expect(sendChatPrompt).toHaveBeenCalled()
+    expect(textarea().placeholder).not.toBe('run it in the background')
   })
 })
