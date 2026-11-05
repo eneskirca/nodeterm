@@ -1,4 +1,5 @@
 import type { MirrorEntry } from '../agent-status-mirror'
+import type { EnvelopeDeliveryResult } from '../../shared/agents/agent-messaging'
 import type { AgentState } from '../../shared/agents/normalize'
 import type { PaneOwner } from '../../shared/agents/pane-owner-predicate'
 import { agentPidIn, isAgentPane } from '../../shared/agents/pane-owner-predicate'
@@ -140,7 +141,7 @@ export interface DeliveryDeps {
    * receipt watch's honest `stalled` outcome. `'dialog'`: nothing was written because the agent's
    * own dialog owns the keyboard (`PtyManager.sendEnvelope`, Cursor).
    */
-  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'>
+  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<EnvelopeDeliveryResult>
   /** The target's status mirror entry — gate 2's whole input. */
   mirrorEntry(nodeId: string): MirrorEntry | undefined
   /** `nodeTokenFilePresent(nodeId)`. */
@@ -188,7 +189,7 @@ export interface DeliveryDeps {
  * them can confirm anything, and the fail direction here is to TELL the sender:
  * `deliveredToReplacedTarget` with `nowPane: 'unknown'`, never `delivered`.
  */
-function samePane(
+export function samePane(
   before: PaneOwner,
   after: PaneOwner | null,
   agentId: string,
@@ -472,6 +473,14 @@ export async function deliverAgentMessage(
     // demonstrably landed. See `watchForReceipt`: that miss is what makes an LLM send it twice.
     const watch = watchForReceipt(req.targetNodeId, deps.subscribeEvents)
     const wrote = await deps.sendEnvelope(req.targetNodeId, payload, owner)
+    if (wrote === 'unsupported') {
+      watch.cancel()
+      return refuse({ kind: 'notPermitted', reason: 'unsupported-host' })
+    }
+    if (wrote === 'ownership-refused') {
+      watch.cancel()
+      return refuse({ kind: 'notPermitted', reason: 'unproven-operation-owner' })
+    }
     // A dialog owned the keyboard and nothing was written: the pane waits on a person, which the
     // idle gate already reports as `targetBusy` / `blocked` (retryable, queued when queueing is on).
     if (wrote === 'dialog') {

@@ -7,6 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { createHash } from 'crypto'
 import net, { type AddressInfo } from 'net'
 import { Server, utils, type Connection } from 'ssh2'
 import { NativeMux } from './native-mux'
@@ -184,6 +185,22 @@ afterEach(() => {
 })
 
 describe('NativeMux over a ProxyJump chain', () => {
+  it('binds a new transport to the target key, and never reconnects after its jump is lost', async () => {
+    const m = mux(), p = exec('true')
+    const created = await m.master(CP(), p.target, p.options), transport = created.createdTransport!
+    const key = utils.parseKey(target.hostKey.public)
+    if (key instanceof Error || Array.isArray(key)) throw new Error('invalid fixture host key')
+    expect(transport.identity.serverKeySha256).toBe(createHash('sha256').update(key.getPublicSSH()).digest('hex'))
+    expect(transport.identity).toMatchObject({ hostname: '127.0.0.1', port: target.port, user: 'dev' })
+    expect((await transport.exec('lease-read')).stdout.toString()).toBe('target ran: lease-read\n')
+    expect([jump1.logins, target.logins]).toEqual([1, 1])
+    for (const client of jump1.live) client.end()
+    await created.closed
+    expect(transport.isCurrent()).toBe(false)
+    expect((await transport.exec('after-jump-loss')).code).toBe(255)
+    expect([jump1.logins, target.logins]).toEqual([1, 1])
+  })
+
   it('reaches the target through the jump, each hop with its own identity and host key', async () => {
     const m = mux()
     const r = await m.exec(exec('echo hi'))

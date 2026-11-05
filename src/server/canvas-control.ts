@@ -1,4 +1,7 @@
 import fs from 'node:fs'
+import { AgentMailbox, isMailboxControl } from '../core/agents/agent-mailbox'
+import { MailboxFileStore } from '../core/agents/agent-mailbox-store'
+import { prepareMailboxLegacy, createDeliveryHintsFile } from '../core/agents/agent-mailbox-legacy'
 import path from 'node:path'
 
 import {
@@ -20,7 +23,6 @@ import {
   OUTCOME_FACT
 } from '../core/station-outcome-store'
 import { DurableFactFile } from '../core/durable-state'
-import { QUEUE_FACT } from '../core/agents/delivery-queue'
 import { HANDOVER_FACT, StationHandoverTracker } from '../core/station-handover'
 import { stationRecipientFromOwner } from '../shared/station-notice'
 import {
@@ -220,8 +222,8 @@ export async function initServerCanvasControl(
     ...ptyPaneProbeDeps(deps.ptyManager),
     // Server delivery has no renderer/xterm echo stream. Capture the headless pane instead and
     // separate paste from Enter so a fresh TUI cannot swallow the first submit keystroke.
-    sendEnvelope: (nodeId, envelope) =>
-      sendSettledEnvelope(deps.ptyManager, nodeId, envelope),
+    sendEnvelope: (nodeId, envelope, expected) =>
+      sendSettledEnvelope(deps.ptyManager, nodeId, envelope, expected),
     // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.
     hasLiveSession: (nodeId) => deps.ptyManager.sessionExists(nodeId),
     mirrorEntry,
@@ -248,7 +250,8 @@ export async function initServerCanvasControl(
   // Durable, like the desktop's (delivery-queue.ts states what a restart does to a message). Note
   // this edition's creator ledger is process-local, so a restored message whose caller→target proof
   // did not survive the restart is refused `caller-not-owner` at flush — with its sender told.
-  const queueFile = new DurableFactFile(QUEUE_FACT, { userDataDir: platform().userDataDir })
+  const queueFile = createDeliveryHintsFile(platform().userDataDir)
+  let mailbox: AgentMailbox | undefined
   if (deps.ownsDurableState === false) queueFile.standDown()
   const queue = createDeliveryQueue(messaging, { durable: queueFile })
   messaging.queue = queue
@@ -282,8 +285,17 @@ export async function initServerCanvasControl(
   })
   stationNotices.start()
   messaging.onQueuedResult = (req, outcome) => stationNotices.onQueuedResult(req, outcome)
-  // Every listener is wired: bring back what the previous run queued.
-  await restoreDeliveryQueue(queue, queueFile)
+  // The already-enabled server control path uses the same durable mailbox. Its process-local
+  // creator proof remains an additional gate; startup never adopts any surviving session.
+  if (deps.ownsDurableState !== false) {
+    try {
+      await prepareMailboxLegacy(platform().userDataDir)
+      mailbox = new AgentMailbox(new MailboxFileStore(platform().userDataDir), messaging)
+      await restoreDeliveryQueue(queue, queueFile)
+    } catch {
+      console.warn('[agent-mailbox] startup held: legacy audit failed; no legacy restore attempted')
+    }
+  }
 
   const actions: ServerEditionControlActions = {
     openProject: (sourceNodeId, args, verified) =>
@@ -363,6 +375,8 @@ export async function initServerCanvasControl(
     // rule in core/station-outcome-store.ts, applied on the answer. (`send` / `reply` go through
     // `messaging.onHandover` above, which knows when a queued message actually lands.)
     handler: async (req) => {
+      if (isMailboxControl(req.verb)) return mailbox?.control(req.nodeId, req.verified, req.verb, req.args) ?? {
+        ok: false, code: 'store-unavailable', retryable: false, error: 'Agent mailbox is not available.' }
       // When the request arrived — before `run` typed anything (see core/station-handover.ts).
       const requestAt = Date.now()
       const reply = await baseHandler(req)
@@ -377,6 +391,7 @@ export async function initServerCanvasControl(
       // A station starting a DIFFERENT session drops its old report before anything reads it.
       stationOutcomes.onAgentEvent(event)
       onMessagingAgentEvent(event, queue)
+      if (event.verified && event.state === 'done') void mailbox?.onTargetBoundary(event.nodeId)
       factory.onAgentEvent(event)
       stationNotices.onAgentEvent(event)
     },
@@ -384,6 +399,7 @@ export async function initServerCanvasControl(
     stationOutcomes,
     stationHandovers,
     stop: () => {
+      mailbox?.stop()
       factory.stop()
       queue.resetForTests()
       stationNotices.stop()

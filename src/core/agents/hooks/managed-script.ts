@@ -85,6 +85,7 @@
  * which no other agent's tool shell sets, and one builder beats a codex-only fork of it.
  */
 import { codexThreadIdentityResolverSh } from '../../codex-thread-identity-sh'
+import { buildMailboxTurnNotice } from '../../mailbox-instructions'
 import { codexThreadIdentityRoot } from '../../codex-identity-proxy'
 import { HOOK_CURL_HEADERS_SH } from '../hook-curl-config-sh'
 import { NODE_TOKEN_READ_SH } from '../node-token-sh'
@@ -295,7 +296,8 @@ function antigravityAnswerFirst(): string[] {
 
 export function buildManagedScript(
   agentId: string,
-  identityRoot: string | null = safeIdentityRoot()
+  identityRoot: string | null = safeIdentityRoot(),
+  identityOptions: { preferThreadBinding?: boolean } = {}
 ): string {
   const antigravity = agentId === 'antigravity'
   // The codex hook reads its payload BEFORE the identity prelude: the payload's session_id is the
@@ -332,7 +334,7 @@ export function buildManagedScript(
         ]
       : []),
     ...(identityRoot
-      ? [codexThreadIdentityResolverSh(identityRoot, { hookPayloadThread: codexPayloadFirst })]
+      ? [codexThreadIdentityResolverSh(identityRoot, { hookPayloadThread: codexPayloadFirst, preferThreadBinding: identityOptions.preferThreadBinding })]
       : []),
     '# GATE FIRST, and drain stdin before bailing (issues #186/#187). Order is load-bearing twice:',
     '#  - The codex thread-identity prelude above may DERIVE the node id (and endpoint) from its',
@@ -356,6 +358,13 @@ export function buildManagedScript(
     '  cat >/dev/null 2>&1 || :',
     '  exit 0',
     'fi',
+    ...(agentId === 'cursor' ? [
+      '# Only the dedicated sessionStart command sets this flag. Other Cursor hooks stay silent.',
+      'if [ "$NODETERM_CURSOR_MAILBOX_CONTEXT" = "1" ]; then',
+      `  printf '%s\\n' '${JSON.stringify({ additional_context: buildMailboxTurnNotice() }).replaceAll("'", "'\\''")}'`,
+      '  exec >/dev/null 2>&1',
+      'fi'
+    ] : []),
     '# Sourced with stdout swallowed, not only stderr: SessionStart and UserPromptSubmit are two of',
     '# the events where Claude ADDS hook stdout to the agent\'s context (#186). The endpoint files',
     '# nodeterm writes print nothing today — this guards the day one of the four candidate paths',

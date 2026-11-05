@@ -1029,9 +1029,17 @@ const api: NodeTerminalApi = {
     return () => ipcRenderer.removeListener(IPC.hostChatQuery, handler)
   },
   sendHostChatReply: (reply) => ipcRenderer.send(IPC.hostChatReply, reply),
+  paneOwnership: {
+    adopt: (request) => ipcRenderer.invoke(IPC.paneOwnershipAdopt, request),
+    resumeObserved: (request) => ipcRenderer.invoke(IPC.paneOwnershipResumeObserved, request)
+  },
   agentMessage: {
     deliver: (req) => ipcRenderer.invoke(IPC.agentMessageDeliver, req),
     deliverBoardComment: (req) => ipcRenderer.invoke(IPC.agentBoardCommentDeliver, req)
+  },
+  agentMailbox: {
+    view: (req) => ipcRenderer.invoke(IPC.agentMailboxView, req),
+    legacyView: (req) => ipcRenderer.invoke(IPC.agentMailboxLegacyView, req)
   },
   boardDispatch: {
     report: (entries) => {

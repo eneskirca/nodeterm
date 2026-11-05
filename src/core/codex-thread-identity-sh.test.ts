@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { codexThreadIdentityResolverSh } from './codex-thread-identity-sh'
+import { codexThreadIdentityResolverSh, remoteCodexIdentityRoot } from './codex-thread-identity-sh'
 
 const run = promisify(execFile)
 
@@ -54,6 +54,40 @@ async function resolve(env: Record<string, string>): Promise<string> {
   })
   return stdout.trim()
 }
+
+async function resolveObservedRemote(env: Record<string, string>): Promise<string> {
+  const file = path.join(dir, 'observed-remote-resolver.sh')
+  fs.writeFileSync(file, '#!/bin/sh\n' + codexThreadIdentityResolverSh(root, { preferThreadBinding: true }) +
+    '\nprintf "%s|%s|%s\\n" "${NODETERM_NODE_ID-}" "${NODETERM_HOOK_ENDPOINT-}" "${NODETERM_CANVAS_CONTROL-}"\n')
+  return (await run('/bin/sh', [file], { env: { PATH: process.env.PATH ?? '', HOME: dir, ...env } })).stdout.trim()
+}
+
+describe('explicit observed remote thread resolver', () => {
+  const inherited = { NODETERM_NODE_ID: 'stale-daemon-node', NODETERM_HOOK_ENDPOINT: '/stale/endpoint', NODETERM_CANVAS_CONTROL: '1' }
+  it('recovers the unique thread record even when a shared daemon inherited another node', async () => {
+    record('observed-thread', body('observed-node', ''))
+    expect(await resolveObservedRemote({ ...inherited, CODEX_THREAD_ID: 'observed-thread' })).toBe(`observed-node|${dir}/hook-endpoint.env|1`)
+  })
+  it('keeps old plain-session environment when this thread has no observed map', async () => {
+    expect(await resolveObservedRemote({ ...inherited, CODEX_THREAD_ID: 'not-mapped' })).toBe('stale-daemon-node|/stale/endpoint|1')
+  })
+  it('refuses known corrupted or ambiguous records instead of inheriting stale daemon identity', async () => {
+    record('corrupt-thread', 'nodeId=../unsafe\nendpoint=/remote/hook.env\n')
+    expect(await resolveObservedRemote({ ...inherited, CODEX_THREAD_ID: 'corrupt-thread' })).toBe('||')
+    record('ambiguous-thread', body('system-node', ''))
+    scopedRecord('acct-A', 'ambiguous-thread', body('managed-node', 'acct-A'))
+    expect(await resolveObservedRemote({ ...inherited, CODEX_THREAD_ID: 'ambiguous-thread' })).toBe('||')
+  })
+  it('refuses unsafe thread/account selectors without reading an escaped record', async () => {
+    expect(await resolveObservedRemote({ ...inherited, CODEX_THREAD_ID: '..' })).toBe('||')
+    expect(await resolveObservedRemote({ ...inherited, CODEX_THREAD_ID: 'observed-thread', NODETERM_CODEX_ACCOUNT_ID: '../acct' })).toBe('||')
+  })
+  it('constructs only a canonical target-host root', () => {
+    expect(remoteCodexIdentityRoot('/remote/home')).toBe('/remote/home/.nodeterm/codex-thread-nodes')
+    for (const home of ['relative', '/remote/../home', '/remote//home', '/remote/home/', '/remote/$(command)'])
+      expect(() => remoteCodexIdentityRoot(home)).toThrow('Invalid remote Codex identity home')
+  })
+})
 
 describe('codex thread identity prelude', () => {
   it('is valid POSIX sh', async () => {

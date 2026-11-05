@@ -29,6 +29,8 @@ export type NotPermittedReason =
   | 'cross-project'
   | 'self-send'
   | 'unsupported-edition'
+  | 'unsupported-host'
+  | 'unproven-operation-owner'
   | 'unaddressable-node-id'
   /** Server Edition's process-local creator ledger says the sender did not spawn this target in
    *  the current server run. This is separate from pane/project ownership: proving which project

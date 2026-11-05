@@ -255,6 +255,14 @@ export const IPC = {
   agentControl: 'agent:control',
   agentControlResult: 'agent:control-result',
   agentMessageDeliver: 'agent:message-deliver',
+  /** Main-window read-only local mailbox view; never a relay or agent impersonation route. */
+  agentMailboxView: 'agent:mailbox-view',
+  /** MainWindow-only historical recovery view. No relay/server/agent routing. */
+  agentMailboxLegacyView: 'agent:mailbox-legacy-view',
+  /** Raw local MainWindow IPC only; never a canvas-control/relay operation. */
+  paneOwnershipAdopt: 'pane-ownership:human-adopt',
+  /** MainWindow-only explicit observed SSH resume; never canvas control or relay. */
+  paneOwnershipResumeObserved: 'pane-ownership:observed-resume',
   /** Renderer → main: deliver ONE mentioned session's copy of a board comment the local user just
    *  posted (`deliverBoardCommentFromUi`). Desktop-only, main-window-only, never peer-dispatchable —
    *  see src/main/board-comment-wiring.test.ts. Arg: `BoardCommentDeliverRequest`. */

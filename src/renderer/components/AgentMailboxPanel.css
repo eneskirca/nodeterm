@@ -1,0 +1,42 @@
+.confirm.agent-mailbox {
+  width: min(1040px, 94vw);
+  max-height: 88vh;
+  padding: 20px;
+  gap: 14px;
+  color: var(--text);
+}
+.agent-mailbox__header, .agent-mailbox__controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.agent-mailbox h2, .agent-mailbox h3, .agent-mailbox p { margin: 0; }
+.agent-mailbox__hint, .agent-mailbox__meta, .agent-mailbox time, .agent-mailbox__header p { color: var(--muted); font-size: 12px; }
+.agent-mailbox button { color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; cursor: pointer; }
+.agent-mailbox button:disabled { opacity: 0.5; cursor: default; }
+.agent-mailbox button[aria-selected="true"], .agent-mailbox button[aria-pressed="true"] { border-color: var(--accent, #78a9ff); }
+.agent-mailbox button:focus-visible { outline: 2px solid var(--accent, #78a9ff); outline-offset: 2px; }
+.agent-mailbox__controls [role="tablist"] { display: flex; gap: 6px; }
+.agent-mailbox__controls label { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+.agent-mailbox__legacy-entry { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.agent-mailbox__legacy-entry button { flex-shrink: 0; }
+.agent-mailbox__warning { padding: 10px 12px; border: 1px solid var(--warn, #d6aa52); border-radius: 6px; font-size: 12px; line-height: 1.5; }
+.agent-mailbox__body { display: grid; grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1.5fr); min-height: 220px; overflow: hidden; gap: 16px; }
+.agent-mailbox__list, .agent-mailbox__detail { overflow: auto; min-width: 0; padding: 3px; }
+.agent-mailbox__list { display: flex; flex-direction: column; gap: 8px; }
+.agent-mailbox__row { display: flex; flex-direction: column; gap: 5px; text-align: left; overflow-wrap: anywhere; flex-shrink: 0; }
+.agent-mailbox__status { font-size: 12px; }
+.agent-mailbox__detail { display: flex; flex-direction: column; gap: 12px; overflow-wrap: anywhere; }
+.agent-mailbox__detail h3 { font-size: 13px; }
+.agent-mailbox__detail dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 10px; margin: 0; font-size: 12px; }
+.agent-mailbox__detail dt { color: var(--muted); }
+.agent-mailbox__detail dd { margin: 0; white-space: pre-wrap; }
+.agent-mailbox__message { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+@media (max-width: 700px) {
+  .agent-mailbox__legacy-entry { flex-wrap: wrap; }
+  .agent-mailbox__body { grid-template-columns: 1fr; overflow: auto; }
+  .agent-mailbox__list { max-height: 32vh; }
+  .agent-mailbox__detail { overflow: visible; }
+}

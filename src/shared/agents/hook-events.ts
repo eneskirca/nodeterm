@@ -121,13 +121,14 @@ export const COPILOT_HOOK_EVENTS = [
  * `{command}` entries. Cursor's names are camelCase, and it publishes 21 of them
  * (`cursor-agent` 2026.09.28 bundle); these are the five that move the badge, plus `sessionEnd`.
  *
- * Left out on purpose:
- *   - `sessionStart`: does not fire on `--resume` (measured), so it cannot be relied on. Measured
+ * `sessionStart` now supplies static mailbox context for a new conversation only. It is NOT a
+ * readiness or delivery receipt: it does not fire on `--resume` (measured). Measured
  *     again on 2026.10.01: a plain `cursor-agent` fires it before any prompt (with
  *     `conversation_id`), but nodeterm launches every node as `--resume <minted id>`, which fired
- *     nothing until `/quit` (two runs). Subscribing it would not give a fresh node a status.
+ *     nothing until `/quit` (two runs). Existing/resumed sessions still need explicit rollout.
  *   (`sessionEnd` IS subscribed: interactive `/quit` fires it, measured; it puts cursor in
  *   `SESSION_END_CAPABLE`. Dropping it here would make every quit read as a DROPPED crash.)
+ * Left out on purpose:
  *   - `afterAgentResponse`, `afterAgentThought`, `beforeShellExecution`, `afterShellExecution`,
  *     `afterFileEdit`, `beforeReadFile`, `beforeMCPExecution`, `afterMCPExecution`: three headless
  *     runs with all of these subscribed (and a claude-format project file beside them) lost the
@@ -139,6 +140,7 @@ export const COPILOT_HOOK_EVENTS = [
  *     stay silent with exit 0, see `buildManagedHookCommand`'s `silent`.
  */
 export const CURSOR_HOOK_EVENTS = [
+  'sessionStart',
   'beforeSubmitPrompt',
   'preToolUse',
   'postToolUse',

@@ -3,7 +3,11 @@
 // Each case is a promise to the user about their OWN files: nothing is written for an agent they
 // did not enable, a decline removes exactly what nodeterm wrote (a file they edited is kept and
 // reported), and every agent that has canvas control / context link still discovers them.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// This suite exercises file reconciliation, not terminals. Importing the launch helpers must
+// neither require an Electron-ABI native addon nor allow the tests to open an actual PTY.
+vi.mock('node-pty', () => ({ spawn: () => { throw new Error('Integration file tests must not spawn a PTY') } }))
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import os from 'os'
 import path from 'path'
@@ -16,6 +20,7 @@ import {
   CONTEXT_SKILL,
   createIntegrationLifecycle,
   skillsFor,
+  mailboxInstructionFiles,
   detectExistingIntegrations,
   FRESH_INSTALL_MARKER,
   resolveIntegrationConsentAtBoot
@@ -23,6 +28,7 @@ import {
 import { buildCanvasSkillBody, frameCanvasControlBlock } from './canvas-control-core'
 import { buildContextLinkSkillBody, frameInstructionsBlock } from './context-link-core'
 import { MAX_RETAINED } from './integration-files'
+import { MAILBOX_INSTRUCTION_MARKERS, mailboxInstructionBlock } from './mailbox-instructions'
 import { registerClaudeAccountsSource, resetClaudeAccountsSourceForTests } from './claude-config-dir'
 import { accountConfigDir } from './claude-accounts-core'
 import { codexAccountHome } from './codex-accounts-core'
@@ -128,7 +134,7 @@ describe('nothing global is written without consent', () => {
 })
 
 describe('discovery: every capable agent still finds canvas control and context link (no regression)', () => {
-  it('each agent gets the skills in ITS OWN skills dir — and nothing in AGENTS.md / GEMINI.md', () => {
+  it('each agent gets its own skills and compact required rules without the old reference blocks', () => {
     process.env.GROK_HOME = path.join(home, 'grok-home')
     process.env.COPILOT_HOME = path.join(home, 'copilot-home')
     process.env.XDG_CONFIG_HOME = path.join(home, 'xdg')
@@ -156,8 +162,12 @@ describe('discovery: every capable agent still finds canvas control and context 
       if (hasCanvas) expect(read(c)).toBe(canvas(agent))
       if (hasContext) expect(read(x)).toBe(context(agent))
     }
-    for (const f of ['.codex/AGENTS.md', '.gemini/GEMINI.md', 'codex-home/AGENTS.md', 'copilot-home/copilot-instructions.md', 'xdg/opencode/AGENTS.md']) {
-      expect(existsSync(path.join(home, f)), f).toBe(false)
+    expect(existsSync(path.join(home, '.codex/AGENTS.md'))).toBe(false) // CODEX_HOME is relocated.
+    for (const f of ['.gemini/GEMINI.md', 'codex-home/AGENTS.md', 'grok-home/AGENTS.md', 'copilot-home/copilot-instructions.md', 'xdg/opencode/AGENTS.md']) {
+      const body = read(path.join(home, f))
+      expect(body, f).toContain(MAILBOX_INSTRUCTION_MARKERS.start)
+      expect(body, f).toContain(SHIMS().canvas)
+      expect(body, f).not.toContain('nodeterm:manage-canvas:start')
     }
     expect(hookCalls.install).toEqual([['claude', 'codex', 'copilot', 'gemini', 'grok', 'opencode']])
   })
@@ -202,7 +212,10 @@ describe('upgrade: the legacy instruction blocks go, the user text stays', () =>
     put(path.join(home, '.gemini', 'GEMINI.md'), `${frameInstructionsBlock('Z')}\n`)
     const { lc } = lifecycle(() => withAgents({ codex: 'enabled', gemini: 'declined' }))
     lc.reconcile()
-    expect(read(path.join(home, '.codex', 'AGENTS.md'))).toBe(user)
+    const updated = read(path.join(home, '.codex', 'AGENTS.md'))
+    expect(updated.startsWith(user)).toBe(true)
+    expect(updated).toContain(MAILBOX_INSTRUCTION_MARKERS.start)
+    expect(updated).not.toContain('X'.repeat(100))
     // A file that held NOTHING but our block was ours: it goes, rather than staying behind empty.
     expect(existsSync(path.join(home, '.gemini', 'GEMINI.md'))).toBe(false)
   })
@@ -213,6 +226,54 @@ describe('upgrade: the legacy instruction blocks go, the user text stays', () =>
     const { lc } = lifecycle(() => withAgents({ codex: 'enabled' }))
     lc.reconcile()
     expect(read(path.join(home, '.gemini', 'GEMINI.md'))).toBe(legacy)
+  })
+})
+
+describe('required mailbox context', () => {
+  it('installs short rules for every provider with a global instruction path, including Antigravity’s own root', () => {
+    const agents = ['claude', 'codex', 'gemini', 'grok', 'copilot', 'opencode', 'antigravity'] as const
+    const settings = withAgents(Object.fromEntries(agents.map((agent) => [agent, 'enabled'])))
+    const { lc } = lifecycle(() => settings)
+    lc.reconcile()
+    for (const agent of agents) {
+      const files = mailboxInstructionFiles(agent, settings, userData, home)
+      expect(files.length, agent).toBeGreaterThan(0)
+      for (const file of files) {
+        const rule = read(file)
+        expect(rule, agent).toContain('At the beginning of every turn and before reporting completion')
+        expect(rule, agent).toContain(SHIMS().canvas)
+        expect(rule, agent).not.toContain('/tmp/nodeterm-start-check-')
+        expect(rule, agent).toContain('NEVER causes automatic ACK')
+      }
+    }
+    expect(read(path.join(home, '.gemini', 'config', 'AGENTS.md'))).toContain('complete --message')
+    expect(mailboxInstructionFiles('cursor', settings, userData, home)).toEqual([])
+  })
+
+  it('preserves user text, keeps edited mailbox rules and removes only unchanged owned rules on decline', () => {
+    let settings = withAgents({ codex: 'enabled' })
+    const file = path.join(home, '.codex', 'AGENTS.md')
+    put(file, '# user before\n')
+    const { lc } = lifecycle(() => settings)
+    lc.reconcile()
+    const installed = read(file)
+    put(file, `${installed}# user after\n`)
+    lc.reconcile()
+    expect(read(file)).toBe(`${installed}# user after\n`)
+    settings = withAgents({ codex: 'declined' })
+    lc.onSettingsChanged(settings)
+    expect(read(file)).toContain('# user before')
+    expect(read(file)).toContain('# user after')
+    expect(mailboxInstructionBlock(read(file))).toBeNull()
+
+    settings = withAgents({ codex: 'enabled' })
+    lc.onSettingsChanged(settings)
+    put(file, read(file).replace('Nodeterm agent mail', 'My edited Nodeterm agent mail'))
+    const edited = read(file)
+    settings = withAgents({ codex: 'declined' })
+    expect(lc.onSettingsChanged(settings)).toBeUndefined()
+    expect(lc.reconcile().retained).toContain(file)
+    expect(read(file)).toBe(edited)
   })
 })
 

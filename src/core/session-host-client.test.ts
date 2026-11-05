@@ -199,6 +199,33 @@ afterEach(async () => {
 })
 
 describe('SessionHostClient handshake transition', () => {
+  it.each([{ kind: 'missing', features: undefined }, { kind: 'empty', features: [] },
+    { kind: 'legacy', features: undefined }])('old host without the additive capability gets only hello, zero envelope or fallback frames ($kind)', async ({ kind, features }) => {
+    const { userDataDir, paths } = createUserData('old-envelope-capability', kind === 'legacy' ? 1 : 2)
+    const commands: string[] = []
+    await serve(paths.endpoint, (req, socket) => {
+      commands.push(req.cmd)
+      socket.write(encodeFrame(kind === 'legacy' ? { id: req.id, ok: true } :
+        { id: req.id, ok: true, result: { protocolVersion: 2, ...(features ? { features } : {}) } }))
+    })
+    const client = new SessionHostClient({ userDataDir, repoRoot: userDataDir })
+    expect(await within(client.messageEnvelope('nt-old', 'SYNTHETIC', { panePid: 1, tty: 't', command: 'codex', argv: ['codex'] }))).toBe('unsupported')
+    expect(commands).toEqual(['hello'])
+  })
+  it.each([true, 'dialog', 'unknown command'] as const)('negotiated envelope V2 preserves result/refusal %s without legacy fallback', async result => {
+    const { userDataDir, paths } = createUserData('new-envelope-capability')
+    const requests: SessionHostRequest[] = []
+    await serve(paths.endpoint, (req, socket) => {
+      requests.push(req)
+      if (req.cmd === 'hello') socket.write(encodeFrame({ id: req.id, ok: true, result: { protocolVersion: 2, features: ['envelope-surface-v2'] } }))
+      else socket.write(encodeFrame(result === 'unknown command' ? { id: req.id, ok: false, error: result } : { id: req.id, ok: true, result }))
+    })
+    const client = new SessionHostClient({ userDataDir, repoRoot: userDataDir })
+    const expected = { panePid: 1, tty: 't', command: 'codex', argv: ['codex'] }
+    expect(await within(client.messageEnvelope('nt-new', 'SYNTHETIC', expected))).toBe(result === 'unknown command' ? 'unsupported' : result)
+    expect(requests.map(r => r.cmd)).toEqual(['hello', 'messageEnvelopeV2'])
+    expect(requests[1]).toMatchObject({ expected, envelope: 'SYNTHETIC' })
+  })
   it('keeps an old live host usable when it refuses the additive messaging extension', async () => {
     const { userDataDir, paths } = createUserData('old-host-message-refusal')
     const commands: string[] = []
@@ -214,9 +241,9 @@ describe('SessionHostClient handshake transition', () => {
     expect(await within(client.messagePasteReady('nt-existing'))).toBe(false)
     expect(await within(client.messageEnvelope('nt-existing', 'message', {
       panePid: 42, tty: 'win32-console:42', command: 'opencode', argv: ['opencode']
-    }))).toBe(false)
+    }))).toBe('unsupported')
     expect(await within(client.hasSession('nt-existing'))).toBe(true)
-    expect(commands).toEqual(['hello', 'messageOwnerV1', 'messagePasteReadyV1', 'messageEnvelopeV1', 'hasSession'])
+    expect(commands).toEqual(['hello', 'messageOwnerV1', 'messagePasteReadyV1', 'hasSession'])
     // No fallback to sendKeys/write/executeLaunch, no kill, no replacement/attach request.
   })
 
@@ -872,6 +899,12 @@ describe('SessionHostClient attach rollback', () => {
       )
     ).rejects.toThrow('initial attach refused')
     await firstClosed
+    // The peer's close is not the client's close. Observe the client's own connection state
+    // before testing reconnect rollback; otherwise hasSession can correctly surface EPIPE on
+    // the still-cached socket. This waits without sending a command or retrying any mutation.
+    await vi.waitFor(() => {
+      expect(client.connectedFeature('geometry')).toBeUndefined()
+    }, { timeout: 1_000, interval: 5 })
 
     await expect(within(client.hasSession('nt-no-ghost'))).resolves.toBe(true)
     await new Promise((resolve) => setTimeout(resolve, 20))

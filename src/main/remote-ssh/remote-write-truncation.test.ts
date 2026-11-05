@@ -31,8 +31,9 @@ import {
 import { tmpdir } from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CONTROL_SHIM_SCRIPT } from '../../core/canvas-control-core'
-import { CONTEXT_SHIM_SCRIPT } from '../../core/context-link-core'
+import { buildRemoteControlShimScript } from '../../core/canvas-control-core'
+import { buildRemoteContextShimScript } from '../../core/context-link-core'
+import { buildMailboxTurnNotice, frameMailboxInstructions } from '../../core/mailbox-instructions'
 import { RemoteHooks, type RemoteRunner } from './remote-hooks'
 import { SshProjectManager } from './ssh-project'
 
@@ -127,15 +128,16 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     await rh.installCanvasControl(conn, '/fixture.sock', home)
     await rh.installContextLink(conn, '/fixture.sock', home)
 
-    expect(read('.nodeterm/nodeterm.sh')).toBe(CONTROL_SHIM_SCRIPT)
-    expect(read('.nodeterm/context.sh')).toBe(CONTEXT_SHIM_SCRIPT)
+    expect(read('.nodeterm/nodeterm.sh')).toBe(buildRemoteControlShimScript(home))
+    expect(read('.nodeterm/context.sh')).toBe(buildRemoteContextShimScript(home))
     expect(modeOf('.nodeterm/nodeterm.sh')).toBe(0o755)
     expect(modeOf('.nodeterm/context.sh')).toBe(0o755)
     expect(read('.claude/skills/manage-nodeterm-canvas/SKILL.md')).toContain('name: manage-nodeterm-canvas')
     expect(read('.agents/skills/manage-nodeterm-canvas/SKILL.md')).toContain('name: manage-nodeterm-canvas')
     expect(read('.agents/skills/get-linked-context/SKILL.md')).toContain('name: get-linked-context')
-    // No global instruction file is created any more (#744).
-    expect(existsSync(path.join(home, '.codex/AGENTS.md'))).toBe(false)
+    // The large reference stays in skills; only the short, managed mailbox rule is always loaded.
+    const rule = frameMailboxInstructions(buildMailboxTurnNotice(`${home}/.nodeterm/nodeterm.sh`))
+    expect(read('.codex/AGENTS.md')).toBe(`${rule}\n`)
     expect(leftovers()).toEqual([])
   })
 
@@ -212,7 +214,7 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     expect(leftovers()).toEqual([])
     // The installers did run: our own files landed beside the untouched user files.
     expect(read('.nodeterm/agent-hooks/codex.sh')).toContain('#!/bin/sh')
-    expect(read('.nodeterm/nodeterm.sh')).toBe(CONTROL_SHIM_SCRIPT)
+    expect(read('.nodeterm/nodeterm.sh')).toBe(buildRemoteControlShimScript(home))
     expect(warned(`Remote file unchanged: ${home}/.codex/hooks.json`)).toBe(true)
     // The instruction files are named by their quoted path expression (this $HOME has a quote in it).
     expect(
@@ -229,13 +231,15 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     // A dotfile-managed AGENTS.md: the link must still be a link afterwards.
     const real = seed(
       'dotfiles/AGENTS.md',
-      '# my own agent notes\n\n<!-- nodeterm:get-linked-context:start -->\nOLD\n<!-- nodeterm:get-linked-context:end -->\n'
+      '# my own agent notes\n\n<!-- nodeterm:get-linked-context:start -->\nOLD\n<!-- nodeterm:get-linked-context:end -->\n',
+      0o640
     )
     symlinkSync(real, path.join(home, '.codex', 'AGENTS.md'))
 
     const rh = new RemoteHooks(hostRunner('deliver'), allRemote)
     await rh['installCodexRemote'](conn, '/fixture.sock', home, `${home}/.nodeterm`)
     await rh['stripLegacyInstructionBlocks'](conn, '/fixture.sock', home)
+    await rh.installCanvasControl(conn, '/fixture.sock', home)
 
     const nextToml = read('.codex/config.toml')
     expect(nextToml.startsWith(toml)).toBe(true)
@@ -247,8 +251,10 @@ describe.skipIf(process.platform === 'win32')('remote writes never leave a trunc
     expect(read('.nodeterm/agent-hooks/codex.sh')).toContain('#!/bin/sh')
     expect(modeOf('.nodeterm/agent-hooks/codex.sh')).toBe(0o755)
     expect(lstatSync(path.join(home, '.codex', 'AGENTS.md')).isSymbolicLink()).toBe(true)
-    // The legacy block is stripped through the link; the user's text is all that is left.
-    expect(readFileSync(real, 'utf8')).toBe('# my own agent notes\n')
+    // The old block is replaced by the small owned rule through the link; user bytes/mode survive.
+    const rule = frameMailboxInstructions(buildMailboxTurnNotice(`${home}/.nodeterm/nodeterm.sh`))
+    expect(readFileSync(real, 'utf8')).toBe(`# my own agent notes\n${rule}\n`)
+    expect(modeOf('.codex/AGENTS.md')).toBe(0o640)
     expect(leftovers()).toEqual([])
   })
 

@@ -20,7 +20,7 @@
  *    ownership either.
  *
  * ── COLD STATE / RESTART (stated honestly) ──────────────────────────────────────────────────────
- * This ledger is IN-MEMORY and starts empty every run. After an app restart the tmux SERVER
+ * The fresh-spawn ledger is IN-MEMORY and starts empty every run. After an app restart the tmux SERVER
  * usually survives, so the renderer's re-open of a node ATTACHES (`fresh === false`) and records
  * nothing — the pane is then UNPROVEN and messaging to it is REFUSED (fail-closed) until the
  * session is truly respawned (or the machine reboots, killing the tmux server, after which the
@@ -29,6 +29,10 @@
  * settable from any pane's shell), and guessing the owner on attach is exactly how the attacker
  * would re-acquire ownership by opening the victim's id first. Fail-closed is the safe direction
  * and is pinned by a test (`ownerOf` empty ⇒ the delivery gate refuses).
+ *
+ * An optional local-main reader can supply separately validated private human/fresh-spawn
+ * provenance. It is never populated by attach, and it never writes to the fresh-spawn map.
+ * Without that explicitly configured reader, the original fail-closed contract is unchanged.
  *
  * ── SCOPE ───────────────────────────────────────────────────────────────────────────────────────
  * This is scoped to tmux-pane messaging ownership but is intentionally feature-neutral: S8 PR 4's
@@ -40,6 +44,18 @@
 
 /** nodeId → owning projectId (machine-local entry id), for panes freshly spawned THIS run. */
 const owners = new Map<string, string>()
+/** Main-only reader of strictly restored private human or genuine fresh-spawn proofs.
+ * It never infers ownership from attaching/project files. Server default: off. */
+let persistentOwner: ((nodeId: string) => string | undefined) | null = null
+
+export function setPersistentPaneOwnershipReader(reader: ((nodeId: string) => string | undefined) | null): void {
+  persistentOwner = reader
+}
+/** Compatibility for the initially human-only reader; this never writes the fresh-spawn map. */
+export const setHumanPaneAdoptionReader = setPersistentPaneOwnershipReader
+
+/** The actual fresh-spawn ledger, kept distinct from the optional human-adoption provenance. */
+export function freshPaneOwnerProject(nodeId: string): string | undefined { return owners.get(nodeId) }
 
 /**
  * THE FRESH-GATE, pure and pinned: may this create() record pane ownership? True ONLY for a
@@ -69,11 +85,12 @@ export function recordFreshSpawnOwner(nodeId: string, ownerProjectId: string | u
   owners.set(nodeId, ownerProjectId)
 }
 
-/** The project that provably spawned this node's pane this run, or `undefined` when unproven
- *  (never spawned here, or only ever attached — e.g. after a restart). Undefined MUST fail closed
- *  at every gate: an unprovable owner is not an absent restriction. */
+/** Currently authorized project, from real fresh-spawn evidence or the separately validated
+ * private provenance. Attaching alone supplies neither. Undefined remains fail-closed. */
 export function paneOwnerProject(nodeId: string): string | undefined {
-  return owners.get(nodeId)
+  const fresh = owners.get(nodeId)
+  if (fresh) return fresh
+  try { return persistentOwner?.(nodeId) } catch { return undefined }
 }
 
 /** Drop a node's ownership — its session is ending (delete or recycle). A later genuine respawn
@@ -85,4 +102,5 @@ export function forgetPaneOwner(nodeId: string): void {
 /** Test seam only: wipe the ledger between cases. Never called in production. */
 export function resetPaneOwnershipForTests(): void {
   owners.clear()
+  persistentOwner = null
 }

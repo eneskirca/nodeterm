@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { TerminalEmulator } from './terminal-emulator'
 
 const emulators: TerminalEmulator[] = []
+it('plain guard capture uses applied cells without replay modes and preserves soft-wrap spacing', async () => {
+  const e = emulator(40, 10)
+  await e.write('\x1b[?2004h\x1b[31m› \x1b[0m\r\n\r\n← for agents · ? for shortcuts          ⚠ 2 warnings · f2 to view')
+  expect(e.capturePlain()).toContain('← for agents · ? for shortcuts          ⚠ 2 warnings · f2 to view')
+  expect(e.capturePlain()).not.toContain('\x1b')
+  expect(e.serialize()).toContain('\x1b')
+})
 function emulator(cols = 20, rows = 4): TerminalEmulator {
   const e = new TerminalEmulator({ cols, rows, scrollback: 1000 })
   emulators.push(e)

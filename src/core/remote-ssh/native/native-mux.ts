@@ -36,6 +36,8 @@ import net from 'net'
 import os from 'os'
 import type { Duplex } from 'stream'
 import fs from 'fs'
+import { createHash, randomUUID } from 'crypto'
+import type { NativeSshTransport } from './existing-transport'
 // Type-only: ssh2 itself is required on first use (`ssh2()` below), never at module scope.
 import type { Client, Channel, ClientChannel, ConnectConfig, UNIXConnectionDetails, ParsedKey, SFTPWrapper, createAgent } from 'ssh2'
 import type { LocalForward, ParsedSsh, ReverseForward, SshOptions, SshTarget } from './ssh-argv'
@@ -106,6 +108,9 @@ export { WINDOWS_OPENSSH_AGENT_PIPE }
 
 interface Conn {
   key: string
+  generation: string
+  peer?: NativeSshTransport['identity']
+  serverKeySha256?: string
   client: Client
   ready: Promise<void>
   alive: boolean
@@ -330,7 +335,7 @@ export class NativeMux {
    * `closed` resolves (never rejects) with the reason once the connection is gone, which is what a
    * master PROCESS's exit is to the manager.
    */
-  async master(controlPath: string, target: SshTarget, options: SshOptions): Promise<{ closed: Promise<string> }> {
+  async master(controlPath: string, target: SshTarget, options: SshOptions): Promise<{ closed: Promise<string>; createdTransport?: NativeSshTransport }> {
     const existing = this.conns.get(controlPath)
     if (existing?.alive) {
       await existing.ready
@@ -344,7 +349,53 @@ export class NativeMux {
       if (this.conns.get(controlPath) === conn) this.conns.delete(controlPath)
       throw e
     }
-    return { closed: conn.closed }
+    return { closed: conn.closed, createdTransport: this.createdTransport(controlPath, conn) }
+  }
+
+  /** Reachable only after this master() actually opened and authenticated the client. Existing
+   * master()/auto-child reuse cannot mint a new creation receipt. This is NOT mailbox authority. */
+  private createdTransport(controlPath: string, conn: Conn): NativeSshTransport | undefined {
+    const identity = conn.peer
+    if (!identity) return undefined
+    const isCurrent = (): boolean => this.conns.get(controlPath) === conn && conn.alive &&
+      conn.peer === identity && conn.serverKeySha256 === identity.serverKeySha256
+    if (!isCurrent()) return undefined
+    return Object.freeze({ identity, isCurrent,
+      exec: async (command: string, io: { stdin?: string | Buffer; timeoutMs?: number } = {}): Promise<ExecResult> => {
+        try {
+          if (!isCurrent() || typeof command !== 'string' || !command || command.length > 65536 || command.includes('\0') ||
+              (io.stdin !== undefined && Buffer.byteLength(io.stdin) > 1024 * 1024) ||
+              (io.timeoutMs !== undefined && (!Number.isSafeInteger(io.timeoutMs) || io.timeoutMs <= 0 || io.timeoutMs > 30_000)))
+            throw new Error('Existing native SSH transport refused')
+          // Intentionally do NOT call exec/openOn: those permit reconnect/overflow connections.
+          // This captured client is the actual authenticated transport, even during path reuse.
+          let expired = false, channel: ClientChannel | undefined
+          let timer!: ReturnType<typeof setTimeout>
+          const budget = new Promise<ExecResult>(resolve => {
+            timer = setTimeout(() => {
+              expired = true
+              resolve({ ...fail(new Error('Existing native SSH command timed out')), timedOut: true })
+              channel?.close()
+            }, io.timeoutMs ?? 2000)
+          })
+          const work = new Promise<ExecResult>((resolve, reject) => {
+            conn.client.exec(command, (err, openedChannel) => {
+              if (err) return reject(err)
+              if (expired || !isCurrent()) { openedChannel.close(); return reject(new Error('Existing native SSH transport changed')) }
+              channel = openedChannel
+              conn.channels++
+              openedChannel.once('close', () => { conn.channels-- })
+              recordExit(openedChannel)
+              resolve(this.collect(openedChannel, { stdin: io.stdin, maxOutputBytes: 1024 * 1024 }))
+            })
+          })
+          try {
+            const result = await Promise.race([work, budget])
+            return isCurrent() ? result : fail(new Error('Existing native SSH transport changed'))
+          } finally { clearTimeout(timer) }
+        } catch (e) { return fail(e) }
+      }
+    })
   }
 
   /** Run one parsed `exec` argv. Never rejects: failures are exit 255 with stderr, like ssh. */
@@ -618,11 +669,13 @@ export class NativeMux {
   // ---------------------------------------------------------------------------------------------
 
   /** Drain an exec channel into an ExecResult (stdin written, timeout enforced). */
-  private collect(ch: ClientChannel, io: { stdin?: string | Buffer; timeoutMs?: number }): Promise<ExecResult> {
+  private collect(ch: ClientChannel, io: { stdin?: string | Buffer; timeoutMs?: number; maxOutputBytes?: number }): Promise<ExecResult> {
     return new Promise((resolve) => {
       const out: Buffer[] = []
       const errOut: Buffer[] = []
       let timedOut = false
+      let outputBytes = 0
+      let outputExceeded = false
       let timer: ReturnType<typeof setTimeout> | undefined
       if (io.timeoutMs && io.timeoutMs > 0) {
         timer = setTimeout(() => {
@@ -630,14 +683,22 @@ export class NativeMux {
           ch.close()
         }, io.timeoutMs)
       }
-      ch.on('data', (d: Buffer) => out.push(d))
-      ch.stderr.on('data', (d: Buffer) => errOut.push(d))
+      const collect = (chunks: Buffer[], d: Buffer): void => {
+        if (outputExceeded) return
+        outputBytes += d.length
+        if (io.maxOutputBytes !== undefined && outputBytes > io.maxOutputBytes) {
+          outputExceeded = true
+          ch.close()
+        } else chunks.push(d)
+      }
+      ch.on('data', (d: Buffer) => collect(out, d))
+      ch.stderr.on('data', (d: Buffer) => collect(errOut, d))
       ch.on('close', () => {
         if (timer) clearTimeout(timer)
         const { code: c, signal } = channelExit(ch)
         // A channel that closed with no exit status was cut off (connection dropped, or our own
         // timeout): report it the way a mux'd ssh does, 255.
-        const code = c === null && signal === null ? 255 : c
+        const code = outputExceeded || (c === null && signal === null) ? 255 : c
         resolve({ code, signal, stdout: Buffer.concat(out), stderr: Buffer.concat(errOut), timedOut })
       })
       if (io.stdin !== undefined) ch.end(io.stdin)
@@ -658,6 +719,7 @@ export class NativeMux {
     const closed = new Promise<string>((r) => (resolveClosed = r))
     const conn: Conn = {
       key: targetKey(target),
+      generation: randomUUID(),
       client,
       ready: Promise.resolve(),
       alive: true,
@@ -720,7 +782,9 @@ export class NativeMux {
     mode: { interactive: boolean },
     via?: Conn
   ): Promise<void> {
-    const host = await this.deps.resolveHost(target)
+    // Copy effective endpoint fields before awaits; the caller's config object is not an
+    // immutable account of the endpoint this client actually authenticated against.
+    const host = { ...await this.deps.resolveHost(target) }
     if (!via && host.unsupported?.length) {
       this.warnOnce(
         `[native-ssh] ${target.host}: ~/.ssh/config options nodeterm's SSH transport does not support are ignored: ${host.unsupported.join(', ')}`
@@ -773,7 +837,10 @@ export class NativeMux {
     const forwardAgent = resolveForwardAgent(host.forwardAgent, this.agentPathFor(target.identityAgent ?? host.identityAgent))
     conn.agentForward = forwardAgent !== undefined
     try {
-      await this.handshake(conn.client, sock, target, host, options, mode, '', forwardAgent)
+      await this.handshake(conn.client, sock, target, host, options, mode, '', forwardAgent,
+        hash => { conn.serverKeySha256 = hash })
+      if (conn.serverKeySha256) conn.peer = Object.freeze({ backend: 'native-ssh2', generation: conn.generation,
+        hostname: host.hostname, user: host.user, port: host.port, serverKeySha256: conn.serverKeySha256 })
     } catch (e) {
       if (conn.ownsJumps) for (const j of conn.jumps) j.end()
       throw e
@@ -835,7 +902,8 @@ export class NativeMux {
     mode: { interactive: boolean },
     prefix: string,
     /** ForwardAgent's agent (target hop only): set as ssh2's `agent`, which agent channels use. */
-    forwardAgent?: string
+    forwardAgent?: string,
+    observedHostKey?: (sha256: string) => void
   ): Promise<void> {
     // OpenSSH checks the key under the REAL host name (HostName) unless HostKeyAlias says otherwise.
     const knownAs = host.hostKeyAlias ?? host.hostname
@@ -858,6 +926,7 @@ export class NativeMux {
         // accept-new is the only policy the builders ask for; `ask`/`yes` from the user's config
         // are overridden by the command line exactly as they are for OpenSSH.
         const v = acceptNewHostKey(keyPolicy, knownAs, host.port, key)
+        if (v.accept) observedHostKey?.(createHash('sha256').update(key).digest('hex'))
         if (!v.accept) {
           hostKeyRefusal =
             prefix +

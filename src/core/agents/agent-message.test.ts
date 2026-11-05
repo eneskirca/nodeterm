@@ -124,6 +124,13 @@ async function deliverWithReceipt(
 }
 
 describe('deliverAgentMessage — sequencing', () => {
+  it('reports unsupported host capability without a write receipt or fallback', async () => {
+    const fallback = vi.fn(async () => 'unsupported' as const)
+    const r = recorder({ sendEnvelope: fallback })
+    expect(await deliverAgentMessage(req(), r.deps)).toMatchObject({ kind: 'notPermitted', reason: 'unsupported-host' })
+    expect(fallback).toHaveBeenCalledTimes(1)
+    expect(r.sends).toEqual([])
+  })
   it('takes the lock for the WHOLE run: pre-flight probe and post-write probe are both inside', async () => {
     const r = recorder()
     await deliverWithReceipt(r)

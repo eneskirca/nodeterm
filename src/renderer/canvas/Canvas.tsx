@@ -317,6 +317,7 @@ import { SpawnTeamDialog } from '../components/SpawnTeamDialog'
 import { conductorPrompt } from '../lib/spawnTeamPrompt'
 import { NotifyConsentDialog } from '../components/NotifyConsentDialog'
 import { SessionsSidebar } from '../components/SessionsSidebar'
+import { AgentMailboxPanel } from '../components/AgentMailboxPanel'
 import type { SessionNodeInput } from '../lib/sessionList'
 import {
   needsYouQueue,
@@ -1577,6 +1578,7 @@ export function Canvas() {
     }
   }, [])
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  const [mailboxTarget, setMailboxTarget] = useState<{ nodeId: string; projectId: string; title: string; remote: boolean }>()
   const [remotePicker, setRemotePicker] = useState<{ x: number; y: number } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [fileIndex, setFileIndex] = useState<QuickOpenIndexedFile[]>([])
@@ -11233,9 +11235,17 @@ export function Canvas() {
    *  `at` is where the menu was opened, in flow coordinates: every entry that SPAWNS a node
    *  (Duplicate / Branch / Transfer) puts it there, instead of somewhere the user never pointed. */
   const selectionItems = useCallback(
-    (ids: string[], at?: { x: number; y: number }, filter?: NodeActionFilter): MenuItem[] =>
-      buildNodeActionItems(ids, at, liveNodeActionCtx(), filter),
-    [liveNodeActionCtx]
+    (ids: string[], at?: { x: number; y: number }, filter?: NodeActionFilter): MenuItem[] => {
+      const items = buildNodeActionItems(ids, at, liveNodeActionCtx(), filter)
+      const node = ids.length === 1 ? nodesRef.current.find((candidate) => candidate.id === ids[0]) : undefined
+      if (node?.type === 'terminal') items.unshift({
+        label: 'Agent Inbox / Outbox',
+        onClick: () => setMailboxTarget({ nodeId: node.id, projectId: activeProjectId, title: String(node.data.title || node.id),
+          remote: !!(node.data.ssh || node.data.sshRemoteTmux || useProjects.getState().projects.find(p => p.id === activeProjectId)?.ssh) })
+      })
+      return items
+    },
+    [liveNodeActionCtx, activeProjectId]
   )
 
   /** The node action context for a node of `projectId`: the live canvas when React Flow holds
@@ -17163,6 +17173,14 @@ export function Canvas() {
       // sidebar's prompt-dialog rename). These stay on top for every project.
       const head: MenuItem[] = [
         { label: 'Go to', icon: <IconJump />, onClick: () => focusNodeById(id) },
+        ...(projectId !== activeProjectId ? [{
+          label: 'Agent Inbox / Outbox',
+          onClick: () => {
+            const project = useProjects.getState().getProject(projectId), node = project?.nodes.find(candidate => candidate.id === id)
+            setMailboxTarget({ nodeId: id, projectId, title: node?.title || id,
+              remote: !!(project?.ssh || node?.ssh || node?.sshRemoteTmux) })
+          }
+        }] : []),
         {
           label: 'Rename',
           icon: <IconEditor />,
@@ -20255,6 +20273,18 @@ export function Canvas() {
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
+      )}
+
+      {mailboxTarget && (
+        <AgentMailboxPanel
+          key={`${mailboxTarget.projectId}:${mailboxTarget.nodeId}`}
+          nodeId={mailboxTarget.nodeId}
+          projectId={mailboxTarget.projectId}
+          remote={mailboxTarget.remote}
+          title={mailboxTarget.title}
+          api={sessionForProject(mailboxTarget.projectId).api}
+          onClose={() => setMailboxTarget(undefined)}
+        />
       )}
 
       {paletteOpen && (

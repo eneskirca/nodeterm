@@ -354,6 +354,7 @@ async function main(): Promise<void> {
    *  `captureVisible` / `paneCwd` are plain reads and need no per-socket gate — a client that did not
    *  negotiate them never sends them, and an older host answers `unknown command`. */
   const watchSockets = new WeakSet<net.Socket>()
+  const envelopeSurfaceSockets = new WeakSet<net.Socket>()
   /** Set while a `shutdown` is ending sessions. New sessions (attach / attachExisting / launches)
    *  are refused for its duration; cleared again only if the shutdown could not end everything. */
   let shuttingDown = false
@@ -393,6 +394,7 @@ async function main(): Promise<void> {
     if (features.includes('shutdown')) shutdownSockets.add(socket)
     if (features.includes('sessionDetails')) sessionDetailsSockets.add(socket)
     if (features.includes('watch-attach')) watchSockets.add(socket)
+    if (features.includes('envelope-surface-v2')) envelopeSurfaceSockets.add(socket)
     return features.length > 0
       ? { protocolVersion: currentProtocolVersion(), features }
       : { protocolVersion: currentProtocolVersion() }
@@ -1017,6 +1019,9 @@ async function main(): Promise<void> {
       case 'messagePasteReadyV1':
         return { ok: true, result: await hostMessagePane(() => sessions.get(req.name)).pasteReady() }
       case 'messageEnvelopeV1':
+        return { ok: false, error: 'unsupported: envelope-surface-v2 capability required; no legacy envelope fallback' }
+      case 'messageEnvelopeV2':
+        if (!envelopeSurfaceSockets.has(socket)) return { ok: false, error: 'envelope-surface-v2 capability required' }
         return {
           ok: true,
           result: await hostMessagePane(() => sessions.get(req.name)).send(req.envelope, req.expected)

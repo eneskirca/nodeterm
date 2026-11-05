@@ -1,4 +1,5 @@
 import type { TextDeliveryResult } from '../shared/text-delivery'
+import type { EnvelopeDeliveryResult } from '../shared/agents/agent-messaging'
 // The Electron-main-side client for the session host: one long-lived connection per app process,
 // auto-spawning the host on first use and restoring every live local attachment before allowing
 // ordinary traffic through a replacement connection.
@@ -1090,7 +1091,8 @@ export class SessionHostClient {
     request: SessionHostRequestBody,
     onSuccess?: (result: T, socket: net.Socket) => void,
     onSent?: () => void,
-    timeoutMs = SESSION_HOST_REQUEST_TIMEOUT_MS
+    timeoutMs = SESSION_HOST_REQUEST_TIMEOUT_MS,
+    connectionOptions?: { launch?: boolean }
   ): Promise<T> {
     // A peer-initiated close races the client's own 'close' event: a cached socket can look live
     // here while the peer already hung up, and a frame written into that gap fails (EPIPE) for
@@ -1102,7 +1104,7 @@ export class SessionHostClient {
     let undelivered: SessionHostRequestNotDeliveredError | undefined
     for (let attempt = 0; ; attempt++) {
       try {
-        await this.ensureConnected()
+        await this.ensureConnected(connectionOptions)
       } catch (connectError) {
         // A resend that cannot even reconnect reports the transport failure the caller actually
         // hit, not the follow-up connect refusal; a cold first connect keeps its own error.
@@ -1133,6 +1135,11 @@ export class SessionHostClient {
       return Promise.reject(
         new SessionHostRequestNotDeliveredError(new Error('session-host connection lost'))
       )
+    }
+    // Revalidate on the ACTUAL socket, including a reconnect between the public capability
+    // check and request(). A legacy replacement must not even receive a V2 envelope frame.
+    if (request.cmd === 'messageEnvelopeV2' && !this.hostFeatures.has('envelope-surface-v2')) {
+      return Promise.reject(new Error('unsupported: envelope-surface-v2 capability required'))
     }
     const id = this.nextId++
     const full = { id, ...request } as SessionHostRequest
@@ -1858,7 +1865,7 @@ export class SessionHostClient {
 
   async messageOwner(name: string): Promise<PaneOwner | null> {
     try {
-      return await this.request<PaneOwner | null>({ cmd: 'messageOwnerV1', name })
+      return await this.request<PaneOwner | null>({ cmd: 'messageOwnerV1', name }, undefined, undefined, SESSION_HOST_REQUEST_TIMEOUT_MS, { launch: false })
     } catch { return null } // Older live hosts refuse; never replace them or use name-only input.
   }
 
@@ -1868,10 +1875,15 @@ export class SessionHostClient {
     } catch { return false }
   }
 
-  async messageEnvelope(name: string, envelope: string, expected: PaneOwner): Promise<boolean> {
+  async messageEnvelope(name: string, envelope: string, expected: PaneOwner): Promise<EnvelopeDeliveryResult> {
     try {
-      return await this.request<boolean>({ cmd: 'messageEnvelopeV1', name, envelope, expected }) === true
-    } catch { return false }
+      await this.ensureConnected()
+      if (!this.hostFeatures.has('envelope-surface-v2')) return 'unsupported'
+      const result = await this.request<boolean | 'dialog'>({ cmd: 'messageEnvelopeV2', name, envelope, expected })
+      return result === 'dialog' ? 'dialog' : result === true
+    } catch (e) {
+      return /unknown command|capability.*required|unsupported/i.test(String(e)) ? 'unsupported' : false
+    }
   }
 
   /** `terminateOwnerV1`. `'unsupported'` = the live host predates the verb (it answered `unknown
@@ -2355,7 +2367,8 @@ export class SessionHostClient {
         // one that answers. Nothing answering is a FAILED read (null) — never a launch.
         await this.ensureConnected({ launch: false })
       }
-      const result = await this.request<ListSessionsResult>({ cmd: 'listSessions' })
+      // Preserve the observer's no-launch policy through the request's own reconnect/retry loop.
+      const result = await this.request<ListSessionsResult>({ cmd: 'listSessions' }, undefined, undefined, SESSION_HOST_REQUEST_TIMEOUT_MS, { launch: false })
       if (!result || !Array.isArray(result.names) || !result.names.every((n) => typeof n === 'string')) {
         return null
       }

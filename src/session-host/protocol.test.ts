@@ -58,12 +58,12 @@ describe('agent-operation verbs', () => {
   })
 
   it('are negotiated by command name, not by a hello feature (an older host answers unknown command)', () => {
-    // Features gate PUSH frames an older client would misread; these are plain requests.
-    // (The listed features come from other extensions; these two verbs must never join them.)
+    // These two operations retain command-name negotiation. Envelope V2 has a separate explicit
+    // feature because an old envelope implementation must not be used as a write fallback.
     expect(SESSION_HOST_FEATURES).not.toContain('terminateOwnerV1')
     expect(SESSION_HOST_FEATURES).not.toContain('writeDetachedV1')
     expect(SESSION_HOST_FEATURES).toEqual([
-      'geometry', 'shutdown', 'sessionDetails', 'watch-attach', 'captureVisible', 'paneCwd'
+      'envelope-surface-v2', 'geometry', 'shutdown', 'sessionDetails', 'watch-attach', 'captureVisible', 'paneCwd'
     ])
   })
 })

@@ -1,5 +1,6 @@
 import { findSshBinary, nativeMux, setNativePassphrasePrompt, useNativeSsh } from '../../core/remote-ssh/native/native-runtime'
 import { runScpArgv, runSshArgv, startNativeMaster } from '../../core/remote-ssh/native/native-invoke'
+import type { NativeSshTransport } from '../../core/remote-ssh/native/existing-transport'
 import { promises as fs } from 'fs'
 import path from 'path'
 import { createHash, randomUUID } from 'crypto'
@@ -109,6 +110,8 @@ interface Runners {
      *  (verified against a real sshd), so a cancelled prompt can be attributed to this exact
      *  master rather than guessed from a global timestamp. */
     pid?: () => number | undefined
+    /** Actual new native connection, never reconstructed from an OpenSSH PID/socket/config. */
+    createdTransport?: () => NativeSshTransport | undefined
   }
   /** Run a one-shot ssh, resolving its stdout + exit code; optional stdin written to the child.
    *  `timeoutMs` (default 15 s) bounds the child; only a caller whose remote command legitimately
@@ -1924,6 +1927,25 @@ export class SshProjectManager {
   hostKeyFor(projectId: string): string | undefined {
     const c = this.conns.get(projectId)
     return c ? sshHostKey(c.conn) : undefined
+  }
+
+  /** Origin only, NOT mailbox permission. No IPC export. Private project ownership, remote
+   * kernel/provider evidence and human adoption must be checked independently by consumers.
+   * OpenSSH/orphan handles and pre-existing native masters cannot produce this capability. */
+  newConnectionTransport(projectId: string): Readonly<{ projectId: string; transport: NativeSshTransport }> | undefined {
+    const entry = this.conns.get(projectId)
+    if (!entry?.setupDone) return undefined
+    const transport = entry.master.createdTransport?.()
+    return transport?.isCurrent() ? Object.freeze({ projectId, transport }) : undefined
+  }
+
+  /** Actual completed manager setup for the explicit observed-resume UI. Metadata only;
+   * this never connects, resolves an alias, installs a runtime or starts an account daemon. */
+  observedCodexRuntimeFor(projectId: string): { conn: SshConnection; remoteHome: string; cli: string; hookEndpoint: string } | undefined {
+    const entry = this.conns.get(projectId)
+    if (!entry?.setupDone || !entry.remoteHome || !entry.codexCliPath || !entry.hookEndpointPath ||
+        !this.newConnectionTransport(projectId) || !this.remoteHooks.planFor(entry.conn).install.has('codex')) return undefined
+    return { conn: entry.conn, remoteHome: entry.remoteHome, cli: entry.codexCliPath, hookEndpoint: entry.hookEndpointPath }
   }
 
   /** Remote path of this project's pushed agent-status mirror (`~`-relative when the remote

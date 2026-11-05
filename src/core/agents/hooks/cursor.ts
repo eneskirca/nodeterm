@@ -12,7 +12,7 @@
 // SAFETY. `preToolUse` is a gate: Cursor reads its stdout as a decision (invalid JSON denies) and
 // exit code 2 denies. Empty stdout and any other exit code are fail-open (measured, and in the
 // bundle's executeCommandHook). The command therefore runs the script with stdout+stderr on
-// /dev/null and `|| :` (`silent`), and our script prints nothing anyway.
+// /dev/null and `|| :` (`silent`). Only the separate sessionStart command exposes static context.
 //
 // TRAP. Cursor strips `//…` from hooks.json as JSONC comments before JSON.parse, ignoring quotes,
 // so a command containing `//` would corrupt the WHOLE file for every tool. We refuse to write one.
@@ -49,6 +49,12 @@ export function cursorCommandFor(scriptPath: string): string {
   return buildManagedHookCommand(scriptPath, { silent: true })
 }
 
+/** Only sessionStart may expose static additional_context (https://cursor.com/docs/hooks).
+ * Resume does not fire it in the measured CLI; existing sessions still require explicit rollout. */
+export function cursorSessionCommandFor(scriptPath: string): string {
+  return buildManagedHookCommand(scriptPath, { env: { NODETERM_CURSOR_MAILBOX_CONTEXT: '1' }, fallbackStdout: '{}' })
+}
+
 /** Ours = the command carries `.nodeterm/agent-hooks/cursor.sh` (anchored: a user's own
  *  `~/work/agent-hooks/cursor.sh` is not ours). */
 export function isCursorManagedCommand(command: unknown): boolean {
@@ -62,20 +68,20 @@ const withoutOurs = (entries: unknown[]): unknown[] =>
  * Pure: `config` with exactly one entry of ours (`command`) on every event in `events` and none on
  * any other event. Throws on a shape we cannot merge into (the transaction then leaves the file).
  */
-export function applyCursorHooks(config: Json, command: string | null, events: readonly string[] = CURSOR_HOOK_EVENTS): Json {
+export function applyCursorHooks(config: Json, command: string | null, events: readonly string[] = CURSOR_HOOK_EVENTS, sessionCommand?: string): Json {
   const hooks = config.hooks
   if (hooks !== undefined && !isRecord(hooks)) throw new Error('hooks is not an object')
   const next: Json = {}
   for (const [event, entries] of Object.entries(hooks ?? {})) {
     if (!Array.isArray(entries)) throw new Error(`hooks.${event} is not a list`)
     const kept = withoutOurs(entries)
-    if (command !== null && events.includes(event)) kept.push({ command, timeout: CURSOR_HOOK_TIMEOUT })
+    if (command !== null && events.includes(event)) kept.push({ command: event === 'sessionStart' ? sessionCommand ?? command : command, timeout: CURSOR_HOOK_TIMEOUT })
     // An event we emptied goes away; one that was already empty is someone else's and stays.
     if (kept.length || entries.length === 0) Object.defineProperty(next, event, { value: kept, enumerable: true, writable: true, configurable: true })
   }
   if (command !== null) {
     for (const event of events) {
-      if (!(event in next)) Object.defineProperty(next, event, { value: [{ command, timeout: CURSOR_HOOK_TIMEOUT }], enumerable: true, writable: true, configurable: true })
+      if (!(event in next)) Object.defineProperty(next, event, { value: [{ command: event === 'sessionStart' ? sessionCommand ?? command : command, timeout: CURSOR_HOOK_TIMEOUT }], enumerable: true, writable: true, configurable: true })
     }
   }
   const out: Json = { ...config, hooks: next }
@@ -135,7 +141,7 @@ export function installCursorHooks(opts: CursorInstallOptions = {}): CursorInsta
   }
   // updateSettingsFile answers false for "nothing to change" AND for "could not publish"; either
   // way the file is never half-written, and a later launch retries.
-  updateSettingsFile(hooksJson, (config) => applyCursorHooks(config, command))
+  updateSettingsFile(hooksJson, (config) => applyCursorHooks(config, command, CURSOR_HOOK_EVENTS, cursorSessionCommandFor(script)))
   return 'installed'
 }
 

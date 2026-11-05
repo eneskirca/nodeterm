@@ -108,6 +108,22 @@ const conn = (): SshConnection => ({ user: 'dev', host: '127.0.0.1', port, ident
 const CP = (): string => path.join(dir, 'cm.sock')
 
 describe('native-invoke', () => {
+  it('publishes a creation transport only for the genuinely new authenticated master', async () => {
+    const m = mux()
+    const first = startNativeMaster(m, masterArgs(conn(), CP()))
+    expect(first.createdTransport()).toBeUndefined() // authentication is still pending
+    await runSshArgv(m, childArgs(conn(), CP(), 'ready'))
+    const transport = first.createdTransport()
+    expect(transport?.isCurrent()).toBe(true)
+    const reused = startNativeMaster(m, masterArgs(conn(), CP()))
+    await runSshArgv(m, childArgs(conn(), CP(), 'reused'))
+    expect(reused.createdTransport()).toBeUndefined()
+    expect(first.createdTransport()).toBe(transport)
+    await m.exit(CP())
+    expect(first.createdTransport()).toBeUndefined()
+    expect(transport?.isCurrent()).toBe(false)
+  })
+
   it('useNativeSsh: always on win32, opt-in elsewhere, opt-out anywhere', () => {
     expect(useNativeSsh('win32', {})).toBe(true)
     expect(useNativeSsh('darwin', {})).toBe(false)
@@ -139,6 +155,7 @@ describe('native-invoke', () => {
     const master = startNativeMaster(m, masterArgs(bad, CP()))
     await new Promise<void>((r) => master.on('exit', () => r()))
     expect(master.stderr()).toMatch(/Permission denied/)
+    expect(master.createdTransport()).toBeUndefined()
   })
 
   it('-O forward carries a remote unix-socket connection to the local TCP port; -O cancel removes it', async () => {

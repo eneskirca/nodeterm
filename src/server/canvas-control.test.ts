@@ -235,7 +235,7 @@ describe('initServerCanvasControl', () => {
     expect(sendEnvelope).not.toHaveBeenCalled()
   })
 
-  it('wires permitted delivery through paste-settle-submit on the first fresh pane message', async () => {
+  it('routes first fresh-pane delivery through the checked backend with its expected owner', async () => {
     const workspace: Workspace = {
       version: 2,
       activeProjectId: 'p1',
@@ -282,31 +282,19 @@ describe('initServerCanvasControl', () => {
         capabilityAck: { agentMessaging: 'kept' }
       })
     } as unknown as WorkspaceStore
-    const writes: Array<{ text: string; enter: boolean | undefined }> = []
-    let pasted = ''
-    const legacySendEnvelope = vi.fn(async () => true)
+    const ownerSendEnvelope = vi.fn(async (nodeId: string, _text: string, _expected?: import('../shared/agents/pane-owner-predicate').PaneOwner) => {
+      queueMicrotask(() => runtime?.onAgentEvent({ nodeId, agentId: 'claude', kind: 'state', state: 'working',
+        newTurn: true, verified: true, clientRevision: MANAGED_SCRIPT_REVISION } as never))
+      return true
+    })
     // The Server shell must hand messaging the pane's own read budget (ptyPaneProbeDeps).
     const paneProbeTimeoutMs = vi.fn((_nodeId: string) => 2000)
     const pty = {
       ...headlessShell(),
       createHeadless: vi.fn(async () => ({ sessionId: 'unused', fresh: true })),
       paneCommand: vi.fn(async () => 'bash'),
-      captureSession: vi.fn(async () =>
-        pasted ? `Claude composer\n${pasted.split('\n').at(-1)}` : 'Claude composer'),
-      sendText: vi.fn(async (nodeId: string, text: string, opts?: { enter?: boolean }) => {
-        writes.push({ text, enter: opts?.enter })
-        if (text) pasted = text
-        else queueMicrotask(() => runtime?.onAgentEvent({
-          nodeId,
-          agentId: 'claude',
-          kind: 'state',
-          state: 'working',
-          newTurn: true,
-          verified: true,
-          clientRevision: MANAGED_SCRIPT_REVISION
-        } as never))
-        return true
-      }),
+      captureSession: vi.fn(async () => 'unused by the server adapter'),
+      sendText: vi.fn(async () => true),
       destroySession: vi.fn(async () => undefined),
       paneOwner: vi.fn(async () => ({
         tty: '/dev/pts/9',
@@ -316,7 +304,7 @@ describe('initServerCanvasControl', () => {
         argv: ['claude'],
         pids: [200]
       })),
-      sendEnvelope: legacySendEnvelope,
+      sendEnvelope: ownerSendEnvelope,
       hasLiveSession: () => true,
       sessionExists: async () => true,
       paneProbeTimeoutMs
@@ -337,12 +325,16 @@ describe('initServerCanvasControl', () => {
     })
     expect(opened).toMatchObject({ ok: true })
     const targetId = (opened.result as { id: string }).id
-    writes.length = 0
-    pasted = ''
     recordFreshSpawnOwner(targetId, 'p1')
+    // Durable mail binds both actual conversations; a verified node token alone does not
+    // identify which logical session is allowed to receive or acknowledge this work.
+    recordFreshSpawnOwner('source', 'p1')
+    recordAgentEvent({ nodeId: 'source', sessionId: 'source-session', agentId: 'claude', kind: 'state',
+      state: 'working', verified: true, clientRevision: MANAGED_SCRIPT_REVISION } as never)
     expect(writeNodeTokenFile(targetId, 'token')).toBe(true)
     recordAgentEvent({
       nodeId: targetId,
+      sessionId: 'target-session',
       agentId: 'claude',
       kind: 'state',
       state: 'done',
@@ -353,15 +345,19 @@ describe('initServerCanvasControl', () => {
     const reply = await runtime.handler({
       verb: 'send',
       nodeId: 'source',
-      args: { node: targetId, text: 'hello' },
+      args: { node: targetId, text: 'hello', 'request-id': 'server-first-mail' },
       verified: true
     })
     expect(reply).toMatchObject({ ok: true, message: expect.stringContaining('delivered') })
-    expect(writes).toHaveLength(2)
-    expect(writes[0]).toMatchObject({ enter: false })
-    expect(writes[1]).toEqual({ text: '', enter: true })
-    expect(legacySendEnvelope).not.toHaveBeenCalled()
+    expect(reply.result).toMatchObject({ schemaVersion: 1, deliveryStatus: 'delivered', processingStatus: 'unacknowledged' })
+    expect(ownerSendEnvelope).toHaveBeenCalledWith(targetId, expect.stringContaining('--- END NODETERM MESSAGE'),
+      expect.objectContaining({ paneId: '%1', panePid: 100, command: 'claude', pids: [200] }), undefined)
+    expect(pty.sendText).not.toHaveBeenCalled()
     expect(paneProbeTimeoutMs).toHaveBeenCalledWith(targetId)
+    const repeated = await runtime.handler({ verb: 'send', nodeId: 'source', verified: true,
+      args: { node: targetId, text: 'hello', 'request-id': 'server-first-mail' } })
+    expect(repeated).toMatchObject({ ok: true, result: { messageId: (reply.result as { messageId: string }).messageId } })
+    expect(ownerSendEnvelope).toHaveBeenCalledTimes(1)
   })
 
   it('publishes its own writes on server-change, never on the outside-edit channel', async () => {

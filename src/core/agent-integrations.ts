@@ -6,6 +6,7 @@
 //   enabled   → install/refresh its status hook + its skills (canvas control, context link) in the
 //               agent's OWN skills dir; strip the legacy marker blocks older builds merged into its
 //               global instruction file (skills replaced them — they were ~17 KB in AGENTS.md).
+//               A short required mailbox rule stays in always-loaded provider context.
 //   declined  → remove exactly what we wrote: our hook entries (exact command match), our skill
 //               files (exact-content receipts — a file the user edited is KEPT and reported), our
 //               legacy blocks, and our hook script.
@@ -38,6 +39,7 @@ import { managedHookScriptPath } from './agents/hooks/install-helper'
 import { opencodeConfigDir } from './agents/hooks/opencode'
 import { grokHomeDir } from './agents/grok-paths'
 import { buildCanvasSkillBody } from './canvas-control-core'
+import { buildMailboxTurnNotice } from './mailbox-instructions'
 import { buildContextLinkSkillBody } from './context-link-core'
 import { claudeConfigDirFor } from './claude-config-dir'
 import { codexHomeForAccount, systemCodexHome } from './codex-accounts-core'
@@ -47,7 +49,8 @@ import {
   pushRetained,
   removeOwnedFile,
   stripLegacyBlocks,
-  writeOwnedFile
+  writeOwnedFile,
+  reconcileMailboxInstructions
 } from './integration-files'
 
 export const CANVAS_SKILL = 'manage-nodeterm-canvas'
@@ -241,6 +244,15 @@ export function legacyInstructionFiles(agent: IntegrationAgentId, home: string =
   }
 }
 
+/** Always-loaded files of the enabled provider, never arbitrary project repositories. */
+export function mailboxInstructionFiles(agent: IntegrationAgentId, settings: Settings, userDataDir: string, home: string = os.homedir()): string[] {
+  if (agent === 'cursor') return [] // sessionStart additional_context, not a fictitious global rules path.
+  // Separate from Gemini CLI's file. Vendor discovery: https://antigravity.google/docs/rules/
+  if (agent === 'antigravity') return [path.join(home, '.gemini', 'config', 'AGENTS.md')]
+  const leaf = agent === 'claude' ? 'CLAUDE.md' : agent === 'gemini' ? 'GEMINI.md' : agent === 'copilot' ? 'copilot-instructions.md' : 'AGENTS.md'
+  return skillRootsFor(agent, settings, userDataDir, home).map((root) => path.join(path.dirname(root), leaf))
+}
+
 // Every file a declined agent loses, Windows wrappers included (`windowsHookWrapperFile`: the
 // `.cmd` that PowerShell-run hooks call). A wrapper left behind would outlive its script harmlessly
 // (it drains and exits 0), but "remove exactly what we wrote" means all of it.
@@ -381,6 +393,13 @@ export function createIntegrationLifecycle(deps: IntegrationLifecycleDeps): Inte
       for (const f of legacyInstructionFiles(agent, home)) {
         if (stripLegacyBlocks(f) === 'failed') console.warn('[integrations] could not clean', f)
       }
+      for (const file of mailboxInstructionFiles(agent, settings, deps.userDataDir(), home)) {
+        if (on && !shims.canvas) continue // A failed shim lookup is not a decline.
+        const body = on && shims.canvas ? buildMailboxTurnNotice(shims.canvas, shimDialectFor(agent, process.platform)) : null
+        const result = reconcileMailboxInstructions(receipts, file, body)
+        if (result === 'retained') pushRetained(report.retained, file)
+        else if (result === 'failed') console.warn('[integrations] could not reconcile mailbox instructions', file)
+      }
       if (!on) {
         for (const script of HOOK_SCRIPTS[agent] ?? []) {
           try {
@@ -432,6 +451,7 @@ export function createIntegrationLifecycle(deps: IntegrationLifecycleDeps): Inte
         for (const [name, body] of skillsFor('claude', shims)) {
           writeOwnedFile(receipts, path.join(configDir, 'skills', name, 'SKILL.md'), body)
         }
+        if (shims.canvas) reconcileMailboxInstructions(receipts, path.join(configDir, 'CLAUDE.md'), buildMailboxTurnNotice(shims.canvas))
       } catch (e) {
         console.warn('[integrations] account install failed', configDir, e)
       }
@@ -441,6 +461,8 @@ export function createIntegrationLifecycle(deps: IntegrationLifecycleDeps): Inte
       try {
         if (integrationsOf(deps.settings()).agents?.codex !== 'enabled') return
         ensureCodexHome(codexHome)
+        const shims = deps.shims()
+        if (shims.canvas) reconcileMailboxInstructions(receipts, path.join(codexHome, 'AGENTS.md'), buildMailboxTurnNotice(shims.canvas, shimDialectFor('codex', process.platform)))
       } catch (e) {
         console.warn('[integrations] codex launch hook check failed', codexHome, e)
       }

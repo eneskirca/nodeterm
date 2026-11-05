@@ -28,12 +28,14 @@ import {
 describe('every control verb has an off-screen disposition, and none of them travels', () => {
   it('covers main’s whole verb table', () => {
     const unclassified = VERBS_FOR_TEST.filter(
-      (v) => offScreenDisposition(v).kind === 'refuse' && !REFUSERS.has(v)
+      (v) => offScreenDisposition(v).kind === 'refuse' && !REFUSERS.has(v) && !MAIN_HANDLED.has(v)
     )
     // A verb main accepts but `controlRouting` has never heard of falls into the generic refusal.
     // That is the fail-CLOSED direction (it cannot steal a screen), but it is still a verb whose
     // off-screen behaviour nobody decided — so it fails here, where the decision is cheap, rather
     // than surfacing as a refusal an agent cannot act on.
+    // Mailbox control is answered in main before this renderer routing is reached; it has its own
+    // explicit class below. This is an exact allowlist, not an exemption for arbitrary new verbs.
     expect(unclassified, 'verbs with no decided off-screen behaviour').toEqual([])
   })
 
@@ -60,12 +62,19 @@ describe('every control verb has an off-screen disposition, and none of them tra
     expect(offScreenRefusal('branch')).toContain('that project')
   })
 
-  it('the four answering sets are disjoint', () => {
+  it('the four renderer answering sets and main-only handlers are disjoint', () => {
     // Each set means something different (see their doc comments), and a verb in two of them
     // would take whichever branch the dispatch tests first — a silent behaviour change.
     const sets = controlVerbSetsForTests()
-    const all = [...sets.storeAnswered, ...sets.coldOpenable, ...sets.offCanvas, ...sets.storedNode]
+    const all = [...sets.storeAnswered, ...sets.coldOpenable, ...sets.offCanvas, ...sets.storedNode, ...MAIN_HANDLED]
     expect(all.length).toBe(new Set(all).size)
+  })
+
+  it.each([...MAIN_HANDLED])('%s has an explicit main-only disposition without requiring a canvas', (verb) => {
+    expect(VERBS_FOR_TEST).toContain(verb)
+    const sets = controlVerbSetsForTests()
+    expect([...sets.storeAnswered, ...sets.coldOpenable, ...sets.offCanvas, ...sets.storedNode]).not.toContain(verb)
+    expect(REFUSERS.has(verb)).toBe(false)
   })
 
   it('every verb the renderer answers is one main will actually forward', () => {
@@ -97,6 +106,12 @@ describe('every control verb has an off-screen disposition, and none of them tra
     expect(calls, 'travelToProject: its definition plus the facepile prop').toBe(2)
   })
 })
+
+/** Independent expectation of the shell's early mailbox handler (`isMailboxControl` in main).
+ * It returns before renderer forwarding/source routing. These verbs therefore require neither
+ * an on-screen project nor a renderer-owned disposition; unknown future verbs still fail above.
+ * The handler's authentication/forwarding behaviour is covered by the mailbox control tests. */
+const MAIN_HANDLED = new Set(['inbox', 'outbox', 'read', 'ack', 'complete'])
 
 /** The verbs that deliberately refuse off screen, each with its reason in `OFF_SCREEN_REFUSALS`. */
 const REFUSERS = new Set([

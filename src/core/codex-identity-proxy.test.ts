@@ -19,7 +19,9 @@ import {
   resetCodexThreadIdentityAuthSecret,
   resolveCodexThreadNodeIdentity,
   setCodexThreadIdentityAuthSecret,
+  serializeCodexThreadIdentity,
   SYSTEM_ACCOUNT_SCOPE,
+  verifyCodexThreadIdentityText,
   writeCodexThreadIdentity
 } from './codex-identity-proxy'
 import { createHmac } from 'node:crypto'
@@ -57,6 +59,36 @@ afterEach(() => {
 // `..` as a path segment resolves to the record dir's PARENT. This is the same hole `isSafeNodeId`
 // closed for node ids; these rows are the trap.
 const UNSAFE_THREAD_IDS = ['.', '..', '../x', 'a/b', '', 'x'.repeat(129)]
+
+describe('signed remote identity metadata codec', () => {
+  it('uses the exact existing format without creating a file or process', () => {
+    const text = serializeCodexThreadIdentity('thread-remote', 'node-remote', '/remote/.nodeterm/hook.env', 'acct-A',
+      { agentId: 'codex', canvasControl: true })
+    expect(fs.existsSync(recordsRoot)).toBe(false)
+    expect(verifyCodexThreadIdentityText('thread-remote', text, 'acct-A')).toMatchObject({
+      nodeId: 'node-remote', hookEndpoint: '/remote/.nodeterm/hook.env', accountId: 'acct-A', agentId: 'codex', canvasControl: true
+    })
+    expect(fs.existsSync(recordsRoot)).toBe(false)
+    writeCodexThreadIdentity('thread-remote', 'node-remote', '/remote/.nodeterm/hook.env', recordsRoot, 'acct-A',
+      { agentId: 'codex', canvasControl: true })
+    expect(fs.readFileSync(path.join(recordsRoot, 'acct-A', 'thread-remote'), 'utf8')).toBe(text)
+  })
+  it('does not accept a different thread, account, node, endpoint or grant as the same binding', () => {
+    const text = serializeCodexThreadIdentity('thread-remote', 'node-remote', '/remote/.nodeterm/hook.env', 'acct-A',
+      { agentId: 'codex', canvasControl: true })
+    expect(verifyCodexThreadIdentityText('different-thread', text, 'acct-A')).toBeUndefined()
+    expect(verifyCodexThreadIdentityText('thread-remote', text, 'acct-B')).toBeUndefined()
+    for (const changed of [text.replace('node-remote', 'another-node'), text.replace('hook.env', 'other.env'), text.replace('canvasControl=1', 'canvasControl=0')])
+      expect(verifyCodexThreadIdentityText('thread-remote', changed, 'acct-A')).toBeUndefined()
+    expect(verifyCodexThreadIdentityText('thread-remote', text + 'x'.repeat(16384), 'acct-A')).toBeUndefined()
+  })
+  it('refuses unavailable authentication without writing a guessed identity', () => {
+    resetCodexThreadIdentityAuthSecret()
+    expect(() => serializeCodexThreadIdentity('thread-remote', 'node-remote', '/remote/hook.env')).toThrow('authentication is unavailable')
+    expect(verifyCodexThreadIdentityText('thread-remote', 'nodeId=node-remote\nendpoint=/remote/hook.env\n')).toBeUndefined()
+    expect(fs.existsSync(recordsRoot)).toBe(false)
+  })
+})
 
 describe('isSafeThreadId', () => {
   it('refuses every id that could leave the record directory, be empty, or be unbounded', () => {

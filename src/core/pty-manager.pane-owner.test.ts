@@ -58,7 +58,7 @@ const NODE = 'node-1'
 const hostMessaging = vi.hoisted(() => ({
   owner: vi.fn(async () => null as unknown),
   pasteReady: vi.fn(async () => false),
-  send: vi.fn(async () => false),
+  send: vi.fn(async (): Promise<boolean | 'dialog' | 'unsupported'> => false),
   terminate: vi.fn(async (): Promise<boolean | 'unsupported'> => true),
   writeDetached: vi.fn(async () => true),
   supported: vi.fn(() => true)
@@ -115,6 +115,19 @@ function healthy(file: string, args: string[]): { stdout: string } {
 }
 
 describe('PtyManager.paneOwner', () => {
+  it('unsupported host capability never falls back to generic input or tmux', async () => {
+    const mgr = await manager() as unknown as {
+      sessions: Map<string, unknown>; byPersistKey: Map<string, string>
+      sendEnvelope(id: string, text: string, expected?: unknown): Promise<unknown>
+      sendText(id: string, text: string): Promise<unknown>
+    }
+    mgr.sessions.set('host-session', { persistKey: NODE, indexKey: NODE, sessionHost: true })
+    mgr.byPersistKey.set(NODE, 'host-session')
+    const generic = vi.spyOn(mgr, 'sendText')
+    hostMessaging.send.mockResolvedValueOnce('unsupported')
+    expect(await mgr.sendEnvelope(NODE, 'SYNTHETIC', { panePid: 10, tty: 't', command: 'codex', argv: ['codex'] })).toBe('unsupported')
+    expect(generic).not.toHaveBeenCalled(); expect(calls).toHaveLength(0)
+  })
   it('routes a persistent Windows generation exclusively through the host extension', async () => {
     const mgr = await manager() as unknown as {
       sessions: Map<string, unknown>

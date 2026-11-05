@@ -25,6 +25,12 @@ import type {
   AgentMessageDeliveryInput,
   AgentMessageReply
 } from '../../shared/agents/agent-messaging'
+import type { EnvelopeDeliveryResult } from '../../shared/agents/agent-messaging'
+import type { AcquirePaneOwnership, PaneOperationContext, PaneOperationProof, PaneOperationPurpose } from './pane-operation-proof'
+import { acquireRemoteOperation, operationContext, sameOperationContext, type EnvelopeWriteAccess, type PaneOperationEnvironment } from './agent-message-operation'
+import { remotePaneOwnerCommand } from '../remote-ssh/control-master'
+import { sessionName } from '../tmux-naming'
+import { parseCombinedPaneOwner } from './pane-owner'
 import {
   AGENT_MESSAGE_VERBS,
   NOTIFY_BODY,
@@ -143,7 +149,11 @@ export interface AgentMessagingDeps {
   /** Per-target pane-read budget; see `DeliveryDeps.paneProbeTimeoutMs`. Optional — absent keeps
    *  the 2s default for every target, i.e. exactly the pre-existing behaviour. */
   paneProbeTimeoutMs?(nodeId: string): number
-  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'>
+  sendEnvelope(nodeId: string, envelope: string, expected?: PaneOwner, access?: EnvelopeWriteAccess): Promise<EnvelopeDeliveryResult>
+  acquirePaneOwnership?: AcquirePaneOwnership
+  remoteIdentity?(nodeId: string): PaneOperationContext | undefined
+  /** Per-message expected parties, not a reusable node owner permission. */
+  beforeWrite?: () => Promise<boolean>
   envelopePasteReady?(nodeId: string): Promise<boolean>
   /**
    * Does a session exist for this node at all — attached in this process OR held by a backend
@@ -520,24 +530,18 @@ const NOT_PERMITTED_TEXT: Record<NotPermittedReason, string> = {
     'that node id exists in more than one project, so the target pane cannot be attributed to a ' +
     'single project\'s messaging grant. De-duplicate the id (re-add the cloned folder to mint ' +
     'fresh ids) before messaging it.',
-  // The remedy sentence here USED TO SAY "Re-open the target node so its owner is recorded, then
-  // try again", and that was false in the commonest case it fires in. Ownership is recorded only
-  // on a GENUINE FRESH SPAWN (`shouldRecordOwnership`, `fresh === true`); after an app restart the
-  // tmux server has survived, so re-opening the node ATTACHES to the session that is already
-  // running and records NOTHING. A caller that followed the advice got the identical refusal, and
-  // the one thing that does fix it — respawning the session — was the one thing the text did not
-  // say. It also told a LANGUAGE MODEL to do something only a human can do.
-  //
-  // `pane-ownership.ts` explains why attaching deliberately does not record (there is no
-  // cross-restart signal a hostile pane's own shell could not also write), so this is a permanent
-  // property to describe honestly, not a gap to promise around. No retry advice is spelled out
-  // here: `renderMessageOutcome` appends it from `RETRYABLE`, where `notPermitted` is false.
+  // Attach alone still grants nothing. Supported desktops now offer a separately verified
+  // human-adoption path, so the old advice to end a session is no longer appropriate.
+  // Keep unsupported targets blocked without encouraging destructive workarounds.
+  // `renderMessageOutcome` adds the retry policy from RETRYABLE separately.
+  'unsupported-host': 'The live session host did not prove envelope-surface-v2 support. No envelope was written; no generic write fallback or automatic host restart is allowed.',
+  'unproven-operation-owner': 'A fresh scope/session/transport-bound SSH ownership operation was not proven. Nothing was written; no reconnect, restart or generic-input fallback is allowed.',
   'unproven-target-owner':
-    'the target pane\'s owning project cannot be proven at runtime (it was not freshly spawned in ' +
-    'this session, or its ownership is disputed), so a per-project messaging grant cannot be ' +
-    'applied to it. Attaching to the running session cannot prove this — only a fresh spawn ' +
-    'records the owner — so the USER has to end that session and start it again (an app restart ' +
-    'leaves it unproven; a machine restart clears it). Ask them, or reach that agent another way.'
+    'the target pane\'s owning project cannot currently be proven, which can happen after an app restart. ' +
+    'Attaching alone does not establish ownership. Keep the existing session and its work running. ' +
+    'On a supported local desktop, the user can open Agent Inbox / Outbox and choose ' +
+    '"Authorize this running session…" for the exact verified session. Unsupported targets need ' +
+    'coordinated recovery; do not end sessions or bypass ownership checks to deliver a message.'
 }
 
 /**
@@ -695,30 +699,20 @@ const WROTE: ReadonlySet<AgentMessageOutcome['kind']> = new Set([
   'deliveredToReplacedTarget'
 ])
 
-/**
- * One control-verb delivery attempt, end to end: scope → switch → ownership → flow →
- * `deliverAgentMessage` → budget. Returns the raw typed outcome and does NOT queue — this is both
- * the verb's first attempt AND the queue's flush-time `deliver` callback, so the queue re-runs the
- * ENTIRE chain (ownership, grant and flow included) against live state every time it flushes. That
- * is the flush-time re-validation the queue depends on: a grant revoked while a message was queued
- * comes back `notPermitted` here and the queue drops it.
+/** The project/creator/owner/grant gates, without flow reservation or delivery pane I/O.
+ * Remote owner authorization requires the fresh operation's read-only evidence probe.
+ * Mail admission and transport share this rule; transport always re-evaluates it at delivery.
  */
-export async function runDelivery(
-  req: MessagingRequest,
-  deps: AgentMessagingDeps
-): Promise<AgentMessageOutcome> {
-  const now = deps.now ?? ((): number => Date.now())
+export async function authorizeMessageScope(req: MessagingRequest, deps: AgentMessagingDeps, purpose: PaneOperationPurpose = 'deliver'): Promise<{
+  projects: ReturnType<AgentMessagingDeps['projects']>
+  projectId?: string
+  notPermitted?: NotPermittedReason
+  targetNotStarted?: true
+  targetOperation?: PaneOperationProof
+}> {
   const board = req.verb === 'board-comment' ? req : null
   const ident = requestIdentity(req)
-  // The app's own station-failure notice (station-notice.ts): the SOURCE is the station the notice
-  // is about and the TARGET is the agent that opened it. It runs every gate below — scope, the
-  // per-project switch, runtime pane ownership, flow limits, the pane probes, the receipt — with
-  // two differences, both because the app, not the station, is the author: the body was composed
-  // in core from a closed table, and the creator check runs the OTHER way round (the recipient must
-  // have opened the station, which is how the recipient was chosen; re-asked here so a queued
-  // notice is re-validated at flush time like every other delivery).
   const stationNotice = req.verb === STATION_NOTICE_VERB
-
   const projects = deps.projects()
   // WHO MAY BE ADDRESSED — the serialized store, never a live canvas (there is nothing to travel
   // toward, by construction: see agent-message-scope.ts). This is also where `isSafeNodeId` runs,
@@ -729,6 +723,7 @@ export async function runDelivery(
     : resolveDeliveryScope(projects, ident.sourceNodeId, req.targetNodeId)
   let notPermitted = scopeRefusal(scope)
   const projectId = scope.kind === 'same-project' ? scope.projectId : undefined
+  let targetOperation: PaneOperationProof | undefined
   // A shell with a creator ledger (the Server Edition) authorizes control by which AGENT spawned
   // the target. A person's board comment is no agent's, and that shell serves no board-comment
   // delivery at all — refused by edition rather than squeezed through a ledger it was not built for.
@@ -746,6 +741,17 @@ export async function runDelivery(
       notPermitted = 'caller-not-owner'
   }
   if (!notPermitted) {
+    if (deps.isRemoteNode(req.targetNodeId)) {
+      const env: PaneOperationEnvironment = { ...deps, mirrorEntry: deps.mirrorEntry ?? coreMirrorEntry }
+      const ctx = operationContext(env, req.targetNodeId, projectId)
+      const source = !board && !stationNotice ? operationContext(env, ident.sourceNodeId, projectId) : undefined
+      const sourceRemote = !board && !stationNotice && deps.isRemoteNode(ident.sourceNodeId)
+      const sourceCurrent = () => !!board || stationNotice || !!source && deps.isRemoteNode(ident.sourceNodeId) === sourceRemote &&
+        sameOperationContext(source, operationContext(env, ident.sourceNodeId, projectId))
+      const proof = ctx ? await acquireRemoteOperation(env, ctx, purpose, sourceCurrent) : null
+      if (!proof) notPermitted = 'unproven-operation-owner'
+      else targetOperation = proof
+    } else {
     // OWNERSHIP IS PROVEN AT RUNTIME, NOT READ FROM THE STORE (PR #237 fix round 2). The scope
     // above resolved `projectId` from the persisted node-set, which is attacker-writable — a
     // hostile `project.json` can LIST a live pane's node id it never spawned, and when the real
@@ -768,10 +774,79 @@ export async function runDelivery(
         !(await deps.hasLiveSession(req.targetNodeId))
       ) {
         if (!deps.messagingEnabled(projectId)) notPermitted = 'switch-off'
-        else return { kind: 'targetNotStarted' }
+        else return { projects, projectId, targetNotStarted: true }
       } else notPermitted = 'unproven-target-owner'
     } else if (!deps.messagingEnabled(owner)) notPermitted = 'switch-off'
+    }
   }
+
+  return { projects, projectId, notPermitted, targetOperation }
+}
+
+/** One end-to-end attempt, without queueing. Re-evaluates authorization before reserving flow
+ * budget or probing/writing the pane. The same path runs for an initial send and every flush.
+ */
+export async function runDelivery(
+  req: MessagingRequest,
+  deps: AgentMessagingDeps
+): Promise<AgentMessageOutcome> {
+  const now = deps.now ?? ((): number => Date.now())
+  const board = req.verb === 'board-comment' ? req : null
+  const ident = requestIdentity(req)
+  // The app's own station-failure notice (station-notice.ts): the SOURCE is the station the notice
+  // is about and the TARGET is the agent that opened it. It runs every gate below — scope, the
+  // per-project switch, runtime pane ownership, flow limits, the pane probes, the receipt — with
+  // two differences, both because the app, not the station, is the author: the body was composed
+  // in core from a closed table, and the creator check runs the OTHER way round (the recipient must
+  // have opened the station, which is how the recipient was chosen; re-asked here so a queued
+  // notice is re-validated at flush time like every other delivery).
+  const stationNotice = req.verb === STATION_NOTICE_VERB
+
+  const env: PaneOperationEnvironment = { ...deps, mirrorEntry: deps.mirrorEntry ?? coreMirrorEntry }
+  const targetBefore = operationContext(env, req.targetNodeId)
+  const sourceBefore = !board && !stationNotice ? operationContext(env, ident.sourceNodeId) : undefined
+  const targetRemote = deps.isRemoteNode(req.targetNodeId)
+  const sourceRemote = !board && !stationNotice && deps.isRemoteNode(ident.sourceNodeId)
+  const { projects, projectId, targetOperation, targetNotStarted, notPermitted: denied } = await authorizeMessageScope(req, deps)
+  let notPermitted = denied
+  if (targetNotStarted) return { kind: 'targetNotStarted' }
+  let sourceOperation: PaneOperationProof | undefined
+  if (!notPermitted && !board && !stationNotice && deps.isRemoteNode(ident.sourceNodeId)) {
+    const ctx = operationContext(env, ident.sourceNodeId, projectId)
+    const proof = ctx ? await acquireRemoteOperation(env, ctx, 'send-source',
+      () => !!targetBefore && deps.isRemoteNode(req.targetNodeId) === targetRemote &&
+        sameOperationContext(targetBefore, operationContext(env, req.targetNodeId))) : null
+    if (!proof) notPermitted = 'unproven-operation-owner'
+    else sourceOperation = proof
+  }
+  if (!notPermitted && (targetOperation || sourceOperation)) {
+    if (!targetBefore || !sameOperationContext(targetBefore, operationContext(env, req.targetNodeId)) ||
+        (!board && !stationNotice && (!sourceBefore || !sameOperationContext(sourceBefore, operationContext(env, ident.sourceNodeId)))))
+      notPermitted = 'unproven-operation-owner'
+  }
+  const contextCurrent = (): boolean => {
+    const current = board ? resolveBoardCommentScope(deps.projects(), board.projectId, req.targetNodeId) :
+      resolveDeliveryScope(deps.projects(), ident.sourceNodeId, req.targetNodeId)
+    return current.kind === 'same-project' && current.projectId === projectId && !!projectId && deps.messagingEnabled(projectId) &&
+      deps.isRemoteNode(req.targetNodeId) === targetRemote &&
+      (board || stationNotice || deps.isRemoteNode(ident.sourceNodeId) === sourceRemote) &&
+      (!targetBefore || sameOperationContext(targetBefore, operationContext(env, req.targetNodeId))) &&
+      (!sourceBefore || sameOperationContext(sourceBefore, operationContext(env, ident.sourceNodeId))) &&
+      (targetRemote ? !!targetOperation : deps.paneOwnerProject(req.targetNodeId) === projectId) &&
+      (!deps.callerOwnsTarget || !board && (stationNotice ? deps.callerOwnsTarget(req.targetNodeId, ident.sourceNodeId) : deps.callerOwnsTarget(ident.sourceNodeId, req.targetNodeId)))
+  }
+  const access: EnvelopeWriteAccess | undefined = targetOperation || sourceOperation ? {
+    remoteProof: targetOperation,
+    contextCurrent,
+    beforeWrite: async () => {
+      try {
+        if (deps.beforeWrite && !await deps.beforeWrite()) return false
+        if (sourceOperation && !await sourceOperation.revalidate()) return false
+        if (targetOperation && !await targetOperation.revalidate()) return false
+        return contextCurrent()
+      } catch { return false }
+    }
+  } : undefined
 
   // Flow control (PR #208), taken as a RESERVATION rather than a pure read: `checkFlowLimits`
   // followed later by `noteSent` is not atomic, and N parallel sends to N distinct targets would
@@ -799,7 +874,7 @@ export async function runDelivery(
   // A plain terminal is not Claude by default. A hand-launched agent may still prove its runtime
   // identity through a hook event; absent either stored or runtime evidence, the binary predicate
   // receives an unknowable identity and refuses instead of guessing a provider.
-  const targetAgentId = targetNode?.agentId ??
+  const targetAgentId = targetOperation?.context.agentId ?? targetNode?.agentId ??
     (deps.mirrorEntry ?? coreMirrorEntry)(req.targetNodeId)?.agentId ?? ''
   // Where the trace lands. A board comment's is always its own board — even for a refusal that
   // resolved no project (a target on another board) — because that is where the comment's row
@@ -807,7 +882,12 @@ export async function runDelivery(
   const traceProject = board ? board.projectId : projectId
 
   const delivery: DeliveryDeps = {
-    paneOwner: (id) => deps.paneOwner(id),
+    paneOwner: async (id) => {
+      if (!targetRemote) return deps.paneOwner(id)
+      if (!targetOperation) return null
+      try { const r = await targetOperation.runExisting(remotePaneOwnerCommand(sessionName(id)))
+        return r.code === 0 ? parseCombinedPaneOwner(r.stdout) : null } catch { return null }
+    },
     paneProbeTimeoutMs: deps.paneProbeTimeoutMs
       ? (id) => deps.paneProbeTimeoutMs!(id)
       : undefined,
@@ -822,9 +902,17 @@ export async function runDelivery(
     // TODO(pr7): a supported agent CLI idling WITHOUT bracketed paste on is asserted by no test —
     // if one exists, its deliveries splice line-by-line and only the receipt/trace make it
     // visible. Measure per CLI before relying on this any further.
-    bracketPasteRequested: (id) => deps.envelopePasteReady?.(id) ?? Promise.resolve(true),
-    sendEnvelope: (id, envelope, expected) => deps.sendEnvelope(id, envelope, expected),
-    mirrorEntry: (id) => (deps.mirrorEntry ?? coreMirrorEntry)(id),
+    bracketPasteRequested: (id) => targetRemote ? Promise.resolve(!!targetOperation) : deps.envelopePasteReady?.(id) ?? Promise.resolve(true),
+    sendEnvelope: (id, envelope, expected) => access ? deps.sendEnvelope(id, envelope, expected, access) : deps.sendEnvelope(id, envelope, expected),
+    mirrorEntry: (id) => {
+      const m = (deps.mirrorEntry ?? coreMirrorEntry)(id), context = targetOperation?.context
+      // A verified launch observation may authorize reading its mailbox, but NEVER fabricate an
+      // idle boundary. Transport requires a real hook-state proof for this exact observed thread.
+      if (context && (m?.sessionId !== context.sessionId || m.agentId !== context.agentId ||
+          m.stateIdentity?.sessionId !== context.sessionId || m.stateIdentity.agentId !== context.agentId))
+        return m ? { ...m, stateVerified: false } : undefined
+      return m
+    },
     tokenFilePresent: (id) => nodeTokenFilePresent(id),
     lock: (id, fn) => withNodeLock(id, fn),
     now,
@@ -869,7 +957,7 @@ export async function runDelivery(
         targetIsRemote: deps.isRemoteNode(req.targetNodeId),
         notPermitted,
         retryAfterMs,
-        targetLive: await deps.hasLiveSession(req.targetNodeId),
+        targetLive: targetRemote ? !!targetOperation : await deps.hasLiveSession(req.targetNodeId),
         ...(board ? { origin: 'board-comment' as const } : {})
       },
       delivery

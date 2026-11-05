@@ -39,7 +39,7 @@ async function install(remoteDir = `${home}/.nodeterm`) {
 }
 
 describe.skipIf(process.platform === 'win32')('remote cursor hook installer', () => {
-  it('merges our five events into the host hooks.json, keeping other tools, content over stdin', async () => {
+  it('merges our subscribed events and session context, keeping other tools, content over stdin', async () => {
     giveHostCursor()
     mkdirSync(path.dirname(hooksJson()), { recursive: true })
     const foreign = { command: 'other-tool start', timeout: 9 }
@@ -47,7 +47,8 @@ describe.skipIf(process.platform === 'win32')('remote cursor hook installer', ()
     const calls = await install()
     const doc = JSON.parse(readFileSync(hooksJson(), 'utf8'))
     expect(doc.other).toBe(true)
-    expect(doc.hooks.sessionStart).toEqual([foreign])
+    expect(doc.hooks.sessionStart[0]).toEqual(foreign)
+    expect(doc.hooks.sessionStart).toHaveLength(2)
     for (const ev of CURSOR_HOOK_EVENTS) {
       const ours = doc.hooks[ev].filter((e: { command: string }) => e.command.includes('.nodeterm/agent-hooks/cursor.sh'))
       expect(ours, ev).toHaveLength(1)

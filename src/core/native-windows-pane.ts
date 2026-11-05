@@ -6,6 +6,7 @@ import { sendTextWhenSettled } from './settled-text'
 import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
 import { sanitizePasteText } from './paste-injection'
 import { pasteThenSubmitWhenSettled, type SettleOptions } from './settled-submit'
+import { ownerEnvelopeSurfaceReady } from './agents/envelope-surface'
 
 export { sameNativeProcess } from '../session-host/windows-pane-owner'
 
@@ -52,19 +53,32 @@ export class NativeWindowsPane {
     return this.alive && this.screen.bracketedPasteRequested()
   }
 
-  async sendEnvelope(envelope: string, expected?: PaneOwner): Promise<boolean> {
+  async sendEnvelope(envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
     if (!envelope || !expected || !(await this.pasteAware())) return false
     // Re-check the exact process immediately before typing. A replacement with the same
     // PID but a different OS birth time, or a shell returned to the console, refuses.
     if (!sameNativeProcess(expected, await this.owner()) || !(await this.pasteAware())) return false
     const text = sanitizePasteText(envelope)
     if (!text) return false
+    const capture = async (): Promise<string> => {
+      await this.tail
+      return this.alive ? this.screen.capturePlain(200) : ''
+    }
+    const ready = async (): Promise<boolean> => {
+      if (!this.alive || !(await this.pasteAware())) return false
+      const screen = await capture()
+      if (!this.alive || !ownerEnvelopeSurfaceReady(screen, expected)) return false
+      const actual = await this.owner()
+      if (!actual || !sameNativeProcess(expected, actual) || !(await this.pasteAware()) || !this.alive) return false
+      return ownerEnvelopeSurfaceReady(await capture(), actual) && this.alive
+    }
+    if (!(await ready())) return 'dialog'
     // Paste, let the composer install the block, then submit in a second write
     // (core/settled-submit.ts). Two synchronous writes arrive as one read on the other side.
     return pasteThenSubmitWhenSettled(text, {
-      capture: async () => (this.alive ? this.capture(false) : null),
+      capture: async () => (this.alive ? capture() : null),
       paste: async () => {
-        if (!this.alive || !(await this.pasteAware())) return false
+        if (!(await ready())) return false
         try {
           this.proc.write(`\x1b[200~${text}\x1b[201~`)
           return true
@@ -72,7 +86,7 @@ export class NativeWindowsPane {
       },
       submit: async () => {
         try {
-          if (!sameNativeProcess(expected, await this.owner()) || !(await this.pasteAware()) || !this.alive) return
+          if (!(await ready())) return
           this.proc.write('\r')
         } catch { /* paste landed; receipt reports stalled */ }
       }

@@ -8,6 +8,7 @@ import {
   remoteTmuxEnterArgs,
   probeSaysAbsent,
   remoteCapturePaneArgs,
+  remoteCaptureEnvelopePlainArgs,
   remoteCaptureVisibleArgs,
   remoteTmuxWatcherArgs,
   remoteWindowSizeArgs,
@@ -256,6 +257,13 @@ describe('remoteTmuxEnterArgs', () => {
 })
 
 describe('remoteCapturePaneArgs', () => {
+  it('keeps replay styled but provides a separate exact plain envelope capture', () => {
+    const plain = remoteCaptureEnvelopePlainArgs(conn, '/s.sock', 'nt-x')
+    expect(plain.at(-1)).toBe(`${TP}tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -t '=nt-x:' -S -200`)
+    expect(remoteCapturePaneArgs(conn, '/s.sock', 'nt-x', false).at(-1)).toContain('capture-pane -p -e ')
+    expect(plain.slice(0, -1)).toEqual(remoteCapturePaneArgs(conn, '/s.sock', 'nt-x', false).slice(0, -1))
+    expect(() => remoteCaptureEnvelopePlainArgs(conn, '/s.sock', 'nt-x; touch bad')).toThrow()
+  })
   it('captures the whole scrollback (-S -) when full', () => {
     const args = remoteCapturePaneArgs(conn, '/s.sock', 'nt-x', true)
     expect(args[args.length - 1]).toBe(`${TP}tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t '=nt-x:' -S -`)

@@ -7,6 +7,7 @@ import type { PrWaitHold } from './pr-wait'
 import type { SessionBackend } from './session-backend'
 import type { AgentIntegrationsSettings } from './agent-integrations'
 import type { NodeSize, SizableNodeKind } from './default-node-size'
+import type { PaneAdoptionReply, PaneAdoptionRequest, PaneObservedResumeReply } from './agents/pane-adoption'
 // Types shared across the main, preload, and renderer processes.
 
 import { TABBAR_HEIGHT_PX } from './window-chrome-metrics'
@@ -21,6 +22,8 @@ import type { HostChatQuery, HostChatReply } from './mobile-chat'
 import type { AgentId, AgentPermissionMode, BuiltinAgentId, PromptInjectionMode } from './agents/config'
 import type { ControlConfirmWaivers } from './control-confirm'
 import type { AgentMessageDeliverRequest, AgentMessageReply } from './agents/agent-messaging'
+import type { MailboxViewRequest, MailboxReply } from './agents/agent-mailbox'
+import type { LegacyMailboxViewRequest, LegacyMailboxViewReply } from './agents/agent-mailbox-legacy'
 import type { BoardCommentDeliverRequest } from './board-comment'
 import type { ChatTranscriptPageRequest } from './chat-page'
 import type { BrowserLeasePush } from './browser-indicator'
@@ -4905,12 +4908,21 @@ export interface NodeTerminalApi {
   /** Agent messaging (the `send`/`reply` control verbs): run one delivery in main, where the
    *  scope check, the per-project switch, flow control and the pane probes all live. The reply is
    *  already rendered as a control reply — Canvas forwards it verbatim. */
+  /** Optional local desktop capability. No agent, relay or Server Edition adoption route. */
+  paneOwnership?: {
+    adopt(request: PaneAdoptionRequest): Promise<PaneAdoptionReply>
+    resumeObserved?(request: PaneAdoptionRequest): Promise<PaneObservedResumeReply>
+  }
   agentMessage: {
     deliver(req: AgentMessageDeliverRequest): Promise<AgentMessageReply>
     /** Deliver one mentioned session's copy of a board comment the local user just posted, through
      *  the same gates. `result` carries the typed outcome the comment row renders. Desktop only: the
      *  browser and relay bridges answer `notPermitted: unsupported-edition`. */
     deliverBoardComment(req: BoardCommentDeliverRequest): Promise<AgentMessageReply>
+  }
+  agentMailbox: {
+    view(req: MailboxViewRequest): Promise<MailboxReply>
+    legacyView(req: LegacyMailboxViewRequest): Promise<LegacyMailboxViewReply>
   }
   /** Board dispatch (#1051): the renderer REPORTS its in-memory dispatch map to core, replaced
    *  whole on each change, so the read-only `issues` control verb can show it beside an issue

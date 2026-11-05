@@ -1745,9 +1745,10 @@ describe('one-way context links (issue #852) — agent-facing docs', () => {
 // Windows (`windows-cmd` dialect): what a PowerShell-run agent reads. The POSIX default is pinned
 // byte-for-byte, because every SSH-host skill is built without a dialect.
 describe('buildCanvasSkillBody — shim invocation dialect', () => {
-  it('the default is the historical `sh` block, unchanged', () => {
+  it('the default keeps the historical `sh` invocation alongside mailbox instructions', () => {
     const body = buildCanvasSkillBody('/x/nodeterm.sh')
-    expect(body).toContain('```sh\nsh "/x/nodeterm.sh" <verb> [args]\n```\n\nFlags take a value')
+    expect(body).toContain('```sh\nsh "/x/nodeterm.sh" <verb> [args]\n```')
+    expect(body).toContain('Flags take a value')
     expect(body).toBe(buildCanvasSkillBody('/x/nodeterm.sh', 'posix'))
     expect(body).not.toContain('nodeterm.cmd')
   })

@@ -1,4 +1,5 @@
 import type { TextDeliveryResult } from '../shared/text-delivery'
+import type { EnvelopeDeliveryResult } from '../shared/agents/agent-messaging'
 // The thin facade `pty-manager.ts` talks to — owns the ONE process-wide `SessionHostClient` (one
 // long-lived connection per app process, matching how `PtyManager` itself keeps one `tmuxPath`
 // for the whole process) and exposes exactly the operations pty-manager's existing tmux/ssh call
@@ -40,7 +41,7 @@ export async function sessionHostMessagePasteReady(name: string): Promise<boolea
 
 export async function sessionHostMessageEnvelope(
   name: string, envelope: string, expected: PaneOwner
-): Promise<boolean> {
+): Promise<EnvelopeDeliveryResult> {
   return getClient().messageEnvelope(name, envelope, expected)
 }
 

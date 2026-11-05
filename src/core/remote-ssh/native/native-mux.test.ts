@@ -6,7 +6,8 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { AddressInfo } from 'net'
+import { createHash } from 'crypto'
+import net, { type AddressInfo } from 'net'
 import { Client, Server, utils, type Connection, type ConnectConfig } from 'ssh2'
 import { NativeMux, noMasterMessage } from './native-mux'
 import { parseSshArgv } from './ssh-argv'
@@ -30,6 +31,8 @@ let serverHostKey = hostKey.private
 let sessions: { requests: string[]; cmd: string }[] = []
 /** Whether the server grants agent forwarding (AllowAgentForwarding). */
 let allowAgentFwd = true
+let refuseSessions = false
+let stallSessionOpen = false
 
 function pubMatches(offered: { algo: string; data: Buffer }, pub: string): boolean {
   const k = utils.parseKey(pub)
@@ -49,7 +52,9 @@ function startServer(): Promise<void> {
       ctx.accept()
     })
     client.on('ready', () => {
-      client.on('session', (accept) => {
+      client.on('session', (accept, reject) => {
+        if (stallSessionOpen) return // private synthetic peer: never answers channel open
+        if (refuseSessions) return reject()
         const session = accept()
         const requests: string[] = []
         let ptyInfo: { cols: number; rows: number } | undefined
@@ -78,6 +83,11 @@ function startServer(): Promise<void> {
             return
           }
           if (cmd === 'hang') return // never answers
+          if (cmd === 'bulk') {
+            ch.write(Buffer.alloc(1024 * 1024 + 1, 'x'))
+            ch.exit(0)
+            return ch.end()
+          }
           if (cmd.startsWith('fail ')) {
             ch.stderr.write('boom\n')
             ch.exit(Number(cmd.slice(5)))
@@ -140,8 +150,125 @@ afterEach(() => {
   for (const c of live.splice(0)) c.end()
   sessions = []
   allowAgentFwd = true
+  refuseSessions = false
+  stallSessionOpen = false
 })
 const track = (m: NativeMux): NativeMux => (muxes.push(m), m)
+
+describe('new native master transport capability', () => {
+  it('binds the authenticated endpoint and runs only on the captured client', async () => {
+    const configuration = host()
+    let resolutions = 0
+    const m = track(mux({ resolveHost: async () => { resolutions++; return configuration } }))
+    const p = exec('true'), before = connections
+    const { createdTransport: transport } = await m.master(CP(), p.target, p.options)
+    expect(transport).toBeDefined()
+    expect(Object.isFrozen(transport)).toBe(true)
+    expect(Object.isFrozen(transport!.identity)).toBe(true)
+    expect(transport!.identity).toMatchObject({ backend: 'native-ssh2', hostname: '127.0.0.1', user: 'dev', port })
+    expect(transport!.identity.serverKeySha256).toMatch(/^[a-f0-9]{64}$/)
+    const serverKey = utils.parseKey(serverHostKey)
+    if (serverKey instanceof Error || Array.isArray(serverKey)) throw new Error('invalid fixture host key')
+    expect(transport!.identity.serverKeySha256).toBe(createHash('sha256').update(serverKey.getPublicSSH()).digest('hex'))
+    configuration.hostname = 'replacement.invalid'
+    configuration.user = 'someone-else'
+    expect((await transport!.exec('cat', { stdin: 'synthetic' })).stdout.toString()).toBe('synthetic')
+    expect((await transport!.exec('proof-read')).stdout.toString()).toBe('ran: proof-read\n')
+    expect(transport!.identity.hostname).toBe('127.0.0.1')
+    expect(transport!.isCurrent()).toBe(true)
+    expect(resolutions).toBe(1)
+    expect(connections - before).toBe(1)
+    expect((await m.master(CP(), p.target, p.options)).createdTransport).toBeUndefined()
+  })
+
+  it('does not relabel an auto-child connection as a new master creation', async () => {
+    const m = track(mux()), p = exec('auto-child'), before = connections
+    expect((await m.exec(p)).code).toBe(0)
+    expect((await m.master(CP(), p.target, p.options)).createdTransport).toBeUndefined()
+    expect(connections - before).toBe(1)
+  })
+
+  it('refuses a lost/replaced transport without connecting or using the replacement', async () => {
+    const m = track(mux()), p = exec('true')
+    const first = (await m.master(CP(), p.target, p.options)).createdTransport!
+    await m.exit(CP())
+    const afterClose = connections
+    expect(first.isCurrent()).toBe(false)
+    expect((await first.exec('old-after-loss')).code).toBe(255)
+    expect(connections).toBe(afterClose)
+    const second = (await m.master(CP(), p.target, p.options)).createdTransport!
+    const afterReplacement = connections
+    expect(first.identity.generation).not.toBe(second.identity.generation)
+    expect((await first.exec('old-after-replacement')).code).toBe(255)
+    expect((await second.exec('new-read')).code).toBe(0)
+    expect(sessions.map(s => s.cmd)).toEqual(['new-read'])
+    expect(connections).toBe(afterReplacement)
+  })
+
+  it('does not open overflow connections when the server refuses a channel', async () => {
+    const m = track(mux()), p = exec('true')
+    const transport = (await m.master(CP(), p.target, p.options)).createdTransport!
+    const before = connections
+    refuseSessions = true
+    expect((await transport.exec('refused')).code).toBe(255)
+    expect(connections).toBe(before)
+    expect(m.connectionCount(CP())).toBe(1)
+    expect(sessions).toEqual([])
+  })
+
+  it('fails an in-flight command and every subsequent use when the actual peer disappears', async () => {
+    let connectionAttempts = 0
+    const m = track(mux({ connectSocket: (host, port) => {
+      connectionAttempts++
+      return new Promise((resolve, reject) => {
+        const socket = net.connect(port, host)
+        socket.once('connect', () => resolve(socket))
+        socket.once('error', reject)
+      })
+    } })), p = exec('true')
+    const created = await m.master(CP(), p.target, p.options), transport = created.createdTransport!
+    const before = connections, pending = transport.exec('hang')
+    await expect.poll(() => sessions.some(s => s.cmd === 'hang')).toBe(true)
+    for (const client of live) client.end()
+    expect((await pending).code).toBe(255)
+    await created.closed
+    expect(transport.isCurrent()).toBe(false)
+    expect((await transport.exec('after-peer-loss')).code).toBe(255)
+    expect(connections).toBe(before)
+    expect(connectionAttempts).toBe(1)
+    expect(sessions.map(s => s.cmd)).toEqual(['hang'])
+  })
+
+  it('bounds channel output, input and duration without creating another connection', async () => {
+    const m = track(mux()), p = exec('true')
+    const transport = (await m.master(CP(), p.target, p.options)).createdTransport!
+    const before = connections
+    expect((await transport.exec('cat', { stdin: Buffer.alloc(1024 * 1024 + 1) })).code).toBe(255)
+    expect((await transport.exec('bad\0command')).code).toBe(255)
+    expect(sessions).toEqual([])
+    const bulk = await transport.exec('bulk')
+    expect(bulk.code).toBe(255)
+    expect(bulk.stdout.length).toBeLessThanOrEqual(1024 * 1024)
+    const timed = await transport.exec('hang', { timeoutMs: 20 })
+    expect(timed.timedOut).toBe(true)
+    expect(timed.code).toBe(255)
+    expect(transport.isCurrent()).toBe(true)
+    expect(connections).toBe(before)
+  })
+
+  it('also bounds a channel-open request that the peer never answers', async () => {
+    const m = track(mux()), p = exec('true')
+    const transport = (await m.master(CP(), p.target, p.options)).createdTransport!
+    const before = connections
+    stallSessionOpen = true
+    const result = await transport.exec('never-opened', { timeoutMs: 20 })
+    expect(result.code).toBe(255)
+    expect(result.timedOut).toBe(true)
+    expect(connections).toBe(before)
+    expect(sessions).toEqual([])
+    expect(transport.isCurrent()).toBe(true)
+  })
+})
 
 describe('NativeMux over a real SSH protocol peer', () => {
   it('shares ONE connection across many commands (ControlMaster=auto)', async () => {

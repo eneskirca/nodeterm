@@ -14,7 +14,7 @@ import {
   ownerUnreachableGuidanceLines
 } from './agents/hook-endpoint-failover-sh'
 import { NODE_TOKEN_READ_SH } from './agents/node-token-sh'
-import { codexThreadIdentityResolverSh } from './codex-thread-identity-sh'
+import { codexThreadIdentityResolverSh, remoteCodexIdentityRoot } from './codex-thread-identity-sh'
 import { shimCommand, shimFence, windowsShimNoteLines, type ShimDialect } from '../shared/agents/shim-invocation'
 
 /** The shim's generic transport-failure sentence — exported so the agent-facing docs below can
@@ -343,13 +343,18 @@ exit 1
  *
  * Omit `identityRoot` for the machine-neutral script copied to SSH hosts.
  */
-export function buildContextShimScript(identityRoot?: string): string {
-  const identityPrelude = identityRoot ? `${codexThreadIdentityResolverSh(identityRoot)}\n` : ''
+export function buildContextShimScript(identityRoot?: string, options: { preferThreadBinding?: boolean } = {}): string {
+  const identityPrelude = identityRoot ? `${codexThreadIdentityResolverSh(identityRoot, options)}\n` : ''
   return `#!/bin/sh\n${identityPrelude}${CONTEXT_SHIM_BODY}`
 }
 
 /** Machine-neutral variant used by SSH installation and legacy tests. */
 export const CONTEXT_SHIM_SCRIPT = buildContextShimScript()
+
+/** Uses only the authenticated target host's home, never local application user data. */
+export function buildRemoteContextShimScript(remoteHome: string): string {
+  return buildContextShimScript(remoteCodexIdentityRoot(remoteHome), { preferThreadBinding: true })
+}
 
 /** The get-linked-context SKILL.md body, pointing at the shim at `shimPath`. Parameterized
  *  because the same skill is installed twice with different paths: into the desktop's config
