@@ -18,8 +18,8 @@ export function PullStatePill({ lifecycle }: { lifecycle: PullLifecycle }): Reac
 }
 
 /** The PR at a glance, above the readiness bar (F1): title and number with the lead action beside
- *  them, then state, author and "wants to merge N commits into base from head". Before the detail
- *  read lands it names only the repository and number. */
+ *  them, then state, author and "wants to merge N commits into base from head" (once merged: who
+ *  merged it). Before the detail read lands it names only the repository and number. */
 export function PullHeader({ pull, detail: d, avatars, action, onCopy }: {
   pull: PullNodeRef; detail: GitHubPullDetail | undefined; avatars?: PullAvatarDataUrls
   /** The NextAction button and its menu, top right. */
@@ -33,7 +33,12 @@ export function PullHeader({ pull, detail: d, avatars, action, onCopy }: {
       </header>
     )
   }
-  const commits = d.commits === undefined ? '' : ` ${d.commits} ${d.commits === 1 ? 'commit' : 'commits'}`
+  const commits = d.commits === undefined ? '' : `${d.commits} ${d.commits === 1 ? 'commit' : 'commits'}`
+  const merged = d.lifecycle === 'merged'
+  // Merged: who merged it, not who wrote it. GitHub can hide the merger; then no name at all.
+  const who = merged ? d.mergedBy : d.author
+  const count = commits && ` ${commits}`
+  const verb = !merged ? ` wants to merge${count}` : who ? ` merged${count}` : commits ? `${commits} merged` : 'Merged'
   return (
     <header className="pr-head">
       <div className="pr-head__top">
@@ -42,10 +47,10 @@ export function PullHeader({ pull, detail: d, avatars, action, onCopy }: {
       </div>
       <div className="pr-head__meta">
         <PullStatePill lifecycle={d.lifecycle} />
-        {d.author && <Avatar user={d.author} avatars={avatars} size={18} />}
+        {who && <Avatar user={who} avatars={avatars} size={18} />}
         <span className="pr-head__sentence">
-          {d.author && <span className="pr-head__author">{d.author.login}</span>}
-          {d.lifecycle === 'merged' ? ' merged' : ' wants to merge'}{commits} into <code className="pr-branch">{d.base.ref}</code> from{' '}
+          {who && <span className="pr-head__author">{who.login}</span>}
+          {verb} into <code className="pr-branch">{d.base.ref}</code> from{' '}
           <code className="pr-branch">{d.head.ref}</code>
         </span>
         {onCopy && (

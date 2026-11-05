@@ -444,6 +444,17 @@ describe('GitHubIssuesClient.getPull', () => {
     expect((await read({ body: null })).body).toBe('')
   })
 
+  it('reads who merged it from merged_by, and leaves it out when GitHub hides it', async () => {
+    const read = async (over: Record<string, unknown>) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(pull(over))
+    }).getPull('nodeterm/nodeterm', 7)
+    const merger = { id: 9, login: 'merger', avatar_url: 'https://avatars.githubusercontent.com/u/9?v=4' }
+    expect((await read({ state: 'closed', merged: true, merged_by: merger })).mergedBy)
+      .toEqual({ id: 9, login: 'merger', avatarUrl: 'https://avatars.githubusercontent.com/u/9?v=4' })
+    expect('mergedBy' in await read({ state: 'closed', merged: true, merged_by: null })).toBe(false)
+    expect('mergedBy' in await read({ state: 'closed', merged: true, merged_by: { login: 'not a login!' } })).toBe(false)
+  })
+
   it('marks a head in another repository (or in a deleted fork) as fromFork', async () => {
     const read = async (over: Record<string, unknown>) => new GitHubIssuesClient({
       token: 'secret', fetch: async () => response(pull(over))

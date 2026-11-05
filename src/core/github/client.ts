@@ -214,6 +214,8 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
   if (!base || !head) return null
   const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
   if (item.user && !author) return null
+  // ponytail: display only, so a malformed merger is left out rather than failing the overview.
+  const mergedBy = item.merged_by ? issueUser(item.merged_by) : null
   // ponytail: display only, so a malformed entry is skipped rather than failing the overview.
   const requested = Array.isArray(item.requested_reviewers)
     ? item.requested_reviewers.slice(0, 100).flatMap((user) => issueUser(user) ?? [])
@@ -244,6 +246,7 @@ function pullDetailFrom(value: unknown): GitHubPullDetail | null {
     body: item.body ?? '',
     lifecycle,
     author,
+    ...(mergedBy ? { mergedBy } : {}),
     base,
     head,
     ...(merge !== undefined ? { merge } : {}),

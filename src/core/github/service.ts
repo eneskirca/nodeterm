@@ -1135,7 +1135,7 @@ export class GitHubIssueService {
       // The numeric id, not the login: a login can be renamed.
       const ownPull = detail.author !== null && String(detail.author.id) === captured.userId
       const avatarDataUrls = await this.pullAvatars([
-        detail.author, ...(detail.requestedReviewers ?? []), ...(sidebar?.reviewers ?? []).map((reviewer) => reviewer.user),
+        detail.author, detail.mergedBy ?? null, ...(detail.requestedReviewers ?? []), ...(sidebar?.reviewers ?? []).map((reviewer) => reviewer.user),
         ...(sidebar?.assignees ?? []), ...(sidebar?.participants ?? [])
       ])
       return {

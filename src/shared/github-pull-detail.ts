@@ -11,6 +11,8 @@ export interface GitHubPullDetail {
   body: string
   lifecycle: PullLifecycle
   author: GitHubIssueUser | null
+  /** Who merged it. Absent = not merged, or GitHub hid it (a deleted account). */
+  mergedBy?: GitHubIssueUser
   base: { ref: string; sha: string }
   head: { ref: string; sha: string }
   /** From the shared pull-status rules (`mergeState`). Absent when the PR is not open. */

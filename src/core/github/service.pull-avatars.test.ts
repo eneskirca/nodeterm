@@ -73,6 +73,15 @@ describe('GitHubIssueService pull reads carry avatars', () => {
     expect(result.status === 'ok' && result.avatarDataUrls).toEqual({ 1: dataUrl(1), 2: dataUrl(2) })
   })
 
+  it('attaches the avatar of who merged it', async () => {
+    const service = harness()
+    Client.prototype.getPull = async () => ({ ...detail, lifecycle: 'merged', merge: undefined, mergedBy: user(4) })
+    try {
+      const result = await service.pullDetail(request)
+      expect(result.status === 'ok' && result.avatarDataUrls).toEqual({ 1: dataUrl(1), 2: dataUrl(2), 4: dataUrl(4) })
+    } finally { Client.prototype.getPull = async () => detail }
+  })
+
   it('attaches comment, review and line comment author avatars to the conversation', async () => {
     const result = await harness().pullConversation(request)
     expect(result.status === 'ok' && result.avatarDataUrls).toEqual({ 1: dataUrl(1), 4: dataUrl(4) })
