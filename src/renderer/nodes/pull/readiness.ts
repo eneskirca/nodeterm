@@ -99,7 +99,7 @@ export function pullReadiness({ detail: d, checks, openThreads, agent, proposal 
   return segments
 }
 
-export type NextStepKind = 'reopen' | 'ready' | 'conflicts' | 'checks' | 'threads' | 'merge'
+export type NextStepKind = 'reopen' | 'ready' | 'conflicts' | 'checks' | 'threads' | 'review' | 'update' | 'blocked' | 'merge'
 export interface NextStep { kind: NextStepKind; label: string; tone: 'primary' | 'attention' | 'danger' | 'neutral'; icon: IconName }
 
 /** The one button the header leads with, by what blocks the PR first. Merged = none. */
@@ -112,5 +112,12 @@ export function nextStep({ detail: d, checks, openThreads, method }: ReadinessIn
     return { kind: 'checks', label: 'Fix checks', tone: 'danger', icon: 'x' }
   }
   if (openThreads) return { kind: 'threads', label: `Review ${plural(openThreads, 'open thread')}`, tone: 'attention', icon: 'thread' }
+  const read = checks && checks !== 'loading' && (checks.status === 'ok' || checks.status === 'no-checks') ? checks : undefined
+  if (read?.review === 'required' || read?.review === 'changes-requested') {
+    return { kind: 'review', label: 'Review changes', tone: 'attention', icon: 'eye' }
+  }
+  if (d.merge === 'behind') return { kind: 'update', label: 'Update branch', tone: 'attention', icon: 'sync' }
+  // ponytail: other blocks (pending checks, unknown protection rule) jump to the merge box, which says why.
+  if (d.merge === 'blocked') return { kind: 'blocked', label: 'Merge blocked', tone: 'neutral', icon: 'merge' }
   return { kind: 'merge', label: method ? METHOD_TEXT[method] : 'Merge', tone: 'primary', icon: 'merge' }
 }

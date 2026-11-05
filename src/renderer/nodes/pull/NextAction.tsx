@@ -32,7 +32,7 @@ function useMenu(): { open: boolean; setOpen: (open: boolean | ((shown: boolean)
  * so its confirm step and head pin stay the only way to merge.
  */
 export function NextAction(props: NextActionProps): React.JSX.Element {
-  const { api, projectId, pull, detail: d, next, onJump, onWritten, onWork } = props
+  const { api, projectId, pull, detail: d, next, onJump, onWritten, onWork, update } = props
   const write = useWrite(onWritten)
   const conflict = useMenu()
   const choices = useConflictChoices(d, onWork)
@@ -44,7 +44,11 @@ export function NextAction(props: NextActionProps): React.JSX.Element {
       // The merge box's two ways out; with neither, the merge box says how.
       case 'conflicts': return choices.length ? conflict.setOpen((shown) => !shown) : onJump({ tab: 'conversation', section: 'merge' })
       case 'checks': return onJump({ tab: 'checks' })
-      case 'threads': return onJump({ tab: 'files' })
+      case 'threads':
+      case 'review': return onJump({ tab: 'files' })
+      // The merge box shows the update's state and refusal, as the More actions item does.
+      case 'update': update.run(); return onJump({ tab: 'conversation', section: 'merge' })
+      case 'blocked':
       case 'merge': return onJump({ tab: 'conversation', section: 'merge' })
     }
   }
@@ -52,7 +56,8 @@ export function NextAction(props: NextActionProps): React.JSX.Element {
     <div className="pr-next">
       {next && (
         <div className="pr-more" ref={conflict.ref}>
-          <button type="button" className={`pr-btn pr-btn--${next.tone}`} data-next={next.kind} disabled={write.busy}
+          <button type="button" className={`pr-btn pr-btn--${next.tone}`} data-next={next.kind}
+            disabled={write.busy || (next.kind === 'update' && (update.busy || update.updating))}
             aria-haspopup={next.kind === 'conflicts' && choices.length ? 'menu' : undefined}
             aria-expanded={next.kind === 'conflicts' && choices.length ? conflict.open : undefined}
             onClick={() => run(next)}>

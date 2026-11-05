@@ -766,7 +766,7 @@ describe('PullNodeView files', () => {
 
   it('shows the files as a tree with +/- per folder, and the filter narrows it', async () => {
     const view = await render(withFiles(), 'o/r', 'files')
-    expect(view.querySelector('.pf-dir')?.textContent).toBe('src')
+    expect(view.querySelector('.pf-dir')?.textContent).toBe('src+3 −1')
     const filter = view.querySelector<HTMLInputElement>('input[aria-label="Filter files"]')!
     await act(async () => { typeInput(filter, 'GONE') })
     expect([...view.querySelectorAll('.pf-file')].map((row) => row.getAttribute('title'))).toEqual(['gone.md'])

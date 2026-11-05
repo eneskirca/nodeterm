@@ -18,6 +18,8 @@ const detail: GitHubPullDetail = {
   merge: 'ready', additions: 1, deletions: 0, changedFiles: 1, url: 'https://github.com/o/r/pull/7'
 }
 const failing: GitHubPullChecksResult = { status: 'ok', headRefOid: HEAD, truncated: false, checks: [{ name: 'test', state: 'failed' }] }
+const review = (state: 'required' | 'changes-requested'): GitHubPullChecksResult =>
+  ({ status: 'ok', headRefOid: HEAD, truncated: false, checks: [], review: state })
 const at = { projectId: 'p', repository: 'o/r', pullNumber: 7 }
 
 describe('nextStep', () => {
@@ -30,7 +32,11 @@ describe('nextStep', () => {
     ['open threads', { openThreads: 2 }, 'threads:Review 2 open threads'],
     ['one thread', { openThreads: 1 }, 'threads:Review 1 open thread'],
     ['ready, squash allowed', { openThreads: 0, method: 'squash' }, 'merge:Squash and merge'],
-    ['ready, methods unknown', {}, 'merge:Merge']
+    ['ready, methods unknown', {}, 'merge:Merge'],
+    ['review required', { detail: { ...detail, merge: 'blocked' }, checks: review('required'), method: 'squash' }, 'review:Review changes'],
+    ['changes requested', { detail: { ...detail, merge: 'blocked' }, checks: review('changes-requested'), method: 'squash' }, 'review:Review changes'],
+    ['behind', { detail: { ...detail, merge: 'behind' }, method: 'squash' }, 'update:Update branch'],
+    ['blocked, reason unknown', { detail: { ...detail, merge: 'blocked' }, method: 'squash' }, 'blocked:Merge blocked']
   ])('%s', (_name, input, expected) => {
     const step = nextStep({ detail, ...input })
     expect(step && `${step.kind}:${step.label}`).toBe(expected)
@@ -102,6 +108,23 @@ describe('NextAction', () => {
     const merge = await mount(detail, { method: 'squash' })
     await act(async () => { merge.lead!.click() })
     expect(merge.onJump).toHaveBeenCalledWith({ tab: 'conversation', section: 'merge' })
+  })
+
+  it('Review changes jumps to the files; Update branch runs the shared update; Merge blocked jumps to the merge box', async () => {
+    const reviewing = await mount({ ...detail, merge: 'blocked' }, { checks: review('required') })
+    await act(async () => { reviewing.lead!.click() })
+    expect(reviewing.onJump).toHaveBeenCalledWith({ tab: 'files' })
+    act(() => root!.unmount()); host!.remove(); root = host = undefined
+
+    const behind = await mount({ ...detail, merge: 'behind' })
+    await act(async () => { behind.lead!.click() })
+    expect(behind.api.updatePullBranch).toHaveBeenCalledWith({ ...at, headSha: HEAD })
+    expect(behind.onJump).toHaveBeenCalledWith({ tab: 'conversation', section: 'merge' })
+    act(() => root!.unmount()); host!.remove(); root = host = undefined
+
+    const blocked = await mount({ ...detail, merge: 'blocked' })
+    await act(async () => { blocked.lead!.click() })
+    expect(blocked.onJump).toHaveBeenCalledWith({ tab: 'conversation', section: 'merge' })
   })
 
   it('Resolve conflicts opens the merge box\'s choice; Resolve myself is Work on this PR', async () => {

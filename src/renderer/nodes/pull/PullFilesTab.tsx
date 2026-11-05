@@ -201,6 +201,7 @@ function FilesBody(props: BodyProps & { list: Read<FilesRead> }): React.JSX.Elem
         <button key={`d:${node.path}`} className="pf-dir" data-depth={level} aria-expanded={open}
           onClick={() => setClosed((set) => { const next = new Set(set); if (open) next.add(node.path); else next.delete(node.path); return next })}>
           <Icon name={open ? 'chevron' : 'chevron-right'} size={12} />{node.name}
+          <span className="pf-file__end pf-mono"><span className="pr-add">+{node.additions}</span> <span className="pr-del">−{node.deletions}</span></span>
         </button>,
         ...(open ? rows(node.children, depth + 1) : [])
       ]

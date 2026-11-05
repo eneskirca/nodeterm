@@ -166,6 +166,12 @@ describe('PullFilesTab tree', () => {
     await act(async () => { hide.click() })
     expect(tree()).toEqual(['src/a.ts'])
   })
+
+  it('shows +/- counts on folder rows, summed from their files, the way file rows show theirs', async () => {
+    await render(fakeApi())
+    const dir = [...host.querySelectorAll('.pf-dir')].find((d) => d.textContent?.startsWith('src'))!
+    expect(dir.querySelector('.pf-file__end.pf-mono')?.textContent).toBe('+4 −1')
+  })
 })
 
 describe('PullFilesTab threads', () => {
