@@ -94,7 +94,7 @@ describe('omp posts a BARE session id', () => {
     const realFetch = globalThis.fetch
     globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
       bodies.push(init?.body ?? '')
-    }) as typeof fetch
+    }) as unknown as typeof fetch
     try {
       // The module under test is a GENERATED plugin file (built at runtime into tmp) — static
       // import cannot reach a file that does not exist at author time.
