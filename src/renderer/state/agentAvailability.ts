@@ -7,6 +7,21 @@ export function isAgentEnabled(settings: Pick<Settings, 'disabledAgents'>, id: A
   return !settings.disabledAgents.includes(id)
 }
 
+export function controlAgentRefusal(
+  verb: string,
+  id: AgentId,
+  settings: Pick<Settings, 'disabledAgents' | 'customAgents'>
+): string | null {
+  const known = !!agentConfig(id) || settings.customAgents.some((c) => c.id === id)
+  if (!known) {
+    return `${verb}: unknown agent "${id}" — pass a builtin id or a custom agent id from Settings`
+  }
+  if (!isAgentEnabled(settings, id)) {
+    return `${verb}: agent "${id}" is disabled in Settings`
+  }
+  return null
+}
+
 /**
  * First enabled agent in claude → codex → gemini → … order, then the user's custom agents in
  * their own order; 'claude' only when literally everything is disabled. Custom agents are real

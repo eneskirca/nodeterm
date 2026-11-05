@@ -408,6 +408,23 @@ describe('HeadlessNodeFactory', () => {
     expect(reloaded.projects).toHaveLength(1)
   })
 
+  it('refuses open-agent when the target agent is disabled in settings without creating a node or PTY', async () => {
+    settingsOverride = { disabledAgents: ['codex'] }
+    const beforeNodes = (await store.load({ sideline: false })).projects[0].nodes.map((n) => n.id)
+
+    await expect(
+      factory.openAgent('term-source', { agent: 'codex', prompt: 'should not open' }, true)
+    ).resolves.toEqual({
+      ok: false,
+      error: 'open-agent: agent "codex" is disabled in Settings'
+    })
+
+    expect(pty.creates).toEqual([])
+    expect(published).toEqual([])
+    const afterNodes = (await store.load({ sideline: false })).projects[0].nodes.map((n) => n.id)
+    expect(afterNodes).toEqual(beforeNodes)
+  })
+
   it('lets a verified caller close its own spawn, killing the pane before persisted edge removal and fanout', async () => {
     const opened = await factory.openAgent(
       'term-source',

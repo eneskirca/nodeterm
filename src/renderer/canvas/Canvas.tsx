@@ -790,6 +790,7 @@ import {
 } from '@shared/node-colors'
 import { parseLenses, verifyLensPrompt, verifySynthesisPrompt } from '../lib/verifyPanel'
 import { useSettings } from '../state/settings'
+import { controlAgentRefusal } from '../state/agentAvailability'
 import { activePermissionMode, cursorCliCapsNow, grokCliCapsNow, projectPermissionMode } from '../state/permissionMode'
 import { useContextWindow } from '../state/contextWindow'
 import { useSessionNaming } from '../state/sessionNaming'
@@ -13393,7 +13394,15 @@ export function Canvas() {
         encodeBase64: encodeUtf8Base64
       }
       const openPrompt: { prompt?: string; promptFile?: string } =
-        issueOpen && openScopePre?.ok && !dryRun && !(args.prompt && openPromptFileArg)
+        issueOpen &&
+        openScopePre?.ok &&
+        !dryRun &&
+        !(args.prompt && openPromptFileArg) &&
+        !controlAgentRefusal(
+          verb,
+          (verb === 'open-agent' ? args.agent : 'claude') as AgentId,
+          useSettings.getState().settings
+        )
           ? await launchPromptFor(
               {
                 // An issue-bound session's prompt is the REFERENCE line, with the caller's own
@@ -13911,6 +13920,13 @@ export function Canvas() {
           const target = tgResolved.project
           const tgAgentId = (verb === 'open-agent' ? args.agent : 'claude') as AgentId
           const tgIsTerminal = verb === 'open-terminal'
+          if (!tgIsTerminal) {
+            const tgAgentRefusal = controlAgentRefusal(verb, tgAgentId, useSettings.getState().settings)
+            if (tgAgentRefusal) {
+              reply({ ok: false, error: tgAgentRefusal })
+              return
+            }
+          }
           // `#N` was resolved against the TARGET project above (`issuePre`) — the node opens there,
           // and so was `openPrompt` (the target is local here: SSH and relay targets are refused).
           const tgIssueRef = tgIsTerminal ? undefined : issueRefPre
@@ -14329,19 +14345,14 @@ export function Canvas() {
             // `#N` was resolved against the OWNING project above (`issuePre`): the node is saved
             // there — and so was `openPrompt`, spilled or not by that project's own locality.
             const coldIssueRef = coldTerminal ? undefined : issueRefPre
-            if (dryRun) {
-              if (!coldTerminal) {
-                const dryKnownAgent =
-                  !!agentConfig(coldAgentId) ||
-                  useSettings.getState().settings.customAgents.some((c) => c.id === coldAgentId)
-                if (!dryKnownAgent) {
-                  reply({
-                    ok: false,
-                    error: `${verb}: unknown agent "${coldAgentId}" — pass a builtin id or a custom agent id from Settings`
-                  })
-                  return
-                }
+            if (!coldTerminal) {
+              const coldAgentRefusal = controlAgentRefusal(verb, coldAgentId, useSettings.getState().settings)
+              if (coldAgentRefusal) {
+                reply({ ok: false, error: coldAgentRefusal })
+                return
               }
+            }
+            if (dryRun) {
               reply({
                 ok: true,
                 message: [
@@ -15085,20 +15096,12 @@ export function Canvas() {
             const agentCwd = args.cwd || groupCwd || srcCwd
             // `#N` was resolved above (`issuePre`), before anything here read the store.
             const issueRef = issueRefPre
+            const agentRefusal = controlAgentRefusal(verb, agentId, useSettings.getState().settings)
+            if (agentRefusal) {
+              reply({ ok: false, error: agentRefusal })
+              return
+            }
             if (dryRun) {
-              // The dry run is deliberately STRICTER than the real open here: an unknown agent id
-              // today opens a node whose launch command is the typo, failing only inside its pane
-              // — precisely the "validated by running it" cost #532 names. Catch it when asked.
-              const dryKnownAgent =
-                !!agentConfig(agentId) ||
-                useSettings.getState().settings.customAgents.some((c) => c.id === agentId)
-              if (!dryKnownAgent) {
-                reply({
-                  ok: false,
-                  error: `${verb}: unknown agent "${agentId}" — pass a builtin id or a custom agent id from Settings`
-                })
-                return
-              }
               reply({
                 ok: true,
                 message: [
@@ -15619,6 +15622,11 @@ export function Canvas() {
               return
             }
             const reviewAgent = ((args.agent as AgentId | undefined) || targetAgent) as AgentId
+            const verifyAgentRefusal = controlAgentRefusal('verify', reviewAgent, useSettings.getState().settings)
+            if (verifyAgentRefusal) {
+              reply({ ok: false, error: verifyAgentRefusal })
+              return
+            }
             if (!canContextLink(reviewAgent)) {
               reply({
                 ok: false,
@@ -15782,11 +15790,16 @@ export function Canvas() {
             // named refusals for bad JSON, a role missing its prompt, a ninth role, an unknown
             // agent id — instead of the old silent filter-and-slice, where a role without a
             // prompt simply vanished and a typo'd agent opened a broken node (issue #532).
+            const teamSettings = useSettings.getState().settings
             const teamKnownAgents = new Set<string>([
               ...BUILTIN_AGENT_IDS,
-              ...useSettings.getState().settings.customAgents.map((c) => c.id)
+              ...teamSettings.customAgents.map((c) => c.id)
             ])
-            const teamSpec = parseTeamSpec(args.team ?? '', teamKnownAgents)
+            const teamSpec = parseTeamSpec(
+              args.team ?? '',
+              teamKnownAgents,
+              new Set<string>(teamSettings.disabledAgents)
+            )
             if (!teamSpec.ok) {
               reply({ ok: false, error: `spawn-team: ${teamSpec.error}` })
               return
