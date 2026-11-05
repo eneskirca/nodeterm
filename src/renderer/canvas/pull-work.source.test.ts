@@ -39,5 +39,9 @@ describe('Work on this PR', () => {
     expect(listener).toContain("mode: 'new'")
     expect(listener).toContain('opener: source.id')
     expect(code(src).match(/pullWorkPrompt\(/g) ?? []).toHaveLength(1)
+    expect(listener).not.toMatch(/pr\.title|pr\.body/)
+    expect(listener).toContain('launchOrSpill(prompt, true, api.files.saveUpload)')
+    // One spill-or-fallback block for both "Work on this" paths.
+    expect(code(src).match(/promptExceedsLineBudget\(/g) ?? []).toHaveLength(1)
   })
 })

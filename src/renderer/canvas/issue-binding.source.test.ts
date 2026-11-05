@@ -162,16 +162,14 @@ describe('Start with agent (issue card)', () => {
     expect(body).toContain('title: `Issue #${start.ref.number}`')
   })
 
-  it('the issue text reaches a prompt only from the issues node, quoted by issueWorkPrompt', () => {
-    // The one exception to the reference-only rule: the issues node's "Work on this" (a user click).
-    // `issueWorkPrompt` (@shared/issues-node) strips control bytes, bounds and marks the text.
+  it('the issues node\'s "Work on this" prompt carries the reference only (issueWorkPrompt)', () => {
     expect(code(src).match(/issueWorkPrompt\(/g) ?? []).toHaveLength(1)
     const listener = code(between('const onWork = async (e: Event): Promise<void> => {', 'window.addEventListener(ISSUE_WORK_EVENT, listener)'))
-    expect(listener).toContain('issueWorkPrompt(ref, d.issue)')
+    expect(listener).toContain('issueWorkPrompt(ref)')
+    expect(listener).not.toMatch(/issue\.title|issue\.body/)
     expect(listener).toContain("n.type === 'issues'")
     // Spilled to a file when too long for a typed line (#706); else the reference-only prompt.
-    expect(listener).toContain('launchPromptFor({ prompt, localFs: !ssh }')
-    expect(listener).toContain('launch = { prompt: issueLaunchPrompt(ref) }')
+    expect(listener).toContain('launchOrSpill(prompt, !ssh, api.files.saveUpload, issueLaunchPrompt(ref))')
     // `opts.launch` is set nowhere else.
     expect(code(src).match(/\blaunch, opener\b/g) ?? []).toHaveLength(1)
   })

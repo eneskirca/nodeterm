@@ -631,7 +631,7 @@ import { OpenLinkSheet } from '../components/OpenLinkSheet'
 import { NEW_PROJECT_KEY, nextSheetAction, type LinkPermissionView } from '../lib/openLinkSheet'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { promptFilePathError } from '@shared/agents/launch'
-import { encodeUtf8Base64, launchPromptFor, promptExceedsLineBudget } from '../lib/promptSpill'
+import { encodeUtf8Base64, launchPromptFor, promptExceedsLineBudget, type PromptSpillIo } from '../lib/promptSpill'
 import { parseTeamSpec } from '../lib/teamSpec'
 import { relativeTime } from '../lib/relativeTime'
 import { AgentIcon } from '../lib/agentIcons'
@@ -1092,14 +1092,23 @@ type ControlReply = { ok: boolean; message?: string; result?: unknown; error?: s
 
 /** How an issue start differs when the issues node's "Work on this" asks for it. */
 type IssueStartOptions = {
-  /** The issues node's own first prompt (`issueWorkPrompt`: the issue's text as marked, untrusted
-   *  data), already spilled to a file when it is too long for a typed line (#706). */
+  /** The issues node's own first prompt (`issueWorkPrompt`: reference and link only), already
+   *  spilled to a file when it is too long for a typed line (#706). */
   launch?: { prompt?: string; promptFile?: string }
   /** The issues node: a rope from it to the new agent. */
   opener?: string
   /** Where the agent opens (no worktree). */
   center?: { x: number; y: number }
 }
+/** A "Work on this" prompt too long for a typed line goes to a file the pane's shell reads (#706).
+ *  When it cannot (an SSH pane, a failed write) the shorter `fallback` is typed instead. */
+async function launchOrSpill(
+  prompt: string, localFs: boolean, saveUpload: PromptSpillIo['saveUpload'], fallback = prompt
+): Promise<{ prompt?: string; promptFile?: string }> {
+  const launch = await launchPromptFor({ prompt, localFs }, { saveUpload, encodeBase64: encodeUtf8Base64 })
+  return !launch.promptFile && promptExceedsLineBudget(launch.prompt) ? { prompt: fallback } : launch
+}
+
 /** An accepted `nodeterm://open` link, as main answered it (prompt possibly spilled to a file). */
 type LinkOpen = Extract<OpenLinkAcceptResult, { ok: true }>['open']
 /** An accepted link waiting for its project to load is dropped after this (see pendingLinkRef). */
@@ -13197,23 +13206,18 @@ export function Canvas() {
   )
 
   // The issues node's "Work on this": the default agent on the issue, beside the node (or in a new
-  // worktree), with the issue's text quoted into its prompt and a rope from the node. A user click
+  // worktree), with the issue's reference in its prompt and a rope from the node. A user click
   // in the node is the only sender; no control verb reaches it.
   useEffect(() => {
     const onWork = async (e: Event): Promise<void> => {
       const d = (e as CustomEvent<IssueWorkRequest>).detail
       const source = nodesRef.current.find((n) => n.id === d?.nodeId && n.type === 'issues')
       const ref = d?.issue ? issueRefFromHtmlUrl(d.issue.htmlUrl, d.issue.number) : undefined
-      const prompt = ref && issueWorkPrompt(ref, d.issue)
+      const prompt = ref && issueWorkPrompt(ref)
       if (!source || !ref || !prompt) return
       const projectId = useProjects.getState().activeProjectId
       const ssh = !!useProjects.getState().getProject(projectId)?.ssh
-      // Too long for a typed line: a file the pane's shell reads (#706). An SSH pane cannot read this
-      // machine's file, so there an over-long prompt falls back to the reference-only one.
-      let launch = await launchPromptFor({ prompt, localFs: !ssh }, {
-        saveUpload: (name, data) => api.files.saveUpload(name, data), encodeBase64: encodeUtf8Base64
-      })
-      if (!launch.promptFile && promptExceedsLineBudget(launch.prompt)) launch = { prompt: issueLaunchPrompt(ref) }
+      const launch = await launchOrSpill(prompt, !ssh, api.files.saveUpload, issueLaunchPrompt(ref))
       // The await above is where a tab switch can land; never start into another project.
       if (useProjects.getState().activeProjectId !== projectId) return
       const agentId = resolveNewNodeAgent(undefined, projectId, useSettings.getState().settings)
@@ -13236,7 +13240,7 @@ export function Canvas() {
 
   // The pull node's "Work on this PR": the PR's head in a FRESH worktree (`pr-<n>-<slug>`, the next
   // free `-k` when taken, never a reuse), a frame bound to it, the default agent inside with the PR
-  // named in its prompt (title and body as marked, untrusted data), and a rope from the pull node so
+  // named in its prompt (reference only; the agent reads the text with gh), and a rope from the pull node so
   // `pr-show` / `pr-propose` work from that agent. A user click in the node is the only sender.
   // "Resolve conflicts with agent" is the same path with `conflict`: the prompt adds the merge task.
   useEffect(() => {
@@ -13286,18 +13290,12 @@ export function Canvas() {
         }
         const { branch, path } = plan.target
         const fork = !!pr.fromFork
-        const promptFor = (text: { title: string; body: string }): string | undefined => pullWorkPrompt({
-          repository: pull.repository, number: n, title: text.title, body: text.body,
-          base: pr.base.ref, head: pr.head.ref, branch, fork, conflict: conflict === true, node: source.id
+        const prompt = pullWorkPrompt({
+          repository: pull.repository, number: n, base: pr.base.ref, head: pr.head.ref, branch, fork, conflict: conflict === true, node: source.id
         })
-        const prompt = promptFor(pr)
         if (!prompt) return
-        // Too long for a typed line: a file the pane's shell reads (#706); SSH never gets here.
-        let launch = await launchPromptFor({ prompt, localFs: true }, {
-          saveUpload: (name, data) => api.files.saveUpload(name, data), encodeBase64: encodeUtf8Base64
-        })
-        // ponytail: a spill that failed drops the quoted text; the agent reads it with gh instead.
-        if (!launch.promptFile && promptExceedsLineBudget(launch.prompt)) launch = { prompt: promptFor({ title: '', body: '' }) ?? '' }
+        // SSH never gets here.
+        const launch = await launchOrSpill(prompt, true, api.files.saveUpload)
         if (useProjects.getState().activeProjectId !== projectId) {
           setNotice({ kind: 'info', text: `The project changed, so nothing was started for PR #${n}.` })
           return
