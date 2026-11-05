@@ -458,3 +458,28 @@ describe('⌘M todo-list card', () => {
     expect(host.querySelectorAll('.term-chat__tool-card')).toHaveLength(1)
   })
 })
+
+describe('⌘M teammate messages', () => {
+  it("draws a teammate's messages as the TUI does: a status line and a folded row, never a bubble", async () => {
+    await mount([
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }], key: 0 },
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'teammate', from: 'pc-02', color: 'green', idle: { reason: 'available', result: 'All green.\nDetails.' } },
+          { kind: 'teammate', from: 'pc-02', color: 'green', text: 'one' },
+          { kind: 'teammate', from: 'pc-02', color: 'green', text: 'two' }
+        ],
+        key: 10
+      }
+    ])
+
+    const rows = [...host.querySelectorAll('.term-chat__teammate')]
+    expect(rows).toHaveLength(2)
+    expect(rows[0].querySelector('summary')?.textContent).toBe('✓Teammate @pc-02 finishedAll green.')
+    expect(rows[1].querySelector('summary')?.textContent).toBe('›2 messages from @pc-02')
+    expect(rows[1].textContent).toContain('one')
+    expect(host.querySelector('.term-chat__teammate')?.closest('.term-chat__bubble')).toBeNull()
+    expect(host.querySelectorAll('.term-chat__bubble')).toHaveLength(1)
+  })
+})

@@ -4256,6 +4256,87 @@ body,
 .term-chat__thinking > .term-chat__text {
   margin-top: 4px;
 }
+/* A teammate's message to the lead (nodes/ChatTeammate.tsx), drawn as Claude Code's TUI draws it: a
+   quiet line on the assistant side, never a bubble. An idle notification is "✓ Teammate @x finished"
+   with a one-line preview of its report; a plain message is "› Message from @x". Both open to the
+   full text. The sender's TUI color is a dot, not the name's color (yellow text is unreadable on the
+   light theme). */
+.term-chat__teammate {
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.term-chat__teammate > summary,
+.term-chat__teammate--line {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+.term-chat__teammate > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.term-chat__teammate > summary::-webkit-details-marker {
+  display: none;
+}
+.term-chat__teammate-pointer {
+  flex: 0 0 auto;
+}
+/* The status text keeps its width and ends in an ellipsis only when the row itself is too narrow;
+   the preview (basis 0) takes what is left. */
+.term-chat__teammate-head {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.term-chat__teammate-from {
+  font-weight: 600;
+  color: var(--text);
+}
+.term-chat__teammate-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border-radius: 50%;
+  vertical-align: 1px;
+}
+.term-chat__teammate-icon {
+  flex: 0 0 auto;
+}
+.term-chat__teammate-icon--available {
+  color: var(--state-success);
+}
+.term-chat__teammate-icon--interrupted {
+  color: var(--state-warning);
+}
+.term-chat__teammate-icon--failed {
+  color: var(--state-error);
+}
+/* The one-line preview (a plain message's summary, or the first line of an idle report): shrinks
+   first and ends in an ellipsis. The report's preview goes once the row is open, since the full
+   report is right under it; a summary is a title and stays. */
+.term-chat__teammate-preview {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+.term-chat__teammate[open] > summary .term-chat__teammate-preview--result {
+  display: none;
+}
+.term-chat__teammate-body {
+  margin: 4px 0 0 14px;
+  color: var(--text);
+}
+.term-chat__teammate-summary {
+  color: var(--muted);
+}
 /* An image the user attached to a prompt (ChatImage): a height-capped thumbnail in the bubble; a click
    drops the cap to show it at full size, still never wider than the bubble. */
 .term-chat__image {

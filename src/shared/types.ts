@@ -3628,6 +3628,22 @@ export type ChatPart =
       data: string
     }
   | {
+      /**
+       * A message from an agent team's teammate (core/chat-teammate.ts): Claude Code records it in the
+       * lead's transcript as a user record, but nobody typed it. Present only on the opt-in `rich`
+       * read; without it the record is one `Agent message` tool part. `text` = a plain message's
+       * markdown body; `idle` = the teammate reporting that its turn ended (then `text` is absent).
+       * `color` is the teammate's TUI color name, as recorded (untrusted: map it, never use it as CSS).
+       */
+      kind: 'teammate'
+      from: string
+      color?: string
+      summary?: string
+      unverified?: boolean
+      text?: string
+      idle?: ChatTeammateIdle
+    }
+  | {
       kind: 'tool'
       name: string
       arg: string
@@ -3650,6 +3666,18 @@ export type ChatPart =
        *  present): a result carried across a page boundary (`unmatchedResults`) is attached by it. */
       id?: string
     }
+
+/** An `idle_notification` from a teammate (`ChatPart` teammate `idle`). Every field is optional:
+ *  the notification names only what the teammate reported. */
+export interface ChatTeammateIdle {
+  reason?: 'available' | 'interrupted' | 'failed'
+  /** The teammate's last direct message, one line. */
+  summary?: string
+  failureReason?: string
+  taskId?: string
+  /** The teammate's report, markdown, capped. */
+  result?: string
+}
 
 /**
  * The change an `Edit` / `Write` tool call asked for (`ChatPart` tool `diff`). Edit's

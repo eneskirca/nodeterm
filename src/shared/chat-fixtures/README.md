@@ -86,6 +86,7 @@ the production paging, not a second implementation of it.
 | `bash-mode` | `!` bash-mode records: `<bash-input>` becomes a tool part named `!` with the command as `arg`; the ONE following record carrying `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>` sets its `result` (non-empty parts joined by `\n`, then the `summarizeResult` cap), including an empty stdout with a stderr. |
 | `meta-turns` | `isMeta` rule 1: a peer hand-back (`promptSource` + `origin.kind:"peer"` + `turnOrigin`), a scheduled wakeup (`turnOrigin:"scheduled"` + `scheduledTaskId`), an auto-continuation (`origin.kind:"auto-continuation"`), a `promptSource`-only, an `origin`-only and a `turnOrigin`-only record (the last two with no `promptSource`, so each field is pinned on its own) are all KEPT; the caveat and a skill body (none of the three fields) are skipped. Three of the kept records then render as system chips (see **System-injected records**): BOTH `origin.kind:"peer"` records — the hand-back and the `origin`-only one — as `Agent message`, and the auto-continuation as `System`; the others stay user messages. |
 | `system-records` | Every rule of **System-injected records**: a full agent completion (nested `<usage>`, a result over three lines), a status + summary completion, a monitor `<event>`, a summary alone (the `notified` result), a repeated `<task-id>` with a summary over the 200-unit cap, a whole element with no `origin`, the same whole element sent by a human (`origin.kind:"human"`, and `promptSource:"typed"` with no `origin`; both stay user messages), two malformed notifications (unknown tags only; plain prose), a message that only MENTIONS the element (stays a user message), a subagent `<agent-message>` hand-back with its frame lines, a `<cross-session-message>` (its `from-name` is the arg), a report over the 16384-unit cap, a peer record with no element, an auto-continuation and a multi-line coordinator prompt. |
+| `teammate-messages` | Rule **2b** of **System-injected records**: an idle notification with a report, one with no fields, a failed one (`failureReason`), a plain message whose summary is escaped (`&quot;`) and whose body quotes the close tag, a record holding two elements (a report, then a message), an unverified sender (`verified="false"`), the same text typed by a human (by `origin` and by `promptSource` alone — both stay user messages), the frame line with no element and an element with no `teammate_id` (both stay user messages). |
 | `pasted-content` | **Pasted content**: a span between typed lines, backtick runs inside (a five-backtick fence) and the same id twice, an array text part beside an image, a pasted `<task-notification>` (stays the user's paste), a close tag with a different id inside a span (content), an empty paste, a same-id open nested inside a span (the span ends at the FIRST close), text that is not the CLI's grammar (no id, an upper-case or three- or five-digit id, a missing newline after the open or before the close: all left as typed) and an unclosed span (left as typed). |
 | `queued-prompts` | **Queued prompts**: a typed prompt queued mid-turn (between a tool result and the reply), one with no `origin`, an array prompt with an image (its text block only), a paste inside one (fenced, as in a typed prompt), and six attachments that stay hidden: a task notification, a peer message (`isMeta`), a coordinator message, a non-human `origin`, a blank prompt and a non-`queued_command` attachment. |
 
@@ -242,6 +243,31 @@ units, `String.prototype.slice(0, n)`, and may split a surrogate pair exactly as
    is dropped. `fromName` = group 1 of `(?:^|\s)from-name="([^"]*)"` matched on group 2 (`""` when
    group 2 is absent or has no match), trimmed. `arg` = the first 200 units of `fromName` when it is
    non-empty, else `firstLine(body)`; `result` = `full(body)`.
+2b. **Agent message** for an agent team's teammate writing to the lead (measured on CLI 2.1.285–2.1.316:
+   no `origin`, no `promptSource`, no `isMeta`) when there is NO kind (`origin` absent — a present
+   `origin`, even `null`, never matches), `promptSource` is UNSET or `"system"`, the string STARTS
+   with one of `Another Claude session sent a message:\n`, `Another Claude session sent a message
+   while you were working:\n`, `A peer session sent a message while you were working:\n`, and at
+   least one element follows. Elements, from the end of that line: skip `\s`; an element starts with
+   `<teammate-message` followed by one `\s`, its attributes run to the first `>`, and it needs a
+   non-empty (trimmed) `teammate_id`; else stop. Attributes are `name="value"` pairs (the first of a
+   name wins); a value's `&quot;` `&apos;` `&amp;` `&lt;` `&gt;` are decoded in ONE pass. The body
+   starts after the `>` (and one `\n` right after it, if any) and ends at the first
+   `</teammate-message>` after which, skipping `\s`, comes the end of the string or the next
+   `<teammate-message`; if no close qualifies, at the LAST `</teammate-message>` (when that lies at
+   or after the body's start, else stop). Parsing stops after an element ended by the fallback or by
+   the end of the string; what follows (the trailer) is dropped. No element → not this rule (rule 4).
+   Per element: `from` = `firstLine(teammate_id)`, `summary` = `firstLine(summary)` when non-blank,
+   `verified="false"` = unverified. The body (trimmed) is an **idle notification** when it starts
+   with `{`, parses as a JSON object, and has `type:"idle_notification"` and a string `from`; then
+   `outcome` = `failed` / `was interrupted` / `finished` for `idleReason` `failed` / `interrupted` /
+   anything else, `failureReason` = its `firstLine` when a non-blank string, `result` = `full` of a
+   non-blank string `result`. Each element's text: idle = `from + " " + outcome`, then
+   `": " + failureReason` when present, then `"\n" + result` when present; plain = `summary + "\n" +
+   body` when both are non-empty, else whichever is (body capped at 16384 units first).
+   `arg` = the first 200 units of the distinct senders in order (`from`, `+ " (unverified)"` when
+   unverified) joined by `", "`; `result` = `full` of the element texts joined by `"\n\n"`. The
+   desktop's opt-in `rich` read draws a `teammate` part per element instead (not on the wire).
 3. **System** (`name:"System"`) when the kind is `auto-continuation` or `coordinator`: the fallback.
 4. Anything else is not a system record, and the rules above apply unchanged.
 
@@ -301,7 +327,7 @@ and the find-bar index emits the same user line. Every other attachment yields n
 
 - **Turn grouping** (`assistantTurnEnds`, `src/renderer/lib/chatThread.ts`): a message that is an
   assistant message with exactly ONE tool part named `Background task`, `Agent message` or `System`
-  (`isSystemRecordMessage`) is a turn BOUNDARY, like a user message: it gets no action row and it
+  — or, on the desktop's `rich` read, only `teammate` parts — (`isSystemRecordMessage`) is a turn BOUNDARY, like a user message: it gets no action row and it
   splits the assistant runs around it, so answer → notification → reply keeps two Copy rows and two
   times. A local-command chip (#991) is not a boundary. The phone copies per message
   (`ChatScreen.copyText`), not per turn, so it has no grouping to mirror today.

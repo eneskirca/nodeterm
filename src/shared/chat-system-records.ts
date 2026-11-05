@@ -13,9 +13,12 @@ export const COMPACTION_TOOL = 'Compaction'
 const SYSTEM_RECORD_TOOLS: ReadonlySet<string> = new Set([BACKGROUND_TASK_TOOL, AGENT_MESSAGE_TOOL, SYSTEM_TOOL, COMPACTION_TOOL])
 
 /** A message the reader made from a system-injected record: an assistant message holding exactly
- *  ONE tool part named Background task / Agent message / System / Compaction. */
+ *  ONE tool part named Background task / Agent message / System / Compaction, or (on the opt-in
+ *  `rich` read) only `teammate` parts — an agent team's teammate writing to the lead. */
 export function isSystemRecordMessage(m: ChatMessage): boolean {
-  if (m.role !== 'assistant' || m.parts.length !== 1) return false
+  if (m.role !== 'assistant' || m.parts.length === 0) return false
+  if (m.parts.every((p) => p.kind === 'teammate')) return true
+  if (m.parts.length !== 1) return false
   const p = m.parts[0]
   return p.kind === 'tool' && SYSTEM_RECORD_TOOLS.has(p.name)
 }
