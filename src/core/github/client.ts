@@ -650,15 +650,7 @@ export class GitHubIssuesClient {
         !body.trim()) {
       throw new GitHubClientError('invalid-request')
     }
-    const response = await this.request(`/repos/${repository}/issues/${issueNumber}/comments`, {
-      method: 'POST',
-      body: JSON.stringify({ body })
-    })
-    const value = object(await this.json(response))
-    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) {
-      throw new GitHubClientError('malformed-response')
-    }
-    return { id: Number(value.id) }
+    return this.postForId(`/repos/${repository}/issues/${issueNumber}/comments`, { body })
   }
 
   /**
@@ -702,20 +694,12 @@ export class GitHubIssuesClient {
         !Array.isArray(comments) || comments.length > MAX_PULL_REVIEW_COMMENTS || !comments.every(isPullLineDraft)) {
       throw new GitHubClientError('invalid-request')
     }
-    const response = await this.request(`/repos/${repository}/pulls/${pullNumber}/reviews`, {
-      method: 'POST',
-      body: JSON.stringify({
-        event: review.event, ...(review.body.trim() ? { body: review.body } : {}), commit_id: review.commitId,
-        ...(comments.length
-          ? { comments: comments.map(({ path, line, side, body }) => ({ path, line, side, body })) }
-          : {})
-      })
+    return this.postForId(`/repos/${repository}/pulls/${pullNumber}/reviews`, {
+      event: review.event, ...(review.body.trim() ? { body: review.body } : {}), commit_id: review.commitId,
+      ...(comments.length
+        ? { comments: comments.map(({ path, line, side, body }) => ({ path, line, side, body })) }
+        : {})
     })
-    const value = object(await this.json(response))
-    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) {
-      throw new GitHubClientError('malformed-response')
-    }
-    return { id: Number(value.id) }
   }
 
   /** The merge methods the repository allows, and whether it allows auto-merge (`GET /repos/{r}`).
@@ -1099,11 +1083,7 @@ export class GitHubIssuesClient {
       const { path, line, side, body: text } = comment.draft
       body = { body: text, commit_id: comment.commitId, path, line, side }
     }
-    const value = object(await this.json(await this.request(`/repos/${repository}/pulls/${pullNumber}/comments`, {
-      method: 'POST', body: JSON.stringify(body)
-    })))
-    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('malformed-response')
-    return { id: Number(value.id) }
+    return this.postForId(`/repos/${repository}/pulls/${pullNumber}/comments`, body)
   }
 
   /** One page of a PR's issue comments (`GET /issues/{n}/comments`), for the Conversation tab. */
@@ -1392,6 +1372,13 @@ export class GitHubIssuesClient {
       throw new GitHubClientError('malformed-response')
     }
     return { ...base, description: item.description }
+  }
+
+  /** POST `body` as JSON to `path`; the created object's id is the whole answer. */
+  private async postForId(path: string, body: unknown): Promise<{ id: number }> {
+    const value = object(await this.json(await this.request(path, { method: 'POST', body: JSON.stringify(body) })))
+    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('malformed-response')
+    return { id: Number(value.id) }
   }
 
   private async request(path: string, init: RequestInit, acceptRedirect = false): Promise<Response> {

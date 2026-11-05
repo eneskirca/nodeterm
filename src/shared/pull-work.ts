@@ -6,12 +6,11 @@
 // `isPullBranchName`, as one argv element of a refspec git builds itself. A fresh worktree only:
 // a taken branch or folder moves to the next `-k`, nothing on disk is reused or overwritten.
 
-import { computeWorktreePath, type WorktreeEntry } from './worktree'
-import { normWorktreePath } from './worktree-reconcile'
-import { sharedWorktreeLocationRefusal } from './worktree-location'
+import type { WorktreeEntry } from './worktree'
 import {
   ISSUE_BRANCH_SUFFIX_MAX,
   issueBranchSlug,
+  worktreeNameSpace,
   type IssueWorktreeBoundGroup,
   type IssueWorktreeTarget,
   type PathProbe
@@ -62,32 +61,15 @@ export type PullWorktreePlan =
 export async function planPullWorktree(input: PullWorktreeInput, pathExists: PathProbe): Promise<PullWorktreePlan> {
   const canonical = pullWorktreeBranch(input.number, input.headRef)
   if (!canonical) return { kind: 'refused', reason: 'That is not a valid pull request number.' }
-  const repoRoot = input.repoRoot.trim()
-  if (!repoRoot) return { kind: 'refused', reason: 'No git repository was found in this project’s folder.' }
-  const pathFor = (branch: string): string => computeWorktreePath(repoRoot, branch, input.template)
-  if (!pathFor(canonical)) {
-    return { kind: 'refused', reason: 'No worktree location could be derived from the worktree path setting. Nothing was created.' }
-  }
-  const location = sharedWorktreeLocationRefusal({
-    path: pathFor(canonical), repoRoot, branch: canonical, sharedBasePath: input.sharedBasePath
-  })
-  if (location) return { kind: 'refused', reason: location }
-
-  const known = new Set<string>()
-  for (const b of input.branches ?? []) known.add(b.toLowerCase())
-  for (const e of input.entries) if (e.branch) known.add(e.branch.toLowerCase())
-  for (const g of input.bound) known.add(g.branch.toLowerCase())
-  for (const r of input.remoteBranches ?? []) {
-    const slash = r.indexOf('/')
-    if (slash > 0 && slash < r.length - 1) known.add(r.slice(slash + 1).toLowerCase())
-  }
-  const paths = new Set([...input.entries.map((e) => e.path), ...input.bound.map((g) => g.path)].map(normWorktreePath))
+  const names = worktreeNameSpace(input, canonical, pathExists)
+  if (names.kind === 'refused') return names
+  const { pathFor, branchTaken, pathTaken } = names
   for (let k = 1; k <= ISSUE_BRANCH_SUFFIX_MAX; k++) {
     const branch = pullWorktreeBranch(input.number, input.headRef, k)
-    if (known.has(branch)) continue
+    if (branchTaken(branch)) continue
     const path = pathFor(branch)
     // A probe that fails is never evidence of absence.
-    if (!path || paths.has(normWorktreePath(path)) || (await pathExists(path).catch(() => true))) continue
+    if (!path || (await pathTaken(path))) continue
     return k === 1 ? { kind: 'create', target: { branch, path } } : { kind: 'create', target: { branch, path }, renamedFrom: canonical }
   }
   return {

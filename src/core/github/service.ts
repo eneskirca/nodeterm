@@ -39,6 +39,7 @@ import type {
   GitHubPullFileContentsResult,
   GitHubPullFilesResult,
   PullFile,
+  PullFileContents,
   PullFileRead,
   PullFileSide,
   PullFilesPage,
@@ -1281,20 +1282,7 @@ export class GitHubIssueService {
       const { client } = captured
       if (!client.getFileAt) return null
       if (!file) return { status: 'ok', contents: { kind: 'unavailable', reason: 'not-in-pull' }, observedAt: this.now() }
-      const side = async (path: string, sha: string): Promise<PullFileRead | PullFileSide> =>
-        this.readWithEpoch(captured, () => client.getFileAt!(repository, path, sha))
-      const [before, after] = await Promise.all([
-        file.status === 'added' ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, mergeBase.sha),
-        file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, head.sha)
-      ])
-      const unavailable = [before, after].find((item) => item.kind === 'unavailable')
-      return {
-        status: 'ok',
-        contents: unavailable?.kind === 'unavailable'
-          ? { kind: 'unavailable', reason: unavailable.reason }
-          : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
-        observedAt: this.now()
-      }
+      return this.pullFileDiff(captured, repository, file, mergeBase.sha, head.sha)
     })
   }
 
@@ -1371,20 +1359,7 @@ export class GitHubIssueService {
       const { client } = captured
       if (!client.getFileAt) return null
       if (!file) return { status: 'ok', contents: { kind: 'unavailable', reason: 'not-in-pull' }, observedAt: this.now() }
-      const side = async (at: string, ref: string): Promise<PullFileRead> =>
-        this.readWithEpoch(captured, () => client.getFileAt!(repository, at, ref))
-      const [before, after] = await Promise.all([
-        file.status === 'added' || !listed.parent ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, listed.parent),
-        file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, sha)
-      ])
-      const unavailable = [before, after].find((item) => item.kind === 'unavailable')
-      return {
-        status: 'ok',
-        contents: unavailable?.kind === 'unavailable'
-          ? { kind: 'unavailable', reason: unavailable.reason }
-          : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
-        observedAt: this.now()
-      }
+      return this.pullFileDiff(captured, repository, file, listed.parent, sha)
     })
   }
 
@@ -1434,21 +1409,33 @@ export class GitHubIssueService {
     return this.pullRead(`since-review-contents\0${commitOid}\0${head}\0${path}`, request, async (captured, repository) => {
       const { client } = captured
       if (!client.getFileAt) return null
-      const side = async (at: string, ref: string): Promise<PullFileRead> =>
-        this.readWithEpoch(captured, () => client.getFileAt!(repository, at, ref))
-      const [before, after] = await Promise.all([
-        file.status === 'added' ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, commitOid),
-        file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, head)
-      ])
-      const unavailable = [before, after].find((item) => item.kind === 'unavailable')
-      return {
-        status: 'ok',
-        contents: unavailable?.kind === 'unavailable'
-          ? { kind: 'unavailable', reason: unavailable.reason }
-          : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
-        observedAt: this.now()
-      }
+      return this.pullFileDiff(captured, repository, file, commitOid, head)
     })
+  }
+
+  /**
+   * Both sides of one changed file: the base at `baseRef`, the head at `headRef`. An added file,
+   * or no `baseRef` (a root commit), reads an empty base; a removed file reads an empty head.
+   * The caller has checked `client.getFileAt`.
+   */
+  private async pullFileDiff(
+    captured: GitHubIssueServiceContext, repository: string,
+    file: Pick<PullFile, 'path' | 'previousPath' | 'status'>, baseRef: string | undefined, headRef: string
+  ): Promise<PullOk & { contents: PullFileContents }> {
+    const side = async (at: string, ref: string): Promise<PullFileRead> =>
+      this.readWithEpoch(captured, () => captured.client.getFileAt!(repository, at, ref))
+    const [before, after] = await Promise.all([
+      file.status === 'added' || !baseRef ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, baseRef),
+      file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, headRef)
+    ])
+    const unavailable = [before, after].find((item) => item.kind === 'unavailable')
+    return {
+      status: 'ok',
+      contents: unavailable?.kind === 'unavailable'
+        ? { kind: 'unavailable', reason: unavailable.reason }
+        : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
+      observedAt: this.now()
+    }
   }
 
   /** The merge base of `base` and `head`, read once per pair through `pullRead`. */

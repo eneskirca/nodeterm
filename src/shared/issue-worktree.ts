@@ -151,16 +151,22 @@ export interface IssueWorktreeInput {
  *  worktree into a folder that is not empty.) */
 export type PathProbe = (path: string) => Promise<boolean>
 
-/**
- * Decide what "Start with agent in a new worktree" does for this issue. Reads the filesystem only
- * through `pathExists`, so the whole matrix is testable without a repository.
- */
-export async function planIssueWorktree(
-  input: IssueWorktreeInput,
+/** What a fresh-worktree planner settles before it tries a name (shared with @shared/pull-work):
+ *  the refusals, the folder a branch gets, and whether a branch or a folder is already taken. */
+export type WorktreeNameSpace =
+  | { kind: 'refused'; reason: string }
+  | {
+      kind: 'ok'
+      pathFor: (branch: string) => string
+      branchTaken: (branch: string) => boolean
+      pathTaken: (path: string) => Promise<boolean>
+    }
+
+export function worktreeNameSpace(
+  input: Omit<IssueWorktreeInput, 'number' | 'title'>,
+  canonical: string,
   pathExists: PathProbe
-): Promise<IssueWorktreePlan> {
-  const canonical = issueWorktreeBranch(input.number, input.title)
-  if (!canonical) return { kind: 'refused', reason: 'That is not a valid issue number.' }
+): WorktreeNameSpace {
   const repoRoot = input.repoRoot.trim()
   if (!repoRoot) return { kind: 'refused', reason: 'No git repository was found in this project’s folder.' }
   const pathFor = (branch: string): string => computeWorktreePath(repoRoot, branch, input.template)
@@ -199,6 +205,22 @@ export async function planIssueWorktree(
     if (entryPaths.has(normWorktreePath(p))) return true
     return pathExists(p).catch(() => true)
   }
+  return { kind: 'ok', pathFor, branchTaken, pathTaken }
+}
+
+/**
+ * Decide what "Start with agent in a new worktree" does for this issue. Reads the filesystem only
+ * through `pathExists`, so the whole matrix is testable without a repository.
+ */
+export async function planIssueWorktree(
+  input: IssueWorktreeInput,
+  pathExists: PathProbe
+): Promise<IssueWorktreePlan> {
+  const canonical = issueWorktreeBranch(input.number, input.title)
+  if (!canonical) return { kind: 'refused', reason: 'That is not a valid issue number.' }
+  const names = worktreeNameSpace(input, canonical, pathExists)
+  if (names.kind === 'refused') return names
+  const { pathFor, branchTaken, pathTaken } = names
   /** The first `base`, `base-2`, `base-3`, … whose branch AND folder are both free. */
   const firstFree = async (fromSuffix: number): Promise<IssueWorktreeTarget | null> => {
     for (let k = fromSuffix; k <= ISSUE_BRANCH_SUFFIX_MAX; k++) {
