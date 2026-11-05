@@ -32,6 +32,7 @@ const READ_TEXT: Record<PullRefusal | PullReadFailure, string> = {
   throttled: 'GitHub is throttling requests. Refresh again in a minute.',
   unreachable: 'GitHub could not be reached. Check the connection, then refresh.',
   'signed-out': 'You are not signed in to GitHub. Sign in from the board\'s GitHub settings.',
+  'not-found': 'GitHub could not find this. It was deleted, or this token can no longer see it.',
   'not-approved': 'This repository is not allowed on this machine. Add the Issues node again to allow it.',
   'repository-mismatch': 'This node points at another repository than this project\'s. Add the Issues node again.',
   'not-configured': 'This project has no GitHub repository. Add an origin remote, then add the Issues node again.'

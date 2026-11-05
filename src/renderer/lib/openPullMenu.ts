@@ -3,7 +3,7 @@
 // and the order are tested without a canvas.
 import type { GitHubControlView } from '@shared/github-issues'
 import type { GitHubPullBoard } from '@shared/github-pull-status'
-import { FAILURE_TEXT, REFUSAL_TEXT } from '../nodes/pull/shared'
+import { FAILURE_TEXT, REFUSAL_TEXT } from '../nodes/pull/readText'
 import type { OpenPullSection } from './addMenuSpec'
 
 /** The add menu's own sentence for a folder with no GitHub remote (its "Pull request…" toast). */

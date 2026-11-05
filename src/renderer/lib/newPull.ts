@@ -42,13 +42,15 @@ const CREATE_PULL_TEXT: Record<Exclude<PullWriteReason, 'not-approved'>, string>
   // A create never gets these (Apply suggestion and Delete branch only).
   'suggestion-stale': 'GitHub refused it. Try again on GitHub.',
   'from-fork': 'GitHub refused it. Try again on GitHub.',
-  'branch-protected': 'GitHub refused it. Try again on GitHub.'
+  'branch-protected': 'GitHub refused it. Try again on GitHub.',
+  'not-found': 'GitHub could not find the repository. It was deleted, or this token can no longer see it.'
 }
 
 /** Why the form could not start: the core's own reason for the read, never a guess. */
 export function pullStartText(reason: PullRefusal | PullReadFailure): string {
   if (reason === 'throttled') return CREATE_PULL_TEXT.throttled
   if (reason === 'signed-out') return CREATE_PULL_TEXT['signed-out']
+  if (reason === 'not-found') return CREATE_PULL_TEXT['not-found']
   if (reason === 'not-approved' || reason === 'repository-mismatch' || reason === 'not-configured') return createPullText('not-approved')
   return CREATE_PULL_TEXT.network
 }

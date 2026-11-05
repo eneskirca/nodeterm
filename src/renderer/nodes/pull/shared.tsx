@@ -10,13 +10,15 @@ import type {
   GitHubPullFilesResult,
   PullMergeMethod,
   PullReadFailure,
-  PullRefusal,
   PullWriteReason,
   PullWriteResult
 } from '@shared/github-pull-detail'
 import type { GitHubPullTimelineResult } from '@shared/github-pull-timeline'
 import type { PullNodeRef } from '@shared/pull-node'
 import type { LinkedAgent } from '../../state/pullAgent'
+import { FAILURE_TEXT, REFUSAL_TEXT } from './readText'
+
+export { FAILURE_TEXT, REFUSAL_TEXT }
 
 export type PullNodeApi = Pick<
   GitHubIssuesApi,
@@ -30,31 +32,16 @@ export type PullNodeApi = Pick<
   'pullCheckLog' | 'rerunFailedJobs' | 'pullWatch' | 'setPullWatch'
 >
 
-/** Each refusal names what is wrong and the one step that fixes it. No request was made. */
-export const REFUSAL_TEXT: Record<PullRefusal, (repository: string) => string> = {
-  'not-approved': () =>
-    'This repository is not approved on this machine. Open the board, then approve the repository in its GitHub settings.',
-  'signed-out': () => 'You are not signed in to GitHub. Open the board, then sign in from its GitHub settings.',
-  'repository-mismatch': (repository) =>
-    `This node points at ${repository}, which is not this project's repository. Open the pull request again from this project's board.`,
-  'not-configured': () =>
-    "This project has no GitHub repository connected. Connect one in the board's GitHub settings."
-}
-
-export const FAILURE_TEXT: Record<PullReadFailure, string> = {
-  throttled: 'GitHub is throttling requests. Refresh again in a minute.',
-  unreachable: 'GitHub could not be reached. Check the connection, then refresh.',
-  'signed-out': 'GitHub refused the token. Sign in again from the board\'s GitHub settings.'
-}
-
 export const STALE_TEXT: Record<PullReadFailure, string> = {
   throttled: 'Throttled by GitHub: showing the last loaded version.',
   unreachable: 'GitHub could not be reached: showing the last loaded version.',
-  'signed-out': 'GitHub refused the token: showing the last loaded version.'
+  'signed-out': 'GitHub refused the token: showing the last loaded version.',
+  'not-found': 'GitHub could not find the pull request: showing the last loaded version.'
 }
 
 /** One sentence per write refusal. */
 export const WRITE_TEXT: Record<PullWriteReason, string> = {
+  'not-found': 'The pull request was not found. It was deleted, or this token can no longer see it.',
   'head-moved': 'The pull request changed since you loaded it, so nothing was merged. It has been reloaded: check the new commits, then merge again.',
   'not-mergeable': 'GitHub says this pull request cannot be merged right now. Check its merge state on GitHub, then try again.',
   'own-pull': 'GitHub does not let you approve or request changes on your own pull request. Leave a comment instead.',

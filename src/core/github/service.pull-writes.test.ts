@@ -216,7 +216,7 @@ describe('GitHubIssueService pull writes', () => {
   it.each([
     [new GitHubClientError('own-pull', 422), 'own-pull'],
     [new GitHubClientError('insufficient-permission', 403), 'forbidden'],
-    [new GitHubClientError('request-failed', 404), 'forbidden'],
+    [new GitHubClientError('request-failed', 404), 'not-found'],
     [new GitHubClientError('request-failed', 401), 'signed-out'],
     [new GitHubClientError('request-failed', 422), 'validation'],
     [new GitHubClientError('rate-limited', 429, 2_000_000), 'throttled'],

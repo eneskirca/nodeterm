@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { createStore, useStore } from 'zustand'
 import type { GitApi, MainDrift } from '@shared/types'
+import { isWindowBackgrounded, subscribeWindowBackgrounded } from '../terminal/window-backgrounded'
 
 /** The badge's poll. The core fetches at most once per this window per repository and backs off
  *  after a failure, so several badges on one repository (project + worktrees) cost one fetch. */
@@ -36,20 +37,34 @@ export async function refreshMainDrift(git: GitApi, cwd: string): Promise<void> 
   }
 }
 
-/** Polls `cwd` every MAIN_DRIFT_POLL_MS while the window is visible; undefined `cwd` = off. */
+/** Polls `cwd` every MAIN_DRIFT_POLL_MS while the window is focused and shown; undefined `cwd` = off.
+ *  Each poll is a `git fetch`, so an unfocused or hidden window pauses it and reads once on return. */
 export function useMainDrift(git: GitApi, cwd: string | undefined): MainDrift | undefined {
   useEffect(() => {
     // ponytail: test fakes of GitApi do not carry mainDrift, so no test ever starts this poll.
     if (!cwd || typeof git.mainDrift !== 'function') return
-    const poke = (): void => {
-      if (document.visibilityState !== 'hidden') void refreshMainDrift(git, cwd)
+    let timer: ReturnType<typeof setInterval> | undefined
+    const stop = (): void => {
+      clearInterval(timer)
+      timer = undefined
     }
-    poke()
-    const t = setInterval(poke, MAIN_DRIFT_POLL_MS)
-    document.addEventListener('visibilitychange', poke)
+    const sync = (): void => {
+      stop()
+      if (document.visibilityState === 'hidden' || !document.hasFocus() || isWindowBackgrounded()) return
+      void refreshMainDrift(git, cwd)
+      timer = setInterval(() => void refreshMainDrift(git, cwd), MAIN_DRIFT_POLL_MS)
+    }
+    sync()
+    window.addEventListener('focus', sync)
+    window.addEventListener('blur', stop)
+    document.addEventListener('visibilitychange', sync)
+    const unsubscribe = subscribeWindowBackgrounded(sync)
     return () => {
-      clearInterval(t)
-      document.removeEventListener('visibilitychange', poke)
+      stop()
+      window.removeEventListener('focus', sync)
+      window.removeEventListener('blur', stop)
+      document.removeEventListener('visibilitychange', sync)
+      unsubscribe()
     }
   }, [git, cwd])
   return useStore(storeFor(git), (s) => (cwd ? s.byCwd[cwd] : undefined))

@@ -114,11 +114,10 @@ import {
 } from '../terminal/window-backgrounded'
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
-import { LazyEditorNode, LazyDiffNode, LazyPullNode } from '../nodes/lazyMonacoNodes'
+import { LazyEditorNode, LazyDiffNode, LazyPullNode, LazyIssuesNode } from '../nodes/lazyMonacoNodes'
 import { PULL_REFRESH_EVENT, pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
 import { NO_GITHUB_REMOTE_TEXT } from '../lib/openPullMenu'
 import { useOpenPullSection } from '../state/openPulls'
-import { IssuesNode } from '../nodes/IssuesNode'
 import { ISSUE_WORK_EVENT, issueWorkPrompt, type IssueWorkRequest } from '@shared/issues-node'
 import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
 import { nodesJoined, usePullAgent } from '../state/pullAgent'
@@ -2441,7 +2440,7 @@ export function Canvas() {
       editor: withNodeBoundary(LazyEditorNode),
       diff: withNodeBoundary(LazyDiffNode),
       pull: withNodeBoundary(LazyPullNode),
-      issues: withNodeBoundary(IssuesNode),
+      issues: withNodeBoundary(LazyIssuesNode),
       subagent: withNodeBoundary(SubagentNode),
       loop: withNodeBoundary(LoopNode),
       dino: withNodeBoundary(DinoNode),

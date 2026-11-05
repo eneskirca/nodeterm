@@ -57,7 +57,7 @@ describe('reads', () => {
 
   // Bug: service.ts:299 pullReadFailure folds a 404 (PR deleted, or no access) into 'unreachable',
   // so the node tells the user to check the connection for a pull request that is gone.
-  it.fails('a deleted pull request (404) is not reported as a connection problem', async () => {
+  it('a deleted pull request (404) is not reported as a connection problem', async () => {
     const { service } = harness({}, new GitHubClientError('request-failed', 404))
     const result = await service.pullDetail(at)
     expect(result.status === 'failed' && result.reason).not.toBe('unreachable')
@@ -70,7 +70,7 @@ describe('reads', () => {
 
   // Bug: service.ts:1239 pages files until 300 are held; a page that brings none but names a next page
   // (a buggy or hostile answer) never ends the loop. Pinned with a fake that gives up after 10 pages.
-  it.fails('a file list that names a next page but brings no files stops by itself', async () => {
+  it('a file list that names a next page but brings no files stops by itself', async () => {
     let pages = 0
     const { service } = harness({
       listPullFiles: async (): Promise<PullFilesPage> => {
@@ -107,7 +107,7 @@ const WRITES: Array<[string, (s: GitHubIssueService) => Promise<unknown>]> = [
 const FAILURES: Array<[string, unknown, string]> = [
   ['401', new GitHubClientError('request-failed', 401), 'signed-out'],
   ['403 no write access', new GitHubClientError('insufficient-permission', 403), 'forbidden'],
-  ['404 PR gone or hidden', new GitHubClientError('request-failed', 404), 'forbidden'],
+  ['404 PR gone or hidden', new GitHubClientError('request-failed', 404), 'not-found'],
   ['429 rate limit', new GitHubClientError('rate-limited', 429, 2_000_000), 'throttled'],
   ['403 primary rate limit', new GitHubClientError('rate-limited', 403, 2_000_000, 'core'), 'throttled'],
   ['offline', new GitHubClientError('request-failed'), 'network'],

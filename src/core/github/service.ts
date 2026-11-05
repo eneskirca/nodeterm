@@ -300,6 +300,7 @@ const PULL_REFUSALS: Partial<Record<GitHubHostError['code'], PullRefusal>> = {
 function pullReadFailure(error: unknown): { reason: PullReadFailure; retryAt?: number } {
   const failure = classifyGitHubFailure(error)
   if (failure.kind === 'unauthorized') return { reason: 'signed-out' }
+  if (failure.kind === 'not-found') return { reason: 'not-found' }
   if (failure.kind === 'rate-limited') {
     return failure.retryAt !== undefined ? { reason: 'throttled', retryAt: failure.retryAt } : { reason: 'throttled' }
   }
@@ -313,14 +314,14 @@ function pullRefusalOf(error: unknown): PullRefusal | undefined {
 }
 
 /** Why a pull write that reached GitHub (or the coordinator) did not land. A write has answers a
- *  read never gets (own-pull, a 403/404 that means "may not write", a 422); everything else is
+ *  read never gets (own-pull, a 403 that means "may not write", a 422); everything else is
  *  decided by `classifyGitHubFailure`, as for reads. */
 function pullWriteFailure(error: unknown): PullWriteReason {
   const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
   if (code === 'own-pull') return 'own-pull'
   if (code === 'suggestion-stale' || code === 'from-fork') return code
-  // A write the token may not make: a 403 that is not a rate limit, or GitHub's 404 for "no access".
-  if (code === 'insufficient-permission' || (code === 'request-failed' && (status === 403 || status === 404))) {
+  // A write the token may not make: a 403 that is not a rate limit.
+  if (code === 'insufficient-permission' || (code === 'request-failed' && status === 403)) {
     return 'forbidden'
   }
   if (code === 'request-failed' && status === 422) return 'validation'
@@ -329,6 +330,7 @@ function pullWriteFailure(error: unknown): PullWriteReason {
   if (code === 'request-failed' && status === 405) return 'not-mergeable'
   const failure = classifyGitHubFailure(error)
   if (failure.kind === 'unauthorized') return 'signed-out'
+  if (failure.kind === 'not-found') return 'not-found'
   if (failure.kind === 'rate-limited') return 'throttled'
   return 'network'
 }
@@ -1241,7 +1243,8 @@ export class GitHubIssueService {
         const next: number = page
         const result = await this.readWithEpoch(captured, () => client.listPullFiles!(repository, pullNumber, next))
         files.push(...result.files)
-        page = result.nextPage
+        // An empty page ends the list even if it names a next one, or a bad answer loops forever.
+        page = result.files.length ? result.nextPage : undefined
       }
       // Only the Viewed boxes use it: a failed read leaves them unknown, never fails the tab.
       const readViewed = client.pullViewedStates?.bind(client)

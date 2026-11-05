@@ -48,8 +48,9 @@ export type GitHubRepoCollaboratorsResult =
  *  the hardened avatar fetcher; the renderer never loads a remote image. A missing key = fallback letter. */
 export type PullAvatarDataUrls = Record<string, string>
 
-/** Why a read produced no fresh answer. `signed-out` only for an answer GitHub gave about the token. */
-export type PullReadFailure = 'throttled' | 'unreachable' | 'signed-out'
+/** Why a read produced no fresh answer. `signed-out` only for an answer GitHub gave about the token;
+ *  `not-found` = GitHub's 404 (deleted, or no longer visible to this token). */
+export type PullReadFailure = 'throttled' | 'unreachable' | 'signed-out' | 'not-found'
 
 /** Why no request was made at all. Each has a named fix in the node. */
 export type PullRefusal = 'not-approved' | 'signed-out' | 'repository-mismatch' | 'not-configured'
@@ -201,6 +202,8 @@ export type PullWriteReason =
   | 'suggestion-stale' | 'from-fork'
   /** Delete head branch: GitHub refused the delete (a protected branch, or one already gone). */
   | 'branch-protected'
+  /** GitHub's 404: the pull request was deleted, or this token can no longer see it. */
+  | 'not-found'
 
 /** How a merge from the node lands. The repository decides which ones it allows. */
 export type PullMergeMethod = 'merge' | 'squash' | 'rebase'

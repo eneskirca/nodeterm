@@ -47,6 +47,8 @@ const item = (text: string) =>
 
 beforeEach(() => {
   resetSessionsForTest()
+  // The poll runs only in a focused window; jsdom's document never has focus.
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true)
   window.nodeTerminal = {} as NodeTerminalApi
   host = document.createElement('div')
   document.body.append(host)

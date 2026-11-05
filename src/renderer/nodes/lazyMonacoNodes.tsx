@@ -10,6 +10,8 @@ const EditorInner = lazy(() => import('./EditorNode').then((m) => ({ default: m.
 const DiffInner = lazy(() => import('./DiffNode').then((m) => ({ default: m.DiffNode })))
 // The pull request node joins this group: its Files tab shows a Monaco diff (ticket 03).
 const PullInner = lazy(() => import('./PullNode').then((m) => ({ default: m.PullNode })))
+// The issues node shares the pull node's timeline and stylesheet, so it loads on first mount too.
+const IssuesInner = lazy(() => import('./IssuesNode').then((m) => ({ default: m.IssuesNode })))
 
 function LoadingBody() {
   return (
@@ -51,6 +53,14 @@ export function LazyPullNode(props: NodeProps<CanvasNode>) {
   return (
     <Suspense fallback={<LoadingBody />}>
       <PullInner {...props} />
+    </Suspense>
+  )
+}
+
+export function LazyIssuesNode(props: NodeProps<CanvasNode>) {
+  return (
+    <Suspense fallback={<LoadingBody />}>
+      <IssuesInner {...props} />
     </Suspense>
   )
 }
