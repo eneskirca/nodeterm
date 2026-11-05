@@ -1,4 +1,5 @@
 import os from 'os'
+import { parseControlScope, type ControlScope } from './control-scope'
 import path from 'path'
 import {
   parseTrustedNets,
@@ -57,6 +58,12 @@ export type ServerConfig = {
    * NODETERM_CANVAS_CONTROL discovery bit injected by HookServer.
    */
   canvasControl?: boolean
+  /**
+   * Which nodes a canvas-control caller may read and act on (src/server/control-scope.ts):
+   * `creator` (default) or `project`. Environment: NODETERM_SERVER_CONTROL_SCOPE; CLI:
+   * --control-scope. Only meaningful with canvas control enabled.
+   */
+  controlScope?: ControlScope
   /**
    * Reverse-proxy SSO trust (issue #29): requests whose TCP peer is inside `nets` and
    * which carry `header` (non-empty) are authenticated without a session cookie.
@@ -216,6 +223,10 @@ export function resolveConfig(env: NodeJS.ProcessEnv, argv: string[]): ServerCon
     args['canvas-control'] !== undefined
       ? truthy(args['canvas-control'])
       : truthy(env.NODETERM_SERVER_CANVAS_CONTROL)
+  if (args['control-scope'] === true) {
+    throw new Error('--control-scope needs a value: creator or project')
+  }
+  const controlScope = parseControlScope(pick('control-scope', 'NODETERM_SERVER_CONTROL_SCOPE', ''))
 
   // Headless binds nothing, so the "plain HTTP on a public interface" hazard the loopback refusal
   // guards against does not apply — a stray NODETERM_HOST must not fail a headless boot.
@@ -292,6 +303,7 @@ export function resolveConfig(env: NodeJS.ProcessEnv, argv: string[]): ServerCon
     ...(trustProxyRefused !== undefined ? { trustProxyRefused } : {}),
     ...(publicOrigin !== undefined ? { publicOrigin } : {}),
     headless,
-    canvasControl
+    canvasControl,
+    controlScope
   }
 }
