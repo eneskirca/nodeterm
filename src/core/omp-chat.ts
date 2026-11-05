@@ -161,8 +161,11 @@ export function parseOmpChat(buf: string, opts?: { thinking?: boolean }): OmpCha
       }
       if (parts.length) messages.push({ role: 'assistant', parts, ...stamped })
     } else if ('role' in msg && msg.role === 'toolResult') {
+      // An orphan result — its call sits above the capped-tail window (or mid-write). Skipping it
+      // must never end the parse: the tail of a long session can BEGIN with one, and stopping
+      // there would hand the panel a found-but-empty conversation.
       const tool = 'toolCallId' in msg && typeof msg.toolCallId === 'string' ? toolById.get(msg.toolCallId) : undefined
-      if (!tool) break
+      if (!tool) continue
       const s = summarizeResult(textOf(msg.content))
       if (s) tool.result = s
     }

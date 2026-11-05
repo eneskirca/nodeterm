@@ -131,11 +131,34 @@ describe('parseOmpChat', () => {
   it('carries the newest assistant model', () => {
     expect(parseOmpChat(buf).model).toBe('zai/glm-4.7')
   })
+
+  it('skips an orphan tool result without ending the parse — a capped tail can begin with one', () => {
+    // The call for call_orphan sits ABOVE the tail window; everything after must survive.
+    const orphanBuf = [
+      line({
+        type: 'message',
+        id: 'orphan1',
+        parentId: 'gone',
+        timestamp: '2026-11-02T18:00:00.000Z',
+        message: { role: 'toolResult', toolCallId: 'call_orphan', toolName: 'bash', content: [{ type: 'text', text: 'output from before the window' }], isError: false }
+      }),
+      line({
+        type: 'message',
+        id: 'after1',
+        parentId: 'orphan1',
+        timestamp: '2026-11-02T18:00:01.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'всё ещё здесь' }] }
+      })
+    ].join('\n')
+    const { messages } = parseOmpChat(orphanBuf)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ role: 'user', parts: [{ kind: 'text', text: 'всё ещё здесь' }] })
+  })
 })
 
 describe('readOmpChat', () => {
   it('serves the located session locally, paged reads included but never paging', async () => {
-    const paged = await readOmpChat({ sessionId: SID }, { maxBytes: 65536, thinking: false, rich: false })
+    const paged = await readOmpChat({ sessionId: SID }, { maxBytes: 65536, before: null })
     expect(paged.found).toBe(true)
     expect(paged.olderCursor).toBeNull()
     expect(paged.model).toBe('zai/glm-4.7')
@@ -145,7 +168,7 @@ describe('readOmpChat', () => {
   })
 
   it('answers unreadable/not-found for a remote node before touching this disk', async () => {
-    const paged = await readOmpChat({ sessionId: SID, remoteOnly: true }, { maxBytes: 4096, thinking: false, rich: false })
+    const paged = await readOmpChat({ sessionId: SID, remoteOnly: true }, { maxBytes: 4096, before: null })
     expect(paged).toMatchObject({ found: false, unreadable: true, olderCursor: null })
     const legacy = await readOmpChat({ sessionId: SID, remoteOnly: true }, null)
     expect(legacy).toEqual({ messages: [], found: false })
@@ -153,7 +176,7 @@ describe('readOmpChat', () => {
 
   it('maps a local miss to plain not-found (unreadable means remote)', async () => {
     expect(await readOmpChat({ sessionId: '01adead-beef-0000-0000-000000000000' }, null)).toEqual({ messages: [], found: false })
-    const paged = await readOmpChat({ sessionId: '01adead-beef-0000-0000-000000000000' }, { maxBytes: 4096, thinking: false, rich: false })
+    const paged = await readOmpChat({ sessionId: '01adead-beef-0000-0000-000000000000' }, { maxBytes: 4096, before: null })
     expect(paged.found).toBe(false)
     expect(paged.unreadable).toBeUndefined()
   })
