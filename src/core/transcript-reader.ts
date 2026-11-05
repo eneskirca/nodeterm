@@ -10,6 +10,7 @@ import { linkedClaudeConfigDirFor } from './claude-config-dir'
 import { platform } from './platform'
 import { capText, toolBody } from './chat-tool-body'
 import { isRecord } from '../shared/is-record'
+import { CLAUDE_TOOL_INTERRUPT_MARKER, claudeInterruptMarkerOf } from '../shared/agents/claude-interrupt'
 import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
 import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../shared/chat-command'
 import {
@@ -349,6 +350,17 @@ export function classifySystemRecord(
   return null
 }
 
+/** What a tool call cancelled by an interrupt shows as its result (`ChatParseOptions.rich`). */
+export const INTERRUPTED_TOOL_RESULT = 'Interrupted'
+
+/** The result Claude Code writes for a tool call the user cancelled or refused. MEASURED on 2.1.285
+ *  (`__fixtures__/claude/interrupt-capture.json`): an `is_error` tool_result starting with this. */
+const TOOL_REJECTION_PREFIX = "The user doesn't want to proceed with this tool use."
+
+function isToolRejection(c: { is_error?: unknown; content?: unknown }): boolean {
+  return c.is_error === true && summarizeResult(c.content).startsWith(TOOL_REJECTION_PREFIX)
+}
+
 /** A system record's tool part (`result` only when non-empty). */
 function systemPart(r: SystemRecord): Extract<ChatPart, { kind: 'tool' }> {
   const part: Extract<ChatPart, { kind: 'tool' }> = { kind: 'tool', name: r.name, arg: r.arg }
@@ -612,6 +624,9 @@ function parseChatRecords(
   // The stamp of the newest `user` record so far, hidden meta lines included: when the request a
   // thinking record answers was made, so its `ms` (see the type). Read only on the opt-in branch.
   let lastUserAt: number | undefined
+  // The tool part the LAST user/assistant record rejected (Claude's canned "doesn't want to proceed"
+  // result), for an interrupt marker right after it. Read only on the opt-in branch.
+  let rejectedTool: Extract<ChatPart, { kind: 'tool' }> | null = null
   const push = (m: ChatMessage, offset: number): void => {
     awaitingOutput = null
     // `at` rides BOTH paths (additive): the time the line was written, for the thread's relative
@@ -654,6 +669,17 @@ function parseChatRecords(
       continue
     }
     if (opts?.rich && o.type === 'user' && o.isCompactSummary === true) continue
+    // Opt-in (see `ChatParseOptions.rich`): an interrupt marker is Claude's, not the user's words.
+    // A tool call it cancelled was answered just before with a canned rejection ("The user doesn't
+    // want to proceed with this tool use…"), which reads as the tool's output; it says Interrupted.
+    const interrupt = opts?.rich && o.type === 'user' ? claudeInterruptMarkerOf(content) : null
+    if (interrupt !== null) {
+      if (interrupt === CLAUDE_TOOL_INTERRUPT_MARKER && rejectedTool) rejectedTool.result = INTERRUPTED_TOOL_RESULT
+      rejectedTool = null
+      push({ role: 'assistant', parts: [{ kind: 'interrupt' }] }, offset)
+      continue
+    }
+    if (o.type === 'user' || o.type === 'assistant') rejectedTool = null
     if (o.type === 'assistant' && Array.isArray(content)) {
       const parts: ChatPart[] = []
       for (const c of content as Array<{
@@ -707,6 +733,7 @@ function parseChatRecords(
         tool_use_id?: string
         content?: unknown
         source?: unknown
+        is_error?: unknown
       }>) {
         if (!c || typeof c !== 'object') continue
         // A non-string `text` is passed through as before; only a string is a paste to expand.
@@ -720,6 +747,7 @@ function parseChatRecords(
           const s = summarizeResult(c.content)
           if (tool) {
             if (s) tool.result = s
+            if (opts?.rich && isToolRejection(c)) rejectedTool = tool
           } else if (paged && s && typeof c.tool_use_id === 'string' && c.tool_use_id) {
             // Its tool_use is in an OLDER window (claude writes the call before its result, so it
             // can never be in a newer one). Carried so the renderer can attach it later.

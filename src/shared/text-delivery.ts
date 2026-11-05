@@ -27,3 +27,21 @@ export const isChatPromptBlocked = (r: ChatPromptResult): r is ChatPromptBlocked
  */
 export type EmptyPromptRefusal = 'unsupported' | 'draft' | 'no-prompt' | 'unknown' | 'not-submitted' | 'failed'
 export type EmptyPromptResult = { sent: true } | { sent: false; reason: EmptyPromptRefusal }
+
+/**
+ * Why Esc from the ⌘M chat view (`pty.interruptChat`) did not reach the agent. Every refusal is decided
+ * before the Esc is written.
+ * - `unsupported` — not an agent whose interrupt and screen we have measured (claude only).
+ * - `dialog` — the agent's own dialog owns the keyboard (Esc would cancel it), or no input box is on
+ *   screen. `dialog` carries its text when one was recognized.
+ * - the rest are `sendPaneKeys`'s: the pane could not be reached or typed into.
+ */
+export type ChatInterruptRefusal = 'unsupported' | 'dialog' | 'not-connected' | 'unsupported-backend' | 'no-ssh' | 'failed'
+/**
+ * `restored` is the prompt Claude put back into its own input box when the Esc landed before the
+ * reply started, taken back out of it (the box is cleared) so the chat view can put it in its own
+ * composer. null when nothing was put back, or when it could not be taken out cleanly.
+ */
+export type ChatInterruptResult =
+  | { sent: true; restored: string | null }
+  | { sent: false; reason: ChatInterruptRefusal; dialog?: string | null }
