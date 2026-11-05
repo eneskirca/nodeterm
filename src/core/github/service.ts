@@ -1989,6 +1989,8 @@ export class GitHubIssueService {
   private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
     const kinds = new Set(['detail', 'conversation', 'files', 'commits', 'issue-conversation', 'timeline', 'issue-timeline'])
     const suffix = `\0${projectId}\0${repository}\0${pullNumber}`
+    // The checks read carries the review state the lead button reads (readiness.ts nextStep).
+    this.checkReads.delete(`${projectId}\0${pullNumber}`)
     for (const key of [...this.pullReads.keys()]) {
       if (!key.endsWith(suffix)) continue
       const kind = key.slice(0, -suffix.length)

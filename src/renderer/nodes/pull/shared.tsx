@@ -36,12 +36,12 @@ export const STALE_TEXT: Record<PullReadFailure, string> = {
   throttled: 'Throttled by GitHub: showing the last loaded version.',
   unreachable: 'GitHub could not be reached: showing the last loaded version.',
   'signed-out': 'GitHub refused the token: showing the last loaded version.',
-  'not-found': 'GitHub could not find the pull request: showing the last loaded version.'
+  'not-found': 'GitHub could not find it: showing the last loaded version.'
 }
 
 /** One sentence per write refusal. */
 export const WRITE_TEXT: Record<PullWriteReason, string> = {
-  'not-found': 'The pull request was not found. It was deleted, or this token can no longer see it.',
+  'not-found': 'GitHub could not find what this acts on. It was deleted, or this token can no longer see it.',
   'head-moved': 'The pull request changed since you loaded it, so nothing was merged. It has been reloaded: check the new commits, then merge again.',
   'not-mergeable': 'GitHub says this pull request cannot be merged right now. Check its merge state on GitHub, then try again.',
   'own-pull': 'GitHub does not let you approve or request changes on your own pull request. Leave a comment instead.',

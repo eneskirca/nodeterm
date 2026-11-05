@@ -37,6 +37,8 @@ class Client implements GitHubIssuesClientLike {
     if (this.fail) throw this.fail
     return { id: 3 }
   }
+  checkReads = 0
+  async pullRequestChecks(): Promise<{ status: 'no-checks' }> { this.checkReads += 1; return { status: 'no-checks' } }
   async reviewPull(
     repository: string, pullNumber: number,
     review: { event: PullReviewEvent; body: string; commitId: string; comments?: PullLineDraft[] }
@@ -121,6 +123,14 @@ function harness(contextError?: { code: string }) {
 const at = { projectId: 'p', repository: 'o/r', pullNumber: 7 }
 
 describe('GitHubIssueService pull writes', () => {
+  it('a landed review drops the held checks read, so the lead button sees the new review state', async () => {
+    const { client, service } = harness()
+    await service.pullChecks({ projectId: 'p', pullNumber: 7 })
+    expect(await service.reviewPull({ ...at, event: 'APPROVE', body: '', headSha: 'a'.repeat(40) })).toEqual({ ok: true })
+    await service.pullChecks({ projectId: 'p', pullNumber: 7 })
+    expect(client.checkReads).toBe(2)
+  })
+
   it('comments through the issue-comment call without label-mapping approval', async () => {
     const { client, service } = harness()
     expect(await service.commentOnPull({ ...at, body: 'Looks good' })).toEqual({ ok: true })

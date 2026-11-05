@@ -50,21 +50,6 @@
   gap: 6px;
   margin-right: 6px;
 }
-.pull-avatar {
-  flex: none;
-  border-radius: 50%;
-  object-fit: cover;
-  box-shadow: 0 0 0 1px rgba(var(--tint-rgb), 0.16);
-}
-.pull-avatar--letter {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(var(--tint-rgb), 0.15);
-  color: var(--text-strong);
-  font-weight: 700;
-  line-height: 1;
-}
 /* A+ header: the PR at a glance above the tabs, then the sticky tab bar under it. */
 .pull-head {
   margin: -12px -14px 0;

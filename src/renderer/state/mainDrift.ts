@@ -48,21 +48,24 @@ export function useMainDrift(git: GitApi, cwd: string | undefined): MainDrift | 
       clearInterval(timer)
       timer = undefined
     }
+    // Focus is asked per tick, not tracked by blur: focus moving into a webview may never fire the
+    // window's focus event again, and a blur-stopped poll would then stay paused.
+    const tick = (): void => {
+      if (document.hasFocus()) void refreshMainDrift(git, cwd)
+    }
     const sync = (): void => {
       stop()
-      if (document.visibilityState === 'hidden' || !document.hasFocus() || isWindowBackgrounded()) return
-      void refreshMainDrift(git, cwd)
-      timer = setInterval(() => void refreshMainDrift(git, cwd), MAIN_DRIFT_POLL_MS)
+      if (document.visibilityState === 'hidden' || isWindowBackgrounded()) return
+      tick()
+      timer = setInterval(tick, MAIN_DRIFT_POLL_MS)
     }
     sync()
     window.addEventListener('focus', sync)
-    window.addEventListener('blur', stop)
     document.addEventListener('visibilitychange', sync)
     const unsubscribe = subscribeWindowBackgrounded(sync)
     return () => {
       stop()
       window.removeEventListener('focus', sync)
-      window.removeEventListener('blur', stop)
       document.removeEventListener('visibilitychange', sync)
       unsubscribe()
     }

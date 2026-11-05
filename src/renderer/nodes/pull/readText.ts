@@ -17,5 +17,5 @@ export const FAILURE_TEXT: Record<PullReadFailure, string> = {
   throttled: 'GitHub is throttling requests. Refresh again in a minute.',
   unreachable: 'GitHub could not be reached. Check the connection, then refresh.',
   'signed-out': 'GitHub refused the token. Sign in again from the board\'s GitHub settings.',
-  'not-found': 'The pull request was not found. It was deleted, or this token can no longer see it.'
+  'not-found': 'GitHub could not find it. It was deleted, or this token can no longer see it.'
 }
