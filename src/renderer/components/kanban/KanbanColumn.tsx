@@ -70,7 +70,8 @@ export const KanbanColumn = memo(function KanbanColumn({
       if (!trigger || !menu) return
 
       const triggerRect = trigger.getBoundingClientRect()
-      const width = Math.min(triggerRect.width, Math.max(0, window.innerWidth - 16))
+      const minW = triggerRect.width > 0 ? Math.max(triggerRect.width, 180) : triggerRect.width
+      const width = Math.min(minW, Math.max(0, window.innerWidth - 16))
       const left = Math.max(8, Math.min(triggerRect.left, window.innerWidth - width - 8))
       const below = triggerRect.bottom + 4
 
@@ -130,10 +131,18 @@ export const KanbanColumn = memo(function KanbanColumn({
 
   return (
     <div
-      className={`kanban-col${column ? '' : ' kanban-col--ungrouped'}${dragOverCount > 0 ? ' kanban-col--drop' : ''}`}
+      className={`kanban-col${column ? '' : ' kanban-col--ungrouped'}${count === 0 ? ' kanban-col--empty' : ''}${dragOverCount > 0 ? ' kanban-col--drop' : ''}`}
       onDragOver={(e) => e.preventDefault()}
       onDragEnter={() => setDragOverCount((c) => c + 1)}
-      onDragLeave={() => setDragOverCount((c) => Math.max(0, c - 1))}
+      onDragLeave={(e) => {
+        if (e.relatedTarget instanceof Node && !e.currentTarget.contains(e.relatedTarget)) {
+          setDragOverCount(0)
+        } else {
+          setDragOverCount((c) => Math.max(0, c - 1))
+        }
+      }}
+      onDropCapture={() => setDragOverCount(0)}
+      onDragEndCapture={() => setDragOverCount(0)}
       onDrop={(e) => {
         e.preventDefault()
         setDragOverCount(0)

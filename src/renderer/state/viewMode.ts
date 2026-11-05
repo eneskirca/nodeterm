@@ -12,8 +12,10 @@ import { issueUrl, type IssueRef } from '@shared/github-issue-ref'
 
 export const PROJECT_VIEW_KEY = 'nodeterm.projectView'
 export const GLOBAL_KANBAN_KEY = 'nodeterm.globalKanban'
+export const KANBAN_LAYOUT_KEY = 'nodeterm.kanbanLayout'
 
 export type ProjectView = 'canvas' | 'kanban'
+export type KanbanLayout = 'vertical' | 'horizontal'
 
 /** Parses the persisted map, keeping only valid canvas/kanban entries. Exported for tests. */
 export function parseViewMap(raw: string | null): Record<string, ProjectView> {
@@ -48,6 +50,11 @@ interface ViewModeState {
    *  board. Omni is a scope of the kanban side, not a third view — see `toggleBoardView`. */
   globalKanban: boolean
   setGlobalKanban(on: boolean): void
+  /** Column layout orientation on Kanban boards: 'vertical' (default, fits window width without
+   *  horizontal scroll) or 'horizontal' (classic side-by-side scrolling columns). */
+  kanbanLayout: KanbanLayout
+  setKanbanLayout(layout: KanbanLayout): void
+  toggleKanbanLayout(): void
   /** Which swimlane is currently highlighted in the global overview (jump target). */
   highlightedSwimlaneId: string | null
   setHighlightedSwimlaneId(id: string | null): void
@@ -99,11 +106,32 @@ function readGlobalKanban(): boolean {
 function saveGlobalKanban(v: boolean): void {
   try { writeLocal(GLOBAL_KANBAN_KEY, v ? '1' : '0') } catch { /* ignore */ }
 }
+function readKanbanLayout(): KanbanLayout {
+  try {
+    return readLocal(KANBAN_LAYOUT_KEY) === 'horizontal' ? 'horizontal' : 'vertical'
+  } catch { return 'vertical' }
+}
+function saveKanbanLayout(v: KanbanLayout): void {
+  try { writeLocal(KANBAN_LAYOUT_KEY, v) } catch { /* ignore */ }
+}
 
 export const useViewMode = create<ViewModeState>((set) => ({
   viewByProject: parseViewMap(readLocal(PROJECT_VIEW_KEY)),
   defaultView: 'canvas',
   globalKanban: readGlobalKanban(),
+  kanbanLayout: readKanbanLayout(),
+  setKanbanLayout: (layout) =>
+    set((s) => {
+      if (s.kanbanLayout === layout) return s
+      saveKanbanLayout(layout)
+      return { kanbanLayout: layout }
+    }),
+  toggleKanbanLayout: () =>
+    set((s) => {
+      const next: KanbanLayout = s.kanbanLayout === 'vertical' ? 'horizontal' : 'vertical'
+      saveKanbanLayout(next)
+      return { kanbanLayout: next }
+    }),
   highlightedSwimlaneId: null,
   setHighlightedSwimlaneId: (id) => set({ highlightedSwimlaneId: id }),
   setDefaultView: (v) => set((s) => (s.defaultView === v ? s : { defaultView: v })),
