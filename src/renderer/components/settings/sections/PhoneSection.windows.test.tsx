@@ -80,6 +80,23 @@ describe('PhoneSection on a relay-only (Windows) host', () => {
     expect(text).toMatch(/administrators_authorized_keys/)
   })
 
+  it('says beside the QR that this first pairing needs the same network, and only then', async () => {
+    stubBridge({ sshKey: false, relayPlan: 'ok' })
+    expect(await startPairing()).toMatch(/same Wi-Fi network.*connects from anywhere/)
+  })
+
+  it('has no network note while the QR is withheld', async () => {
+    stubBridge({ sshKey: false, relayPlan: 'off' })
+    expect(await startPairing()).not.toMatch(/same Wi-Fi network/)
+  })
+
+  it('promises nothing about "anywhere" on an SSH host pairing LAN-only', async () => {
+    stubBridge({ sshKey: true, sshOpen: true, relayPlan: 'off' })
+    const text = await startPairing()
+    expect(text).toMatch(/same Wi-Fi network/)
+    expect(text).not.toMatch(/connects from anywhere/)
+  })
+
   it('does not claim a key-based connection once paired', async () => {
     stubBridge({ sshKey: false, relayPlan: 'ok' })
     await startPairing()
