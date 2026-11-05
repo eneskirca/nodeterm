@@ -3296,10 +3296,24 @@ export interface SessionMemoryRow {
   /** Everything below it (MCP servers, headless browsers, …). */
   childrenMb: number
   childCount: number
+  /** The whole tree: the pane's own process plus everything below it. */
   totalMb: number
+  /** The biggest single process in the tree, pane process included. Part of `totalMb`. */
+  largestMb: number
+  /** Its name, cleaned for display (`processLabel`). Absent when the table carried no name. */
+  largestName?: string
   /** `#{pane_current_command}` — the agent/shell label. */
   command: string
 }
+
+/**
+ * What a sweep's numbers are, because the three measures answer differently for the same process:
+ * on a Mac an idle MCP server measured 242 MB of footprint and 4 MB of rss (most of it compressed).
+ *  - `footprint`: macOS phys_footprint, Activity Monitor's "Memory" column;
+ *  - `rss`: resident memory: Linux, and every SSH host, which is read with `ps` whatever it runs;
+ *  - `working-set`: Windows, Task Manager's "Working set" column.
+ */
+export type SessionMemoryMetric = 'footprint' | 'rss' | 'working-set'
 
 /**
  * `ok: false` means the sweep could not run (no tmux binary, unreadable process table). It is NOT
@@ -3311,6 +3325,8 @@ export interface SessionMemoryReport {
   ok: boolean
   rows: SessionMemoryRow[]
   mem: MemInfo | null
+  /** The measure `rows` are in. Absent when the sweep read no process table. */
+  metric?: SessionMemoryMetric
   /**
    * Live nodeterm sessions on this machine that the sweep could NOT measure — today, Zellij-backed
    * ones (the sweep reads tmux). Absent/0 = none. `null` = could not tell. Local scope only. The

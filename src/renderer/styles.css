@@ -9585,6 +9585,11 @@ button.group-node__setup:disabled {
   font-size: 11px;
   color: rgba(var(--tint-rgb), 0.5);
 }
+.sessmem-panel__foot-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .sessmem-panel__refresh {
   display: inline-flex;
   align-items: center;

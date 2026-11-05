@@ -177,14 +177,35 @@ assumption — a hard-coded 4096 under-reports **4×** on a 16 KiB-page arm64 ke
 64 KiB-page enterprise arm64 builds (it would print 40 MB for a 640 MB session). Do not "optimise"
 this back to `statm`.
 
-Non-Linux (and an unreadable `/proc`) falls through to one `ps -eo pid,ppid,rss` call, through the
-same injectable seam as tmux — nothing in `session-memory.ts` reaches a subprocess around it.
+Non-Linux (and an unreadable `/proc`) falls through to one `ps -eo pid,ppid,rss,comm` call, through
+the same injectable seam as tmux — nothing in `session-memory.ts` reaches a subprocess around it.
 
 `rollupTree` walks each pane pid's descendants with a `seen` guard (a table captured while pids are
 recycling can present a cyclic ppid chain, and a sweep that hangs is worse than one that
 under-reports). **`childCount` counts EVERY descendant**, the agent CLI included: `pane_pid` is the
-pane's *shell*, so a claude session with two MCP servers reports **3**. The panel therefore says
-"child processes", never "MCP" — a plain `npm run dev` has children too.
+pane's *shell*, so a claude session with two MCP servers reports **3**.
+
+A row's number is that whole tree. The line under it is how the tree splits: `claude 538 MB · 14
+other processes 1.2 GB`, two parts that add up to the row. It names the LARGEST process in the tree,
+which is usually the agent CLI and is what a reader wants either way when a total looks high. It says
+"processes", never "MCP": a plain `npm run dev` has them too.
+
+### Comparing the panel with other tools
+
+The panel reports its measure (`metric`) and the time of the reading. A row is a tree SUM, so compare
+it with a sum in the same measure, on the same processes:
+
+| Session of 7 processes, measured on a Mac | |
+|---|---|
+| The panel | 751 MB |
+| `footprint -p <pid> -p <pid> …` for all seven, "Summary Footprint" | 751 MB, 620 MB of it compressed or swapped |
+| `footprint <claude pid>` alone | 232 MB |
+| `ps` rss, summed | 148 MB |
+
+`rss` leaves compressed pages out, and an idle process is mostly compressed: one idle MCP `node`
+measured 242 MB of footprint and 4 MB of rss. A panel figure far above `ps` is therefore normal on
+macOS. An SSH host is the exception: it is read with `ps`, so its rows are rss on a macOS host too,
+and the panel says so.
 
 `list-panes -a` emits one line per **pane**, so the first pane of a session wins in both legs (same
 key, same order) — one session is one row.
@@ -598,9 +619,10 @@ Layout and theming (argued from CSS only)
 18. fitView / goToNode must no longer tuck nodes under the pill.
 
 Rows, travel and the panel itself
-19. A `claude` node with 2 MCP servers must read `+3 child processes`, not +2: `pane_pid` is the
-    pane's SHELL, so the count includes the agent CLI itself. This is the ONLY item that can
-    falsify the "reports 3" claim made twice above; everything else about the sub-line is arithmetic.
+19. A `claude` node with 2 MCP servers must read `claude … · 3 other processes …`: `pane_pid` is the
+    pane's SHELL, so the tree is 4 processes and the 3 others are the shell and both servers. This is
+    the ONLY item that can falsify the "reports 3" claim above; the rest of the sub-line is arithmetic.
+    The two sizes on it must add up to the row's number, give or take rounding.
 20. Travel to a row whose node lives in a CLOSED project: the tab must REOPEN and the camera land on
     the node. This is the likeliest thing on the list to be wrong — the load and the focus happen in
     the same tick, and `travelToNode` (not `focusNodeById`) is what handles it.
