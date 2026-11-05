@@ -6,6 +6,8 @@
  */
 
 export type AgentMessageVerb = 'send' | 'reply' | 'notify'
+/** No bytes for dialog/unsupported/ownership-refused; false can include uncertain transport failure. */
+export type EnvelopeDeliveryResult = boolean | 'dialog' | 'unsupported' | 'ownership-refused'
 
 export const AGENT_MESSAGE_VERBS: ReadonlySet<string> = new Set([
   'send',

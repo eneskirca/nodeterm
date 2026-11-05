@@ -207,6 +207,9 @@ export function buildRelayApi(
     // Messaging rides the same decision: the browser client is never a sender (constraint 5 of
     // the messaging plan — the phone drives canvas control over relay→IPC, not /control/*).
     agentMessage: stub.agentMessage,
+    agentMailbox: stub.agentMailbox,
+    // A remote tab must never inherit the local MainWindow's human-ownership action.
+    paneOwnership: undefined,
     // Station-failure notices are about THIS machine's stations and its own orchestrators; a relay
     // tab's nodes live in the host's core, whose notices are the host's renderer's to draw.
     stationNotice: stub.stationNotice,

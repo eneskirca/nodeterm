@@ -701,6 +701,13 @@ export function buildStubApi(): Omit<
     // Messaging never runs in the browser: `onAgentControl` above is inert here, so no dispatch
     // can ever reach this. It answers the honest terminal refusal all the same, so a stray call
     // can never look like it delivered.
+    paneOwnership: undefined,
+    agentMailbox: {
+      legacyView: async () => ({ ok: false as const, error: 'Legacy recovery is available only in the local desktop window.',
+        code: 'unsupported-edition' as const, retryable: false }),
+      view: async () => ({ ok: false as const, error: 'Agent mail is unsupported on this bridge.',
+        code: 'unsupported-edition' as const, retryable: false })
+    },
     agentMessage: {
       deliver: async () => ({
         ok: false as const,

@@ -86,6 +86,21 @@ export class TerminalEmulator {
     }
     return out
   }
+  /** Applied active-buffer text for safety decisions, without replay CSI/mode/cursor sequences.
+   * Soft-wrapped rows are joined with their actual spacing; logical line breaks remain intact.
+   */
+  capturePlain(lines = 200): string {
+    const buffer = this.term.buffer.active
+    const start = Math.max(0, buffer.length - Math.max(1, Math.floor(lines)))
+    let text = ''
+    for (let i = start; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (!line) continue
+      if (i > start && !line.isWrapped) text += '\n'
+      text += line.translateToString(buffer.getLine(i + 1)?.isWrapped !== true)
+    }
+    return text
+  }
 
   /**
    * A live link's keyframe: the VISIBLE rows of the ACTIVE buffer only (never history), in the shape

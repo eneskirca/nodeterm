@@ -88,6 +88,12 @@ its terminals and refuses the extension; never restart it automatically or fall 
 Message dispatch publishes pending canvas edits before main resolves scope, without overwriting
 an unresolved file conflict. See `docs/windows-session-host.md`.
 
+On Linux without tmux, the persistent host uses `session-host/linux-pane-owner.ts`: the tty's
+actual foreground process group plus `/proc` start times, not the Windows console probe or a
+deepest-descendant guess. The same identity is checked before paste and before Enter. Missing
+kernel data or redirected root stdin refuses delivery. The real-PTY regression is
+`src/session-host/message-pane.linux.test.ts`; it never writes into a developer's terminal.
+
 **Windows pane probes:** never start a `powershell.exe` per probe. Pane-command and console-owner
 reads go through the per-process probe worker (`session-host/windows-probe-worker.ts`), which falls
 back to the one-shot script (absolute `powershellExe()` path) only when it cannot answer. Coalesce
@@ -1779,3 +1785,40 @@ resolving pointer targets. Keep actions on one guest exclusive. A CDP viewport o
 (`--screenshot --full true`) survives debugger detach and a reload: it goes through the lease,
 which clears it before every detach and on the next attach — never send emulation around it, and
 never reattach a released lease to clean up.
+
+## Durable agent mail: Inbox and Outbox
+
+Regular agent `send` and `reply` are admitted through the authenticated mailbox, persisted before
+an acceptance response, and retain their work records without the transport queue's five-minute
+TTL. Inbox and Outbox are views of the same private record. Delivery and processing are separate:
+`delivered` is a transport observation, while `accepted`, `blocked`, `completed` and `rejected`
+require an explicit authenticated recipient operation. Reading, a turn boundary, a reply, a mobile
+inbox acknowledgement, and `report-outcome` never complete mail. A completion is the recipient's
+statement, not independent acceptance of the underlying work.
+
+Use the existing generated CLI: `inbox`, `outbox`, `read --message`, `ack --message --revision`,
+and `complete --message --revision --claim`. Give mutating calls a request ID; retry an uncertain
+call only with the same ID and identical arguments. Session and project binding comes from verified
+runtime evidence, never display metadata or user-controlled message text. Recheck pane ownership
+before both paste and submit. A crash during a possibly-written delivery stays uncertain and is
+not blindly replayed. Commit/storage failures fail closed; retain the last valid store.
+
+The store is local to userData under `orchestration-state`, with restrictive file permissions.
+Historical delivery-queue entries are losslessly audited as held/unverified before scheduler
+startup, never assigned to today's replacement sessions. The local main-window Recovery view is
+read-only: it cannot ACK, rebind, resend, or speak as a former agent. Missing old bodies are explicit.
+Existing creator/grant restrictions continue to apply on Server Edition; relay viewers cannot use
+local-user-only mailbox recovery APIs.
+
+The integration lifecycle owns the generated CLI, Skills and short mandatory provider instruction
+blocks. Preserve unrelated user instructions and report edited owned blocks instead of overwriting
+them. Inside Nodeterm, agents check Inbox at turn start and before reporting completion, acknowledge
+incorporated work, and explicitly finish or mark blockers. Installation does not prove that an
+already-running conversation has read the new instructions; record live onboarding separately.
+Provider hooks must not print arbitrary context on protocols that interpret stdout as decisions.
+
+Mailbox tests use synthetic actors and private stores; never the running application's profile.
+Cover restart/commit uncertainty, deduplication, unverified metadata, replaced sessions, counterpart
+removal, current actor revocation, explicit claims, legacy holds and zero mutations from read-only
+UI. Preserve the Linux pane-ownership baseline when packaging this local variant. Keep the BUSL
+license with modified copies and do not mistake this local build for an upstream release.

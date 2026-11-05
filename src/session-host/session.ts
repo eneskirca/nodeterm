@@ -327,6 +327,10 @@ export class HostSession {
     await this.outputTail
     return this.term.serialize(scrollback)
   }
+  async messageCapturePlain(): Promise<string> {
+    await this.outputTail
+    return this.exited || this.suppressingPrivateLaunchOutput ? '' : this.term.capturePlain(200)
+  }
 
   /**
    * Has the app in this pane requested bracketed paste? Behind `outputTail` for the same reason

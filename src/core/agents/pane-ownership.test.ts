@@ -4,12 +4,25 @@ import {
   paneOwnerProject,
   forgetPaneOwner,
   resetPaneOwnershipForTests,
-  shouldRecordOwnership
+  shouldRecordOwnership,
+  setHumanPaneAdoptionReader,
+  freshPaneOwnerProject
 } from './pane-ownership'
 
 beforeEach(() => resetPaneOwnershipForTests())
 
 describe('pane-ownership ledger', () => {
+  it('keeps explicit human provenance separate and never lets it override a fresh owner', () => {
+    setHumanPaneAdoptionReader(id => id === 'n1' ? 'human-project' : undefined)
+    expect(paneOwnerProject('n1')).toBe('human-project')
+    expect(freshPaneOwnerProject('n1')).toBeUndefined()
+    expect(shouldRecordOwnership(false, 'n1', 'human-project')).toBe(false)
+    recordFreshSpawnOwner('n1', 'actual-spawn-project')
+    expect(paneOwnerProject('n1')).toBe('actual-spawn-project')
+    expect(freshPaneOwnerProject('n1')).toBe('actual-spawn-project')
+    setHumanPaneAdoptionReader(() => { throw new Error('unknown') })
+    expect(paneOwnerProject('unproven')).toBeUndefined()
+  })
   it('records and returns the project that freshly spawned a node', () => {
     recordFreshSpawnOwner('n1', 'proj-a')
     expect(paneOwnerProject('n1')).toBe('proj-a')

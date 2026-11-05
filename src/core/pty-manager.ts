@@ -1,5 +1,10 @@
+import { envelopeSurfaceReady } from './agents/envelope-surface'
+import type { EnvelopeWriteAccess } from './agents/agent-message-operation'
+import { isPreparedRemoteCodexLaunch, type PreparedRemoteCodexLaunch } from './remote-ssh/codex-provider-observer'
+import type { NativeSshTransport } from './remote-ssh/native/existing-transport'
 import type { ChatPromptBlocked, ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from '../shared/text-delivery'
 import { claudeScreenBlocksInput, readClaudeComposer, readClaudeDraft, readClaudeScreen } from '../shared/agents/claude-screen'
+import type { EnvelopeDeliveryResult } from '../shared/agents/agent-messaging'
 import os from 'os'
 import fs from 'fs'
 import path from 'path'
@@ -28,6 +33,8 @@ import { cursorApprovalIn, cursorPlanPromptIn, cursorQuestionIn } from './agents
 import { findAgy, pathWithAgyDir } from './agents/hooks/antigravity'
 import { currentIntegrationLifecycle } from './agent-integrations'
 import {
+  childArgs,
+  tmuxCmd,
   probeSaysAbsent,
   remoteHookEnvArgs,
   remoteListSessionsArgs,
@@ -41,6 +48,9 @@ import {
   remoteTypedArgs,
   remoteTmuxEnterArgs,
   remoteCapturePaneArgs,
+  remoteCaptureEnvelopePlainCommand,
+  remotePaneOwnerCommand,
+  remotePasteCommandDelivery,
   remoteCaptureVisibleArgs,
   remoteTmuxWatcherArgs,
   remoteWindowSizeArgs,
@@ -71,7 +81,7 @@ import { isSshProgram, nativeExecFileAsync, nativeMux, resolveSshProgram, useNat
 import { NativeSshPty } from './remote-ssh/native/native-pty'
 import { windowsConptySpawnOptions } from './windows-conpty-dll'
 import { remotePtySpawnGate, type SpawnSlot } from './remote-ssh/pty-spawn-gate'
-import type { SshConnection } from '../shared/ssh'
+import { posixQuote, type SshConnection } from '../shared/ssh'
 import { recordPendingRemoteKill, type PendingRemoteKill } from './pending-remote-kills'
 import { probeAgentSockToPin } from './remote-ssh/agent-probe'
 import { parsePaneCursor } from './pane-cursor'
@@ -106,6 +116,8 @@ import {
 } from './agents/pane-ownership'
 import { PANE_OWNER_FMT, foregroundArgvArgs, paneOwnerFrom, parseCombinedPaneOwner, parsePaneOwner } from './agents/pane-owner'
 import { binariesFor, isAgentPane, type PaneOwner } from '../shared/agents/pane-owner-predicate'
+import { samePane } from './agents/agent-message'
+import { pasteThenSubmitWhenSettled, type SettleOptions } from './settled-submit'
 import { PANE_PROBE_TIMEOUT_MS, WINDOWS_PANE_PROBE_TIMEOUT_MS } from './agents/pane-probe'
 import { readSpawnResources, spawnResourceNote } from './spawn-resources'
 import {
@@ -823,6 +835,8 @@ function isWatcherCreate(options: PtyCreateOptions): boolean {
  * into a read-only `watchExistingSessionHostPty` — no spawn plan, no size claim, no pause ticket.
  */
 const SESSION_HOST_WATCH: unique symbol = Symbol('nodeterm.sessionHostWatch')
+const OBSERVED_SSH_ATTACH: unique symbol = Symbol('nodeterm.observedSshAttach')
+type ObservedSshAttachOptions = PtyCreateOptions & { readonly [OBSERVED_SSH_ATTACH]?: true }
 type SessionHostWatchOptions = PtyCreateOptions & { readonly [SESSION_HOST_WATCH]?: true }
 function isSessionHostWatch(options: PtyCreateOptions): boolean {
   return (options as SessionHostWatchOptions)[SESSION_HOST_WATCH] === true
@@ -2607,6 +2621,13 @@ export class PtyManager {
           `dot, dash, underscore; max ${NODE_ID_MAX}). A project file with an id like this cannot be ` +
           `trusted — it is how a shared or cloned repo would smuggle a command onto a remote host.`
       )
+    // Main holds this deny-only gate until private observed intents have been restored. An
+    // unreadable store cannot silently become permission to cold-replay a remote frontend.
+    if (!this.observedRemoteRestoreCurrent() && (options.requireRemote || options.sshRemote ||
+        this.remoteNodeOwner?.(key) || (options.ownerProjectId && this.isSshProject?.(options.ownerProjectId))))
+      return { sessionId: '', fresh: false, unavailable: 'join-only' }
+    if (this.observedStarting.has(key)) return { sessionId: '', fresh: false, unavailable: 'join-only' }
+    if (this.observedJoinOnly.has(key)) options = { ...options, joinOnly: true, [OBSERVED_SSH_ATTACH]: true } as ObservedSshAttachOptions
     // A generic end and an awaited profile recycle are separate transactions, but both reserve this
     // node name while their backend outcome is pending. Wait before consulting either the live index
     // or a replacement reservation so an early host exit cannot authorize a competing generation.
@@ -4705,7 +4726,14 @@ export class PtyManager {
     // holds the ssh client. Only when BOTH sshRemote and persistKey are set and ssh resolves —
     // otherwise this falls through to the unchanged local-tmux / plain-shell branches below.
     const remoteSsh = options.sshRemote && options.persistKey ? findSsh() : null
-    if (isWatcherCreate(options) && options.sshRemote && options.persistKey && remoteSsh) {
+    if ((options as ObservedSshAttachOptions)[OBSERVED_SSH_ATTACH] && options.sshRemote && options.persistKey && remoteSsh) {
+      // Main's observed launch owns creation. A normal renderer mount may attach only: no
+      // new-session -A, shell fallback, env staging, launch replay or fresh-spawn authority.
+      file = remoteSsh
+      nativeSshArgv = ['-t', ...childArgs(options.sshRemote.conn, options.sshRemote.controlPath,
+        tmuxCmd(`exec tmux -N -L nodeterm-rmt attach-session -E -t ${posixQuote(`=${sessionName(options.persistKey)}:0.0`)}`))]
+      args = nativeSshArgv
+    } else if (isWatcherCreate(options) && options.sshRemote && options.persistKey && remoteSsh) {
       // A live link watcher's own client on the host: attach-only, read-only, ignore-size, no env
       // (see `remoteTmuxWatcherArgs`). Nothing the owner's branch below does — tokens, hook/account
       // env, the session-env file, `markPresent` — belongs to a client that creates nothing.
@@ -6518,6 +6546,20 @@ export class PtyManager {
 
   /** Per-pane write chain: see `serializePaneWrite`. */
   private paneWrites = new Map<string, Promise<unknown>>()
+  private observedStarting = new Set<string>()
+  private observedJoinOnly = new Set<string>()
+  private observedRemoteRestoreCurrent: () => boolean = () => true
+
+  /** Denial only: a pending/failed private restore must never permit a remote plain replay. */
+  setObservedRemoteRestoreGuard(current: () => boolean): void {
+    this.observedRemoteRestoreCurrent = () => { try { return current() === true } catch { return false } }
+  }
+
+  /** Denial-only Main restore hook. A saved observed intent must not cause automatic plain CLI
+   * respawn/cold restore, including after an uncertain launch or app restart. No owner grant. */
+  restrictObservedRemoteNode(nodeId: string): void {
+    if (isSafeNodeId(nodeId)) this.observedJoinOnly.add(nodeId)
+  }
 
   /**
    * Run one write into a pane only after every earlier write into the SAME pane has finished.
@@ -7220,9 +7262,9 @@ export class PtyManager {
 
   /**
    * Deliver the agent-messaging envelope — PLAIN text from `deliverAgentMessage` — into a node's
-   * pane, local or SSH, through the SAME plans as `sendText` with the Enter always on: tmux frames
-   * the paste from the pane's real bracketed-paste state (`paste-buffer -p`) and the submit is a
-   * separate `send-keys Enter` in the same tmux command list.
+   * pane, local or SSH, through the SAME paste plans as `sendText`. The complete envelope,
+   * settling and separate Enter hold one pane-write lock, with expected-owner and input-surface
+   * checks at both write points. Native/session-host routes keep their own OS identity guards.
    *
    * This replaced `sendFramedPayload`, which pushed a JS-composed `ESC[200~…ESC[201~\r` payload
    * through `paste-buffer` with no `-p`: tmux ≥ 3.7 passes paste-buffer content through vis(3),
@@ -7237,28 +7279,77 @@ export class PtyManager {
    * accidental submit a messaging delivery must never perform — an empty envelope refuses here.
    * (`buildEnvelope` can never return '', so this is a guard against a future caller, not a path.)
    */
-  async sendEnvelope(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
-    return this.serializePaneWrite(persistKey, () => this.sendEnvelopeNow(persistKey, envelope, expected))
+  async sendEnvelope(persistKey: string, envelope: string, expected?: PaneOwner, settle?: SettleOptions, access?: EnvelopeWriteAccess): Promise<EnvelopeDeliveryResult> {
+    return this.serializePaneWrite(persistKey, () => this.sendEnvelopeNow(persistKey, envelope, expected, settle, access))
   }
 
-  private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner): Promise<boolean | 'dialog'> {
-    if (envelope.length === 0) return false
+  /** Main-only explicit user resume; not registered on PTY IPC/agent/relay control. Existing
+   * terminals (including shells with unknown input drafts) are never typed into or replaced.
+   * The immutable capability performs one atomic fresh tmux creation on its captured native
+   * transport. submitted means a start request, NEVER a successful provider bind or ownership.
+   */
+  async executeObservedRemoteResume(prepared: PreparedRemoteCodexLaunch, transport: NativeSshTransport,
+    access: { beforeWrite: () => Promise<boolean>; contextCurrent: () => boolean }): Promise<{
+      ok: boolean; status?: 'submitted'; reason?: 'not-permitted' | 'terminal-exists' | 'start-uncertain-or-refused'
+    }> {
+    if (!isPreparedRemoteCodexLaunch(prepared) || !access || typeof access.beforeWrite !== 'function' || typeof access.contextCurrent !== 'function')
+      return { ok: false, reason: 'not-permitted' }
+    const nodeId = prepared.context.nodeId
+    return this.serializePaneWrite(nodeId, async () => {
+      try {
+        const owner = this.remoteNodeOwner?.(nodeId)
+        const key = JSON.stringify(prepared.transportIdentity)
+        const current = (): boolean => access.contextCurrent() === true && transport.isCurrent() && JSON.stringify(transport.identity) === key &&
+          this.remoteNodeOwner?.(nodeId)?.projectId === prepared.context.projectId
+        if (!owner || owner.projectId !== prepared.context.projectId || !current()) return { ok: false, reason: 'not-permitted' }
+        if (this.liveSessionForPersistKey(nodeId) || this.inflight.has(nodeId) || this.ending.has(nodeId) || this.unknownEnds.has(nodeId))
+          return { ok: false, reason: 'terminal-exists' }
+        this.observedStarting.add(nodeId)
+        try {
+          const wrote = await prepared.startFreshPane(async () => {
+            if (!current() || await access.beforeWrite() !== true || !current() || this.liveSessionForPersistKey(nodeId) ||
+                this.inflight.has(nodeId) || this.ending.has(nodeId) || this.unknownEnds.has(nodeId)) return false
+            this.restrictObservedRemoteNode(nodeId)
+            return true
+          })
+          if (owner.remote) this.remoteSessions.invalidate(owner.remote.controlPath)
+          return wrote && current() ? { ok: true, status: 'submitted' } : { ok: false, reason: 'start-uncertain-or-refused' }
+        } finally { this.observedStarting.delete(nodeId) }
+      } catch { return { ok: false, reason: 'not-permitted' } }
+    })
+  }
+
+  private async sendEnvelopeNow(persistKey: string, envelope: string, expected?: PaneOwner, settle?: SettleOptions, access?: EnvelopeWriteAccess): Promise<EnvelopeDeliveryResult> {
+    if (envelope.length === 0 || !expected) return false
     const live = this.liveSessionForPersistKey(persistKey)
     if (this.isZellij(persistKey, live)) return false
-    if (live?.nativeWindowsPane) return live.nativeWindowsPane.sendEnvelope(envelope, expected)
+    const remoteProof = access?.remoteProof
+    const remote = !!remoteProof || !!live?.sshRemote || !!this.remoteNodeOwner?.(persistKey)
+    if (remote && (!remoteProof || remoteProof.context?.nodeId !== persistKey || typeof access?.beforeWrite !== 'function' ||
+        typeof remoteProof.revalidate !== 'function' || typeof remoteProof.runExisting !== 'function' ||
+        !remoteProof.evidenceKey || !remoteProof.transportKey)) return 'ownership-refused'
+    // A remote source's async closure cannot be serialized into a local persistent host/native
+    // envelope. Never silently drop it; these mixed-backend operations remain unsupported.
+    if (access && !remote && (live?.nativeWindowsPane || this.sessionHostOwns(persistKey, live))) return 'ownership-refused'
+    if (!remote && live?.nativeWindowsPane) return live.nativeWindowsPane.sendEnvelope(envelope, expected)
     const target = sessionName(persistKey)
-    if (this.sessionHostOwns(persistKey, live)) {
+    if (!remote && this.sessionHostOwns(persistKey, live)) {
       return expected ? sessionHostMessageEnvelope(target, envelope, expected) : false
     }
-    const sshRemote = this.sessionByPersistKey(persistKey)?.sshRemote
+    const runRemote = async (command: string, stdin?: string) => {
+      if (!remoteProof || await remoteProof.revalidate() !== true) throw new Error('SSH operation refused')
+      if (access?.contextCurrent?.() === false) throw new Error('SSH operation context changed')
+      const r = await remoteProof.runExisting(command, stdin)
+      if (r.code !== 0) throw new Error('SSH operation failed')
+      return r
+    }
     const deliver = async (body: string, enter: boolean): Promise<boolean> => {
       try {
-        if (sshRemote) {
-          const ssh = findSsh()
-          if (!ssh) return false
-          const plan = remotePasteDelivery(sshRemote.conn, sshRemote.controlPath, target, body, enter)
+        if (remote) {
+          const plan = remotePasteCommandDelivery(target, body, enter)
           if (!plan) return false
-          return await runPasteDelivery(plan, (args, input) => runWithStdin(ssh, args, input))
+          try { await runRemote(plan.command, plan.body); return true }
+          catch { if (plan.cleanup) void runRemote(plan.cleanup).catch(() => {}); return false }
         }
         if (!this.tmuxPath) return false
         const tmuxPath = this.tmuxPath
@@ -7271,16 +7362,43 @@ export class PtyManager {
         return false
       }
     }
-    if (!this.submitsSeparatelyKey(persistKey)) return deliver(envelope, true)
-    // `sendText`'s split, inlined: this op already holds the pane's `serializePaneWrite` slot, so
-    // calling `sendText` here would queue behind itself. A dialog before the paste writes nothing
-    // ('dialog'). Once the paste is in, the answer is `true` whatever the Enter does (the
-    // `DeliveryDeps.sendEnvelope` contract), so the receipt watch reports `stalled`, not `targetGone`.
-    if (await this.cursorDialogShowing(persistKey)) return 'dialog'
-    if (!(await deliver(envelope, false))) return false
-    await new Promise((r) => setTimeout(r, SEPARATE_SUBMIT_DELAY_MS))
-    if (!(await this.cursorDialogShowing(persistKey))) await deliver('', true)
-    return true
+    const agent = remoteProof?.context.agentId ?? this.agentForKey(persistKey)
+    if (!agent) return false
+    const binaries = binariesFor(agent, this.getSettings().customAgents)
+    const capturePlain = async (): Promise<string | null> => {
+      if (!remote) return this.captureSession(persistKey).catch(() => null)
+      try {
+        const { stdout } = await runRemote(remoteCaptureEnvelopePlainCommand(target))
+        return stdout
+      } catch { return null } // Never substitute replay, another host or a local capture.
+    }
+    const safeOwner = async (): Promise<boolean> => {
+      try { const owner = remote ? parseCombinedPaneOwner((await runRemote(remotePaneOwnerCommand(target))).stdout) : await this.paneOwner(persistKey)
+        return samePane(expected, owner, agent, binaries) }
+      catch { return false }
+    }
+    const safeSurface = async (): Promise<boolean> => {
+      const screen = await capturePlain()
+      if (!screen?.trim()) return false
+      return envelopeSurfaceReady(screen, agent)
+    }
+    if (!(await safeOwner())) return false
+    if (!(await safeSurface())) return 'dialog'
+    const beforeWrite = async (): Promise<boolean> => {
+      try { return !access || await access.beforeWrite() === true && (!remoteProof || await remoteProof.revalidate()) && access.contextCurrent?.() !== false }
+      catch { return false }
+    }
+    if (!await beforeWrite()) return 'ownership-refused'
+    // Hold the SAME pane-write lock across paste, settle and submit. No generic sendText call
+    // may split this operation or discard expected. Re-check the process and input surface at
+    // both write points; a stable shell screen is not an agent-composer receipt.
+    return pasteThenSubmitWhenSettled(envelope, {
+      capture: capturePlain,
+      paste: async () => await safeSurface() && await safeOwner() && await beforeWrite() && deliver(envelope, false),
+      submit: async () => {
+        if (await safeSurface() && await safeOwner() && await beforeWrite()) await deliver('', true)
+      }
+    }, settle)
   }
 
   /**

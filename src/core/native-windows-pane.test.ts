@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NativeWindowsPane } from './native-windows-pane'
 import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
 
-const expected: PaneOwner = { panePid: 10, paneId: 'win32:generation-a:birth-root', tty: 'win32-console:10', command: 'opencode', argv: ['opencode'], pids: [20], processBirths: ['birth-agent'] }
+const expected: PaneOwner = { panePid: 10, paneId: 'win32:generation-a:birth-root', tty: 'win32-console:10', command: 'codex', argv: ['codex'], pids: [20], processBirths: ['birth-agent'] }
 const panes: NativeWindowsPane[] = []
 /** `render` makes the fake app draw what it is pasted, as a real composer does; off, the pane
  *  never shows the envelope. Settle polls do not wait: the test controls the screen directly. */
@@ -10,12 +10,13 @@ function fixture(render = true) {
   let pane!: NativeWindowsPane
   const write = vi.fn((data: string) => {
     const paste = /^\x1b\[200~([\s\S]*)\x1b\[201~$/.exec(data)
-    if (render && paste) pane.recordOutput(paste[1].replace(/\n/g, '\r\n'))
+    if (render && paste) pane.recordOutput('\x1b[2J\x1b[H› ' + paste[1].replace(/\n/g, '\r\n') + '\r\n\r\n← for agents · ? for shortcuts')
   })
   const probe = vi.fn(async (): Promise<PaneOwner | null> => expected)
   pane = new NativeWindowsPane({ pid: 10, write }, { cols: 80, rows: 24, scrollback: 100 }, probe, {
     wait: async () => {}
   })
+  pane.recordOutput('› \r\n\r\n← for agents · ? for shortcuts')
   panes.push(pane)
   return { pane, write, probe }
 }
@@ -66,6 +67,35 @@ describe('native Windows envelope delivery', () => {
     expect(await pane.sendEnvelope('hello', expected)).toBe(false)
     expect(write).not.toHaveBeenCalled()
   })
+  it.each(['dialog', 'unknown', 'unreadable'] as const)('native V2 surface produces no Enter for %s after paste', async change => {
+    const { pane, write } = fixture()
+    pane.recordOutput('\x1b[?2004h')
+    const render = write.getMockImplementation()!
+    write.mockImplementation(data => {
+      render(data)
+      if (data.startsWith('\x1b[200~')) pane.recordOutput('\x1b[2J\x1b[H' +
+        (change === 'dialog' ? 'Would you like to run the following command?\r\n1. Yes, proceed\r\n2. No' :
+          change === 'unknown' ? 'Unknown interface' : ''))
+    })
+    expect(await pane.sendEnvelope('SYNTHETIC BODY\nEND', expected)).toBe(true)
+    expect(write.mock.calls).toEqual([['\x1b[200~SYNTHETIC BODY\nEND\x1b[201~']])
+  })
+  it('native initial unknown surface writes nothing', async () => {
+    const { pane, write } = fixture()
+    pane.recordOutput('\x1b[?2004h\x1b[2J\x1b[HUnknown interface')
+    expect(await pane.sendEnvelope('SYNTHETIC', expected)).toBe('dialog')
+    expect(write).not.toHaveBeenCalled()
+  })
+  it('native re-reads a dialog that appears during the post-paste OS probe', async () => {
+    const { pane, write, probe } = fixture()
+    pane.recordOutput('\x1b[?2004h')
+    probe.mockImplementation(async () => {
+      if (write.mock.calls.length) pane.recordOutput('\x1b[2J\x1b[HWould you like to run the following command?\r\n1. Yes, proceed')
+      return expected
+    })
+    expect(await pane.sendEnvelope('BODY\nEND', expected)).toBe(true)
+    expect(write.mock.calls).toEqual([['\x1b[200~BODY\nEND\x1b[201~']])
+  })
 })
 
 describe('native Windows sendText (the write verb and the app’s own writers)', () => {
@@ -75,7 +105,8 @@ describe('native Windows sendText (the write verb and the app’s own writers)',
       { cols: 80, rows: 24, scrollback: 100 }, async () => expected, {
         wait: async () => pane.recordOutput('\r> [Pasted text #1 +40 lines]')
       })
-    panes.push(pane)
+    pane.recordOutput('› \r\n\r\n← for agents · ? for shortcuts')
+  panes.push(pane)
     pane.recordOutput('\x1b[?2004h')
     expect(await pane.sendText('a\nb\nc', true)).toBe('pasted-not-submitted')
     expect(write.mock.calls).toEqual([['\x1b[200~a\nb\nc\x1b[201~']])
@@ -89,7 +120,8 @@ describe('native Windows sendText (the write verb and the app’s own writers)',
           if (++polls === 4) pane.recordOutput('slow text')
         }
       })
-    panes.push(pane)
+    pane.recordOutput('› \r\n\r\n← for agents · ? for shortcuts')
+  panes.push(pane)
     pane.recordOutput('\x1b[?2004h')
     expect(await pane.sendText('slow text', true)).toBe(true)
     expect(polls).toBe(5)

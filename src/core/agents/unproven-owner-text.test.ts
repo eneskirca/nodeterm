@@ -44,9 +44,11 @@ describe('the unproven-target-owner refusal describes a remedy that exists', () 
 
   it('names the remedy that does work, and whose job it is', () => {
     const text = refusal().toLowerCase()
-    // Respawning the session is the only thing that records the owner…
-    expect(text).toMatch(/end that session and start it again/)
-    // …and it is a human action: the caller is a language model that cannot do it.
+    // Supported local sessions now have a separately verified human-adoption path.
+    expect(text).toContain('on a supported local desktop')
+    expect(text).toContain('authorize this running session')
+    expect(text).toContain('keep the existing session and its work running')
+    expect(text).not.toMatch(/end that session and start it again/)
     expect(text).toContain('user')
   })
 

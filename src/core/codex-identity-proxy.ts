@@ -395,6 +395,18 @@ export function readIdentityCandidate(
   } catch {
     return undefined
   }
+  return verifyCodexThreadIdentityText(threadId, raw, norm)
+}
+
+/** Verify whitelisted identity metadata obtained over an authenticated remote transport.
+ * This does not write/rebind a thread or infer a running process from a record.
+ */
+export function verifyCodexThreadIdentityText(
+  threadId: string, raw: string, scope = SYSTEM_ACCOUNT_SCOPE
+): CodexThreadIdentity | undefined {
+  if (!isSafeThreadId(threadId) || typeof raw !== 'string' || Buffer.byteLength(raw) > 16 * 1024) return undefined
+  const norm = scope || SYSTEM_ACCOUNT_SCOPE
+  if (norm !== SYSTEM_ACCOUNT_SCOPE && !isSafeAccountId(norm)) return undefined
   const record = parseCodexThreadIdentity(raw)
   if (!validCodexIdentity(record.nodeId, record.hookEndpoint)) return undefined
   // An agent id that reached the record is re-validated before the signature check, exactly as the
@@ -505,14 +517,14 @@ export function codexThreadIdentityHasLiveConflict(
  * genuinely does not know the node's agent id, and it reproduces the behaviour this slice replaced;
  * it is not a default to reach for when the id IS available.
  */
-export function writeCodexThreadIdentity(
+/** Same signed data format as the local store, without filesystem or remote side effects. */
+export function serializeCodexThreadIdentity(
   threadId: string,
   nodeId: string,
   hookEndpoint: string,
-  root = codexThreadIdentityRoot(),
   accountId?: string,
   agent?: CodexThreadAgent
-): void {
+): string {
   if (!isSafeThreadId(threadId) || !validCodexIdentity(nodeId, hookEndpoint)) {
     throw new Error('Invalid NodeTerm Codex thread identity')
   }
@@ -526,6 +538,19 @@ export function writeCodexThreadIdentity(
   const agentLines = agent
     ? `agentId=${agent.agentId}\ncanvasControl=${agent.canvasControl ? '1' : '0'}\n`
     : ''
+  return `accountId=${accountId ?? ''}\nnodeId=${nodeId}\nendpoint=${hookEndpoint}\n${agentLines}signature=${signature}\n`
+}
+
+export function writeCodexThreadIdentity(
+  threadId: string,
+  nodeId: string,
+  hookEndpoint: string,
+  root = codexThreadIdentityRoot(),
+  accountId?: string,
+  agent?: CodexThreadAgent
+): void {
+  const text = serializeCodexThreadIdentity(threadId, nodeId, hookEndpoint, accountId, agent)
+  const scope = accountScope(accountId)
   const file = identityFile(threadId, scope, root)
   const dir = path.dirname(file)
   const tmp = path.join(dir, `.${threadId}.${process.pid}.${Date.now()}`)
@@ -534,7 +559,7 @@ export function writeCodexThreadIdentity(
   try {
     writeFileSync(
       tmp,
-      `accountId=${accountId ?? ''}\nnodeId=${nodeId}\nendpoint=${hookEndpoint}\n${agentLines}signature=${signature}\n`,
+      text,
       {
         encoding: 'utf8',
         mode: 0o600

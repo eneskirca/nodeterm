@@ -3,7 +3,7 @@
 //
 // Since the local shims gained the shared-Codex identity prelude, the two builders take an
 // `identityRoot` — this machine's `<userDataDir>/codex-thread-nodes`. The LOCAL installers pass it;
-// the SSH installer must not, because a record root under one machine's user-data dir is not a
+// the SSH installer must not use that local builder, because a record root under one machine's user-data dir is not a
 // path on somebody else's server. The rule is stated in three places (CLAUDE.md, CONTRIBUTING.md,
 // docs/shared-codex-node-identity.md) and was enforced by none of them.
 //
@@ -15,7 +15,7 @@
 // someone else's server, written there by us, and refreshed on every connect.
 //
 // Two legs, because they catch the mistake at different moments:
-//   1. the VALUE — the neutral exports the SSH installer writes carry nothing machine-specific;
+//   1. the VALUE — the neutral exports carry no profile path; the remote builders use only the target home;
 //   2. the IMPORT — `remote-hooks.ts` cannot even reach a builder that would produce one.
 // Leg 2 is the one that survives a refactor: a future author who reaches for the parameterised
 // builder "so the remote shim gets the fix too" is stopped at the import, before there is a value
@@ -28,8 +28,8 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-import { CONTROL_SHIM_SCRIPT, buildControlShimScript } from '../../core/canvas-control-core'
-import { CONTEXT_SHIM_SCRIPT, buildContextShimScript } from '../../core/context-link-core'
+import { CONTROL_SHIM_SCRIPT, buildControlShimScript, buildRemoteControlShimScript } from '../../core/canvas-control-core'
+import { CONTEXT_SHIM_SCRIPT, buildContextShimScript, buildRemoteContextShimScript } from '../../core/context-link-core'
 
 /** A root no real machine would produce, so a hit is unambiguously the one we baked in. */
 const SENTINEL_ROOT = '/nodeterm-guard-sentinel/codex-thread-nodes'
@@ -48,11 +48,11 @@ const BANNED_IN_REMOTE_HOOKS = [
 ] as const
 
 /**
- * Identifiers `remote-hooks.ts` must still name — the neutral exports it writes to the host. If
+ * Identifiers `remote-hooks.ts` must still name — the explicit target-home-only builders it writes to the host. If
  * these disappear the file has been restructured and leg 2's scan is no longer looking at the
  * thing it was written to look at, so it must go red rather than pass over an empty subject.
  */
-const REQUIRED_IN_REMOTE_HOOKS = ['CONTROL_SHIM_SCRIPT', 'CONTEXT_SHIM_SCRIPT'] as const
+const REQUIRED_IN_REMOTE_HOOKS = ['buildRemoteControlShimScript', 'buildRemoteContextShimScript', 'remoteCodexIdentityRoot'] as const
 
 /**
  * Strip comments before scanning, so this file's own rule can be EXPLAINED at the call site in
@@ -91,7 +91,19 @@ describe('SSH-installed shims stay machine-neutral', () => {
     }
   })
 
-  describe('leg 2 — remote-hooks.ts cannot reach a parameterised builder', () => {
+  describe('explicit target-host variants', () => {
+    for (const build of [buildRemoteControlShimScript, buildRemoteContextShimScript]) {
+      it('carries only the selected target home and refuses unsafe homes', () => {
+        const remote = build('/synthetic-remote/home');
+        expect(remote).toContain('/synthetic-remote/home/.nodeterm/codex-thread-nodes');
+        expect(remote).not.toContain(SENTINEL_ROOT);
+        expect(() => build('relative')).toThrow();
+        expect(() => build('/synthetic/../escape')).toThrow();
+      });
+    }
+  });
+
+  describe('leg 2 — remote-hooks.ts cannot reach a local-path builder', () => {
     const source = code(readFileSync(REMOTE_HOOKS, 'utf8'))
 
     it('is reading the real remote installer (positive control)', () => {

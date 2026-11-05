@@ -247,6 +247,9 @@ describe.skipIf(process.platform === 'win32')('the probe under every sh × awk o
     }
     const entries: ProbeEntry[] = Object.entries(texts).map(([n, t]) => block(posixQuote(put(`${n}.md`, t))))
     entries.push(file(put('owned.sh', '#!/bin/sh\necho ğ\n')))
+    const alive = put('account-alive/AGENTS.md', frameCanvasControlBlock('account rule'))
+    entries.push({ ...block(posixQuote(alive)), gateDirExpr: posixQuote(path.dirname(alive)) })
+    entries.push({ ...block(posixQuote(path.join(home, 'account-gone/AGENTS.md'))), gateDirExpr: posixQuote(path.join(home, 'account-gone')) })
     // `awk` is whichever dialect this combination names; every other tool is the machine's own.
     const bin = mkdtempSync(path.join(tmpdir(), 'nt-probe-bin-'))
     try {
@@ -267,6 +270,8 @@ describe.skipIf(process.platform === 'win32')('the probe under every sh × awk o
         sum(frameCanvasControlBlock('tail')),
         sum('#!/bin/sh\necho ğ\n')
       ])
+      expect(sumAt(report, 6)).toBe(sum(frameCanvasControlBlock('account rule')))
+      expect(sumAt(report, 7)).toBe('no-gate')
     } finally {
       rmSync(bin, { recursive: true, force: true })
     }

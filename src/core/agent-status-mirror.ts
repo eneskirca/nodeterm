@@ -105,6 +105,11 @@ export interface MirrorEntry {
    * about a state that has since changed.
    */
   stateVerified?: boolean
+  /** Ephemeral session/agent tuple attested by the SAME verified event that committed state.
+   * Display identity accepts unverified/ignored events; it must never become an auth source.
+   * Not persisted, seeded or restored. Missing session evidence grants no mailbox authority.
+   */
+  stateIdentity?: { sessionId: string; agentId: NormalizedAgentEvent['agentId'] }
   /**
    * The revision of the managed hook script that posted the event behind the current `state`
    * (`ev.clientRevision`). `undefined` = no stamp, which is what a script predating per-node
@@ -571,6 +576,8 @@ function reduceEffectiveEntry(
     next.state = state
     next.updatedAt = now
     next.stateVerified = proof
+    if (proof && ev.sessionId && ev.agentId) next.stateIdentity = { sessionId: ev.sessionId, agentId: ev.agentId }
+    else delete next.stateIdentity
     if (proof) next.verifiedAt = now
     next.clientRevision = ev.clientRevision
     delete next.sessionStarted

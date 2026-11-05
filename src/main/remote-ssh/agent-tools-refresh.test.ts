@@ -18,9 +18,10 @@ import {
 import { tmpdir } from 'os'
 import path from 'path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CONTROL_SHIM_SCRIPT, buildCanvasSkillBody } from '../../core/canvas-control-core'
-import { CONTEXT_SHIM_SCRIPT, buildContextLinkSkillBody } from '../../core/context-link-core'
+import { buildRemoteControlShimScript, buildCanvasSkillBody } from '../../core/canvas-control-core'
+import { buildRemoteContextShimScript, buildContextLinkSkillBody } from '../../core/context-link-core'
 import { RemoteHooks, type RemoteRunner } from './remote-hooks'
+import { MAILBOX_INSTRUCTION_MARKERS } from '../../core/mailbox-instructions'
 
 const conn = { host: 'fixture', user: 'fixture' }
 let home: string
@@ -96,15 +97,16 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
   it('a fresh host gets every file this build writes', async () => {
     const outcome = await new RemoteHooks(hostRunner(), allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
     expect(outcome).toBe('refreshed')
-    expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
-    expect(read(CTX())).toBe(CONTEXT_SHIM_SCRIPT)
+    expect(read(SHIM())).toBe(buildRemoteControlShimScript(home))
+    expect(read(CTX())).toBe(buildRemoteContextShimScript(home))
     expect(read(SKILL())).toBe(buildCanvasSkillBody(SHIM()))
     expect(read(CTX_SKILL())).toBe(buildContextLinkSkillBody(CTX()))
     expect(read(AGENTS_SKILL())).toBe(buildCanvasSkillBody(SHIM()))
     expect(read(AGENTS_CTX_SKILL())).toBe(buildContextLinkSkillBody(CTX()))
-    // Skills replaced the instruction blocks (#744): no global instruction file is created.
-    for (const f of ['.codex/AGENTS.md', '.gemini/GEMINI.md', '.config/opencode/AGENTS.md', '.copilot/copilot-instructions.md']) {
-      expect(existsSync(path.join(home, f)), f).toBe(false)
+    // Only a short mandatory rule is always loaded; the large reference remains in the skill.
+    for (const f of ['.claude/CLAUDE.md', '.codex/AGENTS.md', '.gemini/GEMINI.md', '.grok/AGENTS.md', '.config/opencode/AGENTS.md', '.copilot/copilot-instructions.md']) {
+      expect(read(path.join(home, f)), f).toContain(MAILBOX_INSTRUCTION_MARKERS.start)
+      expect(read(path.join(home, f)), f).toContain(SHIM())
     }
   })
 
@@ -116,15 +118,29 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     expect(existsSync(path.join(home, '.nodeterm'))).toBe(false)
   })
 
-  it('a current host costs ONE read and not a single write', async () => {
+  it('a current host has one provider-root discovery plus the combined probe, without writes', async () => {
     await freshHost(['acc-1'])
     const runner = hostRunner()
     const outcome = await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1'], 'connect')
     expect(outcome).toBe('current')
-    // Exactly the probe: a block that only LOOKED stale would cost a merge read here, and a file
-    // that only looked stale a write.
-    expect(runner.calls).toHaveLength(1)
+    // One cold Grok-root lookup and the probe. A block that only LOOKED stale would cost an extra
+    // merge read; subsequent reuse in this instance caches the root and costs nothing.
+    expect(runner.calls).toHaveLength(2)
     expect(probes(runner)).toHaveLength(1)
+  })
+
+  it('retains user text and edited mailbox rules, without claiming successful refresh', async () => {
+    const hashes = new Map<string, string>()
+    const receipts = { get: (key: string) => hashes.get(key), set: (key: string, value: string | null) => { if (value === null) hashes.delete(key); else hashes.set(key, value) } }
+    const rh = new RemoteHooks(hostRunner(), allRemote, receipts)
+    expect(await rh.refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('refreshed')
+    const file = path.join(home, '.codex/AGENTS.md')
+    put(file, '# User header\n' + read(file) + '# User footer\n')
+    expect(await rh.refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('current')
+    put(file, read(file).replace('Nodeterm agent mail', 'My edited rule'))
+    const edited = read(file)
+    expect(await rh.refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('failed')
+    expect(read(file)).toBe(edited)
   })
 
   it('rewrites exactly the stale files', async () => {
@@ -135,7 +151,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     const runner = hostRunner()
     const outcome = await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
     expect(outcome).toBe('refreshed')
-    expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
+    expect(read(SHIM())).toBe(buildRemoteControlShimScript(home))
     expect(read(SKILL())).toBe(buildCanvasSkillBody(SHIM()))
     expect(read(AGENTS_SKILL())).toBe(buildCanvasSkillBody(SHIM()))
     expect(publishes(runner)).toHaveLength(3)
@@ -150,7 +166,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     rmSync(path.dirname(CTX_SKILL()), { recursive: true })
     const runner = hostRunner()
     await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
-    expect(read(CTX())).toBe(CONTEXT_SHIM_SCRIPT)
+    expect(read(CTX())).toBe(buildRemoteContextShimScript(home))
     expect(read(CTX_SKILL())).toBe(buildContextLinkSkillBody(CTX()))
     expect(publishes(runner)).toHaveLength(2)
   })
@@ -172,7 +188,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     expect(readlinkSync(codex)).toBe(path.join(home, 'no-such-dotfile'))
     expect(existsSync(path.join(home, 'no-such-dotfile'))).toBe(false)
     // The rest of the host is still brought up to date…
-    expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
+    expect(read(SHIM())).toBe(buildRemoteControlShimScript(home))
     expect(publishes(runner)).toHaveLength(1)
     // …and the refusal is said out loud, naming what was skipped.
     expect(warn.mock.calls.flat().join('\n')).toContain('SKILL.md')
@@ -187,6 +203,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1', 'gone', '../escape'], 'connect')
     expect(read(`${accountDir('acc-1')}/skills/manage-nodeterm-canvas/SKILL.md`)).toBe(buildCanvasSkillBody(SHIM()))
     expect(read(`${accountDir('acc-1')}/skills/get-linked-context/SKILL.md`)).toBe(buildContextLinkSkillBody(CTX()))
+    expect(read(`${accountDir('acc-1')}/CLAUDE.md`)).toContain(MAILBOX_INSTRUCTION_MARKERS.start)
     expect(existsSync(accountDir('gone'))).toBe(false)
     expect(existsSync(path.join(home, '.nodeterm/escape'))).toBe(false)
     expect(runner.calls.some((c) => c.includes('escape'))).toBe(false)
@@ -197,7 +214,10 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     const env = { COPILOT_HOME: path.join(home, 'cp'), GROK_HOME: path.join(home, 'gk'), XDG_CONFIG_HOME: path.join(home, 'xdg') }
     await new RemoteHooks(hostRunner({ env }), allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')
     expect(read(AGENTS_SKILL())).toBe(buildCanvasSkillBody(SHIM()))
-    for (const d of ['cp', 'gk', 'xdg']) expect(existsSync(path.join(home, d)), d).toBe(false)
+    for (const d of ['cp', 'gk', 'xdg/opencode']) expect(existsSync(path.join(home, d, 'skills')), d).toBe(false)
+    expect(read(path.join(home, 'cp/copilot-instructions.md'))).toContain(MAILBOX_INSTRUCTION_MARKERS.start)
+    expect(read(path.join(home, 'gk/AGENTS.md'))).toContain(MAILBOX_INSTRUCTION_MARKERS.start)
+    expect(read(path.join(home, 'xdg/opencode/AGENTS.md'))).toContain(MAILBOX_INSTRUCTION_MARKERS.start)
   })
 
   it('an account dir removed between the probe and the write is not brought back', async () => {
@@ -215,7 +235,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     await new RemoteHooks(racing, allRemote).refreshAgentTools(conn, '/fixture.sock', home, ['acc-1'], 'connect')
     expect(existsSync(accountDir('acc-1'))).toBe(false)
     // The system files still landed: a vanished account costs only its own skills.
-    expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
+    expect(read(SHIM())).toBe(buildRemoteControlShimScript(home))
   })
 
   it('a probe that could not run changes nothing', async () => {
@@ -223,7 +243,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
     const runner = hostRunner({ failProbe: true })
     expect(await new RemoteHooks(runner, allRemote).refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('failed')
     expect(read(SHIM())).toBe('stale\n')
-    expect(runner.calls).toHaveLength(1)
+    expect(runner.calls).toHaveLength(2)
   })
 
   it('the reuse branch costs nothing once the host is confirmed, and concurrent callers share one probe', async () => {
@@ -278,7 +298,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
       expect(readdirSync(SKILL())).toEqual([])
       expect(read(`${accountDir('acc-1')}/skills/manage-nodeterm-canvas/SKILL.md`)).toBe(buildCanvasSkillBody(SHIM()))
       expect(existsSync(accountDir('gone'))).toBe(false)
-      expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
+      expect(read(SHIM())).toBe(buildRemoteControlShimScript(home))
     })
 
     it('writes what it can read without comparison, as every connect did before the check existed', async () => {
@@ -286,7 +306,7 @@ describe.skipIf(process.platform === 'win32')('RemoteHooks.refreshAgentTools (re
       const runner = hostRunner({ path: bin })
       const rh = new RemoteHooks(runner, allRemote)
       expect(await rh.refreshAgentTools(conn, '/fixture.sock', home, [], 'connect')).toBe('refreshed')
-      expect(read(SHIM())).toBe(CONTROL_SHIM_SCRIPT)
+      expect(read(SHIM())).toBe(buildRemoteControlShimScript(home))
       expect(read(CTX_SKILL())).toBe(buildContextLinkSkillBody(CTX()))
       // …but the hourly re-look of a host it already brought up to date writes nothing blind.
       const writes = publishes(runner).length

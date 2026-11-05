@@ -4,7 +4,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { CURSOR_HOOK_EVENTS } from '../../../shared/agents/hook-events'
-import { applyCursorHooks, cursorCommandFor, installCursorHooks, removeCursorHooks } from './cursor'
+import { applyCursorHooks, cursorCommandFor, cursorSessionCommandFor, installCursorHooks, removeCursorHooks } from './cursor'
 
 let home: string
 let hooksJson: string
@@ -39,7 +39,7 @@ describe('installCursorHooks', () => {
     expect(fs.existsSync(script)).toBe(false)
   })
 
-  it('creates a version-1 file with one entry of ours on each of the five events, and the script', () => {
+  it('creates a version-1 file with one entry of ours on each subscribed event, and the script', () => {
     expect(install()).toBe('installed')
     const cfg = read()
     expect(cfg.version).toBe(1)
@@ -71,7 +71,9 @@ describe('installCursorHooks', () => {
     install()
     const cfg = read()
     expect(cfg.extra).toEqual({ a: 1 })
-    expect(cfg.hooks.sessionStart).toEqual([herdr])
+    expect(cfg.hooks.sessionStart[0]).toEqual(herdr)
+    expect(ours(cfg.hooks.sessionStart)).toHaveLength(1)
+    expect(ours(cfg.hooks.sessionStart)[0].command).toContain('NODETERM_CURSOR_MAILBOX_CONTEXT')
     expect(cfg.hooks.preToolUse[0]).toEqual(mine)
     expect(ours(cfg.hooks.preToolUse)).toHaveLength(1)
   })
@@ -83,7 +85,7 @@ describe('installCursorHooks', () => {
     install()
     const cfg = read()
     expect(cfg.hooks.afterAgentResponse).toEqual([other])
-    expect(cfg.hooks.sessionStart).toBeUndefined()
+    expect(ours(cfg.hooks.sessionStart)).toHaveLength(1)
   })
 
   it('does not claim a user script that merely shares the name', () => {
@@ -139,6 +141,21 @@ describe('applyCursorHooks', () => {
 })
 
 describe('the hook command is a silent gate-safe wrapper (cursor denies on bad JSON or exit 2)', () => {
+  it.skipIf(process.platform === 'win32')('sessionStart alone returns mandatory context inside nodeterm, never a processing receipt', () => {
+    install()
+    const env = { PATH: process.env.PATH ?? '', HOME: home, NODETERM_NODE_ID: 'test-node' }
+    const result = spawnSync('sh', ['-c', cursorSessionCommandFor(script)], { input: '{}', encoding: 'utf8', env })
+    expect(result.status).toBe(0)
+    const response = JSON.parse(result.stdout)
+    expect(Object.keys(response)).toEqual(['additional_context'])
+    expect(response.additional_context).toContain('At the beginning of every turn and before reporting completion')
+    expect(response.additional_context).toContain('NEVER causes automatic ACK')
+    const outside = spawnSync('sh', ['-c', cursorSessionCommandFor(script)], { input: '{}', encoding: 'utf8', env: { PATH: env.PATH, HOME: home } })
+    expect(outside.stdout).toBe('')
+    const gate = spawnSync('sh', ['-c', cursorCommandFor(script)], { input: '{"hook_event_name":"preToolUse"}', encoding: 'utf8', env })
+    expect(gate.stdout).toBe('')
+    expect(gate.status).toBe(0)
+  })
   const run = (cmd: string, input = '{}') => spawnSync('sh', ['-c', cmd], { input, encoding: 'utf8' })
 
   it.skipIf(process.platform === 'win32')('prints nothing and exits 0 when the script exits 2 and writes garbage', () => {

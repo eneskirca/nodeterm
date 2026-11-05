@@ -522,7 +522,7 @@ describe('RemoteHooks.setup — grok', () => {
       responses: { '$HOME': '/home/dev', 'GROK_HOME': '/opt/grok-home', 'nodeterm-status.json': '{ oops' }
     })
     await rh.setup('p1', conn, '/s.sock', { port: 1234, token: 't', version: '1' })
-    const write = runs.find((r) => r.cmd.includes('cat > ') && r.cmd.includes('nodeterm-status.json'))
+    const write = runs.find((r) => writesTo(r.cmd, '/opt/grok-home/hooks/nodeterm-status.json'))
     expect(write).toBeTruthy()
     const cfg = JSON.parse(write!.stdin!)
     expect(Object.keys(cfg.hooks).sort()).toEqual(GROK_EVENTS)
@@ -655,7 +655,7 @@ describe('RemoteHooks.teardown', () => {
 describe('RemoteHooks.installCanvasControl', () => {
   const isWriteTo = (args: string[], p: string) => writesTo(args.join(' '), p)
 
-  it('writes an executable shim + the skill in claude\'s dir and ~/.agents/skills — and NO instruction-file block (#744)', async () => {
+  it('writes the remote shim and skills plus compact required mailbox rules, without the old large blocks', async () => {
     const { rh, calls } = harness()
     await rh.installCanvasControl(conn, '/s.sock', '/home/u')
     const joined = calls.map((c) => c.args.join(' '))
@@ -675,8 +675,13 @@ describe('RemoteHooks.installCanvasControl', () => {
       expect(skill, dir).toContain('name: manage-nodeterm-canvas')
       expect(skill, dir).toContain('sh "/home/u/.nodeterm/nodeterm.sh"')
     }
-    // Nothing touches a global instruction file any more (they crowded codex's 32 KiB budget).
-    expect(joined.some((j) => /AGENTS\.md|GEMINI\.md|copilot-instructions\.md/.test(j))).toBe(false)
+    expect(joined.some((j) => /AGENTS\.md|GEMINI\.md|copilot-instructions\.md/.test(j))).toBe(true)
+    const rules = calls.filter((call) => (call.stdin ?? '').includes('nodeterm:agent-mailbox:start'))
+    expect(rules.length).toBeGreaterThan(0)
+    for (const rule of rules) {
+      expect(rule.stdin).toContain('sh "/home/u/.nodeterm/nodeterm.sh" inbox')
+      expect(rule.stdin).not.toContain('/tmp/nodeterm-start-check-')
+    }
     expect(calls.some((c) => (c.stdin ?? '').includes('nodeterm:manage-canvas:start'))).toBe(false)
     // no unexpanded tilde survives in any remote path.
     expect(joined.some((j) => j.includes('~/'))).toBe(false)

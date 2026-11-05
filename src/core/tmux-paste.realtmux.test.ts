@@ -356,8 +356,10 @@ suite('REAL tmux: copy mode', () => {
       ['-L', SOCKET, 'load-buffer', '-b', buffer, '-', ';', 'paste-buffer', '-d', '-p', '-r', '-b', buffer, '-t', 'nt-cm-ctl', ';', 'send-keys', '-t', 'nt-cm-ctl', 'Enter'],
       'a\nb'
     )
-    // The Enter never reached the app either: in copy mode it is `copy-selection-and-cancel`,
-    // which is also why the pane is out of copy mode again by now.
+    // The Enter never reached the app either. Detached tmux 3.4 can leave copy mode active
+    // (copy-selection needs a client); exit it only so the observation sentinel can reach the
+    // recorder. This does not resend or reframe the already delivered control payload.
+    tryTmux(['-L', SOCKET, 'send-keys', '-t', 'nt-cm-ctl', '-X', 'cancel'])
     expect(drain('nt-cm-ctl', out), 'copy mode no longer unframes — the if-shell gate is dead weight').toBe('a\nb')
   })
 

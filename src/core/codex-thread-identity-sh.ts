@@ -44,6 +44,15 @@
  * cores are shared by the desktop and the Server Edition.
  */
 import { posixQuote } from '../shared/ssh'
+import { isSafeRemoteHome } from './remote-safety'
+
+/** The target host's private identity root, never the generating machine's user-data path. */
+export function remoteCodexIdentityRoot(remoteHome: string): string {
+  if (!isSafeRemoteHome(remoteHome) || !remoteHome.startsWith('/') || remoteHome.includes('//') ||
+      (remoteHome.length > 1 && remoteHome.endsWith('/')) || remoteHome.split('/').some(part => part === '.' || part === '..'))
+    throw new Error('Invalid remote Codex identity home')
+  return `${remoteHome === '/' ? '' : remoteHome}/.nodeterm/codex-thread-nodes`
+}
 
 /**
  * The HOOK variant (#1150, #1175). MEASURED on codex-cli 0.162.0, 2026-10-16 (private CODEX_HOME,
@@ -87,20 +96,22 @@ fi
  */
 export function codexThreadIdentityResolverSh(
   identityRoot: string,
-  opts: { hookPayloadThread?: boolean } = {}
+  opts: { hookPayloadThread?: boolean; preferThreadBinding?: boolean } = {}
 ): string {
   return `# A shared-app-server Codex tool shell inherits CODEX_THREAD_ID, not the TUI client's
 # NODETERM_* env. Recover this thread's exact node binding (account-scoped), or change nothing.
 nt_codex_tid=\${CODEX_THREAD_ID-}
 nt_codex_rebind=0
-${opts.hookPayloadThread ? HOOK_PAYLOAD_THREAD_SH : ''}if { [ -z "\${NODETERM_NODE_ID-}" ] || [ "$nt_codex_rebind" = 1 ]; } && [ -n "$nt_codex_tid" ]; then
+${opts.hookPayloadThread ? HOOK_PAYLOAD_THREAD_SH : ''}${opts.preferThreadBinding ? 'if [ -n "$nt_codex_tid" ]; then nt_codex_rebind=1; fi\n' : ''}if { [ -z "\${NODETERM_NODE_ID-}" ] || [ "$nt_codex_rebind" = 1 ]; } && [ -n "$nt_codex_tid" ]; then
   case "$nt_codex_tid" in
     # '.' and '..' MATCH the charset and are path segments: "$identityRoot"/.. is the record dir's
     # PARENT. Refused by name here for the same reason isSafeThreadId refuses them in TypeScript.
-    ''|.|..|*[!A-Za-z0-9._-]*) ;;
+    ''|.|..|*[!A-Za-z0-9._-]*) ${opts.preferThreadBinding ? `unset NODETERM_NODE_ID NODETERM_HOOK_ENDPOINT NODETERM_AGENT_ID NODETERM_CANVAS_CONTROL \\
+      NODETERM_HOOK_PORT NODETERM_HOOK_TOKEN NODETERM_HOOK_SOCK NODETERM_NODE_TOKEN_DIR` : ''} ;;
     *)
       nt_codex_root=${posixQuote(identityRoot)}
       nt_codex_matches=0
+      nt_codex_record_present=0
       nt_codex_node=''
       nt_codex_endpoint=''
       nt_codex_agent=''
@@ -109,6 +120,7 @@ ${opts.hookPayloadThread ? HOOK_PAYLOAD_THREAD_SH : ''}if { [ -z "\${NODETERM_NO
       # records the node/endpoint/agent/grant and counts the match. $1=file, $2=expected scope
       # ('' = system).
       nt_codex_try() {
+        if [ -e "$1" ] || [ -L "$1" ]; then nt_codex_record_present=1; fi
         [ -r "$1" ] || return 0
         # ONE PASS, by the shell itself. This used to be five \`sed | head\` command substitutions —
         # fifteen processes per record, on every hook event of every tool shell — and it is the
@@ -195,7 +207,7 @@ ${opts.hookPayloadThread ? HOOK_PAYLOAD_THREAD_SH : ''}if { [ -z "\${NODETERM_NO
           ;;
         # A daemon scope that could escape the mapping directory, or the reserved system word used
         # as a managed id: resolve nothing.
-        .|..|system|*[!A-Za-z0-9._-]*) ;;
+        .|..|system|*[!A-Za-z0-9._-]*) ${opts.preferThreadBinding ? 'nt_codex_record_present=1' : ''} ;;
         *)
           nt_codex_try "$nt_codex_root/\${NODETERM_CODEX_ACCOUNT_ID}/$nt_codex_tid" \\
             "$NODETERM_CODEX_ACCOUNT_ID"
@@ -220,7 +232,11 @@ ${opts.hookPayloadThread ? HOOK_PAYLOAD_THREAD_SH : ''}if { [ -z "\${NODETERM_NO
           NODETERM_CANVAS_CONTROL=1
           export NODETERM_CANVAS_CONTROL
         fi
-      fi
+${opts.preferThreadBinding ? `      elif [ "$nt_codex_record_present" -eq 1 ]; then
+        # Known but invalid/ambiguous binding: never fall back to a shared daemon's stale node.
+        unset NODETERM_NODE_ID NODETERM_HOOK_ENDPOINT NODETERM_AGENT_ID NODETERM_CANVAS_CONTROL \\
+          NODETERM_HOOK_PORT NODETERM_HOOK_TOKEN NODETERM_HOOK_SOCK NODETERM_NODE_TOKEN_DIR
+` : ''}      fi
       ;;
   esac
 fi`

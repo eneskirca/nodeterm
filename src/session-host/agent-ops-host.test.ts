@@ -32,10 +32,13 @@ function fakePtyPlugin(): Plugin {
         contents: `
           const fs = require('fs')
           export function spawn(file) {
-            let onExit
+            let onExit, output
             return {
               pid: 4242,
-              onData() {},
+              onData(cb) {
+                output = cb
+                if (process.env.NT_TEST_ENVELOPE_SURFACE) setTimeout(() => cb('\\x1b[?2004h› \\r\\n\\r\\n← for agents · ? for shortcuts'), 0)
+              },
               // A shell named EXITING_SHELL ends on its own shortly after the host listens for it —
               // the pty's OWN exit path, identical on every platform (unlike killSession, which on
               // win32 goes through a real taskkill of this never-spawned pid and reports ok:false).
@@ -43,7 +46,15 @@ function fakePtyPlugin(): Plugin {
                 onExit = cb
                 if (file === '${EXITING_SHELL}') setTimeout(() => onExit?.({ exitCode: 0 }), 50)
               },
-              write(data) { fs.appendFileSync(process.env.NT_TEST_WRITE_LOG, JSON.stringify(data) + '\\n') },
+              write(data) {
+                fs.appendFileSync(process.env.NT_TEST_WRITE_LOG, JSON.stringify(data) + '\\n')
+                if (process.env.NT_TEST_ENVELOPE_SURFACE && data.startsWith('\\x1b[200~')) {
+                  const screen = process.env.NT_TEST_ENVELOPE_SURFACE === 'dialog'
+                    ? 'Would you like to run the following command?\\r\\n1. Yes, proceed\\r\\n2. No'
+                    : '› ' + data.slice(6, -6).replace(/\\n/g, '\\r\\n') + '\\r\\n\\r\\n← for agents · ? for shortcuts'
+                  output?.('\\x1b[2J\\x1b[H' + screen)
+                }
+              },
               resize() {}, pause() {}, resume() {},
               kill() { setTimeout(() => onExit?.({ exitCode: 0 }), 20) }
             }
@@ -54,12 +65,28 @@ function fakePtyPlugin(): Plugin {
   }
 }
 
+/** Only the OS observation is synthetic; production process-identity and surface predicates remain real. */
+function fakeEnvelopeProbe(): Plugin {
+  return { name: 'synthetic-envelope-os-probe', setup(bundle) {
+    bundle.onResolve({ filter: /^\.\/(windows|linux)-pane-owner$/ }, args => ({ path: args.path.includes('linux') ? 'linux' : 'windows', namespace: 'synthetic-envelope-owner' }))
+    bundle.onLoad({ filter: /.*/, namespace: 'synthetic-envelope-owner' }, args => ({ loader: 'js', resolveDir: process.cwd(), contents: `
+      export * from ${JSON.stringify(path.resolve(`src/session-host/${args.path}-pane-owner.ts`))}
+      import fs from 'fs'
+      export async function ${args.path === 'linux' ? 'readLinuxPaneOwner' : 'readWindowsConsoleOwner'}(pid, generation) {
+        const changed = process.env.NT_TEST_ENVELOPE_SURFACE === 'owner' && fs.readFileSync(process.env.NT_TEST_WRITE_LOG, 'utf8').length > 0
+        return { panePid: pid, tty: ${args.path === 'linux' ? "'/dev/pts/9'" : "'win32-console:' + pid"}, paneId: '${args.path === 'linux' ? 'host-linux' : 'win32'}:' + generation + ':root',
+          command: 'codex', argv: ['codex'], pids: [pid + 1], processBirths: [changed ? 'replacement' : 'original'] }
+      }
+    ` }))
+  } }
+}
+
 const cleanup: Array<() => Promise<void> | void> = []
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step()
 })
 
-async function bootHost(): Promise<{ connect(): Promise<Conn>; writes(): string[] }> {
+async function bootHost(features?: string[], surface?: 'ready' | 'dialog' | 'owner'): Promise<{ connect(): Promise<Conn>; writes(): string[] }> {
   const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'nt-session-host-agent-ops-'))
   cleanup.push(() => rmSync(fixtureDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }))
   const dataDir = path.join(fixtureDir, 'user-data')
@@ -76,13 +103,13 @@ async function bootHost(): Promise<{ connect(): Promise<Conn>; writes(): string[
     bundle: true,
     platform: 'node',
     format: 'cjs',
-    plugins: [fakePtyPlugin()],
+    plugins: [fakePtyPlugin(), ...(surface ? [fakeEnvelopeProbe()] : [])],
     logLevel: 'silent'
   })
   const child: ChildProcess = spawn(process.execPath, [bundlePath, dataDir], {
     stdio: 'ignore',
     windowsHide: true,
-    env: { ...process.env, NT_TEST_WRITE_LOG: writeLog }
+    env: { ...process.env, NT_TEST_WRITE_LOG: writeLog, ...(surface ? { NT_TEST_ENVELOPE_SURFACE: surface } : {}) }
   })
   cleanup.push(async () => {
     child.kill()
@@ -105,7 +132,7 @@ async function bootHost(): Promise<{ connect(): Promise<Conn>; writes(): string[
     connect: async () => {
       const conn = await connect(state.endpoint)
       cleanup.push(() => void conn.socket.destroy())
-      await expect(conn.call({ cmd: 'hello', token })).resolves.toMatchObject({ ok: true })
+      await expect(conn.call({ cmd: 'hello', token, ...(features ? { protocolVersion: 2, features } : {}) })).resolves.toMatchObject({ ok: true })
       return conn
     },
     writes: () => readFileSync(writeLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as string)
@@ -155,6 +182,33 @@ const OWNER = {
 }
 
 describe('session-host agent-operation verbs', () => {
+  it.each(['ready', 'dialog', 'owner'] as const)('real negotiated V2 host writes only the allowed envelope/Enter (%s)', async surface => {
+    const host = await bootHost(['envelope-surface-v2'], surface), conn = await host.connect()
+    await conn.call({ cmd: 'attach', name: 'nt-v2', spawn: SPAWN, scrollback: 100 })
+    await expect.poll(async () => conn.call({ cmd: 'messagePasteReadyV1', name: 'nt-v2' }), { timeout: 1000, interval: 5 })
+      .toMatchObject({ ok: true, result: true })
+    const observed = await conn.call({ cmd: 'messageOwnerV1', name: 'nt-v2' })
+    if (!observed.ok) throw new Error('synthetic owner unavailable')
+    const reply = await conn.call({ cmd: 'messageEnvelopeV2', name: 'nt-v2', envelope: 'SYNTHETIC BODY\nEND', expected: observed.result })
+    expect(reply, JSON.stringify({ writes: host.writes() })).toMatchObject({ ok: true, result: true })
+    expect(host.writes().filter(w => w.startsWith('\x1b[200~'))).toHaveLength(1)
+    expect(host.writes().filter(w => w === '\r')).toHaveLength(surface === 'ready' ? 1 : 0)
+  }, 30000)
+
+  it('refuses both the legacy envelope and unnegotiated V2 without any PTY writes', async () => {
+    const host = await bootHost(), conn = await host.connect()
+    await conn.call({ cmd: 'attach', name: 'nt-envelope-gate', spawn: SPAWN, scrollback: 100 })
+    for (const cmd of ['messageEnvelopeV1', 'messageEnvelopeV2'])
+      await expect(conn.call({ cmd, name: 'nt-envelope-gate', envelope: 'SYNTHETIC', expected: OWNER }))
+        .resolves.toMatchObject({ ok: false, error: expect.stringContaining('capability required') })
+    expect(host.writes()).toEqual([])
+  }, 30000)
+  it('negotiates the additive feature but still refuses V2 for an absent session, without fallback', async () => {
+    const host = await bootHost(['envelope-surface-v2']), conn = await host.connect()
+    await expect(conn.call({ cmd: 'messageEnvelopeV2', name: 'nt-absent', envelope: 'SYNTHETIC', expected: OWNER }))
+      .resolves.toMatchObject({ ok: true, result: false })
+    expect(host.writes()).toEqual([])
+  }, 30000)
   it('writeDetachedV1 types verbatim into a session this connection never attached', async () => {
     const host = await bootHost()
     const owner = await host.connect()

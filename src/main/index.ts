@@ -12,7 +12,7 @@ import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sw
 import { startTriggerService } from '../core/trigger-service'
 import { readAgentSessionName, type AgentSessionNameDeps } from '../core/agent-session-name'
 import { readFile, readdir as fsReaddir, realpath as fsRealpath, lstat as fsLstat, writeFile as fsWriteFile } from 'fs/promises'
-import { existsSync, statSync, openSync, fstatSync, readFileSync, closeSync } from 'fs'
+import { existsSync, statSync, openSync, fstatSync, readFileSync, closeSync, realpathSync } from 'fs'
 import { homedir, hostname } from 'os'
 import { randomUUID } from 'crypto'
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage, screen, shell, systemPreferences, webContents } from 'electron'
@@ -97,6 +97,11 @@ import {
   type AgentMessagingDeps
 } from '../core/agents/agent-messaging'
 import { registerStationNoticeIpc, StationNoticeMonitor } from '../core/agents/station-notice'
+import { AgentMailbox, isMailboxControl } from '../core/agents/agent-mailbox'
+import { MailboxFileStore } from '../core/agents/agent-mailbox-store'
+import { prepareMailboxLegacy, createDeliveryHintsFile, loadLegacyMailboxAudit } from '../core/agents/agent-mailbox-legacy'
+import { registerLegacyMailboxViewIpc } from '../core/agents/agent-mailbox-legacy-view'
+import type { MailboxViewRequest } from '../shared/agents/agent-mailbox'
 import {
   StationOutcomeStore,
   clearOutcomesAfterControl,
@@ -105,7 +110,6 @@ import {
   OUTCOME_FACT
 } from '../core/station-outcome-store'
 import { DurableFactFile, flushAllDurableFactsSync } from '../core/durable-state'
-import { QUEUE_FACT } from '../core/agents/delivery-queue'
 import {
   HANDOVER_FACT,
   StationHandoverTracker,
@@ -261,7 +265,24 @@ import {
   nodesForAgentSession
 } from '../core/agent-status-mirror'
 import { mirrorCustomAgents } from '../core/mirror-custom-agents'
-import { paneOwnerProject } from '../core/agents/pane-ownership'
+import { paneOwnerProject, freshPaneOwnerProject, setPersistentPaneOwnershipReader } from '../core/agents/pane-ownership'
+import { PaneAdoptionService } from '../core/agents/pane-adoption'
+import { PaneAdoptionFileStore, PrivateRecordFileStore } from '../core/agents/pane-adoption-store'
+import { SshPaneAdoptionService, validateSshOwnershipRecords, type SshOwnershipRecord } from '../core/agents/ssh-pane-adoption'
+import { discoverObservedRuntime } from '../core/remote-ssh/codex-observed-runtime-plan'
+import { captureSshPaneEvidence, sshPaneEvidenceKey } from '../core/remote-ssh/ssh-pane-evidence'
+import { restoreRemoteCodexLaunch } from '../core/remote-ssh/codex-provider-observer'
+import { createObservedCodexScope } from './remote-ssh/observed-codex-scope'
+import { publishObservedCodexBinding, publishObservedNodeToken } from './remote-ssh/observed-codex-binding'
+import { registerObservedCodexResumeIpc } from './remote-ssh/observed-codex-ipc'
+import { observedCodexStartDialogOptions, observedSshAdoptionDialogOptions } from './remote-ssh/observed-codex-dialogs'
+import { createLocalPaneEvidence, linuxAdoptionKernel } from '../core/agents/pane-adoption-local'
+import { registerPaneAdoptionIpc } from '../core/agents/pane-adoption-ipc'
+import { createPrivatePaneScope } from '../core/agents/pane-adoption-scope'
+import { linuxProcessIdentity, readLinuxPaneOwner } from '../session-host/linux-pane-owner'
+import { canControlCanvas } from '../shared/agents/config'
+import { binariesFor, isAgentPane } from '../shared/agents/pane-owner-predicate'
+import { paneAdoptionDialogOptions } from './pane-adoption-dialog'
 import { createPushNotify, createLiveUpdatePush } from '../core/push-notify'
 import { createGrantsAccessor, type PushGrant } from '../core/push-grants'
 import { createRemoteGrantsCache } from '../core/remote-push-grants'
@@ -405,7 +426,7 @@ import { codexThreadExists, startCodexThread } from '../core/codex-session-name'
 import { codexUsageAccounts } from '../core/codex-accounts-core'
 import { codexHomeFor } from '../core/codex-config-dir'
 import { loadOrCreateNodeAuthSecret } from '../core/agents/node-auth-secret'
-import { initNodeTokens, refreshNodeTokens } from '../core/agents/node-token-service'
+import { initNodeTokens, refreshNodeTokens, remoteNodeTokenMinter } from '../core/agents/node-token-service'
 import {
   claudeConfigDirFor,
   linkedClaudeConfigDirs,
@@ -2072,6 +2093,141 @@ app.whenReady().then(async () => {
   // a remote tab derives the default worktree path from it, and the worktree lives on THIS host.
   corePlatform.handle(IPC.appUserDataDir, () => app.getPath('userData'))
 
+  // Only actual freshPaneOwnerProject origin creates automatic records. A private human/spawn
+  // proof can restore an exact identity, but is never itself fed back as a fresh-spawn origin.
+  // Private SSH association survives a released/missing live handle. Never reinterpret such a
+  // node as a local pane merely because the remote client is currently absent.
+  const isMailboxRemoteNode = (nodeId: string): boolean =>
+    !!ptyManager.sshRemoteForNode(nodeId) || workspaceStore.sshProjectIdForNode(nodeId) !== undefined
+  const adoptionEvidence = createLocalPaneEvidence({
+    platform: process.platform,
+    kernel: linuxAdoptionKernel(linuxProcessIdentity),
+    scope: createPrivatePaneScope({
+      projects: () => workspaceStore.persistedCanvases(),
+      privateProject: projectId => workspaceStore.projectTargetInfo(projectId),
+      isSshNode: isMailboxRemoteNode, realpath: realpathSync
+    }),
+    provider: (nodeId) => {
+      const m = mirrorEntry(nodeId)
+      if (!m?.stateVerified || !m.sessionId || !m.agentId || !canControlCanvas(m.agentId)) return null
+      const proof = m.stateIdentity
+      return proof?.sessionId === m.sessionId && proof.agentId === m.agentId ? { sessionId: m.sessionId, agentId: m.agentId } : null
+    },
+    listing: () => ptyManager.sessionHostListing(),
+    // Host-owned generation + kernel probe, without requiring any PTY attach/host upgrade.
+    paneOwner: (_nodeId, session) => readLinuxPaneOwner(session.pid, session.generation),
+    isAgent: (owner, agentId) => isAgentPane(owner, agentId, binariesFor(agentId, settingsStore.get().customAgents)) === 'agent'
+  })
+  const activeHumanFrames = new Set<() => boolean>()
+  const humanFramesCurrent = (): boolean => [...activeHumanFrames].every(current => { try { return current() === true } catch { return false } })
+  const paneAdoption = new PaneAdoptionService({
+    storage: new PaneAdoptionFileStore(corePlatform.userDataDir),
+    mainWindowId: () => mainWindowId(),
+    ...adoptionEvidence, freshOwner: freshPaneOwnerProject,
+    confirm: async (identity) => {
+      const tracked = getMainWindow()
+      const id = tracked?.webContents.id
+      if (!tracked || tracked.isDestroyed() || id === undefined) return false
+      const contents = webContents.fromId(id)
+      const win = contents && !contents.isDestroyed() ? BrowserWindow.fromWebContents(contents) : null
+      if (!win || win.isDestroyed() || win.webContents.id !== id) return false
+      // No control-confirm waiver, renderer approval boolean, or relay-dispatchable dialog.
+      return (await dialog.showMessageBox(win, paneAdoptionDialogOptions(identity))).response === 1
+    }
+  })
+  const mainWindowId = (): number | undefined => {
+    const w = getMainWindow(); return w && !w.isDestroyed() && humanFramesCurrent() ? w.webContents.id : undefined
+  }
+  const confirmObserved = async (options: Electron.MessageBoxOptions): Promise<boolean> => {
+    const tracked = getMainWindow(), id = mainWindowId()
+    if (!tracked || id === undefined) return false
+    const contents = webContents.fromId(id)
+    const win = contents && !contents.isDestroyed() ? BrowserWindow.fromWebContents(contents) : null
+    if (!win || win.isDestroyed() || win.webContents.id !== id) return false
+    const frame = contents!.mainFrame
+    const result = await dialog.showMessageBox(win, options)
+    return result.response === 1 && mainWindowId() === id && getMainWindow() === tracked && !win.isDestroyed() && contents!.mainFrame === frame
+  }
+  const sshOwnershipStore = new PrivateRecordFileStore<SshOwnershipRecord>(corePlatform.userDataDir, 'ssh-pane-ownership', {
+    decode: raw => {
+      const e = raw as { kind?: unknown; version?: unknown; records?: unknown } | null
+      if (!e || Object.keys(e).length !== 3 || e.kind !== 'observed-ssh-pane-ownership' || e.version !== 1) throw new Error('Unknown SSH ownership format')
+      validateSshOwnershipRecords(e.records); return e.records
+    },
+    encode: records => { validateSshOwnershipRecords(records); return { kind: 'observed-ssh-pane-ownership', version: 1, records } }
+  })
+  let sshRestoreAvailable = false
+  ptyManager.setObservedRemoteRestoreGuard(() => sshRestoreAvailable)
+  // Finish deny-only restoration before createWindow can let a renderer auto-create terminals.
+  // Missing storage is a valid empty store; corrupt/unreadable storage keeps remote create held.
+  const restoredSshRecords = await sshOwnershipStore.load().then(records => {
+    validateSshOwnershipRecords(records)
+    for (const record of records) ptyManager.restrictObservedRemoteNode(record.descriptor.plan.context.nodeId)
+    sshRestoreAvailable = true; return records
+  }).catch(() => undefined)
+  let sshPaneAdoption: SshPaneAdoptionService | undefined
+  const observedMessagingEnabled = messagingEnabledVia(id => workspaceStore.capabilityProjectFor(id), () => settingsStore.get())
+  const observedScope = createObservedCodexScope({
+    projects: () => workspaceStore.persistedCanvases(),
+    privateProject: id => workspaceStore.projectTargetInfo(id),
+    runtime: id => sshProjectManager?.observedCodexRuntimeFor(id),
+    accounts: () => settingsStore.get().codexAccounts ?? [],
+    enabled: id => !!hookServer.nodeAuthSecretOrNull() && observedMessagingEnabled(id),
+    recorded: id => sshPaneAdoption?.recordedContext(id),
+    threadCandidate: id => {
+      const m = mirrorEntry(id)
+      return m?.stateVerified && m.agentId === 'codex' && m.sessionId && m.stateIdentity?.agentId === 'codex' &&
+        m.stateIdentity.sessionId === m.sessionId ? m.sessionId : undefined
+    }
+  })
+  sshPaneAdoption = new SshPaneAdoptionService({
+    storage: {
+      load: async () => { if (!restoredSshRecords) throw new Error('SSH ownership restore unavailable'); return restoredSshRecords },
+      commit: async records => { try { await sshOwnershipStore.commit(records) } catch (error) { sshRestoreAvailable = false; throw error } }, standDown: () => sshOwnershipStore.standDown()
+    },
+    mainWindowId, scope: observedScope,
+    // Never reconnect/ensure/catalog; only an actually new authenticated manager transport.
+    transport: async id => sshProjectManager?.newConnectionTransport(id)?.transport,
+    plan: (transport, scope, current) => discoverObservedRuntime(transport, scope.context, scope, current),
+    start: (prepared, transport, access) => ptyManager.executeObservedRemoteResume(prepared, transport, access),
+    restrictNode: id => ptyManager.restrictObservedRemoteNode(id),
+    confirmStart: (_scope, plan, identity) => confirmObserved(observedCodexStartDialogOptions(plan, identity)),
+    confirmAdopt: async (scope, evidence) => {
+      const t = sshProjectManager?.newConnectionTransport(scope.context.projectId)?.transport
+      return !!t && t.isCurrent() && await confirmObserved(observedSshAdoptionDialogOptions({ ...evidence, transport: t.identity }))
+    },
+    bindProvider: async (scope, transport, descriptor, evidence) => {
+      const selected = JSON.stringify(scope), expected = sshPaneEvidenceKey(evidence)
+      const revalidate = async (): Promise<boolean> => {
+        if (JSON.stringify(observedScope({ nodeId: scope.context.nodeId, projectId: scope.context.projectId })) !== selected || !transport.isCurrent()) return false
+        const fresh = await captureSshPaneEvidence(transport, restoreRemoteCodexLaunch(transport, descriptor), scope)
+        return !!fresh && sshPaneEvidenceKey(fresh) === expected && transport.isCurrent() &&
+          JSON.stringify(observedScope({ nodeId: scope.context.nodeId, projectId: scope.context.projectId })) === selected
+      }
+      const token = remoteNodeTokenMinter()?.(scope.context.nodeId)
+      if (!token) throw new Error('Observed node identity unavailable')
+      await publishObservedNodeToken(transport, { remoteHome: scope.remoteHome, nodeId: scope.context.nodeId, token }, revalidate)
+      await publishObservedCodexBinding(transport, { remoteHome: scope.remoteHome, threadId: descriptor.plan.context.sessionId,
+        nodeId: scope.context.nodeId, accountId: scope.accountId, hookEndpoint: scope.hookEndpoint }, revalidate)
+    }
+  })
+  const withinHumanFrame = async <T>(frame: (() => boolean) | undefined, work: () => Promise<T>): Promise<T> => {
+    const current = frame ?? (() => false)
+    activeHumanFrames.add(current)
+    try { return await work() } finally { activeHumanFrames.delete(current) }
+  }
+  const paneAdoptionIpc = { request: (senderId: number, raw: unknown, frame?: () => boolean) => withinHumanFrame(frame, () => {
+    const nodeId = raw && typeof raw === 'object' && 'nodeId' in raw ? raw.nodeId : undefined
+    return typeof nodeId === 'string' && isMailboxRemoteNode(nodeId) ? sshPaneAdoption!.request(senderId, raw) : paneAdoption.request(senderId, raw)
+  }) }
+  registerPaneAdoptionIpc(ipcMain, paneAdoptionIpc)
+  registerObservedCodexResumeIpc(ipcMain, mainWindowId, {
+    resume: (senderId, raw, frame) => withinHumanFrame(frame, () => sshPaneAdoption!.resume(senderId, raw))
+  })
+  app.once('will-quit', () => sshPaneAdoption?.standDown())
+  setPersistentPaneOwnershipReader(nodeId => paneAdoption.owner(nodeId))
+  app.once('will-quit', () => { paneAdoption.standDown(); setPersistentPaneOwnershipReader(null) })
+
   // Phone pairing (nodeterm iOS "scan a QR" flow): a one-shot LAN listener that installs the
   // phone's Ed25519 key into ~/.ssh/authorized_keys. The completion result is forwarded to the
   // window over `pairing:done` so the settings section can show the paired/timeout state.
@@ -2270,12 +2426,16 @@ app.whenReady().then(async () => {
   // src/core/agents/agent-messaging.ts for the whole map.
   const messagingDeps: AgentMessagingDeps = {
     ...ptyPaneProbeDeps(ptyManager),
-    sendEnvelope: (id, envelope, expected) => ptyManager.sendEnvelope(id, envelope, expected),
+    sendEnvelope: (id, envelope, expected, access) => ptyManager.sendEnvelope(id, envelope, expected, undefined, access),
+    // A selected remote identity is metadata only; every operation requires fresh original
+    // provider/kernel evidence and the captured authenticated transport. Old TUIs remain denied.
+    remoteIdentity: id => sshPaneAdoption?.identityCandidate(id),
+    acquirePaneOwnership: expected => sshPaneAdoption!.acquire(expected),
     envelopePasteReady: (id) => ptyManager.envelopePasteReady(id),
     // Attached OR released-but-running: see AgentMessagingDeps.hasLiveSession.
     hasLiveSession: (id) => ptyManager.sessionExists(id),
     projects: () => workspaceStore.persistedCanvases(),
-    isRemoteNode: (id) => !!ptyManager.sshRemoteForNode(id),
+    isRemoteNode: isMailboxRemoteNode,
     // GLOBAL CONSTRAINT 11: every delivery path is gated behind the per-project switch. The switch
     // is the `agentMessaging` capability GRANT (projectCapabilityGrantedFor — never the raw file
     // bit): an explicit `true` in the hostile git-shared project.json needs this machine's 'kept'
@@ -2308,14 +2468,33 @@ app.whenReady().then(async () => {
   // Durable across an app restart (<userData>/orchestration-state/delivery-queue.json): restored
   // below, once the status mirror is loaded and every listener is wired — see delivery-queue.ts for
   // what a restart does to a queued message (TTL keeps running, same session only, sender told).
-  const deliveryQueueFile = new DurableFactFile(QUEUE_FACT, { userDataDir: corePlatform.userDataDir })
+  const deliveryQueueFile = createDeliveryHintsFile(corePlatform.userDataDir)
+  let agentMailbox: AgentMailbox | undefined
   messagingDeps.queue = createDeliveryQueue(messagingDeps, { durable: deliveryQueueFile })
   setDeliveryQueue(messagingDeps.queue)
-  ipcMain.handle(IPC.agentMessageDeliver, async (_e, raw: unknown) => {
+  ipcMain.handle(IPC.agentMessageDeliver, async (event, raw: unknown) => {
+    if (getMainWindow()?.webContents.id !== event.sender.id)
+      return { ok: false, error: 'Agent messaging refused.' }
     if (!isDeliverRequest(raw))
       return { ok: false, error: 'malformed agent-message request. Do not retry.' }
+    // Regular mail is admitted ONLY at the authenticated hook route, into its durable store.
+    // The renderer must not impersonate a source node or bypass the mailbox through this IPC.
+    if (raw.verb !== 'notify') return { ok: false, code: 'not-permitted', retryable: false,
+      error: 'Use authenticated canvas control for send/reply.' }
+    await paneAdoption.refresh([raw.sourceNodeId, raw.targetNodeId])
     const { reply } = await deliverFromControl(raw, messagingDeps)
     return reply
+  })
+  ipcMain.handle(IPC.agentMailboxView, async (event, raw: MailboxViewRequest) => {
+    if (getMainWindow()?.webContents.id !== event.sender.id)
+      return { ok: false, code: 'not-permitted', retryable: false, error: 'Agent mailbox refused.' }
+    if (raw && typeof raw.nodeId === 'string') await paneAdoption.refresh([raw.nodeId])
+    return agentMailbox?.desktopView(raw) ?? { ok: false, code: 'store-unavailable', retryable: false,
+      error: 'Agent mailbox is not available.' }
+  })
+  registerLegacyMailboxViewIpc(ipcMain, {
+    mainWindowId: () => getMainWindow()?.webContents.id,
+    load: () => loadLegacyMailboxAudit(corePlatform.userDataDir)
   })
   // A board comment that @mentions a session (the comment composer's send). Raw ipcMain on purpose —
   // invisible to relay peers (platform-electron.ts, invariant 4c) — and guarded to the live main
@@ -2557,8 +2736,16 @@ app.whenReady().then(async () => {
   // `workspace.load` comes later). Read-only load (`sideline: false`), like the relay path's.
   // Shared with the live links' `init()` below, which must not judge a node gone before this read.
   const bootWorkspaceLoad = workspaceStore.load({ sideline: false })
-  void restoreDeliveryQueue(messagingDeps.queue, deliveryQueueFile, {
-    ready: bootWorkspaceLoad
+  // A second app instance never opens the mailbox. The hook owner is the sole file writer.
+  void bootWorkspaceLoad.then(async () => {
+    if (hookStartupWarning) return
+    // Audit the old queue losslessly BEFORE restoring any scheduler. Historical entries never
+    // enter the new hints queue, whose file is separate; the original remains read-only.
+    await prepareMailboxLegacy(corePlatform.userDataDir)
+    agentMailbox = new AgentMailbox(new MailboxFileStore(corePlatform.userDataDir), messagingDeps)
+    await restoreDeliveryQueue(messagingDeps.queue!, deliveryQueueFile)
+  }).catch(() => {
+    console.warn('[agent-mailbox] startup held: legacy queue audit or workspace load failed; no legacy restore attempted')
   })
 
   /** The one display-title rule for everything the HOST sends out (push alerts, Live Activity
@@ -3499,6 +3686,8 @@ app.whenReady().then(async () => {
       // Agent messaging taps the SAME stream: the sender's newTurn resets its fan-out budget, and
       // an open delivery receipt watch is satisfied by the target's verified advance.
       onMessagingAgentEvent(enriched)
+      if (enriched.verified && enriched.state === 'done')
+        void agentMailbox?.onTargetBoundary(enriched.nodeId)
       // …and so does the station-failure monitor: an errored turn, a needs-you edge, and the
       // successful turn that re-arms a station's notice all ride this one stream.
       stationNotices.onAgentEvent(enriched)
@@ -4621,9 +4810,21 @@ app.whenReady().then(async () => {
     )
   }
   hookServer.setControlHandler(async ({ verb, nodeId, args, verified, onLateAnswer }) => {
+    // Stamp actual arrival before any read-only ownership restoration can await I/O.
+    const requestAt = Date.now()
+    if (verified) {
+      const nodes = [nodeId]
+      if (args.node) {
+        const projects = workspaceStore.persistedCanvases().filter(project => project.nodes.some(node => node.id === nodeId))
+        if (projects.length === 1) {
+          const targets = projects[0].nodes.filter(node => node.id === args.node || (typeof node.title === 'string' && node.title.toLowerCase() === args.node.toLowerCase()))
+          if (targets.length === 1) nodes.push(targets[0].id)
+        }
+      }
+      await paneAdoption.refresh(nodes)
+    }
     // When the request ARRIVED — before a `write` / `run` typed anything. The hand-over tracker
     // stamps the new work with it, so a turn the typed text starts is always later.
-    const requestAt = Date.now()
     // `--dry-run` (issue #532) is honoured by the spawn verbs only, and this gate runs FIRST —
     // before the browser intercept, the open-project gates and the renderer forward — because a
     // verb that cannot dry-run must REFUSE rather than silently perform: a `close --dry-run`
@@ -4632,6 +4833,11 @@ app.whenReady().then(async () => {
     if (dryRunRequested(args) && !DRY_RUN_VERBS.has(verb)) {
       const msg = dryRunRefusal(verb)
       return { ok: false, error: msg, message: msg }
+    }
+    if (isMailboxControl(verb)) {
+      return agentMailbox?.control(nodeId, verified, verb, args) ?? {
+        ok: false, code: 'store-unavailable', retryable: false, error: 'Agent mailbox is not available.'
+      }
     }
     // `--issue` (a GitHub issue reference for a new agent session): its shape is refused HERE,
     // before the renderer ever sees it, by the same gate the Server Edition's parser runs. The

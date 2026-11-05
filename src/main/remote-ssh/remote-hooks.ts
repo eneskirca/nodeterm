@@ -38,21 +38,17 @@ import {
   type RemoteAtomicWriteOptions
 } from '../remote-atomic-write'
 import { curlHeaderConfigLine } from '../../core/agents/hook-curl-config-sh'
+import { remoteCodexIdentityRoot } from '../../core/codex-thread-identity-sh'
 import { buildManagedScript } from '../../core/agents/hooks/managed-script'
 import {
   buildCopilotHookConfig,
   COPILOT_HOOK_FILE,
   isSafeRemoteCopilotHome
 } from '../../core/agents/hooks/copilot'
-import { applyCursorHooks, cursorCommandFor, CURSOR_SCRIPT_FILE } from '../../core/agents/hooks/cursor'
+import { applyCursorHooks, cursorCommandFor, cursorSessionCommandFor, CURSOR_SCRIPT_FILE } from '../../core/agents/hooks/cursor'
 
-/**
- * Remote hook scripts get NO Codex thread-identity root.
- *
- * The default root is THIS machine's data dir, and baking it into a script written to someone
- * else's host puts a path like `/Users/<you>/Library/Application Support/…` on that host — inert
- * (nothing there can read it) but a needless leak of the desktop's layout. Shared identity for SSH
- * hosts is a later slice; when it lands, this becomes the REMOTE host's root, not null.
+/** Other providers keep the neutral prelude. Codex uses only this target host's explicit
+ * private root; the default builder would expose the generating desktop's profile path.
  */
 const REMOTE_IDENTITY_ROOT = null
 import { buildManagedHookCommand, mergeManagedHook, stripManagedHook, type HookSettings } from '../../core/agents/hooks/install-helper'
@@ -64,10 +60,11 @@ import {
 } from '../../core/agents/hooks/codex'
 import { upsertHookTrustEntriesInContent, type CodexTrustEntry } from '../../core/agents/hooks/codex-trust'
 import { ensureFullscreenTui } from '../../core/agents/hooks/claude-tui'
-import { CANVAS_CONTROL_MARKERS, CONTROL_SHIM_SCRIPT, buildCanvasSkillBody } from '../../core/canvas-control-core'
-import { CONTEXT_SHIM_SCRIPT, LINKED_CONTEXT_MARKERS, buildContextLinkSkillBody } from '../../core/context-link-core'
+import { CANVAS_CONTROL_MARKERS, buildRemoteControlShimScript, buildCanvasSkillBody } from '../../core/canvas-control-core'
+import { buildRemoteContextShimScript, LINKED_CONTEXT_MARKERS, buildContextLinkSkillBody } from '../../core/context-link-core'
 import { canContextLink, canControlCanvas } from '../../shared/agents/config'
-import { stripMarkerBlock } from '../../core/integration-files'
+import { stripMarkerBlock, sha256 } from '../../core/integration-files'
+import { MAILBOX_INSTRUCTION_MARKERS, buildMailboxTurnNotice, frameMailboxInstructions, mailboxInstructionBlock, mergeMailboxInstructions } from '../../core/mailbox-instructions'
 import { isSafeAccountId } from '../../core/claude-accounts-core'
 import { formatCksum, posixCksum } from '../../core/remote-ssh/posix-cksum'
 import { posixQuote, type SshConnection } from '../../shared/ssh'
@@ -149,7 +146,7 @@ const AGENT_TARGETS: { agentId: string; config: string; events: readonly Managed
 ]
 
 /** Where the host's instruction files live — one marker block per feature in each. */
-type InstructionTarget = 'codex' | 'gemini' | 'copilot' | 'opencode'
+type InstructionTarget = 'codex' | 'gemini' | 'copilot' | 'opencode' | 'claude' | 'grok'
 /** Every instruction file an older build merged a discovery block into; stripped once per host
  *  per run when the host has an answer (`stripLegacyInstructionBlocks`). */
 const LEGACY_INSTRUCTION_TARGETS: readonly InstructionTarget[] = ['codex', 'gemini', 'copilot', 'opencode']
@@ -168,6 +165,8 @@ type AgentToolArtifact = { group: string; label: string } & (
   | {
       kind: 'block'
       target: InstructionTarget
+      path?: string
+      gateDir?: string
       block: string
       /** The exact bytes the merge places from the start marker through the end marker. */
       framed: string
@@ -206,20 +205,33 @@ function skillRoots(home: string, agents: ReadonlySet<string>, capable: (id: str
   return roots
 }
 
-function canvasControlArtifacts(home: string, agents: ReadonlySet<string>): AgentToolArtifact[] {
+function canvasControlArtifacts(home: string, agents: ReadonlySet<string>, grokHome = `${home}/.grok`): AgentToolArtifact[] {
   const roots = skillRoots(home, agents, canControlCanvas)
   if (!roots.length) return []
   const shim = canvasShimPath(home)
   const g = { group: 'canvas', label: 'canvas control' }
   return [
-    { ...g, kind: 'file', path: shim, body: CONTROL_SHIM_SCRIPT, mode: '755' },
+    { ...g, kind: 'file', path: shim, body: buildRemoteControlShimScript(home), mode: '755' },
     ...roots.map((r): AgentToolArtifact => ({
       ...g,
       kind: 'file',
       path: skillFilePath(r, 'manage-nodeterm-canvas'),
       body: buildCanvasSkillBody(shim)
-    }))
+    })),
+    ...mailboxRuleArtifacts(home, agents, grokHome)
   ]
+}
+
+function mailboxRuleArtifact(home: string, target: InstructionTarget, extra: { path?: string; gateDir?: string; group?: string } = {}): AgentToolArtifact {
+  const block = buildMailboxTurnNotice(canvasShimPath(home))
+  return { kind: 'block', target, group: 'canvas', label: 'required mailbox instructions', block,
+    framed: frameMailboxInstructions(block), markers: MAILBOX_INSTRUCTION_MARKERS, merge: mergeMailboxInstructions, ...extra }
+}
+
+function mailboxRuleArtifacts(home: string, agents: ReadonlySet<string>, grokHome: string): AgentToolArtifact[] {
+  const targets: InstructionTarget[] = ['claude', 'codex', 'gemini', 'copilot', 'opencode', 'grok']
+  return targets.filter((target) => agents.has(target)).map((target) => mailboxRuleArtifact(home, target,
+    target === 'grok' ? { path: `${grokHome}/AGENTS.md` } : {}))
 }
 
 function contextLinkArtifacts(home: string, agents: ReadonlySet<string>): AgentToolArtifact[] {
@@ -228,7 +240,7 @@ function contextLinkArtifacts(home: string, agents: ReadonlySet<string>): AgentT
   const shim = contextShimPath(home)
   const g = { group: 'context', label: 'context link' }
   return [
-    { ...g, kind: 'file', path: shim, body: CONTEXT_SHIM_SCRIPT, mode: '755' },
+    { ...g, kind: 'file', path: shim, body: buildRemoteContextShimScript(home), mode: '755' },
     ...roots.map((r): AgentToolArtifact => ({
       ...g,
       kind: 'file',
@@ -246,7 +258,8 @@ function accountSkillArtifacts(home: string, accountId: string): AgentToolArtifa
   const g = { group: `account:${accountId}`, label: 'a managed-account skill' }
   return [
     { ...g, kind: 'file', path: skillFilePath(dir, 'manage-nodeterm-canvas'), body: buildCanvasSkillBody(canvasShimPath(home)), gateDir: dir },
-    { ...g, kind: 'file', path: skillFilePath(dir, 'get-linked-context'), body: buildContextLinkSkillBody(contextShimPath(home)), gateDir: dir }
+    { ...g, kind: 'file', path: skillFilePath(dir, 'get-linked-context'), body: buildContextLinkSkillBody(contextShimPath(home)), gateDir: dir },
+    mailboxRuleArtifact(home, 'claude', { group: g.group, path: `${dir}/CLAUDE.md`, gateDir: dir })
   ]
 }
 
@@ -316,6 +329,7 @@ export class RemoteHooks {
   /** The expected bytes are fixed for an app build + home + account set, and the reuse branch asks
    *  every 45 s per project — do not rebuild ~150 KB of skill text and its checksums each time. */
   private agentToolsPlans = new Map<string, { plan: AgentToolArtifact[]; expected: string[]; setId: string }>()
+  private mailboxGrokHomes = new Map<string, string>()
 
   /** Hosts whose legacy instruction blocks this run already stripped (once per host per run). */
   private legacyStripped = new Set<string>()
@@ -328,7 +342,7 @@ export class RemoteHooks {
   constructor(
     private r: RemoteRunner,
     private integrations: (conn: SshConnection) => RemoteIntegrationPlan,
-    /** Where we record the bytes of each skill we wrote on a host, so a later decline can remove a
+    /** Where we record the bytes of each skill/rule we wrote on a host, so a later decline can remove a
      *  file an OLDER build wrote (not just this build's exact bytes). Optional. */
     private receipts?: { get(key: string): string | undefined; set(key: string, v: string | null): void }
   ) {}
@@ -374,6 +388,8 @@ export class RemoteHooks {
     controlPath: string,
     hook: { port: number; token: string; version: string }
   ): Promise<{ endpointPath: string } | null> {
+    const grokPrefix = `${conn.user}@${conn.host}:${conn.port ?? 22}\0`
+    for (const key of this.mailboxGrokHomes.keys()) if (key.startsWith(grokPrefix)) this.mailboxGrokHomes.delete(key)
     if (!hook.port || !hook.token) {
       // Not just fail-open noise: on a reused live-orphan ControlMaster this leaves the master
       // serving a PREVIOUS app run's forward (dead port) with nothing ever rebinding it.
@@ -600,6 +616,31 @@ export class RemoteHooks {
       const run = (cmd: string, stdin?: string) => this.r.run(childArgs(conn, controlPath, cmd), stdin)
       const remoteDir = `${home}/.nodeterm`
       const accounts = [...new Set(accountIds.filter(isSafeAccountId))]
+      const removedGrokHome = plan.remove.has('grok') ? await this.resolveMailboxGrokHome(conn, controlPath, home) : `${home}/.grok`
+      const rules = [
+        ...mailboxRuleArtifacts(home, plan.remove, removedGrokHome),
+        ...(plan.remove.has('claude') ? accounts.map((id) => mailboxRuleArtifact(home, 'claude', {
+          path: `${accountConfigDir(home, id)}/CLAUDE.md`, gateDir: accountConfigDir(home, id), group: `account:${id}`
+        })) : [])
+      ]
+      for (const artifact of rules) {
+        if (artifact.kind !== 'block') continue
+        const target = artifact.path ? { pathExpr: posixQuote(artifact.path) } : artifact.target === 'copilot'
+          ? { pathExpr: posixQuote(`${await this.resolveCopilotHome(conn, controlPath, home)}/copilot-instructions.md`) }
+          : this.instructionTarget(home, artifact.target)
+        const receiptKey = this.mailboxBlockReceiptKey(conn, home, artifact)
+        let kept = false
+        const result = await this.mergeRemoteInstructions(conn, controlPath, target.pathExpr, '', (existing) => {
+          const block = mailboxInstructionBlock(existing)
+          if (block === 'malformed' || (block !== null && block !== artifact.framed && this.receipts?.get(receiptKey) !== sha256(block))) {
+            kept = true
+            return existing
+          }
+          return block === null ? existing : stripMarkerBlock(existing, MAILBOX_INSTRUCTION_MARKERS) || '\n'
+        }, `${artifact.gateDir ? `[ -d ${posixQuote(artifact.gateDir)} ] || exit 41\n` : ''}${target.prelude ?? ''}`)
+        if (kept) retained.push(artifact.path ?? artifact.target)
+        else if (result !== 'failed') this.receipts?.set(receiptKey, null)
+      }
       // Hooks in the JSON-settings agents (claude system + managed account dirs, gemini).
       for (const t of AGENT_TARGETS) {
         if (!plan.remove.has(t.agentId)) continue
@@ -874,7 +915,7 @@ export class RemoteHooks {
   ): Promise<void> {
     try {
       const script = `${remoteDir}/agent-hooks/codex.sh`
-      await this.writeOwnedFile(conn, controlPath, script, buildManagedScript('codex', REMOTE_IDENTITY_ROOT), {
+      await this.writeOwnedFile(conn, controlPath, script, buildManagedScript('codex', remoteCodexIdentityRoot(home), { preferThreadBinding: true }), {
         mode: '755'
       })
       // POSIX explicitly: the platform argument is the HOST's, never this desktop's. A Windows
@@ -939,6 +980,17 @@ export class RemoteHooks {
    *
    * Fail-open at every step: a remote grok session simply runs without status hooks.
    */
+  private async resolveMailboxGrokHome(conn: SshConnection, controlPath: string, home: string): Promise<string> {
+    const key = `${conn.user}@${conn.host}:${conn.port ?? 22}\0${home}`
+    const cached = this.mailboxGrokHomes.get(key)
+    if (cached) return cached
+    const probe = await this.r.run(childArgs(conn, controlPath, REMOTE_GROK_HOME_PROBE))
+    if (probe.code !== 0) throw new Error('Could not resolve the remote Grok configuration directory')
+    const resolved = resolveReportedGrokHome(probe.stdout) ?? `${home}/.grok`
+    this.mailboxGrokHomes.set(key, resolved)
+    return resolved
+  }
+
   private async installGrokRemote(
     conn: SshConnection,
     controlPath: string,
@@ -946,12 +998,9 @@ export class RemoteHooks {
     remoteDir: string
   ): Promise<void> {
     try {
-      const { stdout: rawHome } = await this.r.run(
-        childArgs(conn, controlPath, REMOTE_GROK_HOME_PROBE)
-      )
       // The ONE rule (trim at the read site, isSafeRemoteGrokHome, strip trailing slashes) the
       // remote chat reader applies too, so the hook and the reader agree on grok's root.
-      const grokHome = resolveReportedGrokHome(rawHome) ?? `${home}/.grok`
+      const grokHome = await this.resolveMailboxGrokHome(conn, controlPath, home)
       // Joined so the separator is never doubled (`//hooks` is implementation-defined in POSIX).
       const config = `${grokHome.replace(/\/$/, '')}/hooks/${GROK_HOOK_FILE}`
       const script = `${remoteDir}/agent-hooks/grok.sh`
@@ -1032,7 +1081,7 @@ export class RemoteHooks {
       })
       await updateRemoteSettingsFile(`${home}/.cursor/hooks.json`,
         (cmd, stdin) => this.r.run(childArgs(conn, controlPath, cmd), stdin),
-        (cfg) => applyCursorHooks(cfg, command))
+        (cfg) => applyCursorHooks(cfg, command, undefined, cursorSessionCommandFor(script)))
     } catch (e) {
       // Fail-open for the connect, not silent: the remote cursor session runs without status hooks.
       warnNotInstalled('cursor status hook', e)
@@ -1118,7 +1167,13 @@ export class RemoteHooks {
   async installCanvasControl(conn: SshConnection, controlPath: string, remoteHome: string): Promise<void> {
     // Skills in each consented agent's skills dir on the host (claude's own, `~/.agents/skills` for
     // the rest) — nothing for an agent the user has not enabled for this host.
-    await this.applyAgentTools(conn, controlPath, remoteHome, canvasControlArtifacts(remoteHome, this.planFor(conn).install), () =>
+    const install = new Set(this.planFor(conn).install)
+    let grokHome = `${remoteHome}/.grok`
+    if (install.has('grok')) {
+      try { grokHome = await this.resolveMailboxGrokHome(conn, controlPath, remoteHome) }
+      catch (error) { install.delete('grok'); warnNotInstalled('grok mailbox instructions', error) }
+    }
+    await this.applyAgentTools(conn, controlPath, remoteHome, canvasControlArtifacts(remoteHome, install, grokHome), () =>
       this.resolveCopilotHome(conn, controlPath, remoteHome)
     )
   }
@@ -1138,7 +1193,7 @@ export class RemoteHooks {
     try {
       const shim = `${remoteHome}/.nodeterm/nodeterm.sh`
       // Idempotently (re)write the shim: installCanvasControl may not have run (fail-open) yet.
-      await this.writeRemoteShim(conn, controlPath, shim, CONTROL_SHIM_SCRIPT)
+      await this.writeRemoteShim(conn, controlPath, shim, buildRemoteControlShimScript(remoteHome))
       const accountDir = `${remoteHome}/.nodeterm/claude-accounts/${accountId}`
       await this.writeRemoteSkill(
         conn,
@@ -1147,6 +1202,7 @@ export class RemoteHooks {
         'manage-nodeterm-canvas',
         buildCanvasSkillBody(shim)
       )
+      await this.applyAgentTools(conn, controlPath, remoteHome, [mailboxRuleArtifact(remoteHome, 'claude', { path: `${accountDir}/CLAUDE.md`, gateDir: accountDir, group: `account:${accountId}` })], () => this.resolveCopilotHome(conn, controlPath, remoteHome))
     } catch (e) {
       warnNotInstalled('a managed-account skill', e)
     }
@@ -1177,7 +1233,7 @@ export class RemoteHooks {
     if (!this.planFor(conn).install.has('claude')) return
     try {
       const shim = `${remoteHome}/.nodeterm/context.sh`
-      await this.writeRemoteShim(conn, controlPath, shim, CONTEXT_SHIM_SCRIPT)
+      await this.writeRemoteShim(conn, controlPath, shim, buildRemoteContextShimScript(remoteHome))
       await this.writeRemoteSkill(
         conn,
         controlPath,
@@ -1257,13 +1313,26 @@ export class RemoteHooks {
             }
             continue
           }
-          const target =
+          const target = a.path ? { pathExpr: posixQuote(a.path) } :
             a.target === 'copilot'
               ? { pathExpr: posixQuote(`${await (copilot ??= copilotHome())}/copilot-instructions.md`) }
               : this.instructionTarget(remoteHome, a.target)
-          const r = await this.mergeRemoteInstructions(conn, controlPath, target.pathExpr, a.block, a.merge, target.prelude)
+          const mailbox = a.markers.start === MAILBOX_INSTRUCTION_MARKERS.start
+          const receiptKey = this.mailboxBlockReceiptKey(conn, remoteHome, a)
+          const merge = mailbox ? (existing: string, body: string): string => {
+            const before = mailboxInstructionBlock(existing)
+            if (before === 'malformed' || (before !== null && before !== a.framed && this.receipts?.get(receiptKey) !== sha256(before))) {
+              throw new Error('Edited or malformed mailbox instructions retained')
+            }
+            return a.merge(existing, body)
+          } : a.merge
+          const prelude = `${a.gateDir ? `[ -d ${posixQuote(a.gateDir)} ] || exit 41\n` : ''}${target.prelude ?? ''}`
+          const r = await this.mergeRemoteInstructions(conn, controlPath, target.pathExpr, a.block, merge, prelude)
           if (r === 'failed') ok = false
-          else if (r === 'written') written.push(a)
+          else {
+            if (mailbox) this.receipts?.set(receiptKey, sha256(a.framed))
+            if (r === 'written') written.push(a)
+          }
         }
       } catch (e) {
         ok = false
@@ -1282,7 +1351,13 @@ export class RemoteHooks {
   ): { pathExpr: string; prelude?: string } {
     if (target === 'codex') return { pathExpr: posixQuote(`${remoteHome}/.codex/AGENTS.md`) }
     if (target === 'gemini') return { pathExpr: posixQuote(`${remoteHome}/.gemini/GEMINI.md`) }
+    if (target === 'claude') return { pathExpr: posixQuote(`${remoteHome}/.claude/CLAUDE.md`) }
+    if (target === 'grok') return { pathExpr: posixQuote(`${remoteHome}/.grok/AGENTS.md`) }
     return openCodeInstructionsTarget(remoteHome)
+  }
+
+  private mailboxBlockReceiptKey(conn: SshConnection, home: string, artifact: Extract<AgentToolArtifact, { kind: 'block' }>): string {
+    return `ssh:${conn.user}@${conn.host}:${home}/.nodeterm/mailbox-rules/${artifact.group}/${artifact.path ?? artifact.target}`
   }
 
   /**
@@ -1312,13 +1387,15 @@ export class RemoteHooks {
       const key = `${conn.user}@${conn.host}:${conn.port ?? 22}\0${remoteHome}`
       const inFlight = this.agentToolsInFlight.get(key)
       if (inFlight) return await inFlight
-      const install = this.planFor(conn).install
-      // A managed account's skills follow the claude consent for this host.
-      const planned = this.agentToolsPlan(remoteHome, install.has('claude') ? accounts : [], install)
-      // Nothing consented for this host ⇒ nothing to keep current (and nothing to probe).
-      if (!planned.plan.length) return 'skipped'
-      if (!agentToolsCheckDue(this.agentToolsState.get(key), planned.setId, now, trigger)) return 'skipped'
-      const attempt = this.checkAgentTools(conn, controlPath, remoteHome, planned, trigger, key, now)
+      // Claim the WHOLE refresh before its first async provider-directory lookup. Otherwise two
+      // concurrent projects both pass the in-flight check and race their instruction writes.
+      const attempt = (async (): Promise<AgentToolsOutcome> => {
+        const install = this.planFor(conn).install
+        const grokHome = install.has('grok') ? await this.resolveMailboxGrokHome(conn, controlPath, remoteHome) : `${remoteHome}/.grok`
+        const planned = this.agentToolsPlan(remoteHome, install.has('claude') ? accounts : [], install, grokHome)
+        if (!planned.plan.length || !agentToolsCheckDue(this.agentToolsState.get(key), planned.setId, now, trigger)) return 'skipped'
+        return this.checkAgentTools(conn, controlPath, remoteHome, planned, trigger, key, now)
+      })()
       this.agentToolsInFlight.set(key, attempt)
       try {
         return await attempt
@@ -1334,19 +1411,20 @@ export class RemoteHooks {
   private agentToolsPlan(
     remoteHome: string,
     accounts: readonly string[],
-    install: ReadonlySet<string>
+    install: ReadonlySet<string>,
+    grokHome = `${remoteHome}/.grok`
   ): { plan: AgentToolArtifact[]; expected: string[]; setId: string } {
-    const cacheKey = [remoteHome, [...install].sort().join(','), ...accounts].join('\0')
+    const cacheKey = [remoteHome, grokHome, [...install].sort().join(','), ...accounts].join('\0')
     const cached = this.agentToolsPlans.get(cacheKey)
     if (cached) return cached
     const plan = [
-      ...canvasControlArtifacts(remoteHome, install),
+      ...canvasControlArtifacts(remoteHome, install, grokHome),
       ...contextLinkArtifacts(remoteHome, install),
       ...accounts.flatMap((id) => accountSkillArtifacts(remoteHome, id))
     ]
     const expected = plan.map((a) => formatCksum(posixCksum(Buffer.from(a.kind === 'file' ? a.body : a.framed, 'utf8'))))
     const setId = createHash('sha256')
-      .update(JSON.stringify(plan.map((a, i) => [a.kind === 'file' ? a.path : `${a.group}:${a.target}`, expected[i]])))
+      .update(JSON.stringify(plan.map((a, i) => [a.kind === 'file' ? a.path : `${a.group}:${a.path ?? a.target}`, expected[i]])))
       .digest('hex')
     if (this.agentToolsPlans.size >= 16) this.agentToolsPlans.clear()
     const planned = { plan, expected, setId }
@@ -1440,11 +1518,11 @@ export class RemoteHooks {
     if (a.kind === 'file') {
       return { kind: 'file', pathExpr: posixQuote(a.path), ...(a.gateDir ? { gateDirExpr: posixQuote(a.gateDir) } : {}) }
     }
-    const pathExpr =
+    const pathExpr = a.path ? posixQuote(a.path) :
       a.target === 'copilot'
         ? '"${COPILOT_HOME:-$NT_H/.copilot}/copilot-instructions.md"'
         : this.instructionTarget(remoteHome, a.target).pathExpr
-    return { kind: 'block', pathExpr, start: a.markers.start, end: a.markers.end }
+    return { kind: 'block', pathExpr, start: a.markers.start, end: a.markers.end, ...(a.gateDir ? { gateDirExpr: posixQuote(a.gateDir) } : {}) }
   }
 
   /**

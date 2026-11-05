@@ -105,6 +105,8 @@ export type SessionHostRequest =
   | { id: number; cmd: 'messageOwnerV1'; name: string }
   | { id: number; cmd: 'messagePasteReadyV1'; name: string }
   | { id: number; cmd: 'messageEnvelopeV1'; name: string; envelope: string; expected: PaneOwner }
+  /** Requires negotiated envelope-surface-v2; host checks its OWN positive surface before writes. */
+  | { id: number; cmd: 'messageEnvelopeV2'; name: string; envelope: string; expected: PaneOwner }
   /** End the proven agent process tree (`expected`, from `messageOwnerV1`) without touching the
    *  console root. Result: `TerminateOwnerResult`. Additive like the messaging extension: an older
    *  live host answers `unknown command`, which the client reports as unsupported. */
@@ -230,6 +232,7 @@ export interface AttachResult {
 }
 /** Additive, independently negotiated capabilities (see the `hello` request). */
 export type SessionHostFeature =
+  | 'envelope-surface-v2'
   | 'geometry'
   | 'shutdown'
   | 'sessionDetails'
@@ -237,6 +240,7 @@ export type SessionHostFeature =
   | 'captureVisible'
   | 'paneCwd'
 export const SESSION_HOST_FEATURES: readonly SessionHostFeature[] = [
+  'envelope-surface-v2',
   'geometry',
   'shutdown',
   'sessionDetails',

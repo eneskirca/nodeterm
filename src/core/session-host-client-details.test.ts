@@ -9,7 +9,12 @@ import net from 'net'
 import os from 'os'
 import path from 'path'
 import { spawnSync } from 'child_process'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { spawnSessionHost } from './session-host-launcher'
+
+// An observation read must never start a host, even in the reconnect race under test. Trap the
+// launcher instead of ever starting a real SessionHost process when this invariant regresses.
+vi.mock('./session-host-launcher', () => ({ resolveSessionHostScript: () => '/synthetic/host.cjs', spawnSessionHost: vi.fn(() => { throw new Error('Observation attempted a host launch') }) }))
 import { sessionHostPaths } from '../session-host/paths'
 import {
   SESSION_HOST_PROTOCOL_VERSION,
@@ -24,6 +29,8 @@ const sockets = new Set<net.Socket>()
 const dirs = new Set<string>()
 
 afterEach(() => {
+  vi.restoreAllMocks()
+  vi.mocked(spawnSessionHost).mockClear()
   for (const s of sockets) s.destroy()
   sockets.clear()
   for (const s of servers) s.close()
@@ -109,6 +116,39 @@ async function fakeHost(
 }
 
 describe('SessionHostClient.listSessionsDetailed', () => {
+  it('does not launch a replacement if the host disappears between inventory and messageOwner', async () => {
+    const { userDataDir, endpoint } = fixture(true)
+    await fakeHost(endpoint, { details: true })
+    const client = new SessionHostClient({ userDataDir, connectPollSleep: async () => {} })
+    expect((await client.listSessionsDetailed())?.running).toBe(true)
+    for (const socket of sockets) socket.destroy()
+    for (const server of servers) server.close()
+    fs.rmSync(sessionHostPaths(userDataDir).statePath, { force: true })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    await expect(client.messageOwner('nt-a')).resolves.toBeNull()
+    expect(spawnSessionHost).not.toHaveBeenCalled()
+  })
+  it('never launches if the existing host disappears between preflight and the request reconnect', async () => {
+    const { userDataDir, endpoint } = fixture(true)
+    await fakeHost(endpoint, { details: true })
+    const client = new SessionHostClient({ userDataDir, connectPollSleep: async () => {} })
+    const internal = client as unknown as { ensureConnected(options?: { launch?: boolean }): Promise<void> }
+    const original = internal.ensureConnected.bind(client)
+    let attempts = 0
+    const ensure = vi.spyOn(internal, 'ensureConnected').mockImplementation(async options => {
+      await original(options)
+      if (++attempts === 1) {
+        for (const socket of sockets) socket.destroy()
+        for (const server of servers) server.close()
+        fs.rmSync(sessionHostPaths(userDataDir).statePath, { force: true })
+        await new Promise<void>(resolve => setImmediate(resolve))
+      }
+    })
+    await expect(client.listSessionsDetailed()).resolves.toBeNull()
+    expect(ensure.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(ensure.mock.calls.every(([options]) => options?.launch === false)).toBe(true)
+    expect(spawnSessionHost).not.toHaveBeenCalled()
+  })
   it('answers "no host" without launching one when nothing is published', async () => {
     const { userDataDir } = fixture(false)
     // No bundle paths: a launch attempt would throw instead of answering.

@@ -17,7 +17,7 @@ describe('Windows delivery safety boundaries', () => {
   it.each(['process', 'paste-mode'])('host does not submit after %s changes during settlement', async change => {
     let currentOwner = expected
     let pasteReady = true
-    let screen = 'prompt'
+    let screen = '────────────────────────────────\n❯ \n────────────────────────────────'
     const write = vi.fn((data: string) => {
       if (data.startsWith('\x1b[200~')) {
         screen = 'message footer'
@@ -26,7 +26,7 @@ describe('Windows delivery safety boundaries', () => {
       }
     })
     const session: MessagePaneSession = { generation: 'gen', exited: false, proc: { pid: 10, write },
-      messagePasteReady: async () => pasteReady, serialize: async () => screen }
+      messagePasteReady: async () => pasteReady, serialize: async () => screen, messageCapturePlain: async () => screen }
     const pane = hostMessagePane(() => session, async () => currentOwner, { wait: async () => {} })
     expect(await pane.send('message footer', expected)).toBe(true)
     expect(write.mock.calls).toEqual([['\x1b[200~message footer\x1b[201~']])
@@ -41,7 +41,7 @@ describe('Windows delivery safety boundaries', () => {
       }
     })
     pane = new NativeWindowsPane({ pid: 10, write }, { cols: 80, rows: 24, scrollback: 100 }, async () => currentOwner, { wait: async () => {} })
-    pane.recordOutput('\x1b[?2004h')
+    pane.recordOutput('\x1b[?2004h────────────────────────────────\r\n❯ \r\n────────────────────────────────')
     try {
       expect(await pane.sendEnvelope('message footer', expected)).toBe(true)
       expect(write.mock.calls).toEqual([['\x1b[200~message footer\x1b[201~']])

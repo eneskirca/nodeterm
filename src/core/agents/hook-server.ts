@@ -1,4 +1,5 @@
 import { REPORT_OUTCOME_CONTROL_REFUSAL } from '../../shared/station-outcome'
+import { MAILBOX_CONTROL_VERBS, MAILBOX_IDEMPOTENT_VERBS } from '../../shared/agents/agent-mailbox'
 import { sessionContextWindow } from '../model-window'
 import { labelHeldForRevision } from './permission-decision'
 import { createCursorApprovalWatch, type CursorApprovalWatch } from './cursor-approval'
@@ -293,6 +294,7 @@ export interface HookEventMeta {
  * of every hatch and is the test that fails if either half of this comment stops being true.
  */
 export const requiresVerified: ReadonlySet<string> = new Set([
+  ...MAILBOX_CONTROL_VERBS,
   'send',
   'reply',
   'notify',
@@ -887,7 +889,13 @@ export class HookServer {
           // The request id is not an argument of any verb: take it out here, once, so no handler
           // (and no parser that refuses flags it does not know) ever meets it. A bad EXPLICIT id is
           // refused below, after identity — the order every other refusal on this route keeps.
-          const idGate = requestIdGate(verb, rawArgs, cliRequestId)
+          // Mail mutations own a permanent, session-bound idempotency ledger in the SAME
+          // transaction as their message. Do not put them in the 24-hour creation ledger.
+          const idGate = MAILBOX_IDEMPOTENT_VERBS.has(verb)
+            ? { kind: 'pass' as const, args: { ...rawArgs,
+                'request-id': rawArgs['request-id'] ?? cliRequestId ?? randomUUID() },
+                explicit: false, requestId: undefined }
+            : requestIdGate(verb, rawArgs, cliRequestId)
           const args = idGate.kind === 'pass' ? idGate.args : rawArgs
           // IDENTITY, and it runs BEFORE the handler: the promise of a refusal is that nothing
           // happened, and a check after the handler is a check that happened too late.
@@ -896,9 +904,15 @@ export class HookServer {
             verb,
             req.headers['x-nodeterm-node-token']
           )
+          const mailboxVerb = MAILBOX_CONTROL_VERBS.has(verb) || MAILBOX_IDEMPOTENT_VERBS.has(verb)
           if (verdict === 'forged') {
-            res.writeHead(403)
-            res.end()
+            if (mailboxVerb && !wantsText) {
+              res.writeHead(403, { 'content-type': 'application/json' })
+              res.end(JSON.stringify({ ok: false, error: 'Agent messaging refused.', code: 'not-permitted', retryable: false }))
+            } else {
+              res.writeHead(403)
+              res.end()
+            }
             return
           }
           // VERIFIED-ONLY VERBS, decided on the VERDICT and never on the decision: the policy's
@@ -917,7 +931,8 @@ export class HookServer {
               res.end(`${refusal}\n`)
             } else {
               res.writeHead(403, { 'content-type': 'application/json' })
-              res.end(JSON.stringify({ ok: false, error: refusal }))
+              res.end(JSON.stringify({ ok: false, error: refusal,
+                ...(mailboxVerb ? { code: 'not-permitted', retryable: false } : {}) }))
             }
             return
           }

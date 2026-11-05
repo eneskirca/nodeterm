@@ -334,13 +334,10 @@ export function parseRemoteSessionNames(stdout: string): string[] {
  * sibling builder here does, and that is safe only because `sessionName()` sanitises to
  * `[A-Za-z0-9_-]`; `localTmuxPasteArgs` asserts it for both paths (`assertPasteTarget`).
  */
-export function remoteTmuxPasteArgs(
-  conn: SshConnection,
-  controlPath: string,
-  sessionId: string,
-  buffer: string,
-  enter: boolean
-): string[] {
+export function remoteTmuxPasteArgs(conn: SshConnection, controlPath: string, sessionId: string, buffer: string, enter: boolean): string[] {
+  return childArgs(conn, controlPath, remoteTmuxPasteCommand(sessionId, buffer, enter))
+}
+export function remoteTmuxPasteCommand(sessionId: string, buffer: string, enter: boolean): string {
   assertPasteTarget(sessionId, buffer)
   const tmux = `tmux -L ${RMT_TMUX_SOCKET}`
   // EXACT target (`exactPaneTarget`): a bare name prefix-matches a longer session on a miss.
@@ -353,7 +350,7 @@ export function remoteTmuxPasteArgs(
     `if-shell -F -t ${t} '#{pane_in_mode}' 'send-keys -t ${pane} -X cancel' ';' ` +
     `paste-buffer -d -p -r -b ${buffer} -t ${t}`
   if (enter) cmd += ` ';' send-keys -t ${t} Enter`
-  return childArgs(conn, controlPath, tmuxCmd(cmd))
+  return tmuxCmd(cmd)
 }
 
 /**
@@ -400,27 +397,21 @@ export function remoteTypedArgs(
  * safe only because some caller upstream happens to be strict is one refactor from an injection,
  * and this PR's own rule is that the guarantee lives at the splice.
  */
-export function remoteTmuxEnterArgs(
-  conn: SshConnection,
-  controlPath: string,
-  sessionId: string
-): string[] {
+export function remoteTmuxEnterArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
+  return childArgs(conn, controlPath, remoteTmuxEnterCommand(sessionId))
+}
+export function remoteTmuxEnterCommand(sessionId: string): string {
   assertPasteTarget(sessionId)
-  return childArgs(
-    conn,
-    controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} Enter`)
-  )
+  return tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} Enter`)
 }
 
 /** `delete-buffer` on the REMOTE server — the sweep for a remote paste that never ran. */
-export function remoteDeleteBufferArgs(
-  conn: SshConnection,
-  controlPath: string,
-  buffer: string
-): string[] {
+export function remoteDeleteBufferArgs(conn: SshConnection, controlPath: string, buffer: string): string[] {
+  return childArgs(conn, controlPath, remoteDeleteBufferCommand(buffer))
+}
+export function remoteDeleteBufferCommand(buffer: string): string {
   assertPasteBuffer(buffer)
-  return childArgs(conn, controlPath, tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} delete-buffer -b ${buffer}`))
+  return tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} delete-buffer -b ${buffer}`)
 }
 
 /**
@@ -429,24 +420,16 @@ export function remoteDeleteBufferArgs(
  * rather than by writing them out again here. Drift between the two legs is how the ESC rule
  * survived being missing on one of them once already.
  */
-export function remotePasteDelivery(
-  conn: SshConnection,
-  controlPath: string,
-  sessionId: string,
-  text: string,
-  enter: boolean
-): PasteDelivery | null {
+export function remotePasteDelivery(conn: SshConnection, controlPath: string, sessionId: string, text: string, enter: boolean): PasteDelivery | null {
+  const plan = remotePasteCommandDelivery(sessionId, text, enter)
+  return plan ? { args: childArgs(conn, controlPath, plan.command), body: plan.body,
+    cleanup: plan.cleanup ? childArgs(conn, controlPath, plan.cleanup) : null } : null
+}
+export function remotePasteCommandDelivery(sessionId: string, text: string, enter: boolean): { command: string; body: string; cleanup: string | null } | null {
   const body = sanitizePasteText(text)
-  if (body.length === 0) {
-    if (!enter) return null
-    return { args: remoteTmuxEnterArgs(conn, controlPath, sessionId), body: '', cleanup: null }
-  }
+  if (body.length === 0) return enter ? { command: remoteTmuxEnterCommand(sessionId), body: '', cleanup: null } : null
   const buffer = pasteBufferName()
-  return {
-    args: remoteTmuxPasteArgs(conn, controlPath, sessionId, buffer, enter),
-    body,
-    cleanup: remoteDeleteBufferArgs(conn, controlPath, buffer)
-  }
+  return { command: remoteTmuxPasteCommand(sessionId, buffer, enter), body, cleanup: remoteDeleteBufferCommand(buffer) }
 }
 /**
  * Did a FAILED `tmux has-session` probe actually say the session is absent? Only tmux's own
@@ -545,12 +528,22 @@ export function remoteTmuxKillEverySocketArgs(
 ): string[][] {
   return KILL_TMUX_SOCKETS.map((socket) => remoteTmuxKillArgs(conn, controlPath, sessionId, socket))
 }
+function remotePaneCaptureArgs(conn: SshConnection, controlPath: string, sessionId: string, full: boolean, styled: boolean): string[] {
+  return childArgs(conn, controlPath, remotePaneCaptureCommand(sessionId, full, styled))
+}
+function remotePaneCaptureCommand(sessionId: string, full: boolean, styled: boolean): string {
+  return tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} capture-pane -p${styled ? ' -e' : ''} -t ${posixQuote(exactPaneTarget(sessionId))} -S ${full ? '-' : '-200'}`)
+}
+export function remoteCaptureEnvelopePlainCommand(sessionId: string): string {
+  return remotePaneCaptureCommand(sessionId, false, false)
+}
+
 export function remoteCapturePaneArgs(conn: SshConnection, controlPath: string, sessionId: string, full: boolean): string[] {
-  return childArgs(
-    conn,
-    controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t ${posixQuote(exactPaneTarget(sessionId))} -S ${full ? '-' : '-200'}`)
-  )
+  return remotePaneCaptureArgs(conn, controlPath, sessionId, full, true)
+}
+/** Safety/settle evidence only. Replay callers keep their existing styled capture contract. */
+export function remoteCaptureEnvelopePlainArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
+  return remotePaneCaptureArgs(conn, controlPath, sessionId, false, false)
 }
 /**
  * The VISIBLE screen of a remote session, with SGR, and nothing above it — a live link's keyframe
@@ -758,11 +751,10 @@ export function remoteTerminateForegroundArgs(
  *  - the `ps` flags are `PS_FOREGROUND_FLAGS`, the same constant the local leg passes as argv,
  *    so the two legs cannot drift.
  */
-export function remotePaneOwnerCombinedArgs(
-  conn: SshConnection,
-  controlPath: string,
-  sessionId: string
-): string[] {
+export function remotePaneOwnerCombinedArgs(conn: SshConnection, controlPath: string, sessionId: string): string[] {
+  return childArgs(conn, controlPath, remotePaneOwnerCommand(sessionId))
+}
+export function remotePaneOwnerCommand(sessionId: string): string {
   // Every splice is checked at the splice (assertPasteTarget's own rule): the id is interpolated
   // unquoted into a script the remote login shell parses, so a name this app did not generate is
   // refused here rather than trusted to some caller's discipline.
@@ -773,7 +765,7 @@ export function remotePaneOwnerCombinedArgs(
     `printf '%s\\n' "${COMBINED_PANE_MARKER.trimEnd()} $o"; ` +
     'tty=${o#*|}; tty=${tty%%|*}; ' +
     `case "$tty" in /dev/*) ps ${ps} -t "$tty" 2>/dev/null || : ;; esac`
-  return childArgs(conn, controlPath, script)
+  return script
 }
 
 /**

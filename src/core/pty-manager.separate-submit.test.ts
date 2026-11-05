@@ -2,11 +2,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { readFileSync } from 'fs'
 import path from 'path'
 import { submitsSeparately, typesChatInput } from '../shared/agents/config'
+import type { PaneOwner } from '../shared/agents/pane-owner-predicate'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 
 /** Every promisified execFile (runAsync / runWithStdin), in order: the envelope tests read it. */
 const execCalls = vi.hoisted(() => [] as string[][])
+const remoteScreen = vi.hoisted(() => ({ read: undefined as (() => Promise<string>) | undefined }))
 vi.mock('child_process', async () => {
   const { promisify } = await import('util')
   const execFile = (_f: string, _a: string[], a?: unknown, b?: unknown): unknown => {
@@ -18,7 +20,9 @@ vi.mock('child_process', async () => {
     [promisify.custom]: (file: string, args: string[]) => {
       execCalls.push([file, ...args])
       const child = { stdin: { on: () => undefined, end: () => undefined } }
-      return Object.assign(Promise.resolve({ stdout: '', stderr: '' }), { child })
+      const capture = file === '/usr/bin/ssh' && args.at(-1)?.includes('capture-pane')
+      return Object.assign(Promise.resolve(capture ? remoteScreen.read?.() ?? '' : '')
+        .then(stdout => ({ stdout, stderr: '' })), { child })
     }
   })
   return { execFile, execFileSync: (): string => '' }
@@ -72,7 +76,8 @@ interface Internals {
   sendTyped(k: string, text: string, agentId: string): Promise<unknown>
   sendChatPrompt(k: string, text: string, agentId: string): Promise<unknown>
   captureSession(k: string): Promise<string>
-  sendEnvelope(k: string, envelope: string): Promise<boolean>
+  sendEnvelope(k: string, envelope: string, expected?: PaneOwner, settle?: unknown, access?: unknown): Promise<boolean>
+  paneOwner(k: string): Promise<PaneOwner | null>
   sendEnvelopeNow(k: string, envelope: string): Promise<boolean>
   setRelayNodeResolver(r: unknown): void
   tmuxPath: string | null
@@ -220,6 +225,7 @@ describe('PtyManager: separate submit after restart, for envelopes, and never in
     initPlatform(fakePlatform())
     vi.useFakeTimers()
     execCalls.length = 0
+    remoteScreen.read = undefined
   })
   afterEach(() => {
     vi.useRealTimers()
@@ -304,12 +310,26 @@ describe('PtyManager: separate submit after restart, for envelopes, and never in
       .filter((c) => c.includes('paste-buffer') || c.includes('Enter'))
       .map((c) => (c.includes('paste-buffer') ? (c.includes('Enter') ? 'paste+Enter' : 'paste') : 'Enter'))
 
-  async function envelope(agent: string, ssh: boolean, screen = async () => 'idle composer') {
-    const { mgr } = await rig({ create: agent, screen })
+  async function envelope(agent: string, ssh: boolean, screen?: () => Promise<string>) {
+    const { mgr } = await rig({ create: agent, screen: screen ?? (async () =>
+      `────────────────────────────────\n❯ ${shapes().some(s => s.startsWith('paste')) ? 'envelope body' : ''}\n────────────────────────────────`) })
+    const binary = agent === 'cursor' ? 'cursor-agent' : agent
+    const owner: PaneOwner = { panePid: 100, paneId: '%1', tty: '/dev/pts/9', command: binary, argv: [binary], pids: [200] }
+    mgr.paneOwner = async () => owner
     mgr.tmuxPath = '/usr/bin/tmux'
     mgr.sessionByPersistKey = () =>
       ssh ? { sshRemote: { conn: { host: 'box', user: 'me' }, controlPath: '/tmp/cm.sock' } } : {}
-    const sent = mgr.sendEnvelope('n1', 'envelope body')
+    const access = ssh ? { beforeWrite: async () => true, remoteProof: {
+      context: { nodeId: 'n1', projectId: 'p', agentId: agent, sessionId: 's' }, evidenceKey: 'synthetic-evidence', transportKey: 'synthetic-mux',
+      revalidate: async () => true,
+      runExisting: async (command: string) => {
+        execCalls.push(['/synthetic/existing-mux', command])
+        return { code: 0, stdout: command.includes('##NTPANE')
+          ? `##NTPANE 100|/dev/pts/9|${binary}|%1\n200 200 S+ ${binary}\n`
+          : command.includes('capture-pane') ? await mgr.captureSession('n1') : '' }
+      }
+    } } : undefined
+    const sent = mgr.sendEnvelope('n1', 'envelope body', owner, undefined, access)
     await vi.advanceTimersByTimeAsync(400)
     const ok = await sent
     return { ok, shapes: shapes(), files: execCalls.map((c) => c[0]) }
@@ -320,19 +340,22 @@ describe('PtyManager: separate submit after restart, for envelopes, and never in
     it(`${leg}: a cursor envelope is pasted, then submitted by a bare Enter`, async () => {
       const r = await envelope('cursor', ssh)
       expect(r).toMatchObject({ ok: true, shapes: ['paste', 'Enter'] })
-      expect(new Set(r.files)).toEqual(new Set([ssh ? '/usr/bin/ssh' : '/usr/bin/tmux']))
+      expect(new Set(r.files)).toEqual(new Set([ssh ? '/synthetic/existing-mux' : '/usr/bin/tmux']))
     })
 
-    it(`${leg}: a claude envelope keeps its one paste+Enter`, async () => {
-      expect(await envelope('claude', ssh)).toMatchObject({ ok: true, shapes: ['paste+Enter'] })
+    it(`${leg}: a claude envelope also separates the checked paste and Enter`, async () => {
+      expect(await envelope('claude', ssh)).toMatchObject({ ok: true, shapes: ['paste', 'Enter'] })
     })
 
     it(`${leg}: a cursor envelope pasted before a dialog opens gets no Enter, and counts as written`, async () => {
-      expect(await envelope('cursor', ssh, opensAfterPaste(PLAN))).toMatchObject({ ok: true, shapes: ['paste'] })
+      expect(await envelope('cursor', ssh, async () =>
+        shapes().some(s => s.startsWith('paste')) ? PLAN :
+          '────────────────────────────────\n❯ \n────────────────────────────────')).toMatchObject({ ok: true, shapes: ['paste'] })
     })
 
     it(`${leg}: a cursor envelope meeting a dialog writes nothing and answers 'dialog'`, async () => {
-      expect(await envelope('cursor', ssh, async () => PLAN)).toEqual({ ok: 'dialog', shapes: [], files: [] })
+      // The dedicated SSH plain capture is a read, not a paste/Enter write.
+      expect(await envelope('cursor', ssh, async () => PLAN)).toEqual({ ok: 'dialog', shapes: [], files: ssh ? ['/synthetic/existing-mux', '/synthetic/existing-mux'] : [] })
     })
   }
 

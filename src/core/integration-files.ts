@@ -13,6 +13,7 @@ import { writeManagedHookFileAtomic } from './agents/hooks/install-helper'
 import { mergeInstructionFile } from './agents/hooks/settings-file'
 import { CANVAS_CONTROL_MARKERS } from './canvas-control-core'
 import { LINKED_CONTEXT_MARKERS } from './context-link-core'
+import { MAILBOX_INSTRUCTION_MARKERS, frameMailboxInstructions, mailboxInstructionBlock, mergeMailboxInstructions } from './mailbox-instructions'
 
 const RECEIPTS_FILE = 'integration-receipts.json'
 /** Bounded: every entry is a line in Settings and a path in a log. */
@@ -180,6 +181,32 @@ export function stripMarkerBlock(existing: string, markers: { start: string; end
   if (before.endsWith('\n\n')) before = before.slice(0, -1)
   else if (!after && before.endsWith('\n') && before.trim() === '') before = ''
   return before + after
+}
+
+/** Reconcile only our short rule, preserving user edits both outside and inside the block. */
+export function reconcileMailboxInstructions(receipts: ReceiptStore, file: string, body: string | null): OwnedWrite {
+  const key = `${file}#nodeterm-mailbox`
+  if (body === null && readIfRegular(file) === null) return 'unchanged'
+  let retained = false
+  let nextHash: string | null = null
+  const result = mergeInstructionFile(file, (existing) => {
+    const block = mailboxInstructionBlock(existing)
+    if (block === 'malformed') { retained = true; return existing }
+    const wanted = body === null ? null : frameMailboxInstructions(body)
+    if (body === null && block === null) return existing
+    if (block !== null && block !== wanted && receipts.get(key) !== sha256(block)) {
+      retained = true
+      return existing
+    }
+    nextHash = wanted === null ? null : sha256(wanted)
+    return body === null
+      ? (stripMarkerBlock(existing, MAILBOX_INSTRUCTION_MARKERS) || '\n')
+      : mergeMailboxInstructions(existing, body)
+  })
+  if (retained) return 'retained'
+  if (result === 'failed') return 'failed'
+  receipts.set(key, nextHash)
+  return result
 }
 
 /** Strip both legacy discovery blocks (canvas control, context link) from an instruction file.

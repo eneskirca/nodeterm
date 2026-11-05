@@ -43,7 +43,7 @@ export type ProbeEntry =
        *  resurrect the directory of an account the host no longer has). */
       gateDirExpr?: string
     }
-  | { kind: 'block'; pathExpr: string; start: string; end: string }
+  | { kind: 'block'; pathExpr: string; start: string; end: string; gateDirExpr?: string }
 
 export type ProbeStatus =
   | { state: 'present'; sum: Cksum }
@@ -113,7 +113,10 @@ export function agentToolsCheckCommand(prelude: string, entries: readonly ProbeE
     `case "$nt_c" in *NT_AWK_FAILED*) printf '%s X\\n' "$1" ;; *) printf '%s C %s\\n' "$1" "$nt_c" ;; esac; }; `
   const probes = entries
     .map((e, i) => {
-      if (e.kind === 'block') return `nt_b ${i} ${e.pathExpr} ${posixQuote(e.start)} ${posixQuote(e.end)}; `
+      if (e.kind === 'block') {
+        const probe = `nt_b ${i} ${e.pathExpr} ${posixQuote(e.start)} ${posixQuote(e.end)}; `
+        return e.gateDirExpr ? `if [ -d ${e.gateDirExpr} ]; then ${probe}else printf '%s D\\n' ${i}; fi; ` : probe
+      }
       return e.gateDirExpr ? `nt_g ${i} ${e.pathExpr} ${e.gateDirExpr}; ` : `nt_f ${i} ${e.pathExpr}; `
     })
     .join('')

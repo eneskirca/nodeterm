@@ -61,7 +61,7 @@ describe('desktop main', () => {
     const mirror = main.indexOf('initAgentStatusMirror()\n')
     const load = main.indexOf('stationOutcomes.loadFromDisk()')
     const holds = main.indexOf('stationHandovers.loadFromDisk()')
-    const queue = main.indexOf('restoreDeliveryQueue(messagingDeps.queue, deliveryQueueFile, {')
+    const queue = main.indexOf('await restoreDeliveryQueue(messagingDeps.queue!, deliveryQueueFile)')
     expect(mirror).toBeGreaterThan(-1)
     expect(load).toBeGreaterThan(mirror)
     expect(holds).toBeGreaterThan(load)
@@ -72,12 +72,19 @@ describe('desktop main', () => {
     expect(withdraw).toBeGreaterThan(-1)
     expect(withdraw).toBeLessThan(main.indexOf('corePlatform.broadcast(IPC.agentStatus, enriched)'))
     expect(main).toContain('flushAllDurableFactsSync()')
-    // The restore waits for the workspace index, or a restore-time expiry reaches no sender. The boot
-    // read is shared with the live links' init (which must not judge a node gone before it either).
-    expect(main.slice(queue, queue + 200)).toContain('ready: bootWorkspaceLoad')
+    // The async boot callback now awaits the strict legacy audit before the NEW hints queue
+    // restores. Historical accepted work must never enter the expiring hint scheduler.
     const bootLoad = main.indexOf('const bootWorkspaceLoad = workspaceStore.load({ sideline: false })')
+    const bootCallback = main.indexOf('void bootWorkspaceLoad.then(async () => {')
+    const audit = main.indexOf('await prepareMailboxLegacy(corePlatform.userDataDir)')
+    const mailbox = main.indexOf('agentMailbox = new AgentMailbox(', audit)
+    expect(main).toContain('const deliveryQueueFile = createDeliveryHintsFile(corePlatform.userDataDir)')
     expect(bootLoad).toBeGreaterThan(holds)
-    expect(bootLoad).toBeLessThan(queue)
+    expect(bootCallback).toBeGreaterThan(bootLoad)
+    expect(audit).toBeGreaterThan(bootCallback)
+    expect(mailbox).toBeGreaterThan(audit)
+    expect(queue).toBeGreaterThan(mailbox)
+    expect(main.slice(bootCallback, audit)).toContain('if (hookStartupWarning) return')
     // A second instance that lost the hook endpoint stands every durable file down.
     const gate = main.indexOf('const hookStartupWarning = await hookServer.startForApp()')
     expect(gate).toBeGreaterThan(-1)
@@ -117,6 +124,10 @@ describe('Server Edition', () => {
     expect(serverControl).toContain('createDeliveryQueue(messaging, { durable: queueFile })')
     const restore = serverControl.indexOf('await restoreDeliveryQueue(queue, queueFile)')
     expect(restore).toBeGreaterThan(serverControl.indexOf('messaging.onQueuedResult ='))
+    const audit = serverControl.indexOf('await prepareMailboxLegacy(platform().userDataDir)')
+    expect(audit).toBeGreaterThan(serverControl.indexOf('messaging.onQueuedResult ='))
+    expect(restore).toBeGreaterThan(audit)
+    expect(serverControl).toContain('const queueFile = createDeliveryHintsFile(platform().userDataDir)')
     const ev = serverControl.indexOf('onAgentEvent: (event) => {')
     expect(serverControl.indexOf('stationOutcomes.onAgentEvent(event)', ev)).toBeLessThan(
       serverControl.indexOf('onMessagingAgentEvent(event, queue)', ev)

@@ -16,6 +16,7 @@ import type { SFTPWrapper } from 'ssh2'
 import { NativeMux, channelExit, noMasterMessage, type ExecResult } from './native-mux'
 import { parseScpArgv, parseSshArgv, type ParsedSsh } from './ssh-argv'
 import { localChildName, uniqueChildName } from '../../download-name'
+import type { NativeSshTransport } from './existing-transport'
 
 export function useNativeSsh(
   platform: NodeJS.Platform = process.platform,
@@ -74,6 +75,8 @@ export interface NativeMasterHandle {
   stderr(): string
   exited(): boolean
   pid(): number | undefined
+  /** Only a NEW authenticated native master can produce this; never an existing-path adoption. */
+  createdTransport(): NativeSshTransport | undefined
 }
 
 /**
@@ -85,6 +88,7 @@ export function startNativeMaster(mux: NativeMux, argv: string[]): NativeMasterH
   const events = new EventEmitter()
   let stderr = ''
   let exited = false
+  let createdTransport: NativeSshTransport | undefined
   const finish = (code: number | null, why: string): void => {
     if (exited) return
     exited = true
@@ -97,7 +101,10 @@ export function startNativeMaster(mux: NativeMux, argv: string[]): NativeMasterH
     if (p.kind !== 'master' || !p.options.controlPath) throw new Error('native ssh transport: not a master argv')
     controlPath = p.options.controlPath
     mux.master(controlPath, p.target, p.options).then(
-      ({ closed }) => void closed.then((why) => finish(255, why)),
+      (created) => {
+        createdTransport = created.createdTransport
+        void created.closed.then((why) => finish(255, why))
+      },
       (e: Error) => finish(255, e.message)
     )
   } catch (e) {
@@ -115,7 +122,8 @@ export function startNativeMaster(mux: NativeMux, argv: string[]): NativeMasterH
     exited: () => exited,
     // No OS process. The manager only uses the pid to correlate askpass prompts, which the native
     // transport raises itself.
-    pid: () => undefined
+    pid: () => undefined,
+    createdTransport: () => !exited && createdTransport?.isCurrent() ? createdTransport : undefined
   }
 }
 
