@@ -2300,6 +2300,10 @@ export interface Settings {
   /** Draw the canvas dot grid (Settings → Appearance). Display only — snapping and align-to-grid
    *  are unchanged. Default ON in every appearance; read through `showCanvasDots`. */
   canvasDots: boolean
+  /** Pulse the RUNNING chip on board cards (Settings → Appearance). Off = the same chip, held still.
+   *  The node header's mascot is not affected. Default ON; read through `pulseBoardRunning`, so only
+   *  a literal false stops it. */
+  boardRunningPulse: boolean
   /** The Liquid Glass slider (Settings → Appearance), 0 = Clear … 1 = Tinted. null = the Readable
    *  tick, where text keeps 4.5:1 (renderer/lib/glassContrast.ts `resolveGlassSlider`). */
   glassTint: number | null
@@ -2603,6 +2607,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // reads as noise to users who navigate by the trail chords/Dock buttons instead.
   showResumeCard: false,
   canvasDots: true,
+  boardRunningPulse: true,
   glassTint: null,
   glassBlurWhileMoving: true,
   usagePercentMode: 'remaining',

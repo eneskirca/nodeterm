@@ -10,6 +10,7 @@ import {
 } from '@renderer/lib/glassContrast'
 import { useGlassA11y } from '@renderer/lib/useGlassA11y'
 import { showCanvasDots } from '@renderer/lib/canvasDots'
+import { pulseBoardRunning } from '@renderer/lib/boardRunningPulse'
 import {
   defaultWallpaper,
   GRADIENT_WALLPAPERS,
@@ -117,6 +118,10 @@ const ROWS = {
   canvasDots: {
     title: 'Show grid dots',
     keywords: ['grid', 'dots', 'dot', 'canvas', 'background', 'pattern']
+  },
+  boardRunningPulse: {
+    title: 'Pulse RUNNING on board cards',
+    keywords: ['running', 'badge', 'chip', 'board', 'kanban', 'card', 'animation', 'motion', 'pulse', 'static']
   },
   resumeCard: {
     title: 'Resume card',
@@ -505,6 +510,7 @@ export function AppearanceSection({ isActive }: { isActive: boolean }): React.JS
   const hiddenHeaderButtons = useSettings((s) => s.settings.hiddenHeaderButtons)
   const showResumeCard = useSettings((s) => s.settings.showResumeCard)
   const canvasDots = useSettings((s) => s.settings.canvasDots)
+  const boardRunningPulse = useSettings((s) => s.settings.boardRunningPulse)
   const glassSlider = resolveGlassSlider(useSettings((s) => s.settings.glassTint))
   const glassA11y = useGlassA11y()
   const glassLocked = glassA11y.reduceTransparency || glassA11y.moreContrast
@@ -666,6 +672,19 @@ export function AppearanceSection({ isActive }: { isActive: boolean }): React.JS
               checked={showCanvasDots(canvasDots)}
               onChange={(v) => update({ canvasDots: v })}
               ariaLabel="Show grid dots"
+            />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.boardRunningPulse}>
+        <FieldRow
+          label="Pulse RUNNING on board cards"
+          description="Fade the RUNNING chip on a board card in and out while its agent works. Off keeps the chip, held still. The node header is unchanged."
+          control={
+            <Switch
+              checked={pulseBoardRunning(boardRunningPulse)}
+              onChange={(v) => update({ boardRunningPulse: v })}
+              ariaLabel="Pulse RUNNING on board cards"
             />
           }
         />
