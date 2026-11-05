@@ -143,7 +143,7 @@ describe('PullChecksTab', () => {
     await click(button(view, 'Fix with agent')[0])
     expect(view.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('Send the failing check to')
     await click(view.querySelector('[role="option"]')!)
-    expect(send).toHaveBeenCalledWith('a1', expect.objectContaining({ number: 7 }), { kind: 'check', name: 'test' })
+    expect(send).toHaveBeenCalledWith('a1', expect.objectContaining({ number: 7 }), { kind: 'check', name: 'test', runId: 12 })
   })
 
   it('keeps Fix with agent off with the reason in a relay tab', async () => {

@@ -40,7 +40,7 @@ describe('sendToPrompt', () => {
     { kind: 'pr' },
     { kind: 'threads', threads: [{ id: 11, path: 'src/a.ts', line: 3 }], checks: ['build'] },
     { kind: 'threads', threads: [{ id: 11, path: 'src/a.ts', line: 3 }, { id: 12, path: 'b.ts', line: null }], all: true },
-    { kind: 'check', name: 'build' },
+    { kind: 'check', name: 'build', runId: 42 },
     { kind: 'conflict', base: 'main' },
     { kind: 'notes', notes: [{ path: 'src/a.ts', line: 4, text: 'rename\nthis' }] },
     { kind: 'suggestion', thread: { id: 13, path: 'src/a.ts', line: 9 } }
@@ -65,7 +65,8 @@ describe('sendToPrompt', () => {
     expect(threads).toContain('review thread (11)')
     expect(threads).toContain('failing checks [BEGIN PR TEXT] build [END PR TEXT]')
     expect(all).toContain('all open review threads (11, 12)')
-    expect(check).toContain('--log-failed')
+    expect(check).toContain('gh run view 42 --repo o/r --log-failed')
+    expect(sendToPrompt(pr, { kind: 'check', name: 'ext' })).toContain('gh run view <run-id> --repo o/r --log-failed')
     expect(conflict).toContain('merge origin/main')
     // The agent checks the branch out itself; it may sit on any other branch.
     expect(conflict).toContain('Run gh pr checkout 7 --repo o/r')

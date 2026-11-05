@@ -101,7 +101,7 @@ export function PullChecksTab(props: Props): React.JSX.Element {
                     </div>
                   )}
                 {expanded && (
-                  <CheckLog {...props} jobId={job.jobId} check={check} sendTo={sendTo} why={why} onFullLog={() => open(check.url!)} />
+                  <CheckLog {...props} jobId={job.jobId} runId={job.runId} check={check} sendTo={sendTo} why={why} onFullLog={() => open(check.url!)} />
                 )}
               </li>
             )
@@ -120,10 +120,10 @@ export function PullChecksTab(props: Props): React.JSX.Element {
 
 /** The log excerpt of one Actions job, read when the row opens. */
 function CheckLog(props: Props & {
-  jobId: number; check: GitHubPullCheck; onFullLog: () => void
+  jobId: number; runId: number; check: GitHubPullCheck; onFullLog: () => void
   sendTo: ReturnType<typeof useSendTo>['sendTo']; why: string | undefined
 }): React.JSX.Element {
-  const { api, pull, jobId, check, onFullLog, sendTo, why } = props
+  const { api, pull, jobId, runId, check, onFullLog, sendTo, why } = props
   const { name } = useSendTo()
   const read = useCallback(
     (projectId: string, repository: string, pullNumber: number) => api.pullCheckLog(projectId, repository, pullNumber, jobId),
@@ -146,7 +146,7 @@ function CheckLog(props: Props & {
       <div className="pr-checks__log-actions">
         {check.state === 'failed' && (
           <button className="pr-btn pr-checks__fix" disabled={!sendTo} title={why}
-            onClick={() => sendTo?.({ kind: 'check', name: check.name })}>
+            onClick={() => sendTo?.({ kind: 'check', name: check.name, runId })}>
             <Icon name="agent" size={14} />{`Fix with ${name ?? 'agent'}`}
           </button>
         )}

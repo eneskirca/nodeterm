@@ -23,7 +23,8 @@ export type SendToPayload =
   | { kind: 'pr' }
   /** `all`: the user sent every open thread, not a pick. `checks`: failing check names sent with them. */
   | { kind: 'threads'; threads: readonly SendToThread[]; all?: boolean; checks?: readonly string[] }
-  | { kind: 'check'; name: string }
+  /** `runId`: the failed Actions run, so the agent need not look it up. */
+  | { kind: 'check'; name: string; runId?: number }
   | { kind: 'conflict'; base: string }
   /** The user's own machine-local notes (F-07): their text is the user's, so it is sent. */
   | { kind: 'notes'; notes: readonly { path: string; line: number | null; text: string }[] }
@@ -124,8 +125,11 @@ export function sendToPrompt(pr: SendToPr, p: SendToPayload, node?: string): str
         return [checks.length ? `${label} and failing checks ${checks.join(', ')}` : label,
           'Address them in your working copy.']
       }
-      case 'check': return [`the failing check ${data(p.name, 80)}`,
-        'Find why it fails (gh run view <run-id> --log-failed) and fix it in your working copy.']
+      case 'check': {
+        const run = Number.isSafeInteger(p.runId) && p.runId! > 0 ? p.runId : '<run-id>'
+        return [`the failing check ${data(p.name, 80)}`,
+          `Find why it fails (gh run view ${run} --repo ${repo} --log-failed) and fix it in your working copy.`]
+      }
       case 'conflict': {
         const base = isPlainRef(p.base) ? p.base : 'the base branch'
         return [`its merge conflict with ${base}`,
