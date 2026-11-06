@@ -21,21 +21,26 @@ export interface CompletionTrigger {
 const NAME_CHAR = /[A-Za-z0-9._:-]/
 
 /**
- * The token the caret is in, or null. A slash command is only a command at the very start of the
- * message (after optional whitespace) — every CLI measured reads `/x` mid-sentence as text — so
- * `see /usr` never opens the menu. An `@` opens it at the start of a word only, so an e-mail address
+ * The token the caret is in, or null. The `/` menu follows Claude Code's TUI (measured on 2.1.318):
+ * it opens for a `/` at the start of the message (even bare) and, once a character follows it, for a
+ * `/` after whitespace anywhere in the message (`please use /tid`); never inside a word or a path
+ * (`src/tid`, `a/tid`). A `/name` mid-message is text the model reads (a skill it may use), not a
+ * command the CLI runs. An `@` opens the menu at the start of a word only, so an e-mail address
  * (`a@b`) does not. A selection (caret range) never completes.
  */
 export function completionTriggerAt(text: string, caret: number, selectionEnd = caret): CompletionTrigger | null {
   if (caret !== selectionEnd || caret < 0 || caret > text.length) return null
   const before = text.slice(0, caret)
   const after = text.slice(caret)
-  const slash = /^(\s*)\/([A-Za-z0-9._:-]*)$/.exec(before)
-  if (slash) {
+  const slashEnd = (): number => {
     let end = caret
     while (end < text.length && NAME_CHAR.test(text[end])) end++
-    return { kind: 'slash', query: slash[2], start: slash[1].length, end }
+    return end
   }
+  const lead = /^(\s*)\/([A-Za-z0-9._:-]*)$/.exec(before)
+  if (lead) return { kind: 'slash', query: lead[2], start: lead[1].length, end: slashEnd() }
+  const mid = /\s\/([A-Za-z0-9._:-]+)$/.exec(before)
+  if (mid) return { kind: 'slash', query: mid[1], start: caret - mid[1].length - 1, end: slashEnd() }
   const at = /(^|\s)@([^\s@]*)$/.exec(before)
   if (at) {
     const start = caret - at[2].length - 1

@@ -4120,6 +4120,38 @@ body,
 .term-chat__composer-input:focus {
   outline: none;
 }
+/* The command highlight (lib/chatComposerHighlight.ts): while the draft holds a known `/command`, the
+   textarea's text goes transparent (its caret, selection and input stay) and a layer behind it draws
+   the same text, with the command in the accent color, as Claude Code's TUI colors it. The layer must
+   lay text out exactly like the textarea: same box, font, padding and wrapping, and nothing that
+   changes a glyph's width (no bold, no padding on the command). */
+.term-chat__composer-field {
+  position: relative;
+}
+.term-chat__composer-highlight {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--md-font-family);
+  font-size: var(--md-font-size);
+  line-height: normal;
+  color: var(--text-strong);
+  pointer-events: none;
+}
+.term-chat__composer-command {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 3px;
+}
+.term-chat__composer-input--over {
+  position: relative;
+  color: transparent;
+  caret-color: var(--text-strong);
+}
 .term-chat__composer-input:disabled {
   opacity: 0.5;
 }

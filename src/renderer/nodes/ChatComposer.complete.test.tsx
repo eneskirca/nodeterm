@@ -248,3 +248,38 @@ describe('ChatComposer completion', () => {
     expect(options().some((t) => t.startsWith('/compact'))).toBe(true)
   })
 })
+
+describe('command highlight', () => {
+  it('colors a known /command anywhere in the draft and turns spell checking off while it is there', async () => {
+    await mount()
+
+    await type('please /git:commit now and /nothing')
+
+    const cmds = [...host.querySelectorAll('.term-chat__composer-command')].map((n) => n.textContent)
+    expect(cmds).toEqual(['/git:commit'])
+    expect(host.querySelector('.term-chat__composer-highlight')?.textContent).toBe('please /git:commit now and /nothing\u200b')
+    expect(ta().getAttribute('spellcheck')).toBe('false')
+    expect(ta().classList.contains('term-chat__composer-input--over')).toBe(true)
+  })
+
+  it('leaves an ordinary draft exactly as before', async () => {
+    await mount()
+
+    await type('just words, spelled badly')
+
+    expect(host.querySelector('.term-chat__composer-highlight')).toBeNull()
+    expect(ta().getAttribute('spellcheck')).toBe('true')
+    expect(ta().classList.contains('term-chat__composer-input--over')).toBe(false)
+  })
+
+  it('opens the menu mid-message and inserts the name there', async () => {
+    await mount()
+    await type('please run /git:co')
+
+    await key('Enter')
+
+    expect(draft()).toBe('please run /git:commit ')
+    expect(onSend).not.toHaveBeenCalled()
+  })
+})
+

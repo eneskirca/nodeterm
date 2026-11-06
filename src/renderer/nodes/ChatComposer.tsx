@@ -3,6 +3,8 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ClipboardEvent as ReactClipboardEvent,
@@ -24,6 +26,7 @@ import { IconMic, IconPlus } from '../components/icons'
 import { Spinner } from '../components/Spinner'
 import { builtinSlashCommands, sanitizeChatCatalog, type ChatCatalogEntry } from '@shared/chat-catalog'
 import { prepareQuickOpenFiles, type QuickOpenIndexedFile } from '../lib/quickOpenSearch'
+import { commandSegments, mentionsSlashToken } from '../lib/chatComposerHighlight'
 import {
   CATALOG_REUSE_MS,
   applyCompletion,
@@ -197,9 +200,29 @@ export function ChatComposer({
       if (token !== lastTokenRef.current) setActiveIdx(0)
       lastTokenRef.current = token
       if (t) ensureLists(t.kind)
+      // A `/name` anywhere in the draft is colored once the catalog knows it (below), so a draft that
+      // holds one asks for the catalog even with no menu open.
+      else if (mentionsSlashToken(text)) ensureLists('slash')
     },
     [disabled, ensureLists]
   )
+  // Known `/commands` in the draft, drawn colored in a layer behind the textarea
+  // (lib/chatComposerHighlight.ts). Null = none: the textarea renders exactly as it always did. While
+  // there is one, spell checking is off for the whole draft — a textarea can only check all of its
+  // text or none, and a command name is not a word. A half-typed `/tid` keeps its underline: until it
+  // names a command, it is a misspelling.
+  const knownNames = useMemo(() => new Set(catalog.map((e) => e.name)), [catalog])
+  const segments = useMemo(() => commandSegments(value, knownNames), [value, knownNames])
+  const highlightRef = useRef<HTMLDivElement>(null)
+  const syncHighlightScroll = useCallback(() => {
+    const ta = inputRef.current
+    const hl = highlightRef.current
+    if (ta === null || hl === null) return
+    // A visible scrollbar narrows the textarea's text; the layer must wrap at the same width.
+    hl.style.paddingRight = `${6 + Math.max(0, ta.offsetWidth - ta.clientWidth)}px`
+    hl.scrollTop = ta.scrollTop
+  }, [])
+  useLayoutEffect(syncHighlightScroll, [segments, syncHighlightScroll])
   // A composer that cannot flip to the terminal (no `onShowTerminal`) does not offer a built-in that
   // opens a dialog there: the dialog would be invisible and the next Enter would answer it.
   const offered = onShowTerminal ? catalog : catalog.filter((e) => !e.interactive)
@@ -207,6 +230,19 @@ export function ChatComposer({
     trigger && dismissedAt !== trigger.start ? completionItems(trigger, offered, fileIndex) : []
   const menuOpen = items.length > 0
   const active = Math.min(activeIdx, Math.max(0, items.length - 1))
+  // Keep the active row in view as the arrows move it. The menu's own scroll only, by hand:
+  // `scrollIntoView` also scrolls every scrollable ancestor, and an `overflow: hidden` one inside
+  // the canvas would shift the node under the user.
+  const menuRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const menu = menuRef.current
+    const row = menuOpen ? (menu?.children[active] as HTMLElement | undefined) : undefined
+    if (menu === null || row === undefined) return
+    if (row.offsetTop < menu.scrollTop) menu.scrollTop = active === 0 ? 0 : row.offsetTop
+    else if (row.offsetTop + row.offsetHeight > menu.scrollTop + menu.clientHeight) {
+      menu.scrollTop = row.offsetTop + row.offsetHeight - menu.clientHeight
+    }
+  }, [menuOpen, active])
 
   const accept = (item: CompletionItem) => {
     if (!trigger || disabled) return
@@ -419,6 +455,7 @@ export function ChatComposer({
     <div className="term-chat__compose">
       {menuOpen && (
         <div
+          ref={menuRef}
           className="term-chat__complete"
           id={listboxId}
           role="listbox"
@@ -467,40 +504,59 @@ export function ChatComposer({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <textarea
-          ref={inputRef}
-          className="term-chat__composer-input"
-          value={value}
-          onChange={(e) => {
-            onChange(e.target.value)
-            const caret = e.target.selectionStart ?? e.target.value.length
-            // A new token (or none) forgets an Esc on the previous one.
-            if (dismissedAt !== null && completionTriggerAt(e.target.value, caret)?.start !== dismissedAt) setDismissedAt(null)
-            syncTrigger(e.target.value, caret, e.target.selectionEnd ?? caret)
-          }}
-          onKeyUp={(e) => {
-            // Caret moves (arrows, Home/End) — keys that edit already went through onChange. The menu's
-            // own navigation keys are not caret moves while it is open.
-            if (e.nativeEvent.isComposing || (menuOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp'))) return
-            const el = e.currentTarget
-            syncTrigger(el.value, el.selectionStart ?? el.value.length, el.selectionEnd ?? el.value.length)
-          }}
-          onClick={(e) => {
-            const el = e.currentTarget
-            syncTrigger(el.value, el.selectionStart ?? el.value.length, el.selectionEnd ?? el.value.length)
-          }}
-          onBlur={closeMenu}
-          role="combobox"
-          aria-autocomplete="list"
-          aria-expanded={menuOpen}
-          aria-controls={menuOpen ? listboxId : undefined}
-          aria-activedescendant={menuOpen ? `${listboxId}-${active}` : undefined}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          placeholder={placeholder}
-          disabled={disabled}
-          rows={2}
-        />
+        <div className="term-chat__composer-field">
+          {segments !== null && (
+            <div ref={highlightRef} className="term-chat__composer-highlight" aria-hidden="true">
+              {segments.map((seg, i) =>
+                seg.command ? (
+                  <span key={i} className="term-chat__composer-command">
+                    {seg.text}
+                  </span>
+                ) : (
+                  seg.text
+                )
+              )}
+              {/* A trailing newline needs a character after it to take up its line, as in the textarea. */}
+              {'\u200b'}
+            </div>
+          )}
+          <textarea
+            ref={inputRef}
+            className={`term-chat__composer-input${segments !== null ? ' term-chat__composer-input--over' : ''}`}
+            spellCheck={segments === null}
+            onScroll={syncHighlightScroll}
+            value={value}
+            onChange={(e) => {
+              onChange(e.target.value)
+              const caret = e.target.selectionStart ?? e.target.value.length
+              // A new token (or none) forgets an Esc on the previous one.
+              if (dismissedAt !== null && completionTriggerAt(e.target.value, caret)?.start !== dismissedAt) setDismissedAt(null)
+              syncTrigger(e.target.value, caret, e.target.selectionEnd ?? caret)
+            }}
+            onKeyUp={(e) => {
+              // Caret moves (arrows, Home/End) — keys that edit already went through onChange. The menu's
+              // own navigation keys are not caret moves while it is open.
+              if (e.nativeEvent.isComposing || (menuOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp'))) return
+              const el = e.currentTarget
+              syncTrigger(el.value, el.selectionStart ?? el.value.length, el.selectionEnd ?? el.value.length)
+            }}
+            onClick={(e) => {
+              const el = e.currentTarget
+              syncTrigger(el.value, el.selectionStart ?? el.value.length, el.selectionEnd ?? el.value.length)
+            }}
+            onBlur={closeMenu}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={menuOpen}
+            aria-controls={menuOpen ? listboxId : undefined}
+            aria-activedescendant={menuOpen ? `${listboxId}-${active}` : undefined}
+            onKeyDown={onKeyDown}
+            onPaste={onPaste}
+            placeholder={placeholder}
+            disabled={disabled}
+            rows={2}
+          />
+        </div>
         <div className="term-chat__toolbar">
           {pathsForFiles && (
             <>
