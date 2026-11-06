@@ -4454,6 +4454,11 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   re-reads at once; unknown focus polls), to disable the composer and show the dialog's lines; SSH and relay panes are not polled (a round trip per read) and rely
   on the send-time check. Another CLI's layout would read as a permanent dialog, so an agent joins
   the list only with its own measured reader.
+  The live box must end within `BOX_TAIL_LINES` (8) non-blank lines of the bottom, so an old box in
+  the history is not taken for it; the agent list Claude Code draws under its status lines while
+  background agents or teammates run (`● main`, `○ <name> …` rows, `↓ N more`; measured on 2.1.319)
+  does not count toward those lines (`isAgentListLine`). Before that, five agents were enough for the
+  view to say the input box was not on screen.
   **Live progress (2026-09).** While the agent works, a `role=status` row closes the thread (the ONE
   spinner + the placeholder's own "<agent> is working…"/"waiting for an answer" sentence; optimistic
   right after a send, bounded by `CHAT_OPTIMISTIC_WORKING_MS`), and every hook event re-reads the
