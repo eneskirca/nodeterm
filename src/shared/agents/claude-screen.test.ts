@@ -102,6 +102,35 @@ describe('readClaudeScreen', () => {
     expect(readClaudeScreen(screen)).toEqual({ kind: 'prompt' })
   })
 
+  it('reads the input box as a prompt above the agent list background agents add', () => {
+    // Field shape (2.1.319): two status lines, then one row per agent and an overflow line, which
+    // together pushed the box past the status-line allowance.
+    const statusline = ['  🧠 Opus 5.5 | ┤██▒       ├ 27% | 💰 $1.23', '  ⏵⏵ auto mode on (shift+tab to cycle)']
+    const agents = [
+      '● main',
+      '○ worker-1                   Implement ticket 01 (place…                  idle',
+      '○ worker-2                   Implement ticket 02 (squar…                  idle',
+      '○ worker-4                   Implement ticket 04 (P+P C…  3m 36s · ↓ 193.7k tokens',
+      '○ worker-5                   Implement ticket 05 ({L+P}… 19m 17s · ↓ 228.6k tokens',
+      '○ worker-3                   Implement ticket 03 (squar… 11m 52s · ↓ 151.8k tokens',
+      '↓ 1 more'
+    ]
+    const scrolled = [...agents.slice(0, -1), '↑ 2 more · ↓ 1 more']
+
+    const screen = (list: string[]) => [...HEADER, RULE, '❯ ', RULE, ...statusline, '', ...list].join('\n')
+
+    expect(readClaudeScreen(screen(agents))).toEqual({ kind: 'prompt' })
+    expect(readClaudeScreen(screen(scrolled))).toEqual({ kind: 'prompt' })
+  })
+
+  it('still ignores an input box left in the history when only agent-list-like lines are under it', () => {
+    const shellOutput = Array.from({ length: 9 }, (_, i) => `line ${i}`)
+
+    const gone = [IDLE, '● main', '○ worker-1  idle', ...shellOutput, 'user@host ~ % '].join('\n')
+
+    expect(readClaudeScreen(gone)).toEqual({ kind: 'no-prompt' })
+  })
+
   it('a dialog ABOVE a visible input box is still a dialog — the footer decides', () => {
     const above = [...HEADER, ' Set up auto mode defaults?', ' ❯ Yes', '   No', ' Enter to confirm · Esc to cancel', RULE, '❯ ', RULE, ...STATUS].join('\n')
 
