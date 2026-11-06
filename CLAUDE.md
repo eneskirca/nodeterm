@@ -4452,6 +4452,26 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   elsewhere; the screen-wide count never rose and every such send ended `pasted-not-submitted` with
   the answer sitting in the box. The screen-wide count stays only as the fallback for a poll with
   no readable input box (a draft too tall for the box reader).
+  **Esc in the chat view interrupts a running turn** (`lib/chatEscInterrupt.ts`, core
+  `PtyManager.interruptChat`, `pty:interrupt-chat`), as Esc in the terminal would. Only when ALL of:
+  the agent is in `CHAT_INTERRUPT_CAPABLE` (claude, MEASURED on 2.1.318), the state is `working`
+  (idle, two Escs open Claude's rewind picker, which fires no hook; blocked/waiting, Esc cancels the
+  dialog), and the composer is EMPTY (with a draft, Esc means "never mind"). Core reads the screen
+  first and refuses on a dialog, then sends a lone Esc through `sendPaneKeys`. An Esc before the
+  reply's first token makes Claude put the prompt back into its own input box (measured 0.05-0.11 s);
+  core takes it back out ONLY when the box holds exactly the chat view's last send, and hands it to
+  the composer. It clears the box with Ctrl-U, never Ctrl-C: Ctrl-C clears it too but then arms
+  "Press Ctrl-C again to exit" for a few seconds. Claude still writes such a prompt to the
+  transcript as a branch it drops from its context, so the chat view keeps showing it (the reader
+  does not follow `parentUuid`; known gap). The panel also makes the terminal's interrupt guess
+  (`inferInterruptAfterSettle`), since an early Esc writes no transcript marker.
+  **An interrupt is drawn as Claude draws it, not as a user bubble.** Claude saves its marker
+  (`CLAUDE_INTERRUPT_MARKERS`, now in `shared/agents/claude-interrupt.ts`, shared with the context
+  tail) as a USER record. On the `rich` read the parser turns it into an `interrupt` part on the
+  assistant side, drawn as `⎿ Interrupted · What should Claude do instead?`, and a tool call it
+  cancelled shows "Interrupted" instead of Claude's canned "The user doesn't want to proceed…"
+  result. Without `rich` (the phone's `chat.page`, the golden fixtures) nothing changes; the iOS
+  reader owes the same treatment (@eneskirca).
   **The agent's OWN dialogs are read off the screen** (`shared/agents/claude-screen.ts`, claude
   only — `SCREEN_DIALOG_READABLE`). The folder-trust prompt, `/model` and one-time setup questions
   fire NO hook, so the state gate above reads `done` while one owns the keyboard, and a paste into
@@ -4464,6 +4484,11 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   re-reads at once; unknown focus polls), to disable the composer and show the dialog's lines; SSH and relay panes are not polled (a round trip per read) and rely
   on the send-time check. Another CLI's layout would read as a permanent dialog, so an agent joins
   the list only with its own measured reader.
+  The live box must end within `BOX_TAIL_LINES` (8) non-blank lines of the bottom, so an old box in
+  the history is not taken for it; the agent list Claude Code draws under its status lines while
+  background agents or teammates run (`● main`, `○ <name> …` rows, `↓ N more`; measured on 2.1.319)
+  does not count toward those lines (`isAgentListLine`). Before that, five agents were enough for the
+  view to say the input box was not on screen.
   **Live progress (2026-09).** While the agent works, a `role=status` row closes the thread (the ONE
   spinner + the placeholder's own "<agent> is working…"/"waiting for an answer" sentence; optimistic
   right after a send, bounded by `CHAT_OPTIMISTIC_WORKING_MS`), and every hook event re-reads the

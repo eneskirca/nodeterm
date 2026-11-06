@@ -36,6 +36,8 @@ import {
   typesChatInput,
   readsScreenDialogs,
   queuesInputWhileWorking,
+  interruptsFromChat,
+  CHAT_INTERRUPT_CAPABLE,
   LOCAL_ONLY_HOOK_AGENTS,
   reportsSessionEnd,
   resumeCommandWith,
@@ -604,6 +606,14 @@ describe('readsScreenDialogs — whose own dialogs the chat view can see on scre
   it('is claude only: its reader would read every other CLI\'s screen as a permanent dialog', () => {
     expect(readsScreenDialogs('claude')).toBe(true)
     for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'claude')) expect(readsScreenDialogs(id)).toBe(false)
+  })
+})
+
+describe('interruptsFromChat — who Esc in the chat view may interrupt', () => {
+  it('is claude only, and stays within the screen readers: core reads the screen before the Esc', () => {
+    expect(interruptsFromChat('claude')).toBe(true)
+    for (const id of BUILTIN_AGENT_IDS.filter((a) => a !== 'claude')) expect(interruptsFromChat(id)).toBe(false)
+    for (const id of CHAT_INTERRUPT_CAPABLE) expect(readsScreenDialogs(id)).toBe(true)
   })
 })
 

@@ -2,7 +2,7 @@ import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
 import { claudeScreenBlocksInput, readClaudeScreen } from '@shared/agents/claude-screen'
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdown } from '../lib/markdown'
-import { useAgentStatus } from '../state/agentStatus'
+import { inferInterruptAfterSettle, useAgentStatus } from '../state/agentStatus'
 import { useSession } from '../session/session'
 import { chipFor } from '../lib/keybindingOverrides'
 import {
@@ -67,6 +67,7 @@ import { ChatTeammateMessage } from './ChatTeammate'
 import { isTeammateMessage } from '../lib/chatTeammate'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
+import { CLAUDE_INTERRUPT_LINE, chatEscInterrupts, chatInterruptRefusalText } from '../lib/chatEscInterrupt'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -263,6 +264,8 @@ export function ChatPanel({
   olderStateRef.current = olderState
   const [input, setInput] = useState('')
   const [readonly, setReadonly] = useState(false)
+  // The last prompt this panel sent, for taking it back out of the agent's input box after an Esc.
+  const lastSentRef = useRef<string | null>(null)
   const [optimistic, setOptimistic] = useState(false)
   const state = useAgentStatus((s) => s.byId[nodeId]?.state)
   // The shell-owned-pane flags, each as its own primitive selector (an object selector would
@@ -838,13 +841,51 @@ export function ChatPanel({
 
   // Page Up / Page Down page the thread from anywhere in the panel, the composer included
   // (lib/chatPageKeys.ts). `contains`: a React portal's keydown bubbles here too.
-  const onPageKey = (e: KeyboardEvent<HTMLDivElement>) => {
+  const onPanelKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const el = msgsRef.current
     if (!el || e.defaultPrevented || !(e.target instanceof Element) || !e.currentTarget.contains(e.target)) return
+    if (
+      chatEscInterrupts({ ...e, isComposing: e.nativeEvent.isComposing }, e.target, {
+        agentId,
+        state: useAgentStatus.getState().byId[nodeId]?.state,
+        draft: input,
+        readOnly: readOnly === true || readonly
+      })
+    ) {
+      e.preventDefault()
+      void interrupt()
+      return
+    }
     const direction = chatPageDirection(e, e.target)
     if (direction === null) return
     e.preventDefault()
     pageChatThread(el, direction)
+  }
+
+  // Esc while the agent works (lib/chatEscInterrupt.ts). Core checks the screen for a dialog first
+  // and, when the Esc beat the reply's first token, takes the prompt Claude put back into its own
+  // input box out again: it goes into this composer instead, where the user can see and edit it.
+  const interrupt = async () => {
+    const r = await api.pty.interruptChat(nodeId, agentId, lastSentRef.current ?? undefined)
+    if (!r.sent) {
+      if (r.reason === 'dialog') {
+        const dialog = r.dialog ?? null
+        setScreenBlock({ kind: dialog === null ? 'no-prompt' : 'dialog', text: dialog, live: pollScreen })
+      }
+      const message = chatInterruptRefusalText(r.reason, chatAgentLabel(agentId, useSettings.getState().settings.customAgents))
+      window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+      return
+    }
+    // An Esc before the first token writes no transcript marker and fires no hook, so the state would
+    // read working until the stale sweep. The same guess an Esc typed in the terminal makes: an
+    // interrupted `done` after a short settle, healed by the turn's next hook if the guess was wrong.
+    inferInterruptAfterSettle(nodeId)
+    const restored = r.restored
+    if (restored === null) return
+    lastSentRef.current = null
+    // The bubble for that send stays: Claude still writes the prompt to the transcript (as a branch it
+    // then drops from its context), so the next read would draw it again anyway.
+    setInput((cur) => (cur.trim() === '' ? restored : `${restored}\n${cur}`))
   }
 
   const scrollToLatest = () => {
@@ -902,6 +943,7 @@ export function ChatPanel({
     // (`carryUnconfirmed`); the turn-end reload / ↻ reconcile from the transcript outright.
     setScreenBlock(null)
     justSentRef.current = true
+    lastSentRef.current = text
     const sent: ChatMessage = { role: 'user', parts: [{ kind: 'text', text }] }
     if (mode === 'queue') queuedRef.current.add(sent)
     setThread((t) => ({ ...t, messages: [...t.messages, sent] }))
@@ -1029,6 +1071,13 @@ export function ChatPanel({
       // A teammate's message (the opt-in `rich` read). A message of them is drawn whole below, so a
       // run from one teammate folds into one row; this is the part on its own.
       <ChatTeammateMessage key={key} parts={[p]} Markdown={MarkdownText} />
+    ) : p.kind === 'interrupt' ? (
+      // The user interrupted the turn (the opt-in `rich` read). Claude saves that as a user record,
+      // but the user did not type it: drawn as Claude's own TUI line, hanging off what came before.
+      <div key={key} className="term-chat__interrupt">
+        <span className="term-chat__interrupt-hook" aria-hidden="true">⎿</span>
+        {CLAUDE_INTERRUPT_LINE}
+      </div>
     ) : p.body && !staleTodo(p, i, latestTodo) ? (
       // A plan / question / the latest todo list is the content itself, not plumbing: shown
       // expanded, in full, flowing with the thread (no inner scroll box). The answer stays under it.
@@ -1089,7 +1138,7 @@ export function ChatPanel({
   return (
     // `data-chat-node-id`: which node's chat view this is — the mics that name only a node ask it
     // (lib/chatComposerDictation.ts `dictationTargetForNode`) so a take never reaches the hidden pane.
-    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId} onKeyDown={onPageKey}>
+    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId} onKeyDown={onPanelKey}>
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">

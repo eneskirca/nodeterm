@@ -3688,6 +3688,20 @@ body,
   font-size: 11px;
   opacity: 0.85;
 }
+/* An interrupted turn (an `interrupt` part): Claude's own TUI line, quiet and hanging off what came
+   before it, never a user bubble. */
+.term-chat__interrupt {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: -2px;
+  padding-left: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.term-chat__interrupt-hook {
+  font-family: ui-monospace, monospace;
+}
 /* An Edit / Write call (nodes/ChatToolDiff.tsx): the chip's summary ends in the `+N −M` counts, and
    it opens to the line diff. The block is a one-column grid sized to its widest line (at least the
    chip's width), so a line's tint spans the whole row even while the block is scrolled sideways;

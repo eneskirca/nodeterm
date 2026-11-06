@@ -434,6 +434,12 @@ export const SCREEN_DIALOG_READABLE = ['claude'] as const
 // delivered at the next tool boundary of the SAME turn (a `queued_command` transcript attachment, not
 // a new user turn). Every other chat-capable agent is unmeasured and keeps "wait for the reply".
 export const INPUT_QUEUE_CAPABLE = ['claude'] as const
+// Agents the ⌘M chat view may send a lone Esc to while a turn is running, to interrupt it as Esc in
+// the terminal would. MEASURED for claude (2.1.318, 2026-11-04): mid-reply it prints "Interrupted ·
+// What should Claude do instead?"; text in its own input box stays; a queued message is sent as the
+// next turn; an Esc before the first token puts the prompt back into its input box. Must stay within
+// SCREEN_DIALOG_READABLE: core reads the screen first, because Esc on a dialog would cancel it.
+export const CHAT_INTERRUPT_CAPABLE = ['claude'] as const
 // Agents whose native transcript we can read + render for cross-agent transfer.
 export const TRANSFER_SOURCE_CAPABLE = [
   'claude',
@@ -723,6 +729,7 @@ export const chatReadsLocalOnly = (id: AgentId): boolean => includes(CHAT_LOCAL_
 export const typesChatInput = (id: AgentId): boolean => includes(TYPED_INPUT_CAPABLE, id)
 export const readsScreenDialogs = (id: AgentId): boolean => includes(SCREEN_DIALOG_READABLE, id)
 export const queuesInputWhileWorking = (id: AgentId): boolean => includes(INPUT_QUEUE_CAPABLE, id)
+export const interruptsFromChat = (id: AgentId): boolean => includes(CHAT_INTERRUPT_CAPABLE, id)
 /** Can CLAUDE's transcript resolver locate and parse this agent's conversation? Never widen this
  *  to mean "can we read this agent" — see CLAUDE_TRANSCRIPT_READABLE. */
 export const readsClaudeShapedTranscript = (id: AgentId): boolean =>

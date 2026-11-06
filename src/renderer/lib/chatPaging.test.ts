@@ -26,7 +26,7 @@ const page = (
 const texts = (t: ChatThread): string[] =>
   t.messages.map((m) => {
     const p = m.parts[0]
-    return p.kind === 'tool' ? `tool:${p.id}:${p.result ?? '-'}` : p.kind === 'image' ? 'image' : p.kind === 'teammate' ? 'teammate' : p.text
+    return p.kind === 'tool' ? `tool:${p.id}:${p.result ?? '-'}` : p.kind === 'image' ? 'image' : p.kind === 'teammate' ? 'teammate' : p.kind === 'interrupt' ? 'interrupt' : p.text
   })
 
 describe('attachCarried', () => {
