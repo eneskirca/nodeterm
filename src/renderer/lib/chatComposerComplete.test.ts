@@ -20,13 +20,22 @@ const e = (name: string, description = '', kind: ChatCatalogEntry['kind'] = 'bui
 })
 
 describe('completionTriggerAt', () => {
-  it('a slash is a command only at the start of the message', () => {
+  it('a slash opens at the start of the message, even bare', () => {
     expect(completionTriggerAt('/mo', 3)).toEqual({ kind: 'slash', query: 'mo', start: 0, end: 3 })
     expect(completionTriggerAt('  /', 3)).toEqual({ kind: 'slash', query: '', start: 2, end: 3 })
-    expect(completionTriggerAt('see /usr', 8)).toBeNull()
     expect(completionTriggerAt('/model x', 8)).toBeNull()
     // Caret inside the word: the token runs to its end.
     expect(completionTriggerAt('/model', 2)).toEqual({ kind: 'slash', query: 'm', start: 0, end: 6 })
+  })
+
+  it('mid-message, a slash opens after whitespace once a character follows it, as in the TUI', () => {
+    expect(completionTriggerAt('please use /tid', 15)).toEqual({ kind: 'slash', query: 'tid', start: 11, end: 15 })
+    expect(completionTriggerAt('line one\n/tid', 13)).toEqual({ kind: 'slash', query: 'tid', start: 9, end: 13 })
+    expect(completionTriggerAt('see /usr and', 7)).toEqual({ kind: 'slash', query: 'us', start: 4, end: 8 })
+
+    expect(completionTriggerAt('x /', 3)).toBeNull()
+    expect(completionTriggerAt('see src/tid', 11)).toBeNull()
+    expect(completionTriggerAt('a/tid', 5)).toBeNull()
   })
 
   it('an @ opens only at the start of a word, anywhere in the message', () => {

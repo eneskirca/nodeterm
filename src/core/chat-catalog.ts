@@ -11,6 +11,10 @@
 //   frontmatter `name`, else the folder; `user-invocable: false` hides it). `<configDir>` is the
 //   managed or linked account's dir when the node is bound to one — it REPLACES `~/.claude`, it
 //   does not add to it — else `~/.claude`.
+//   Locally also (measured 2026-11-05 on 2.1.318, see `claudeLocalExtras`): the skills claude.ai
+//   syncs to `<configDir>/skills/synced/<bucket>/<name>/SKILL.md` (listed as `/<name>`), and every
+//   ENABLED plugin's skills and commands (listed as `/<plugin>:<name>`), and `skillOverrides` "off"
+//   hides a user, project or synced skill.
 // - gemini: `~/.gemini/commands/**/*.toml` and `<cwd>/.gemini/commands/**/*.toml` (the shipped
 //   custom-commands reference: subfolders are `:` namespaces, `description` is optional).
 // - every other agent: built-ins only. Their custom-command and skill locations were not measured,
@@ -45,7 +49,10 @@ export const CATALOG_ROOT_MAX_FILES = 200
 export const CATALOG_COMMAND_MAX_DEPTH = 3
 export const CATALOG_HEAD_BYTES = 4096
 
-export type CatalogRootKind = 'md-commands' | 'toml-commands' | 'skills'
+// `skills` = a SKILL.md in each folder of `dir`; `skill-dir` = `dir` itself is one skill folder (a
+// plugin manifest may list skill folders one by one); `synced-skills` = `dir/<bucket>/<name>/SKILL.md`
+// (claude.ai's sync).
+export type CatalogRootKind = 'md-commands' | 'toml-commands' | 'skills' | 'skill-dir' | 'synced-skills'
 
 export interface CatalogRoot {
   kind: CatalogRootKind
@@ -62,12 +69,31 @@ export interface CatalogRoot {
    * an account dir.
    */
   within?: string
+  /** A plugin's name: every entry of the root is listed as `<prefix>:<name>`. */
+  prefix?: string
+  /** `skillOverrides` "off" may hide this root's skills. Measured: it hides a user, project or synced
+   *  skill and has no effect on a plugin's. */
+  overridable?: boolean
 }
 
 export interface ChatCatalogQuery {
   agentId: string | undefined
   accountId: string | undefined
   cwd: string | undefined
+}
+
+/** Claude's config dir for a node: the bound account's dir, else `~/.claude`. Null for an account id
+ *  that is not safe or not known — never the system dir in its place, which would list another
+ *  identity's commands under this node. */
+function claudeCatalogConfigDir(accountId: string | undefined, opts: { remote: boolean; home: string }): string | null {
+  if (accountId === undefined || accountId === '') return opts.remote ? '~/.claude' : path.join(opts.home, '.claude')
+  if (!isSafeAccountId(accountId)) return null
+  if (opts.remote) return remoteAccountConfigDir(accountId)
+  try {
+    return claudeConfigDirFor(accountId)
+  } catch {
+    return null
+  }
 }
 
 /** The roots a node's agent reads, in PRECEDENCE order (project before user). */
@@ -78,27 +104,14 @@ export function catalogRoots(q: ChatCatalogQuery, opts: { remote: boolean; home?
   const join = (a: string, ...b: string[]) => (opts.remote ? [a.replace(/\/+$/, ''), ...b].join('/') : path.join(a, ...b))
   const roots: CatalogRoot[] = []
   if (base === 'claude') {
-    let configDir: string | null
-    if (q.accountId) {
-      // A bad id is no account: its roots are simply absent (never the system dir in its place —
-      // that would list another identity's commands under this node).
-      if (!isSafeAccountId(q.accountId)) configDir = null
-      else if (opts.remote) configDir = remoteAccountConfigDir(q.accountId)
-      else {
-        try {
-          configDir = claudeConfigDirFor(q.accountId)
-        } catch {
-          configDir = null
-        }
-      }
-    } else configDir = opts.remote ? '~/.claude' : path.join(home, '.claude')
+    const configDir = claudeCatalogConfigDir(q.accountId, { remote: opts.remote, home })
     if (cwd) {
       roots.push({ kind: 'md-commands', scope: 'project', dir: join(cwd, '.claude', 'commands'), within: cwd })
-      roots.push({ kind: 'skills', scope: 'project', dir: join(cwd, '.claude', 'skills'), within: cwd })
+      roots.push({ kind: 'skills', scope: 'project', dir: join(cwd, '.claude', 'skills'), within: cwd, overridable: true })
     }
     if (configDir) {
       roots.push({ kind: 'md-commands', scope: 'user', dir: join(configDir, 'commands') })
-      roots.push({ kind: 'skills', scope: 'user', dir: join(configDir, 'skills') })
+      roots.push({ kind: 'skills', scope: 'user', dir: join(configDir, 'skills'), overridable: true })
     }
   } else if (base === 'gemini') {
     if (cwd) roots.push({ kind: 'toml-commands', scope: 'project', dir: join(cwd, '.gemini', 'commands'), within: cwd })
@@ -121,7 +134,9 @@ export function parseFrontmatter(text: string): { fields: Record<string, string>
     const m = /^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line)
     if (!m) continue
     let v = m[2].trim()
-    if ((v.startsWith('"') && v.endsWith('"') && v.length >= 2) || (v.startsWith("'") && v.endsWith("'") && v.length >= 2)) v = v.slice(1, -1)
+    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1)
+    // YAML's single-quoted scalar escapes a quote by doubling it (`'the project''s build'`).
+    else if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1).replace(/''/g, "'")
     fields[m[1].toLowerCase()] = v
   }
   const after = t.indexOf('\n', end + 1)
@@ -180,9 +195,15 @@ export function tomlCommandEntry(rel: string, text: string, scope: CatalogRoot['
 
 /** One file of one root → its entry (or null). */
 export function entryFor(root: CatalogRoot, rel: string, text: string): ChatCatalogEntry | null {
-  if (root.kind === 'md-commands') return markdownCommandEntry(rel, text, root.scope)
-  if (root.kind === 'toml-commands') return tomlCommandEntry(rel, text, root.scope)
-  return skillEntry(rel, text, root.scope)
+  const e =
+    root.kind === 'md-commands'
+      ? markdownCommandEntry(rel, text, root.scope)
+      : root.kind === 'toml-commands'
+        ? tomlCommandEntry(rel, text, root.scope)
+        : skillEntry(rel, text, root.scope)
+  if (e === null || root.prefix === undefined) return e
+  const name = catalogName(`${root.prefix}:${e.name}`)
+  return name === null ? null : { ...e, name }
 }
 
 /** Built-ins last, custom entries in root order (project first), deduped. */
@@ -287,9 +308,21 @@ async function localRootFiles(root: CatalogRoot): Promise<{ rel: string; file: s
     }
     if (real !== realWithin && !real.startsWith(realWithin.endsWith(path.sep) ? realWithin : realWithin + path.sep)) return null
   }
+  if (root.kind === 'skill-dir') return [{ rel: path.basename(root.dir), file: path.join(root.dir, 'SKILL.md') }]
   const top = await listLocalDir(root.dir, follow)
   if (!top) return null
   const out: { rel: string; file: string }[] = []
+  if (root.kind === 'synced-skills') {
+    for (const bucket of top) {
+      if (!bucket.dir || bucket.name.startsWith('.')) continue
+      const skills = await listLocalDir(path.join(root.dir, bucket.name), follow).catch(() => null)
+      for (const e of skills ?? []) {
+        if (out.length >= CATALOG_ROOT_MAX_FILES) return out
+        if (e.dir && !e.name.startsWith('.')) out.push({ rel: e.name, file: path.join(root.dir, bucket.name, e.name, 'SKILL.md') })
+      }
+    }
+    return out
+  }
   if (root.kind === 'skills') {
     for (const e of top) {
       if (out.length >= CATALOG_ROOT_MAX_FILES) break
@@ -315,7 +348,8 @@ async function localRootFiles(root: CatalogRoot): Promise<{ rel: string; file: s
 }
 
 export async function buildLocalCatalog(q: ChatCatalogQuery, opts: { home?: string } = {}): Promise<ChatCatalog> {
-  const roots = catalogRoots(q, { remote: false, home: opts.home })
+  const extras = await claudeLocalExtras(q, opts.home ?? os.homedir())
+  const roots = [...catalogRoots(q, { remote: false, home: opts.home }), ...extras.roots]
   let partial = false
   const perRoot = await Promise.all(
     roots.map(async (root) => {
@@ -331,12 +365,132 @@ export async function buildLocalCatalog(q: ChatCatalogQuery, opts: { home?: stri
         const text = await readLocalHead(f.file, root.within === undefined)
         if (text === null) continue
         const e = entryFor(root, f.rel, text)
-        if (e) out.push(e)
+        if (e !== null && !(root.overridable === true && skillTurnedOff(e, root, extras.overrides))) out.push(e)
       }
       return out
     })
   )
   return assembleCatalog(q.agentId, perRoot, partial)
+}
+
+// ── Plugins, synced skills and skill overrides (claude, local) ───────────────────────────────────
+//
+// MEASURED 2026-11-05 on Claude Code 2.1.318 (its own `/` menu, fresh sessions, test settings passed
+// with `--settings`):
+// - A plugin's skills and commands are listed as `/<plugin>:<name>` when the plugin is in
+//   `<configDir>/plugins/installed_plugins.json` AND `enabledPlugins["<plugin>@<marketplace>"]` is
+//   true. A disabled one lists nothing; a plugin that is only in the cache lists nothing; an install
+//   of scope `project` / `local` lists only in the folder it was installed for. The files are read
+//   from the install's `installPath` (older cached versions beside it are not).
+// - claude.ai-synced skills (`<configDir>/skills/synced/<bucket>/<name>/SKILL.md`) are listed as
+//   `/<name>`.
+// - `skillOverrides: { "<name>": "off" }` hides a user, project or synced skill (for a synced one
+//   `"anthropic-skills:<name>"` works too); `name-only` and `user-invocable-only` keep it in the
+//   menu; nothing hides a PLUGIN's skill this way. Settings are merged user < project < local, as
+//   for every other setting.
+
+/** Bounds on what is read from settings: at most this many plugins, files this large. */
+export const CATALOG_PLUGINS_MAX = 64
+const SETTINGS_MAX_BYTES = 1024 * 1024
+/** A synced skill's other spelling in `skillOverrides` (both measured to work). */
+const SYNCED_OVERRIDE_PREFIX = 'anthropic-skills:'
+
+interface ClaudeExtras {
+  roots: CatalogRoot[]
+  /** skillOverrides, merged; only "off" is acted on. */
+  overrides: Map<string, string>
+}
+
+function skillTurnedOff(e: ChatCatalogEntry, root: CatalogRoot, overrides: Map<string, string>): boolean {
+  if (e.kind !== 'skill') return false
+  if (overrides.get(e.name) === 'off') return true
+  return root.kind === 'synced-skills' && overrides.get(`${SYNCED_OVERRIDE_PREFIX}${e.name}`) === 'off'
+}
+
+/** A small JSON object file, or null (absent, too large, not JSON, not an object, or — `follow`
+ *  false, a project file — a symlink). */
+async function readLocalJson(file: string, follow: boolean): Promise<Record<string, unknown> | null> {
+  try {
+    const fh = await fsp.open(file, follow ? fsConstants.O_RDONLY : fsConstants.O_RDONLY | O_NOFOLLOW)
+    try {
+      const st = await fh.stat()
+      if (!st.isFile() || st.size > SETTINGS_MAX_BYTES) return null
+      const v: unknown = JSON.parse((await fh.readFile()).toString('utf8'))
+      return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+    } finally {
+      await fh.close()
+    }
+  } catch {
+    return null
+  }
+}
+
+const recordOf = (v: unknown): Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+
+/** The paths a manifest field names (a string or a list of strings), each resolved inside `root`. */
+function manifestPaths(v: unknown, root: string, fallback: string): string[] {
+  const raw = v === undefined ? [fallback] : typeof v === 'string' ? [v] : Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []
+  const out: string[] = []
+  for (const r of raw as string[]) {
+    const abs = path.resolve(root, r)
+    const rel = path.relative(root, abs)
+    if (rel.startsWith('..') || path.isAbsolute(rel)) continue
+    out.push(abs)
+  }
+  return out
+}
+
+/** The extra roots and the skill overrides of a LOCAL claude node. Never throws: a file that cannot
+ *  be read adds nothing. */
+export async function claudeLocalExtras(q: ChatCatalogQuery, home: string): Promise<ClaudeExtras> {
+  const none: ClaudeExtras = { roots: [], overrides: new Map() }
+  if (q.agentId === undefined || capabilityAgentId(q.agentId) !== 'claude') return none
+  const configDir = claudeCatalogConfigDir(q.accountId, { remote: false, home })
+  if (configDir === null) return none
+  const cwd = typeof q.cwd === 'string' && q.cwd.trim() !== '' ? q.cwd : undefined
+  const settings = [
+    await readLocalJson(path.join(configDir, 'settings.json'), true),
+    ...(cwd === undefined
+      ? []
+      : [
+          await readLocalJson(path.join(cwd, '.claude', 'settings.json'), false),
+          await readLocalJson(path.join(cwd, '.claude', 'settings.local.json'), false)
+        ])
+  ]
+  const enabled = new Map<string, boolean>()
+  const overrides = new Map<string, string>()
+  for (const s of settings) {
+    for (const [k, v] of Object.entries(recordOf(s?.enabledPlugins))) if (typeof v === 'boolean') enabled.set(k, v)
+    for (const [k, v] of Object.entries(recordOf(s?.skillOverrides))) if (typeof v === 'string') overrides.set(k, v)
+  }
+
+  const roots: CatalogRoot[] = [{ kind: 'synced-skills', scope: 'user', dir: path.join(configDir, 'skills', 'synced'), overridable: true }]
+  const installed = recordOf((await readLocalJson(path.join(configDir, 'plugins', 'installed_plugins.json'), true))?.plugins)
+  let count = 0
+  for (const [key, installs] of Object.entries(installed)) {
+    if (enabled.get(key) !== true || !Array.isArray(installs)) continue
+    if (++count > CATALOG_PLUGINS_MAX) break
+    const install = installs.map(recordOf).find((i) => {
+      if (i.scope === 'user' || i.scope === undefined) return true
+      return cwd !== undefined && typeof i.projectPath === 'string' && path.resolve(i.projectPath) === path.resolve(cwd)
+    })
+    const installPath = install?.installPath
+    if (typeof installPath !== 'string' || !path.isAbsolute(installPath)) continue
+    const manifest = await readLocalJson(path.join(installPath, '.claude-plugin', 'plugin.json'), true)
+    const prefix = catalogName(manifest?.name) ?? catalogName(key.split('@')[0])
+    if (prefix === null) continue
+    for (const dir of manifestPaths(manifest?.skills, installPath, 'skills')) {
+      // A listed folder is one skill when it holds a SKILL.md, else a folder of skills.
+      const one = await fsp
+        .stat(path.join(dir, 'SKILL.md'))
+        .then((st) => st.isFile())
+        .catch(() => false)
+      roots.push({ kind: one ? 'skill-dir' : 'skills', scope: 'user', dir, prefix })
+    }
+    for (const dir of manifestPaths(manifest?.commands, installPath, 'commands')) roots.push({ kind: 'md-commands', scope: 'user', dir, prefix })
+  }
+  return { roots, overrides }
 }
 
 // ── Remote reader (one ssh round trip) ──────────────────────────────────────────────────────────

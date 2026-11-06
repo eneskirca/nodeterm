@@ -61,6 +61,9 @@ describe('parsers', () => {
   it('reads flat frontmatter and leaves a file without it as body', () => {
     expect(parseFrontmatter('---\nname: "x"\ndescription: hi there\n---\nbody').fields.description).toBe('hi there')
     expect(parseFrontmatter('no fm').body).toBe('no fm')
+    // YAML single-quoted scalars escape a quote by doubling it; double-quoted ones are left as they are.
+    expect(parseFrontmatter("---\ndescription: 'the project''s build'\n---\n").fields.description).toBe("the project's build")
+    expect(parseFrontmatter('---\ndescription: "it\'\'s"\n---\n').fields.description).toBe("it''s")
     // A prototype key is just a key.
     expect(Object.getPrototypeOf(parseFrontmatter('---\n__proto__: y\n---\n').fields)).toBeNull()
   })
@@ -192,6 +195,138 @@ describe('claude, local', () => {
     const now = new Date()
     fs.utimesSync(file, now, now)
     expect(byName(await buildLocalCatalog(q, { home }), 'x')?.description).toBe('two')
+  })
+})
+
+// Measured on Claude Code 2.1.318 (see `claudeLocalExtras`): what its own `/` menu lists.
+describe('claude, local: plugins, synced skills and skillOverrides', () => {
+  const skill = (dir: string, name: string, extra = ''): void =>
+    write(path.join(dir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} desc\n${extra}---\nbody\n`)
+  const claude = (...p: string[]): string => path.join(home, '.claude', ...p)
+  const settings = (file: string, v: unknown): void => write(file, JSON.stringify(v))
+  const install = (key: string, installPath: string, extra: Record<string, unknown> = {}) => ({
+    [key]: [{ scope: 'user', installPath, version: '1.0.0', ...extra }]
+  })
+  const build = (cwd = proj) => buildLocalCatalog({ agentId: 'claude', accountId: undefined, cwd }, { home })
+
+  it('lists the skills claude.ai syncs under their plain names', async () => {
+    skill(claude('skills', 'synced', 'org_user'), 'xlsx')
+    skill(claude('skills', 'synced', '.staging'), 'half-written')
+
+    const c = await build()
+
+    expect(byName(c, 'xlsx')).toMatchObject({ kind: 'skill', scope: 'user', description: 'xlsx desc' })
+    expect(names(c)).not.toContain('half-written')
+  })
+
+  it("lists an enabled plugin's skills and commands as plugin:name, from its install path", async () => {
+    const root = claude('plugins', 'cache', 'mkt', 'tools', '2.0.0')
+    write(path.join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'tools' }))
+    skill(path.join(root, 'skills'), 'tidy-up')
+    skill(path.join(claude('plugins', 'cache', 'mkt', 'tools', '1.0.0'), 'skills'), 'old-version')
+    write(path.join(root, 'commands', 'tidy-now.md'), '---\ndescription: now\n---\n')
+    settings(claude('plugins', 'installed_plugins.json'), { version: 2, plugins: install('tools@mkt', root) })
+    settings(claude('settings.json'), { enabledPlugins: { 'tools@mkt': true } })
+
+    const c = await build()
+
+    expect(byName(c, 'tools:tidy-up')).toMatchObject({ kind: 'skill', scope: 'user' })
+    expect(byName(c, 'tools:tidy-now')).toMatchObject({ kind: 'command', description: 'now' })
+    expect(names(c)).not.toContain('tools:old-version')
+  })
+
+  it('lists nothing for a disabled plugin, one only in the cache, or one installed for another folder', async () => {
+    const plugin = (name: string): string => {
+      const root = claude('plugins', 'cache', 'mkt', name, '1.0.0')
+      skill(path.join(root, 'skills'), `${name}-skill`)
+      return root
+    }
+    settings(claude('plugins', 'installed_plugins.json'), {
+      version: 2,
+      plugins: {
+        ...install('off@mkt', plugin('off')),
+        ...install('elsewhere@mkt', plugin('elsewhere'), { scope: 'project', projectPath: '/some/other/repo' }),
+        ...install('here@mkt', plugin('here'), { scope: 'project', projectPath: proj })
+      }
+    })
+    plugin('cached')
+    settings(claude('settings.json'), {
+      enabledPlugins: { 'off@mkt': false, 'elsewhere@mkt': true, 'here@mkt': true, 'cached@mkt': true }
+    })
+
+    const c = await build()
+
+    expect(names(c).filter((n) => n.endsWith('-skill'))).toEqual(['here:here-skill'])
+  })
+
+  it('reads the skill folders a plugin manifest lists, and refuses one outside the plugin', async () => {
+    const root = claude('plugins', 'cache', 'mkt', 'mp', '1.0.0')
+    write(path.join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'mp', skills: ['./skills/grill-me', '../../escape'] }))
+    skill(path.join(root, 'skills'), 'grill-me')
+    skill(path.join(root, 'skills'), 'not-listed')
+    skill(claude('plugins', 'cache', 'mkt'), 'escape')
+    settings(claude('plugins', 'installed_plugins.json'), { version: 2, plugins: install('mp@mkt', root) })
+    settings(claude('settings.json'), { enabledPlugins: { 'mp@mkt': true } })
+
+    const c = await build()
+
+    expect(names(c).filter((n) => n.startsWith('mp:'))).toEqual(['mp:grill-me'])
+  })
+
+  it('hides a skill set to "off", merging user < project < local, and keeps the other modes', async () => {
+    skill(claude('skills'), 'explain')
+    skill(claude('skills'), 'gone')
+    skill(claude('skills'), 'kept')
+    skill(claude('skills'), 'back')
+    skill(claude('skills', 'synced', 'org_user'), 'pdf')
+    skill(claude('skills', 'synced', 'org_user'), 'pptx')
+    skill(path.join(proj, '.claude', 'skills'), 'local-one')
+    settings(claude('settings.json'), { skillOverrides: { gone: 'off', back: 'off', kept: 'name-only' } })
+    settings(path.join(proj, '.claude', 'settings.json'), { skillOverrides: { 'local-one': 'off', pdf: 'off' } })
+    settings(path.join(proj, '.claude', 'settings.local.json'), {
+      skillOverrides: { back: 'on', 'anthropic-skills:pptx': 'off', explain: 'user-invocable-only' }
+    })
+
+    const c = await build()
+
+    expect(names(c)).toEqual(expect.arrayContaining(['explain', 'kept', 'back']))
+    for (const n of ['gone', 'pdf', 'pptx', 'local-one']) expect(names(c)).not.toContain(n)
+  })
+
+  it("never hides a plugin's skill (measured: skillOverrides has no effect on one)", async () => {
+    const root = claude('plugins', 'cache', 'mkt', 'tools', '1.0.0')
+    skill(path.join(root, 'skills'), 'tidy-up')
+    settings(claude('plugins', 'installed_plugins.json'), { version: 2, plugins: install('tools@mkt', root) })
+    settings(claude('settings.json'), {
+      enabledPlugins: { 'tools@mkt': true },
+      skillOverrides: { 'tidy-up': 'off', 'tools:tidy-up': 'off' }
+    })
+
+    const c = await build()
+
+    expect(names(c)).toContain('tools:tidy-up')
+  })
+
+  it('reads no project settings through a symlink', async () => {
+    skill(claude('skills'), 'explain')
+    settings(path.join(home, 'elsewhere.json'), { skillOverrides: { explain: 'off' } })
+    fs.mkdirSync(path.join(proj, '.claude'), { recursive: true })
+    fs.symlinkSync(path.join(home, 'elsewhere.json'), path.join(proj, '.claude', 'settings.local.json'))
+
+    const c = await build()
+
+    expect(names(c)).toContain('explain')
+  })
+
+  it('reads none of it for another agent, or for a remote node', async () => {
+    skill(claude('skills', 'synced', 'org_user'), 'xlsx')
+
+    const codex = await buildLocalCatalog({ agentId: 'codex', accountId: undefined, cwd: proj }, { home })
+
+    expect(names(codex)).not.toContain('xlsx')
+    expect(catalogRoots({ agentId: 'claude', accountId: undefined, cwd: proj }, { remote: true }).map((r) => r.kind)).not.toContain(
+      'synced-skills'
+    )
   })
 })
 

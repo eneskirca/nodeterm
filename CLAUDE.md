@@ -4572,8 +4572,16 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   otherwise it is the terminal as before. Every refusal says so in one `nodeterm:toast`
   (`announceChatDictationRefusal`, naming the composer mic) instead of a silent dead key.
 - **The composer completes `/` and `@` (2026-09-30).** Typing `/` at the START of the message (after
-  optional whitespace — every CLI measured reads `/x` mid-sentence as text) opens a menu of the
-  node's CATALOG; `@` at the start of a word opens the node's files. Arrows move, Enter/Tab ACCEPT,
+  optional whitespace) opens a menu of the node's CATALOG, and so does a `/` after whitespace anywhere
+  in the message once a character follows it (2026-11-05, matching Claude Code 2.1.318's TUI, which
+  opens its menu there too: `please use /tid`; never inside a word or path, `src/tid`). Mid-message a
+  `/name` is text the model reads (a skill it may use), not a command the CLI runs, so the
+  interactive-built-in flip (`isInteractiveBuiltin`) still looks at the start only. `@` at the start
+  of a word opens the node's files. **A known `/command` is colored, as the TUI colors it**
+  (`lib/chatComposerHighlight.ts`): a textarea cannot color part of its text, so while the draft holds
+  one the textarea's text goes transparent and a layer behind it draws the same text (same box, font,
+  padding and wrap; nothing that changes a glyph's width), and spell checking is off for that draft
+  (a textarea checks all of its text or none). A draft with no known command renders as before. Arrows move, Enter/Tab ACCEPT,
   Esc closes the menu only (CardModal's capture-phase Esc already stands aside inside
   `.term-chat__compose`). **Accepting only inserts text** (`/name ` / `@path `): nothing is typed into
   the pane, and the send is still the composer's own gated Enter (`chatSendRefusal`) — completing
@@ -4615,6 +4623,21 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     custom-commands reference). Precedence project > user > built-in, deduped by name. Other agents'
     custom locations were not measured, so they list none — a guessed location offers commands the
     CLI does not have.
+  - **Plugins, synced skills and `skillOverrides` (claude, LOCAL nodes; `claudeLocalExtras`)**,
+    measured 2026-11-05 against Claude Code 2.1.318's own `/` menu with test settings passed by
+    `--settings`. A plugin lists `/<plugin>:<skill>` and `/<plugin>:<command>` only when it is in
+    `<configDir>/plugins/installed_plugins.json` AND `enabledPlugins["<plugin>@<marketplace>"]` is
+    `true` (user < project < local settings); a plugin only in the cache, a disabled one, or a
+    `project`/`local` install for another folder lists nothing. Files come from the install's
+    `installPath` (older cached versions are ignored), the plugin manifest's `skills` / `commands`
+    paths when it names them (a listed folder holding a SKILL.md is one skill), never a path outside
+    the plugin. claude.ai-synced skills (`<configDir>/skills/synced/<bucket>/<name>/SKILL.md`) list
+    as `/<name>`. `skillOverrides: "off"` hides a user, project or synced skill (`"<name>"`, and for a
+    synced one `"anthropic-skills:<name>"`); `name-only` and `user-invocable-only` keep it; nothing
+    hides a PLUGIN's skill that way (measured). Note that Claude Code's `/skills` menu writes to the
+    folder's `.claude/settings.local.json`, so an "off" there applies to that folder only. **SSH nodes
+    do not get any of this yet** (the remote leg reads the base roots only): a follow-up needs the
+    host's settings and `installed_plugins.json`, i.e. a second round trip.
   - **A PROJECT root follows no symlink, at any level** (`CatalogRoot.within`). A cloned repository's
     `.claude/commands/notes.md -> ~/.git-credentials` otherwise put the token-bearing first line in
     the menu and in the phone's catalog (reproduced in review, both legs). Locally entries are
