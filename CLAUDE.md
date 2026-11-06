@@ -4489,6 +4489,21 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   background agents or teammates run (`● main`, `○ <name> …` rows, `↓ N more`; measured on 2.1.319)
   does not count toward those lines (`isAgentListLine`). Before that, five agents were enough for the
   view to say the input box was not on screen.
+  **Claude's suggested next prompt is the composer's placeholder** (`readClaudeSuggestion`,
+  `pty.readChatScreen`). A few seconds after a turn ends, and only when there is an obvious next
+  step, Claude draws a suggestion as plain DIM text on its prompt line (MEASURED on 2.1.318); → in
+  its TUI accepts it, and → in an EMPTY composer does the same here: it fills the draft with the
+  caret at the end, and nothing is sent. The poll now makes ONE styled read for both the dialog
+  check and the suggestion (a styled capture is the only way to tell dim text from a draft; a pane
+  with no styled capture still gets the dialog check from the plain one). Two other dim texts sit
+  in the same place and are refused: the fresh-session tips (always `Try "…"`) and `Press up to
+  edit queued messages`. Shown only while a message could be sent and no dialog is on screen;
+  cleared on every state change and on send. Claude draws it 1.1-2.2 s after the turn ends
+  (measured, 5 turns), and the 2 s poll added up to 2 s more, which read as a lag; so after a turn
+  ends a local pane is read every 300 ms for up to 5 s, stopping at the first suggestion
+  (`SUGGESTION_BURST_MS`, at most ~15 extra reads per turn). An SSH node is never polled, so it is
+  read twice after each turn (`REMOTE_SUGGESTION_READ_DELAYS_MS`, 2.5 s and 6 s); relay tabs offer
+  none.
   **Live progress (2026-09).** While the agent works, a `role=status` row closes the thread (the ONE
   spinner + the placeholder's own "<agent> is working…"/"waiting for an answer" sentence; optimistic
   right after a send, bounded by `CHAT_OPTIMISTIC_WORKING_MS`), and every hook event re-reads the

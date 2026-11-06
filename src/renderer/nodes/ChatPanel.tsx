@@ -1,5 +1,5 @@
 import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
-import { claudeScreenBlocksInput, readClaudeScreen } from '@shared/agents/claude-screen'
+import { claudeScreenBlocksInput, type ChatScreenRead } from '@shared/agents/claude-screen'
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { inferInterruptAfterSettle, useAgentStatus } from '../state/agentStatus'
@@ -37,6 +37,10 @@ import {
   CHAT_LIVE_RELOAD_MIN_MS,
   CHAT_OPTIMISTIC_WORKING_MS,
   CHAT_SCREEN_POLL_MS,
+  REMOTE_SUGGESTION_READ_DELAYS_MS,
+  SUGGESTION_BURST_MS,
+  SUGGESTION_BURST_WINDOW_MS,
+  endsTurn,
   TURN_END_RELOAD_DELAYS_MS,
   chatActivity,
   planLiveReload,
@@ -298,6 +302,14 @@ export function ChatPanel({
     remote: sshProjectId !== undefined || source !== 'local',
     refusal
   })
+  // The prompt Claude suggests next (`readClaudeSuggestion`), from the latest screen read. Shown as
+  // the composer's placeholder only while a message could be sent and nothing else is on screen.
+  const [suggestion, setSuggestion] = useState<string | null>(null)
+  const shownSuggestion = !readonly && refusal === null && screenBlock === null ? suggestion : null
+  // An SSH node, read after each turn instead of polled (`REMOTE_SUGGESTION_READ_DELAYS_MS`). Not a
+  // relay tab: that pane is on the peer, and it has its own composer there.
+  const readsRemoteSuggestion =
+    readsScreenDialogs(agentId) && readOnly !== true && sshProjectId !== undefined && source === 'local'
   const agentLabel = chatAgentLabel(agentId, customAgents)
   // What the row closing the thread says (lib/chatLive.ts). `optimistic` covers the gap between a
   // send and the first hook event: set by `send`, retired by the next state change (the real state
@@ -707,10 +719,69 @@ export function ChatPanel({
     prevState.current = state
   }, [state, load, nodeId])
 
-  // Any state change retires the optimistic working row: from here the real state speaks.
+  // Any state change retires the optimistic working row: from here the real state speaks. And a
+  // suggestion belongs to the turn that ended: the next read brings the new one.
   useEffect(() => {
     setOptimistic(false)
+    setSuggestion(null)
   }, [state])
+
+  // Right after a turn ends, read faster until Claude's suggestion is on screen (`SUGGESTION_BURST_MS`).
+  // Same gates as the regular poll, which keeps running beside it for dialogs.
+  const lastTurnStateRef = useRef(state)
+  useEffect(() => {
+    const prev = lastTurnStateRef.current
+    lastTurnStateRef.current = state
+    if (!pollScreen || !endsTurn(prev, state)) return
+    let cancelled = false
+    let inFlight = false
+    const until = Date.now() + SUGGESTION_BURST_WINDOW_MS
+    const t = setInterval(() => {
+      if (Date.now() > until) {
+        clearInterval(t)
+        return
+      }
+      const el = msgsRef.current
+      if (inFlight || el === null || el.clientHeight === 0) return
+      if (!screenPollTickAllowed({ hidden: document.hidden, focused: windowFocusHint(document) })) return
+      inFlight = true
+      void api.pty
+        .readChatScreen(nodeId, agentId)
+        .then((r) => {
+          if (cancelled || r.screen.kind === 'unknown' || r.suggestion === null) return
+          setSuggestion(r.suggestion)
+          clearInterval(t)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false
+        })
+    }, SUGGESTION_BURST_MS)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [pollScreen, state, api, nodeId, agentId])
+
+  useEffect(() => {
+    if (!readsRemoteSuggestion || state !== 'done') return
+    let cancelled = false
+    const read = async (): Promise<void> => {
+      const el = msgsRef.current
+      if (el === null || el.clientHeight === 0 || document.hidden) return
+      try {
+        const r = await api.pty.readChatScreen(nodeId, agentId)
+        if (!cancelled && r.screen.kind !== 'unknown') setSuggestion(r.suggestion)
+      } catch {
+        // A failed read offers nothing; the next turn reads again.
+      }
+    }
+    const timers = REMOTE_SUGGESTION_READ_DELAYS_MS.map((ms) => setTimeout(() => void read(), ms))
+    return () => {
+      cancelled = true
+      for (const t of timers) clearTimeout(t)
+    }
+  }, [readsRemoteSuggestion, state, api, nodeId, agentId])
   useEffect(() => {
     if (!optimistic) return
     const t = setTimeout(() => setOptimistic(false), CHAT_OPTIMISTIC_WORKING_MS)
@@ -734,18 +805,20 @@ export function ChatPanel({
       const el = msgsRef.current
       if (el === null || el.clientHeight === 0 || inFlight) return
       if (!screenPollTickAllowed({ hidden: document.hidden, focused: windowFocusHint(document) })) return
-      let screen: string
+      let result: ChatScreenRead
       inFlight = true
       try {
-        screen = await api.pty.capture(nodeId)
+        // One styled read answers both: who owns the keyboard, and the prompt Claude suggests next.
+        result = await api.pty.readChatScreen(nodeId, agentId)
       } catch {
         return
       } finally {
         inFlight = false
       }
       if (cancelled) return
-      const read = readClaudeScreen(screen)
+      const read = result.screen
       if (read.kind === 'unknown') return
+      setSuggestion(result.suggestion)
       if (!claudeScreenBlocksInput(read)) setScreenBlock(null)
       else if (read.kind === 'dialog') setScreenBlock({ kind: 'dialog', text: read.text, live: true })
       else setScreenBlock({ kind: 'no-prompt', text: null, live: true })
@@ -761,7 +834,7 @@ export function ChatPanel({
       window.removeEventListener('focus', onReturn)
       document.removeEventListener('visibilitychange', onReturn)
     }
-  }, [pollScreen, api, nodeId])
+  }, [pollScreen, api, nodeId, agentId])
 
   // Follow the newest message only when the user was already at the bottom or just sent; a user
   // scrolled up reading an earlier answer keeps their place. Layout effect: the jump lands before
@@ -942,6 +1015,7 @@ export function ChatPanel({
     // Optimistic: show the prompt immediately. A live read keeps it until the transcript carries it
     // (`carryUnconfirmed`); the turn-end reload / ↻ reconcile from the transcript outright.
     setScreenBlock(null)
+    setSuggestion(null)
     justSentRef.current = true
     lastSentRef.current = text
     const sent: ChatMessage = { role: 'user', parts: [{ kind: 'text', text }] }
@@ -1312,15 +1386,19 @@ export function ChatPanel({
           value={input}
           onChange={setInput}
           onSend={() => void send()}
-          placeholder={chatComposerPlaceholder({
-            readonly,
-            refusal,
-            agentLabel,
-            chip: mdChip,
-            answerOnCard: answerCard !== null,
-            sendMode,
-            screen: screenBlock?.live === true ? screenBlock.kind : null
-          })}
+          placeholder={
+            shownSuggestion ??
+            chatComposerPlaceholder({
+              readonly,
+              refusal,
+              agentLabel,
+              chip: mdChip,
+              answerOnCard: answerCard !== null,
+              sendMode,
+              screen: screenBlock?.live === true ? screenBlock.kind : null
+            })
+          }
+          suggestion={shownSuggestion}
           // A dialog the POLL found is also cleared by it; one a refused send found is not (a remote
           // pane is never polled), so that one leaves the draft editable for the resend.
           disabled={readonly || composerStandsDown(refusal) || screenBlock?.live === true}

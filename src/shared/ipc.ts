@@ -30,6 +30,7 @@ export const IPC = {
   ptySendText: 'pty:send-text',
   ptySendChatPrompt: 'pty:send-chat-prompt',
   ptySendToEmptyPrompt: 'pty:send-to-empty-prompt',
+  ptyReadChatScreen: 'pty:read-chat-screen',
   ptyInterruptChat: 'pty:interrupt-chat',
   ptyTmuxStatus: 'pty:tmux-status',
   /** The foreground command of a node's tmux pane (`#{pane_current_command}`) — how the in-place

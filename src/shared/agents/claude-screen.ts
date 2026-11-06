@@ -130,6 +130,13 @@ export function readClaudeScreen(screen: string): ClaudeScreen {
   return box ? { kind: 'prompt' } : { kind: 'no-prompt' }
 }
 
+/** What the ⌘M chat view's screen poll learns from one read of the pane (`pty.readChatScreen`): who
+ *  owns the keyboard, and the suggested next prompt, if any. */
+export interface ChatScreenRead {
+  screen: ClaudeScreen
+  suggestion: string | null
+}
+
 /** Refuse to type: anything but a visible input box, except a screen we could not read at all. */
 export function claudeScreenBlocksInput(s: ClaudeScreen): boolean {
   return s.kind === 'dialog' || s.kind === 'no-prompt'
@@ -251,3 +258,33 @@ export function readClaudeDraft(styledScreen: string): string | null {
   }
   return draft.replace(/\s/g, '')
 }
+
+/**
+ * The next prompt Claude Code suggests after a turn, read from a STYLED capture: the dim text on its
+ * prompt line while the input box holds no draft. null when there is none to offer.
+ *
+ * MEASURED on Claude Code 2.1.318: a few seconds after a turn ends, and only when there is an
+ * obvious next step, Claude draws a suggestion as plain dim text (`❯ run it in the background`);
+ * pressing → in its TUI accepts it. Two other dim texts sit in the same place and are NOT
+ * suggestions: the fresh-session tips, always `Try "…"`, and `Press up to edit queued messages`
+ * while a turn runs with a message queued. Both are refused here.
+ *
+ * Only dim text counts, so a capture that lost its SGR reads as a draft (`readClaudeComposer`) and
+ * offers nothing.
+ */
+export function readClaudeSuggestion(styledScreen: string): string | null {
+  const styled = styledScreen.split(/\r?\n/)
+  const lines = styled.map((l) => l.replace(ANSI, '').trimEnd())
+  if (lines.every((l) => l === '')) return null
+  if (readClaudeScreen(styledScreen).kind !== 'prompt') return null
+  // `empty`: a `❯` prompt line holding only dim text, and nothing on the lines under it.
+  if (readClaudeComposer(styledScreen) !== 'empty') return null
+  const box = inputBox(lines)
+  if (!box) return null
+  const suggestion = lines[box[0] + 1].slice(1).trim()
+  if (suggestion === '' || NOT_SUGGESTIONS.some((re) => re.test(suggestion))) return null
+  return suggestion
+}
+
+/** Dim texts on the prompt line that Claude Code draws but does not suggest (see above). */
+const NOT_SUGGESTIONS: readonly RegExp[] = [/^Try "/, /^Press up to edit queued messages$/]

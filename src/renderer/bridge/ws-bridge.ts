@@ -29,6 +29,7 @@ import {
 } from '../../shared/rpc'
 import { IPC } from '../../shared/ipc'
 import type { ChatInterruptResult, ChatPromptResult, EmptyPromptResult } from '../../shared/text-delivery'
+import type { ChatScreenRead } from '../../shared/agents/claude-screen'
 import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issues'
 import {
   UNKNOWN_CLAUDE_CLI_CAPS,
@@ -303,6 +304,11 @@ export function buildRealApi(
       client.request(IPC.ptySendChatPrompt, persistKey, text, agentId) as Promise<ChatPromptResult>,
     sendToEmptyPrompt: (persistKey, text, agentId) =>
       client.request(IPC.ptySendToEmptyPrompt, persistKey, text, agentId) as Promise<EmptyPromptResult>,
+    // Real: core registers it. A failed read is "could not tell", never a dialog.
+    readChatScreen: (persistKey, agentId) =>
+      client
+        .request(IPC.ptyReadChatScreen, persistKey, agentId)
+        .catch(() => ({ screen: { kind: 'unknown' }, suggestion: null })) as Promise<ChatScreenRead>,
     // Real: core registers it. A failed request (a relay host refusing a non-editor) is `failed`.
     interruptChat: (persistKey, agentId, sentText) =>
       client
