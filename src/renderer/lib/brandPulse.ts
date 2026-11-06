@@ -12,6 +12,7 @@ import codexIcon from '../assets/codex-color.svg'
 import geminiIcon from '../assets/gemini-color.svg'
 import antigravityIcon from '../assets/antigravity-color.svg'
 import opencodeIcon from '../assets/opencode.svg'
+import ompIcon from '../assets/omp.svg'
 
 // Brand logo per builtin agent; custom/unknown agents have none (callers fall back to the terminal
 // glyph, or to the plain pulsing dot).
@@ -26,6 +27,7 @@ export const AGENT_LOGO: Partial<Record<string, string>> = {
   codex: codexIcon,
   gemini: geminiIcon,
   opencode: opencodeIcon,
+  omp: ompIcon,
   // Google's multi-colour arch. Multi-colour (a masked gradient), so an asset like gemini's — not an
   // inline `currentColor` mark.
   antigravity: antigravityIcon

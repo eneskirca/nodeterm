@@ -308,6 +308,103 @@ export function linesFromGrok(buf: string): string[] {
 
 /** How many lines of this buffer could not be parsed. Skipped, but never in silence. */
 linesFromGrok.skipped = (buf: string): number => grokParse(buf).skipped
+// --- omp (Oh My Pi) ---------------------------------------------------------
+
+/** omp's session file: one JSON object per line; only `type:"message"` lines are conversation.
+ *  The typed view ompParse hands back — the boundary type for parsed JSON, as far as any reader
+ *  reads it. Meta lines (session/title/title_change/thinking_level_change/service_tier_change/
+ *  custom) are known shapes, dropped silently; anything else is counted in `skipped`.
+ *  MEASURED 2026-11-02 on omp 18.14/18.15 (see core/omp-chat.ts for the full vocabulary). */
+export interface OmpChatLine {
+  timestamp?: unknown
+  message?: {
+    role?: unknown
+    content?: unknown
+    model?: unknown
+    toolCallId?: unknown
+  }
+}
+
+const OMP_META_TYPES: Record<string, true> = {
+  session: true,
+  title: true,
+  title_change: true,
+  thinking_level_change: true,
+  service_tier_change: true,
+  custom: true,
+  // Measured 2026-11-02 over a real 996-line session: harness bookkeeping, none of it
+  // conversation — model_usage (per-call token records), custom_message (harness notes like
+  // prewalk checklists, never typed by a person), compaction (a summary of earlier turns),
+  // model_change and ttsr_injection (which rules were injected into a turn).
+  model_usage: true,
+  custom_message: true,
+  compaction: true,
+  model_change: true,
+  mode_change: true,
+  ttsr_injection: true
+}
+
+/** Every `type:"message"` line of an omp session buffer, in file order. */
+export function ompParse(buf: string): { lines: OmpChatLine[]; skipped: number } {
+  const lines: OmpChatLine[] = []
+  let skipped = 0
+  for (const raw of buf.split('\n')) {
+    const t = raw.trim()
+    if (!t) continue
+    let o: unknown
+    try {
+      o = JSON.parse(t)
+    } catch {
+      skipped++
+      continue
+    }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) {
+      skipped++
+      continue
+    }
+    const type = 'type' in o ? o.type : undefined
+    if (type === 'message') {
+      // The boundary cast: parsed JSON narrowed once to the named, measured shape above.
+      lines.push(o as OmpChatLine)
+    } else if (typeof type !== 'string' || !(type in OMP_META_TYPES)) {
+      skipped++
+    }
+  }
+  return { lines, skipped }
+}
+
+/**
+ * omp transcript lines for context-link. Same role rules as the ⌘M reader (`parseOmpChat`):
+ * a `developer` line is harness-injected and keeps its own label, thinking parts are skipped
+ * (the decision beside grok's `reasoning`), tool calls render as `  $ name args` and results
+ * as `  = summary` — the same indentation grammar every other parser emits.
+ */
+export function linesFromOmp(buf: string): string[] {
+  const res: string[] = []
+  for (const o of ompParse(buf).lines) {
+    const msg = o.message
+    if (!msg || typeof msg !== 'object') continue
+    const role = 'role' in msg && typeof msg.role === 'string' ? msg.role : 'message'
+    if (role === 'toolResult') {
+      const s = flatText(msg.content).split('\n').slice(0, 3).join(' ').slice(0, TOOL_RESULT_MAX)
+      if (s) res.push(`  = ${s}`)
+      continue
+    }
+    const t = flatText(msg.content)
+    if (t) res.push(`${role}: ${t}`)
+    const content = Array.isArray(msg.content) ? msg.content : []
+    for (const raw of content) {
+      if (!raw || typeof raw !== 'object' || !('type' in raw) || raw.type !== 'toolCall') continue
+      const name = 'name' in raw && typeof raw.name === 'string' ? raw.name : 'tool'
+      const a = 'arguments' in raw && raw.arguments && typeof raw.arguments === 'object' ? JSON.stringify(raw.arguments) : ''
+      res.push(`  $ ${name} ${String(a).slice(0, TOOL_ARG_MAX)}`.trimEnd())
+    }
+  }
+  return res
+}
+
+/** How many lines of this buffer could not be parsed or are of an unknown type. */
+linesFromOmp.skipped = (buf: string): number => ompParse(buf).skipped
 
 export interface AntigravityToolCall {
   id?: string
@@ -454,6 +551,7 @@ linesFromAntigravity.skipped = (buf: string): number => antigravityParse(buf).sk
 export function renderTranscriptLines(agent: string | undefined, buf: string): string[] {
   if (agent === 'gemini') return linesFromGemini(buf)
   if (agent === 'grok') return linesFromGrok(buf)
+  if (agent === 'omp') return linesFromOmp(buf)
   // cursor's transcript text is newline-delimited message JSON built from its SQLite store
   // (`cursorTranscriptText`), not a file on disk.
   if (agent === 'cursor') return linesFromCursor(buf)

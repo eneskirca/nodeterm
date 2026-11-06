@@ -48,6 +48,7 @@ import {
   locateGrok
 } from './handoff/locate'
 import { cursorTranscriptText, locateCursorChat } from './cursor-chat'
+import { locateOmpTranscript } from './omp-chat'
 
 export { setNodeTranscript } from './context-link-core'
 
@@ -112,7 +113,8 @@ const LINK_LOCATORS = {
   gemini: locateGemini,
   grok: locateGrok,
   antigravity: locateAntigravity,
-  cursor: (sessionId: string) => locateCursorChat(sessionId)
+  cursor: (sessionId: string) => locateCursorChat(sessionId),
+  omp: (sessionId: string) => locateOmpTranscript(sessionId)
 }
 
 /** Agents whose "transcript path" is not a text file: the path names a store the agent's own reader
