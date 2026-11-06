@@ -20,6 +20,7 @@ import {
   SYSTEM_TOOL,
   expandPastedContent
 } from '../shared/chat-system-records'
+import { teammateElementText, teammateElements, type TeammateElement } from './chat-teammate'
 
 // Transcript root for a managed account (its `projects` dir) or the system default
 // (`~/.claude/projects` when accountId is undefined — bit-for-bit the old behavior). Impure
@@ -198,6 +199,9 @@ export function classifyLocalCommand(content: string): LocalCommandRecord | null
 //                      `<agent-message from="…">` (a subagent hand-back) or `<cross-session-message
 //                      from="…" from-name="…" from-mode="…">` element + a fixed instruction trailer.
 //   auto-continuation / coordinator  (isMeta)  plain text.
+//   (no origin)        an agent team's teammate: "Another Claude session sent a message:\n" + one or
+//                      more `<teammate-message teammate_id="…">` elements + a fixed trailer, with no
+//                      `origin` / `promptSource` / `isMeta` at all (core/chat-teammate.ts).
 // Each renders as ONE assistant tool part — the #991 local-command pattern: no new role, part kind
 // or field, so a v1 decoder (the phone) reads it as an ordinary tool chip. A human paste
 // (`<pasted_content id="…">…</pasted_content id="…">` inside typed text) stays the user's bubble.
@@ -347,7 +351,25 @@ export function classifySystemRecord(
   }
   if (kind === 'peer') return peerMessage(content)
   if (kind === 'auto-continuation' || kind === 'coordinator') return fallback(SYSTEM_TOOL, content)
+  const team = teammateElements(rec, content)
+  if (team !== null) return teammateRecord(team)
   return null
+}
+
+/** A teammate record (core/chat-teammate.ts) as ONE `Agent message` part: `arg` names the sender(s),
+ *  `result` holds each element as text. The rich read draws `teammate` parts instead. */
+function teammateRecord(team: TeammateElement[]): SystemRecord {
+  const senders = [...new Set(team.map((el) => (el.unverified ? `${el.from} (unverified)` : el.from)))]
+  return {
+    name: AGENT_MESSAGE_TOOL,
+    arg: capArg(senders.join(', ')),
+    result: capResult(team.map(teammateElementText).join('\n\n'))
+  }
+}
+
+/** A teammate element as the `teammate` part the rich read draws. */
+function teammatePart(el: TeammateElement): Extract<ChatPart, { kind: 'teammate' }> {
+  return { kind: 'teammate', ...el }
 }
 
 /** What a tool call cancelled by an interrupt shows as its result (`ChatParseOptions.rich`). */
@@ -390,8 +412,9 @@ export interface ChatParseOptions {
    * default, like `thinking`: the golden fixtures and the phone's `chat.page` never set it.
    * Also: a `diff` on each `Edit` / `Write` tool part whose input reads (`toolDiff`), a
    * `Compaction` chip for each context compaction (`compactionPart`) in place of the long summary
-   * record the model continues from, which is skipped, and a checklist `body` on each `TodoWrite`
-   * tool part whose `todos` read (`toolBody`).
+   * record the model continues from, which is skipped, a checklist `body` on each `TodoWrite`
+   * tool part whose `todos` read (`toolBody`), and a `teammate` part for each message of an agent
+   * team's teammate (`teammateElements`) in place of the one `Agent message` chip.
    */
   rich?: boolean
 }
@@ -759,6 +782,13 @@ function parseChatRecords(
     } else if (o.type === 'user' && typeof content === 'string' && content.trim()) {
       // Not the user's words (a background task's completion, another session's message, an
       // auto-continuation): one assistant tool part, like a local command.
+      // Opt-in (see `ChatParseOptions.rich`): a teammate's messages are drawn as the TUI draws them;
+      // without it the record is one `Agent message` chip, like any other system record.
+      const team = opts?.rich ? teammateElements(o, content) : null
+      if (team !== null) {
+        push({ role: 'assistant', parts: team.map(teammatePart) }, offset)
+        continue
+      }
       const sys = classifySystemRecord(o, content)
       if (sys) {
         push({ role: 'assistant', parts: [systemPart(sys)] }, offset)

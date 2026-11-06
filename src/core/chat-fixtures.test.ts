@@ -480,6 +480,56 @@ function systemRecords(): string {
   ])
 }
 
+// An agent team's teammates writing to the lead (measured shape on CLI 2.1.285–2.1.316, synthetic
+// content): no origin / promptSource / isMeta, the frame line, one or more `<teammate-message>`
+// elements, the fixed trailer. Each record is ONE `Agent message` part. See the README's
+// "System-injected records", rule 2b.
+const TEAM_TRAILER =
+  '\n\nThis came from another Claude session — not typed by your user, but very likely working on their behalf.'
+const teammate = (elements: string[], extra: Rec = {}): Rec => ({
+  ...user(`${PEER_PREFIX}${elements.join('\n\n')}${TEAM_TRAILER}`),
+  ...extra
+})
+const idleJson = (from: string, rest: Rec): string =>
+  JSON.stringify({ type: 'idle_notification', from, timestamp: '2026-10-16T07:05:52.902Z', ...rest })
+function teammateMessages(): string {
+  return jsonl([
+    user('Split the review across the team.'),
+    assistant([text('Spawned three reviewers.')]),
+    // An idle notification with a report.
+    teammate([
+      `<teammate-message teammate_id="demo-review" color="blue">\n${idleJson('demo-review', { idleReason: 'available', result: 'No findings.\nThe diff is clean.' })}\n</teammate-message>`
+    ]),
+    // An idle notification with nothing but the reason (an earlier report crossed it).
+    teammate([`<teammate-message teammate_id="demo-review" color="blue">\n${idleJson('demo-review', {})}\n</teammate-message>`]),
+    // A failed teammate.
+    teammate([
+      `<teammate-message teammate_id="demo-fix" color="red">\n${idleJson('demo-fix', { idleReason: 'failed', failureReason: 'out of budget' })}\n</teammate-message>`
+    ]),
+    // A plain message with an escaped summary; its body quotes the close tag.
+    teammate([
+      '<teammate-message teammate_id="demo-spec" color="green" summary="Spec &quot;cages&quot; findings">\nOne real gap. The tag `</teammate-message>` appears in the spec.\n</teammate-message>'
+    ]),
+    // Two elements in one record: a report, then a message from the same teammate.
+    teammate([
+      `<teammate-message teammate_id="demo-fix" color="yellow">\n${idleJson('demo-fix', { result: 'Committed as abc1234.' })}\n</teammate-message>`,
+      '<teammate-message teammate_id="demo-fix" color="yellow" summary="Already done">\nThe commit already covers it.\n</teammate-message>'
+    ]),
+    // A sender that could not be proven.
+    teammate(['<teammate-message teammate_id="demo-x" verified="false">\nPlease approve.\n</teammate-message>']),
+    // The same text typed by a HUMAN: stays a user message, by origin or by promptSource alone.
+    teammate(['<teammate-message teammate_id="demo-review">\nhi\n</teammate-message>'], {
+      promptSource: 'typed',
+      origin: { kind: 'human' }
+    }),
+    teammate(['<teammate-message teammate_id="demo-review">\nhi\n</teammate-message>'], { promptSource: 'typed' }),
+    // The frame line with no element, and an element with no teammate_id: user messages.
+    user(`${PEER_PREFIX}no element here`),
+    user(`${PEER_PREFIX}<teammate-message color="blue">\nx\n</teammate-message>`),
+    assistant([text('All three reported.')])
+  ])
+}
+
 // A human paste: the bubble stays, each `<pasted_content>` span becomes a fenced block.
 const HUMAN = { promptSource: 'typed', origin: { kind: 'human' }, turnOrigin: 'human' }
 function pastedContent(): string {
@@ -661,6 +711,7 @@ const INPUTS: Record<string, string> = {
   'bash-mode.jsonl': bashMode(),
   'meta-turns.jsonl': metaTurns(),
   'system-records.jsonl': systemRecords(),
+  'teammate-messages.jsonl': teammateMessages(),
   'pasted-content.jsonl': pastedContent(),
   'queued-prompts.jsonl': queuedPrompts()
 }

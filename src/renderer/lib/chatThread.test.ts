@@ -84,6 +84,22 @@ describe('assistantTurnEnds (one action row per assistant turn)', () => {
     }
   })
 
+  it("a teammate's message (the rich read) splits the turns around it like a system chip", () => {
+    const team: ChatMessage = {
+      role: 'assistant',
+      parts: [
+        { kind: 'teammate', from: 'a', idle: { reason: 'available' } },
+        { kind: 'teammate', from: 'a', text: 'more' }
+      ],
+      at: 20
+    }
+    const msgs = [say('user', 'q'), say('assistant', 'first answer', 10), team, say('assistant', 'reply', 30)]
+
+    const ends = assistantTurnEnds(msgs)
+
+    expect([...ends.keys()]).toEqual([1, 3])
+  })
+
   it('a local-command chip (#991) and a two-part message stay inside the turn', () => {
     const cmd: ChatMessage = { role: 'assistant', parts: [{ kind: 'tool', name: '/model', arg: '' }] }
     const twoParts: ChatMessage = {

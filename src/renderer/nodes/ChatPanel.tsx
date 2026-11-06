@@ -63,6 +63,8 @@ import { TODO_WRITE_TOOL, latestTodoIndex, staleTodo } from '../lib/chatTodo'
 import { ChatToolGroup } from './ChatToolGroup'
 import { ChatImage } from './ChatImage'
 import { ChatToolDiff } from './ChatToolDiff'
+import { ChatTeammateMessage } from './ChatTeammate'
+import { isTeammateMessage } from '../lib/chatTeammate'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 import { CLAUDE_INTERRUPT_LINE, chatEscInterrupts, chatInterruptRefusalText } from '../lib/chatEscInterrupt'
@@ -1065,6 +1067,10 @@ export function ChatPanel({
     ) : p.kind === 'image' ? (
       // An image the user attached to the prompt (the opt-in `rich` read): a thumbnail, click to enlarge.
       <ChatImage key={key} mediaType={p.mediaType} data={p.data} />
+    ) : p.kind === 'teammate' ? (
+      // A teammate's message (the opt-in `rich` read). A message of them is drawn whole below, so a
+      // run from one teammate folds into one row; this is the part on its own.
+      <ChatTeammateMessage key={key} parts={[p]} Markdown={MarkdownText} />
     ) : p.kind === 'interrupt' ? (
       // The user interrupted the turn (the opt-in `rich` read). Claude saves that as a user record,
       // but the user did not type it: drawn as Claude's own TUI line, hanging off what came before.
@@ -1230,12 +1236,18 @@ export function ChatPanel({
                     queued ? ' term-chat__msg--queued' : ''
                   }`}
                 >
-                  {m.parts.map((p, j) => {
-                    if (!drawsAt(i, j)) return null
-                    const group = toolGroups.groupAt.get(partPosition(i, j))
-                    if (group) return <ChatToolGroup key={group.key} messages={messages} group={group} renderPart={renderPart} />
-                    return renderPart(p, i, j)
-                  })}
+                  {isTeammateMessage(m) ? (
+                    // A teammate's messages (the opt-in `rich` read), drawn whole so a run from one
+                    // teammate folds into one row, as Claude Code's TUI does.
+                    <ChatTeammateMessage parts={m.parts} Markdown={MarkdownText} />
+                  ) : (
+                    m.parts.map((p, j) => {
+                      if (!drawsAt(i, j)) return null
+                      const group = toolGroups.groupAt.get(partPosition(i, j))
+                      if (group) return <ChatToolGroup key={group.key} messages={messages} group={group} renderPart={renderPart} />
+                      return renderPart(p, i, j)
+                    })
+                  )}
                   {m.role === 'user' && m.at !== undefined && (
                     <time
                       className="term-chat__time term-chat__time--user"

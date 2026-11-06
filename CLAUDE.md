@@ -4351,6 +4351,16 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   a turn boundary in `assistantTurnEnds`) and fences a human paste's `<pasted_content>` span (the
   CLI's own 4-hex-id grammar only; titles keep the raw text) — all `indexOf` scans, never a
   backtracking regex (quadratic on unclosed tags); exact rules in `src/shared/chat-fixtures/README.md`.
+  **An agent team's teammate writing to the lead is one more of these** (`core/chat-teammate.ts`,
+  README rule 2b): a user record with NO `origin`, `promptSource` or `isMeta` (measured on CLI
+  2.1.285–2.1.316), the "Another Claude session sent a message:" line, one or more
+  `<teammate-message teammate_id="…">` elements (a markdown body, or an `idle_notification` JSON
+  object) and a fixed trailer. On the wire it is one `Agent message` chip; the desktop's `rich` read
+  draws a `teammate` part per element instead, as Claude Code's TUI does: an idle notification is a
+  status line ("✓ Teammate @pc-02 finished") with a one-line preview, and consecutive plain
+  messages from one teammate fold into one "N messages from @x" row (`nodes/ChatTeammate.tsx`). The
+  missing `origin` is the human guard: a person who types or pastes the same text is recorded with
+  `origin.kind:"human"` / `promptSource:"typed"` and keeps their bubble.
   **Paged reads (2026-09).** `chat.readTranscript` takes a trailing optional `page`
   (`{before?, maxBytes?}`, `shared/chat-page.ts`). Absent = the legacy 5 MB-tail read, byte for byte
   (result is exactly `{messages, found}`). Present = ONE window of at most `maxBytes` (clamped
