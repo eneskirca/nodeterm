@@ -346,6 +346,7 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.ptySendToEmptyPrompt,
   // The composer's screen poll; only an editor has a composer.
   IPC.ptyReadChatScreen,
+  IPC.ptyInterruptChat,
   IPC.ptyPaneOwner,
   // A host filesystem path, not a view of the terminal — a viewer's file links keep the node cwd.
   IPC.ptyPaneCwd,

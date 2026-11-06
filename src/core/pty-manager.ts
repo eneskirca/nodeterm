@@ -1,4 +1,10 @@
-import type { ChatPromptBlocked, ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from '../shared/text-delivery'
+import type {
+  ChatInterruptResult,
+  ChatPromptBlocked,
+  ChatPromptResult,
+  EmptyPromptResult,
+  TextDeliveryResult
+} from '../shared/text-delivery'
 import {
   claudeScreenBlocksInput,
   readClaudeComposer,
@@ -195,6 +201,7 @@ import {
   submitsSeparately,
   hasSharedIdentity,
   readsScreenDialogs,
+  interruptsFromChat,
   setCustomAgentBaseResolver,
   typesChatInput,
   vanillaEnvStripPattern,
@@ -1181,6 +1188,12 @@ function screenGate(screen: string): ChatPromptBlocked | null {
  * survives, so reopening the node or restarting the app reattaches and continues
  * where it left off. Without tmux, it falls back to a plain shell (no persistence).
  */
+/** How long a chat-view interrupt waits for Claude to put the interrupted prompt back in its input
+ *  box (MEASURED on 2.1.318: 0.05-0.11 s after the Esc), and how often it looks. Also the wait for
+ *  the box to read empty after the Ctrl-Us that clear it. */
+export const INTERRUPT_RESTORE_WAIT_MS = 1500
+export const INTERRUPT_RESTORE_POLL_MS = 150
+
 /** Gap between a paste and its separate Enter for SEPARATE_SUBMIT_AGENTS (the rename path's
  *  measured shape: paste, then Enter as its own tmux invocation). */
 const SEPARATE_SUBMIT_DELAY_MS = 150
@@ -2293,6 +2306,15 @@ export class PtyManager {
     platform().handle(IPC.ptyReadChatScreen, (persistKey: string, agentId: unknown) =>
       // Like the chat-prompt handler: `agentId` only picks the screen reader, and a non-string picks none.
       this.readChatScreen(persistKey, typeof agentId === 'string' ? agentId : '')
+    )
+    platform().handle(IPC.ptyInterruptChat, (persistKey: string, agentId: unknown, sentText: unknown) =>
+      // `agentId` only picks the capability (a non-string picks none: `unsupported`), and `sentText`
+      // is only compared with what the agent put back in its own input box.
+      this.interruptChat(
+        persistKey,
+        typeof agentId === 'string' ? agentId : '',
+        typeof sentText === 'string' ? sentText : undefined
+      )
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string, opts?: { resolveUnmounted?: boolean }) =>
@@ -6849,6 +6871,62 @@ export class PtyManager {
     const styled = await this.captureStyledScreen(persistKey)
     if (styled === '') return { screen: readClaudeScreen(await this.captureSession(persistKey)), suggestion: null }
     return { screen: readClaudeScreen(styled), suggestion: readClaudeSuggestion(styled) }
+  }
+
+  /**
+   * Esc from the ⌘M chat view: interrupt the running turn as Esc typed in the terminal would. Only
+   * for an agent whose interrupt and screen are measured (`interruptsFromChat`, claude), and refused
+   * before anything is written when the agent's own dialog owns the keyboard or no input box is on
+   * screen: Esc there would cancel the dialog. An empty capture is not evidence of a dialog (the
+   * `sendChatPrompt` rule). The Esc goes through `sendPaneKeys`, so it reaches the pane by node id
+   * with no mounted terminal, local or over the project's ControlMaster.
+   *
+   * MEASURED on Claude Code 2.1.318: an Esc before the reply's first token puts the prompt back into
+   * Claude's own input box, where the chat view cannot see it, and the next chat send would be typed
+   * after it. So when `sentText` (the chat view's last send) is given and the box comes to hold
+   * exactly that text, it is cleared and handed back as `restored`. Any other text in the box is the
+   * user's and is left alone. Cleared with Ctrl-U, never Ctrl-C: Ctrl-C clears it too but then
+   * shows "Press Ctrl-C again to exit" for a few seconds, and a Ctrl-C the user presses in that window
+   * would quit Claude. Runs inside `serializePaneWrite`, so a chat send cannot land between the Esc
+   * and the read.
+   */
+  async interruptChat(persistKey: string, agentId: string, sentText?: string): Promise<ChatInterruptResult> {
+    if (!interruptsFromChat(agentId) || !readsScreenDialogs(agentId)) return { sent: false, reason: 'unsupported' }
+    return this.serializePaneWrite(persistKey, async (): Promise<ChatInterruptResult> => {
+      const screen = await this.captureSession(persistKey)
+      const gate = screen === '' ? null : screenGate(screen)
+      if (gate !== null) return { sent: false, reason: 'dialog', dialog: gate.dialog }
+      const esc = await this.sendPaneKeys(persistKey, '\x1b')
+      if (!esc.ok) return { sent: false, reason: esc.reason }
+      const want = sentText === undefined ? '' : sentText.replace(/\s/g, '')
+      if (want === '') return { sent: true, restored: null }
+      const took = await this.takeBackInterruptedPrompt(persistKey, sentText ?? '', want)
+      return { sent: true, restored: took ? (sentText ?? null) : null }
+    })
+  }
+
+  /** After an interrupt: wait briefly for Claude to put `want` (whitespace removed) back in its input
+   *  box, then clear it. true only when the box held exactly that text and reads empty afterwards. */
+  private async takeBackInterruptedPrompt(persistKey: string, sentText: string, want: string): Promise<boolean> {
+    const readDraft = async (): Promise<string | null> => readClaudeDraft(await this.captureStyledScreen(persistKey))
+    const until = async (done: (draft: string | null) => boolean, ms: number): Promise<string | null> => {
+      const deadline = Date.now() + ms
+      for (;;) {
+        const draft = await readDraft()
+        if (done(draft) || Date.now() >= deadline) return draft
+        await new Promise((r) => setTimeout(r, INTERRUPT_RESTORE_POLL_MS))
+      }
+    }
+    // Stop at the first non-empty draft: ours, or text the user typed into the terminal (left alone).
+    const draft = await until((d) => d !== null && d !== '', INTERRUPT_RESTORE_WAIT_MS)
+    if (draft !== want) return false
+    // One Ctrl-U clears a line; at the start of a line it joins it to the one above. MEASURED (2.1.318):
+    // repeated Ctrl-Us empty a multi-line box, and a Ctrl-U on an empty box does nothing, so one per
+    // line plus spares is safe in a single write.
+    const lines = sentText.split('\n').length
+    const cleared = await this.sendPaneKeys(persistKey, '\x15'.repeat(2 * lines + 2))
+    if (!cleared.ok) return false
+    return (await until((d) => d === '', INTERRUPT_RESTORE_WAIT_MS)) === ''
   }
 
   /** The visible screen WITH its SGR, for `readClaudeComposer`: an ssh-project node's capture already

@@ -1,4 +1,4 @@
-import type { ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
+import type { ChatInterruptResult, ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
 import type { ChatScreenRead } from './agents/claude-screen'
 import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from './push-webhook'
 import type { IdentitySeedEntry } from './agent-identity-seed'
@@ -1428,6 +1428,11 @@ export interface PtyApi {
    *  prompt the agent suggests next (claude: `readClaudeSuggestion`). An agent with no measured
    *  reader, or a pane that could not be read, answers `{ screen: { kind: 'unknown' }, suggestion: null }`. */
   readChatScreen(persistKey: string, agentId: string): Promise<ChatScreenRead>
+  /** Esc from the ⌘M chat view: interrupt a running turn, for an agent whose interrupt is measured
+   *  (claude). Refused before writing when the agent's own dialog owns the keyboard. `sentText` (the
+   *  chat view's last send) lets core take it back out of the agent's input box when the Esc landed
+   *  before the reply started; it comes back as `restored`. Never rejects on the desktop. */
+  interruptChat(persistKey: string, agentId: string, sentText?: string): Promise<ChatInterruptResult>
   /** Is tmux available on this host (else the silent plain-shell fallback), plus a suggested
    *  install command for the "tmux not found" banner. */
   tmuxStatus(): Promise<TmuxStatus>
@@ -3631,6 +3636,15 @@ export type ChatPart =
       kind: 'image'
       mediaType: string
       data: string
+    }
+  | {
+      /**
+       * The user interrupted the turn here (Esc, or Ctrl+C once): one of Claude Code's fixed marker
+       * records (`CLAUDE_INTERRUPT_MARKERS`), which it saves as a USER record but which the user did
+       * not type. Present only on the opt-in `rich` read; without it the marker stays a user text
+       * part, as before. The renderer draws Claude's own TUI line for it.
+       */
+      kind: 'interrupt'
     }
   | {
       kind: 'tool'
