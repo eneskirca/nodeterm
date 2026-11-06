@@ -207,7 +207,7 @@
     "@excalidraw/excalidraw": "^0.18.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/css-tree": "^3.2.0",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
