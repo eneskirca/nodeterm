@@ -1,4 +1,34 @@
+import type { PullNotesApi } from './pull-notes'
 import type { GitHubPullBoard, GitHubPullChecksResult } from './github-pull-status'
+import type { GitHubPullCheckLogResult } from './github-pull-check-log'
+
+/** What a pull node's Watch switch shows (F-08). `reason` = why it is off; `note` = why the last wake did not land. */
+export interface PullWatchStatus { on: boolean; reason?: string; note?: string }
+/** Why Watch cannot turn on: no agent node is linked to the pull node. */
+export const PULL_WATCH_NO_AGENT = 'Link an agent first'
+/** Why a watch that is on cannot wake anyone: its agent was unlinked. */
+export const PULL_WATCH_UNLINKED = 'Watch cannot wake the agent: it was unlinked. Link an agent to this pull node.'
+import type { GitHubPullTimelineResult } from './github-pull-timeline'
+import type { GitHubPullSinceReviewResult } from './github-pull-since-review'
+import type { GitHubRepoLabelsResult } from './github-pull-sidebar'
+import type {
+  GitHubPullConversationResult,
+  GitHubIssueConversationResult,
+  GitHubPullDetailResult,
+  GitHubPullFileContentsResult,
+  GitHubPullFilesResult,
+  GitHubRepoCollaboratorsResult,
+  GitHubPullForBranchResult,
+  PullCreateDraft,
+  PullCreateResult,
+  GitHubRepoMergeMethodsResult,
+  PullLineCommentRequest,
+  PullLineDraft,
+  PullMergeMethod,
+  PullReviewEvent,
+  PullWriteResult
+} from './github-pull-detail'
+import type { GitHubPullCommitFilesResult, GitHubPullCommitsResult } from './github-pull-commits'
 
 export interface ProjectKanbanGitHub {
   repository?: string
@@ -212,6 +242,13 @@ export interface GitHubIssueQuery {
   cursor?: string
   search?: string
   labelFilter?: string[]
+  /** The issues node: every column (`columnId` ignored), open items only, and only items assigned
+   *  to the signed-in user. Absent = the board's page, unchanged. */
+  anyColumn?: boolean
+  openOnly?: boolean
+  assignedToMe?: boolean
+  /** The repository the issues node was opened for: refused unless it is the project's. */
+  repository?: string
 }
 
 export interface GitHubIssuePage {
@@ -265,7 +302,8 @@ export interface GitHubControlView {
   }
 }
 
-export interface GitHubIssuesApi {
+/** F-07's notes ride this api too (`PullNotesApi`, shared/pull-notes.ts). */
+export interface GitHubIssuesApi extends PullNotesApi {
   subscribe(projectId: string): Promise<GitHubIssuePage>
   unsubscribe(projectId: string): Promise<void>
   query(request: GitHubIssueQuery): Promise<GitHubIssuePage>
@@ -287,6 +325,103 @@ export interface GitHubIssuesApi {
   chasePulls(projectId: string): Promise<boolean>
   /** Per-check detail for one PR — read only when its modal opens. */
   pullChecks(projectId: string, pullNumber: number): Promise<GitHubPullChecksResult>
+  /** One PR's overview for the pull request node. Refused (no request) unless `repository` is the
+   *  project's approved repository; answers from memory inside the 30 s refresh floor. */
+  pullDetail(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullDetailResult>
+  /** One PR's comments and reviews, oldest first, for the node's Conversation tab. Same refusals
+   *  and refresh floor as `pullDetail`. */
+  pullConversation(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullConversationResult>
+  /** One page of a PR's Conversation timeline, oldest first; `after` = the cursor the previous page
+   *  answered as `next`. Same refusals and refresh floor as `pullDetail`. */
+  pullTimeline(projectId: string, repository: string, pullNumber: number, after?: string): Promise<GitHubPullTimelineResult>
+  /** One PR's changed files (at most 300) for the node's Files tab. Same refusals and floor as `pullDetail`. */
+  pullFiles(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullFilesResult>
+  /** Base and head of one changed file, at the SHAs of the latest `pullDetail`, for the Files tab's diff. */
+  pullFileContents(
+    projectId: string, repository: string, pullNumber: number, path: string
+  ): Promise<GitHubPullFileContentsResult>
+  /** The Commits tab: the PR's commits, one commit's files, and one of those files as a diff against
+   *  the commit's first parent. Same refusals and floor as `pullDetail`. */
+  pullCommits(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullCommitsResult>
+  pullCommitFiles(projectId: string, repository: string, pullNumber: number, sha: string): Promise<GitHubPullCommitFilesResult>
+  pullCommitFileContents(
+    projectId: string, repository: string, pullNumber: number, sha: string, path: string
+  ): Promise<GitHubPullFileContentsResult>
+  /** "Since my last review" (F-10): the viewer's latest review compared to the head, and one file
+   *  of that comparison as a diff. Same refusals and floor as `pullDetail`. */
+  pullSinceReview(projectId: string, repository: string, pullNumber: number): Promise<GitHubPullSinceReviewResult>
+  pullSinceReviewFileContents(
+    projectId: string, repository: string, pullNumber: number, path: string
+  ): Promise<GitHubPullFileContentsResult>
+  /** Post a comment on the PR. A user click only; needs the approved repository, not the mapping. */
+  commentOnPull(
+    request: { projectId: string; repository: string; pullNumber: number; body: string }
+  ): Promise<PullWriteResult>
+  /** Submit a review tied to `headSha`, with the pending line comments. An empty body is refused for
+   *  REQUEST_CHANGES, and for COMMENT without line comments. */
+  reviewPull(request: {
+    projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
+    comments?: PullLineDraft[]
+  }): Promise<PullWriteResult>
+  /** Post one line comment (a new thread at `headSha`) or a reply. A user click only, never an agent verb. */
+  commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult>
+  /** The issues node: one issue's comments, oldest first (same refusals and floor as `pullDetail`). */
+  issueConversation(projectId: string, repository: string, issueNumber: number): Promise<GitHubIssueConversationResult>
+  /** The issues node: one page of an issue's timeline, oldest first; `after` = the previous page's
+   *  `next`. Same refusals and floor as `pullDetail`; `openedAt` = when the issue was opened. */
+  issueTimeline(projectId: string, repository: string, issueNumber: number, after?: string): Promise<GitHubPullTimelineResult>
+  /** Comment on an issue from the issues node. A user click only; needs the approved repository. */
+  commentOnIssue(
+    request: { projectId: string; repository: string; issueNumber: number; body: string }
+  ): Promise<PullWriteResult>
+  /** Cancel "Merge when ready". A user click only, never an agent verb. */
+  disablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
+  /** "Merge when ready": turn on GitHub auto-merge with the method, tied to the head the Overview showed. A user click only, never an agent verb. */
+  enablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string }): Promise<PullWriteResult>
+  /** "Update branch": merge the base into the head, tied to the head the Overview showed. A user click only, never an agent verb. */
+  updatePullBranch(request: { projectId: string; repository: string; pullNumber: number; headSha: string }): Promise<PullWriteResult>
+  /** Tick or clear GitHub's own "Viewed" mark on one changed file. A user click only, never an agent verb. */
+  setFileViewed(request: { projectId: string; repository: string; pullNumber: number; path: string; viewed: boolean }): Promise<PullWriteResult>
+  /** Resolve or unresolve the review thread whose first comment is `threadId`. A user click only, never an agent verb. */
+  setReviewThreadResolved(request: { projectId: string; repository: string; pullNumber: number; threadId: number; resolved: boolean }): Promise<PullWriteResult>
+  /** Commit one comment's suggestion to the head branch, pinned to the file at `headSha`. A user click only, never an agent verb. */
+  applySuggestion(request: { projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number }): Promise<PullWriteResult>
+  /** Add or remove one existing repository label on the PR. A user click only, never an agent verb. */
+  setPullLabels(request: { projectId: string; repository: string; pullNumber: number; label: string; add: boolean }): Promise<PullWriteResult>
+  /** Add or remove one assignee on the PR. A user click only, never an agent verb. */
+  setPullAssignees(request: { projectId: string; repository: string; pullNumber: number; login: string; add: boolean }): Promise<PullWriteResult>
+  /** Close (`open` false) or reopen the PR. A user click only, never an agent verb. */
+  setPullState(request: { projectId: string; repository: string; pullNumber: number; open: boolean }): Promise<PullWriteResult>
+  /** Mark a draft PR ready for review. A user click only, never an agent verb. */
+  markPullReady(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
+  /** Delete the head branch of a merged PR from this repository (never the default branch). A user click only. */
+  deleteHeadBranch(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult>
+  /** The failing step's last lines of one Actions job of the PR's head checks. Same refusals as `pullDetail`. */
+  pullCheckLog(projectId: string, repository: string, pullNumber: number, jobId: number): Promise<GitHubPullCheckLogResult>
+  /** Re-run the failed jobs of one Actions run of the PR's head checks. A user click only, never an agent verb. */
+  rerunFailedJobs(request: { projectId: string; repository: string; pullNumber: number; runId: number }): Promise<PullWriteResult>
+  /** A pull node's Watch switch (F-08): machine-local, read from core's poller. */
+  pullWatch(projectId: string, nodeId: string): Promise<PullWatchStatus>
+  /** Turn a pull node's Watch on or off. A user click only; refused without a linked agent. */
+  setPullWatch(request: { projectId: string; nodeId: string; on: boolean }): Promise<PullWatchStatus>
+  /** The repository's labels (name and color) for the sidebar's "Add label". Same refusals as `pullDetail`. */
+  repoLabels(projectId: string, repository: string): Promise<GitHubRepoLabelsResult>
+  /** Merge the PR only if its head is still `headSha` (a 409 answers `head-moved`). Confirm click only. */
+  mergePull(request: {
+    projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
+  }): Promise<PullWriteResult>
+  /** The merge methods the project's repository allows. Same refusals as `pullDetail`. */
+  repoMergeMethods(projectId: string, repository: string): Promise<GitHubRepoMergeMethodsResult>
+  /** The people a review can be requested from. Same refusals as `pullDetail`. */
+  repoCollaborators(projectId: string, repository: string): Promise<GitHubRepoCollaboratorsResult>
+  /** Ask one collaborator (by login) to review the PR. A user click only, never an agent verb. */
+  requestPullReviewer(
+    request: { projectId: string; repository: string; pullNumber: number; reviewer: string }
+  ): Promise<PullWriteResult>
+  /** "New pull request"'s start: the default branch and `head`'s open PR. Same refusals as `pullDetail`. */
+  pullForBranch(projectId: string, repository: string, head: string): Promise<GitHubPullForBranchResult>
+  /** Open a pull request from a pushed branch. A user click only, never an agent verb. */
+  createPull(request: { projectId: string; repository: string } & PullCreateDraft): Promise<PullCreateResult>
   /** The one-time permission to move a session card because its linked PRs merged. The first ask
    *  across every window wins; the host remembers it. */
   claimPullAutoMove(request: { projectId: string; cardId: string; pulls: number[] }): Promise<boolean>

@@ -279,6 +279,41 @@ describe('parseControlRequest', () => {
     expect(isDestructiveVerb('open-browser')).toBe(false)
   })
 
+  it('open-pr takes only --pr, and never a repository', () => {
+    expect(parseControlRequest('open-pr', { pr: '12' })).toEqual({ verb: 'open-pr', args: { pr: '12' } })
+    expect(parseControlRequest('open-pr', {})).toEqual({
+      error: 'open-pr requires --pr <number> (the number `gh pr create` printed)'
+    })
+    expect(parseControlRequest('open-pr', { pr: '12', repository: 'evil/repo' })).toEqual({
+      error: 'open-pr: unknown flag --repository'
+    })
+    expect(isDestructiveVerb('open-pr')).toBe(false)
+  })
+
+  it('both agent-facing bodies tell the agent to run open-pr after gh pr create', () => {
+    for (const body of [buildCanvasSkillBody('/x/canvas.sh'), buildCanvasControlInstructions('/x/canvas.sh')]) {
+      expect(body).toContain('open-pr --pr <number>')
+      expect(body).toContain('gh pr create')
+    }
+  })
+
+  it('both agent-facing bodies describe pr-show and pr-propose as the gate enforces them', () => {
+    for (const body of [buildCanvasSkillBody('/x/canvas.sh'), buildCanvasControlInstructions('/x/canvas.sh')]) {
+      expect(body).toContain('`pr-show --node <id> --file <path> [--lines 12-30]`')
+      expect(body).toContain('`--tab conversation|commits|checks|files`')
+      expect(body).toContain('`pr-propose --node <id> --action approve|request-changes|comment|merge [--message <text>]')
+      expect(body).toContain('[--method merge|squash|rebase]`')
+      expect(body).toContain('nothing\n  reaches GitHub until they click it')
+      expect(body).toContain('The Server Edition refuses both.')
+    }
+    // The flags the text names are the ones the parser accepts, and nothing else.
+    expect(parseControlRequest('pr-show', { node: 'p', file: 'a.ts', lines: '12-30' })).toMatchObject({ verb: 'pr-show' })
+    expect(parseControlRequest('pr-show', { node: 'p', tab: 'conversation' })).toMatchObject({ verb: 'pr-show' })
+    expect(parseControlRequest('pr-propose', { node: 'p', action: 'merge', method: 'rebase' })).toMatchObject({ verb: 'pr-propose' })
+    expect(parseControlRequest('pr-propose', { node: 'p', action: 'comment', message: 'x' })).toMatchObject({ verb: 'pr-propose' })
+    expect(parseControlRequest('pr-propose', { node: 'p', action: 'close' })).toHaveProperty('error')
+  })
+
   it('classifies destructive verbs', () => {
     expect(isDestructiveVerb('write')).toBe(true)
     expect(isDestructiveVerb('close')).toBe(true)

@@ -10,6 +10,7 @@ import { grokHomeDir, grokSessionDir, grokSessionsDir } from '../core/agents/gro
 import { join, resolve, posix } from 'path'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { startTriggerService } from '../core/trigger-service'
+import { startPullWatch, type PullWatchService } from '../core/github/pull-watch'
 import { readAgentSessionName, type AgentSessionNameDeps } from '../core/agent-session-name'
 import { readFile, readdir as fsReaddir, realpath as fsRealpath, lstat as fsLstat, writeFile as fsWriteFile } from 'fs/promises'
 import { existsSync, statSync, openSync, fstatSync, readFileSync, closeSync } from 'fs'
@@ -353,12 +354,16 @@ import { planSshPrewarm, runSshPrewarm } from '../core/remote-ssh/ssh-prewarm'
 import { sessionName } from '../core/tmux-naming'
 import { posixQuote, sshHostKey, type SshConnection } from '../shared/ssh'
 import { buildHandoff, type HandoffRemote } from './handoff'
-import { contextLinkShimPath, initContextLink, setNodeTranscript } from '../core/context-link'
+import { contextLinkShimPath, initContextLink, pullReadVia, setNodeTranscript } from '../core/context-link'
 import { wireClaudePaneOrigin } from '../core/agents/claude-pane-origin'
 import { transcriptPathOf } from '../core/context-link-core'
 import { initCanvasControl, canvasControlShimPath } from './canvas-control'
 import { DRY_RUN_VERBS, dryRunRequested, dryRunRefusal } from '../shared/control-verbs'
 import { browserFlagRefusal, issueFlagRefusal } from '../core/canvas-control-core'
+import { openPrArgsRefusal } from '../shared/open-pr-verb'
+import { pullCreatedEvent } from '../shared/pr-created-hook'
+import { answerPrWriteGate, isPrGateAnswer, isPrGateId, PR_GATE_ASK_MS, prWriteEvent, type PrWriteEvent } from '../shared/pr-write-hook'
+import { pullAgentArgsRefusal } from '../shared/pull-agent-verbs'
 import { afterPrFlagRefusal } from '../shared/pr-wait'
 import { arrangeArgsRefusal } from '../shared/arrange-verb'
 import { geometryArgsRefusal } from '../shared/geometry-verbs'
@@ -609,6 +614,8 @@ let sshProjectManager: ReturnType<typeof initSshProject> | undefined
 // workspace store's `onPersist`, the license callback and the quit handler read it at call time (the
 // boot workspace load's `onPersist` runs before the assignment — a later `const` would be a TDZ throw).
 let watchLinks: WatchLinkService | null = null
+// Watch (F-08). Assigned in `whenReady`; the quit handler stops it so its last write lands.
+let pullWatch: PullWatchService | undefined
 
 // The standalone Codex relay bundle (`out/main/codex-relay.js`, built by scripts/build-codex-relay.mjs
 // after electron-vite build), uploaded to a Linux host for managed Codex accounts. Read once, beside
@@ -2603,6 +2610,21 @@ app.whenReady().then(async () => {
     paneCommand: (nodeId) => ptyManager.paneCommand(nodeId),
     handle: (channel, handler) => platform().handle(channel, handler)
   })
+  // A pull node's Watch switch (F-08): the poller is core (`startPullWatch`) so it runs while the
+  // node is off screen; this shell supplies the reads, the canvases and the messaging delivery (the
+  // pull node is the source, every messaging gate and the deliver-on-idle queue apply). Identical
+  // call in src/server/index.ts.
+  pullWatch = startPullWatch({
+    userDataDir: app.getPath('userData'),
+    listCanvases: () => workspaceStore.persistedCanvases(),
+    projectClosed: (projectId) => !!workspaceStore.linkProjectEntries()?.find((e) => e.id === projectId)?.closed,
+    messagingRefused: (projectId) => messagingDeps.messagingEnabled(projectId) ? undefined : 'switch-off',
+    readDetail: (request) => github.service.pullDetail(request),
+    readChecks: (request) => github.service.pullChecks(request),
+    deliver: async ({ pullNodeId, agentNodeId, body }) =>
+      (await deliverFromControl({ verb: 'send', sourceNodeId: pullNodeId, targetNodeId: agentNodeId, body }, messagingDeps)).outcome,
+    handle: (channel, handler) => platform().handle(channel, handler)
+  })
   // macOS Notch HUD (docs/notch-hud.md): walking agent mascots by the notch. darwin + setting only;
   // reads the same agent-status seams the mirror does. Live-toggled via settings below.
   //
@@ -3514,14 +3536,19 @@ app.whenReady().then(async () => {
   // the project cwd). pendingId is validated before it is interpolated into any path/command.
   // The held request's I/O for a node — shared with the phone's `agent.answer` (hostBridge.chat) so
   // both answer paths reach the SAME host the same way.
-  const heldPermissionIoFor = (nodeId: string, pendingId: string): HeldPermissionIo => {
+  // `bounded`: what the polling hook prints (the PR write gate's differs from a permission's).
+  const heldPermissionIoFor = (
+    nodeId: string,
+    pendingId: string,
+    bounded?: (content: string) => boolean
+  ): HeldPermissionIo => {
     const sshProjectId = workspaceStore.sshProjectIdForNode(nodeId)
     return sshProjectId && sshProjectManager
       ? {
           readPending: () => sshProjectManager!.readPendingRequest(sshProjectId, pendingId),
-          write: (content) => sshProjectManager!.writePendingAnswer(sshProjectId, pendingId, content)
+          write: (content) => sshProjectManager!.writePendingAnswer(sshProjectId, pendingId, content, bounded)
         }
-      : localHeldPermissionIo(pendingId, homedir())
+      : localHeldPermissionIo(pendingId, homedir(), bounded)
   }
   corePlatform.handle(IPC.agentAnswerPermission, async (payload: AnswerPermissionPayload) => {
     const { nodeId, pendingId } = payload ?? ({} as AnswerPermissionPayload)
@@ -3870,8 +3897,49 @@ app.whenReady().then(async () => {
     return isSafeRemoteTranscriptPath(abs, remoteHome) ? abs : undefined
   }
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
+  // The PR write gate's canvas round trip (@shared/pr-write-hook): the renderer knows the project, its
+  // repository and its pull nodes. answerPrWriteGate allows on its own after PR_GATE_ASK_MS; the
+  // entry is dropped a little later so a canvas that never answers leaves nothing behind.
+  const pendingPrGate = new Map<string, (r: { deny?: string }) => void>()
+  ipcMain.on(IPC.agentPrWriteGateResult, (_e, payload: { requestId?: unknown; deny?: unknown }) => {
+    const resolve = typeof payload?.requestId === 'string' ? pendingPrGate.get(payload.requestId) : undefined
+    if (!resolve) return
+    pendingPrGate.delete(payload.requestId as string)
+    resolve(typeof payload.deny === 'string' && payload.deny ? { deny: payload.deny } : {})
+  })
+  const askPrWriteGate = (event: PrWriteEvent): Promise<{ deny?: string }> => {
+    const w = getMainWindow()
+    if (!w || w.isDestroyed()) return Promise.reject(new Error('no canvas window'))
+    const requestId = randomUUID()
+    setTimeout(() => pendingPrGate.delete(requestId), PR_GATE_ASK_MS * 2).unref?.()
+    return new Promise((resolve) => {
+      pendingPrGate.set(requestId, resolve)
+      w.webContents.send(IPC.agentPrWriteGate, { requestId, ...event })
+    })
+  }
   // Hook server validates session-env capacity and caller identity once for both shells.
-  hookServer.setRawListener((agentId, nodeId, payload, _meta) => {
+  hookServer.setRawListener((agentId, nodeId, payload, meta) => {
+    // A verified agent's `gh pr create`: the canvas opens that PR's node beside it (open-pr's plan).
+    const pullCreated = pullCreatedEvent(agentId, nodeId, payload, meta)
+    if (pullCreated) getMainWindow()?.webContents.send(IPC.agentPullCreated, pullCreated)
+    // A verified agent's own PR write: before it runs, the gate answers the held hook (deny =
+    // "use pr-propose", the pull node's Confirm bar); after it ran, that PR's pull nodes refresh.
+    const prWrite = prWriteEvent(agentId, nodeId, payload, meta)
+    const gateId = payload.nodeterm_gate_id
+    if (isPrGateId(gateId)) {
+      void answerPrWriteGate({
+        event: prWrite,
+        ask: askPrWriteGate,
+        // The hook runs on the agent's host: an SSH project's answer goes over its ControlMaster.
+        write: (content) => heldPermissionIoFor(nodeId, gateId, isPrGateAnswer).write(content),
+        log: (message) => console.warn('[pr-write-gate]', message)
+      })
+    }
+    if (prWrite?.phase === 'post') {
+      // The pull node's reads answer from a 30 s floor: drop them first, or its refresh shows the old state.
+      for (const write of prWrite.writes) github.service.forgetPull(write.repository, write.pullNumber)
+      getMainWindow()?.webContents.send(IPC.agentPrWritten, prWrite)
+    }
     if (agentId === 'cursor') {
       // One shared step (core/cursor-chat.ts `applyCursorRaw`): subagent cards, the meter, and the
       // child-event guard. A remote node gets cards but no meter (its chat is on the host).
@@ -4121,7 +4189,7 @@ app.whenReady().then(async () => {
       const transcriptPath = safeRemoteTranscriptPath(p.transcript_path, remoteHome)
       if (p.session_id && transcriptPath) {
         const ref: RemoteFileRef = { conn: rt.conn, controlPath: rt.controlPath, path: transcriptPath }
-        remoteContextTail.track(p.session_id, ref, _meta.contextWindow)
+        remoteContextTail.track(p.session_id, ref, meta.contextWindow)
         // Hook-fed from now on: a later failed read must not drop it (see remote-transcript-page).
         rememberHookRef(remoteTranscriptRefs, p.session_id, ref)
       }
@@ -4180,7 +4248,7 @@ app.whenReady().then(async () => {
     }
     const transcriptPath = safeTranscriptPath(p.transcript_path)
     // Context-window meter: tail the session transcript (any event carrying both fields).
-    if (p.session_id && transcriptPath) contextTail.track(p.session_id, transcriptPath, _meta.contextWindow)
+    if (p.session_id && transcriptPath) contextTail.track(p.session_id, transcriptPath, meta.contextWindow)
     if (nodeId && p.session_id) nodeContextSession.set(nodeId, p.session_id)
     if (nodeId && p.session_id && transcriptPath) setNodeTranscript(nodeId, p.session_id, transcriptPath)
     if (p.hook_event_name === 'SessionEnd' && p.session_id) contextTail.untrack(p.session_id)
@@ -4661,6 +4729,12 @@ app.whenReady().then(async () => {
     // framed node out to the top level, and a bad `--width` would be the renderer's to explain.
     const geometryRefusal = geometryArgsRefusal(verb, args)
     if (geometryRefusal) return { ok: false, error: geometryRefusal, message: geometryRefusal }
+    // `open-pr`: only `--pr`, never a repository (@shared/open-pr-verb). Same placement, same reason.
+    const openPrRefusal = verb === 'open-pr' ? openPrArgsRefusal(args) : null
+    if (openPrRefusal) return { ok: false, error: openPrRefusal, message: openPrRefusal }
+    // `pr-show` / `pr-propose` (@shared/pull-agent-verbs): the same shape gate, same placement.
+    const pullAgentRefusal = pullAgentArgsRefusal(verb, args)
+    if (pullAgentRefusal) return { ok: false, error: pullAgentRefusal, message: pullAgentRefusal }
     // A station's report about ITSELF: recorded in main's store, board-logged on its own card, and
     // never forwarded — there is no canvas work in it, and the renderer hears the store's push.
     if (verb === 'report-outcome') {
@@ -4814,6 +4888,8 @@ app.whenReady().then(async () => {
   // These three deps are the whole of what `src/core` cannot answer for itself. Fail-open
   // throughout — a failed remote read renders as "no transcript yet", never as an error.
   initContextLink(ptyManager, {
+    // A linked pull request node (open-pr) reads its Overview through the GitHub service.
+    pull: pullReadVia(github.service),
     isRemoteNode: (nodeId) => !!ptyManager.sshRemoteForNode(nodeId),
     readRemoteFile: async (nodeId, filePath, maxBytes) => {
       const rt = ptyManager.sshRemoteForNode(nodeId)
@@ -5675,7 +5751,8 @@ app.on('before-quit', (e) => {
     requestRendererFlush(getMainWindow()?.webContents, ipcMain).then(() => remoteWorkspaceIO.flush()),
     remoteWorkspaceIO.flush(),
     ptyManager.killAll(),
-    watchLinksStopped
+    watchLinksStopped,
+    pullWatch?.stop()
   ])
   void Promise.race([flush, new Promise((r) => setTimeout(r, 1500))])
     // Then let whisper go. A dictation still transcribing when Electron tears down the main

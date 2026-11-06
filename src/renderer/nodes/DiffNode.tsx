@@ -6,7 +6,7 @@ import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import { monaco } from '../editor/monaco-setup'
 import { monacoTheme } from '../lib/appTheme'
 import { useAppTheme } from '../state/useAppTheme'
-import { useSettings } from '../state/settings'
+import { createReadOnlyDiffEditor } from '../editor/TextDiff'
 import { useProjects } from '../state/projects'
 import { sshFs } from '../terminal/ssh-fs'
 import { useSession } from '../session/session'
@@ -102,22 +102,11 @@ export function DiffNode({ id, data, selected }: NodeProps<CanvasNode>) {
         return
       }
       const base = monaco.Uri.file(abs)
-      const s = useSettings.getState().settings
       original = monaco.editor.createModel(orig, undefined, base.with({ fragment: `${id}-o` }))
       modified = monaco.editor.createModel(mod, undefined, base.with({ fragment: `${id}-m` }))
       originalRef.current = original
       modifiedRef.current = modified
-      editor = monaco.editor.createDiffEditor(el, {
-        theme: monacoTheme(appThemeRef.current),
-        readOnly: true,
-        originalEditable: false,
-        automaticLayout: true,
-        renderSideBySide: true,
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        fontSize: s.fontSize,
-        fontFamily: s.fontFamily
-      })
+      editor = createReadOnlyDiffEditor(el, appThemeRef.current)
       editorRef.current = editor
       editor.setModel({ original, modified })
     })

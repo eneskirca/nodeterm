@@ -216,3 +216,23 @@ describe('recreateNodeFromSnapshot', () => {
     expect(snapshot!.type).toBe('files')
   })
 })
+
+describe('pull request reopen', () => {
+  it('rebuilds a pull node on the same PR, tab and file', () => {
+    const node = {
+      id: 'pull-closed',
+      type: 'pull' as const,
+      position: { x: 5, y: 6 },
+      width: 860,
+      height: 600,
+      data: {
+        title: 'PR #7', color: '#a371f7', group: null,
+        pull: { repository: 'o/r', pullNumber: 7, tab: 'files' as const, selectedFile: 'a.ts' }
+      }
+    }
+    const snap = snapshotNode(node, [{ id: node.id, position: node.position }]) as ReopenNodeSnapshot
+    const rebuilt = recreateNodeFromSnapshot(snap, baseCtx())
+    expect(rebuilt?.type).toBe('pull')
+    expect(rebuilt?.data.pull).toEqual({ repository: 'o/r', pullNumber: 7, tab: 'files', selectedFile: 'a.ts' })
+  })
+})

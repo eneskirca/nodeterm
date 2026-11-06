@@ -40,6 +40,8 @@ export interface SourceControlPanelProps {
   /** The scope to open on (derived from the canvas selection by the caller). */
   defaultScope?: ScmScope
   onNewWorktree: () => void
+  /** "New pull request…" for the active scope's checkout (its current branch). */
+  onNewPull?: (cwd: string) => void
 }
 
 const AUTO_FETCH_MS = 180_000
@@ -66,7 +68,8 @@ export function SourceControlPanel({
   onExplainCommit,
   scopes,
   defaultScope,
-  onNewWorktree
+  onNewWorktree,
+  onNewPull
 }: SourceControlPanelProps) {
   const project = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId))
   // SSH project: git ops run on the remote repo over the master, so the cwd is the project's
@@ -488,6 +491,16 @@ export function SourceControlPanel({
               </button>
               <span className="scm-spacer" />
               {renderRemoteAction()}
+              {onNewPull && status.hasRemote && status.branch !== 'HEAD' && (
+                <button
+                  className="scm-sync"
+                  disabled={busy}
+                  title={`New pull request from ${status.branch}`}
+                  onClick={() => onNewPull(cwd!)}
+                >
+                  Create PR
+                </button>
+              )}
               <button
                 className="scm-more"
                 title="More actions"

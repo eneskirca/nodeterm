@@ -4,7 +4,7 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import { IPC } from '../shared/ipc'
-import type { GitFileChange, GitResult, GitStatus } from '../shared/types'
+import type { GitFileChange, GitResult, GitStatus, MainDrift, MainUpdateMode, MainUpdateResult } from '../shared/types'
 import { loadGitHistoryFromExecutor } from '../shared/git-history'
 import * as worktreeOps from '../shared/worktree-ops'
 import type { WorktreeListResult } from '../shared/worktree'
@@ -15,6 +15,7 @@ import { directExecutableInvocation } from './exec-path'
 import { ghPath } from './gh-path'
 import { gitEnv } from './git-env'
 import { worktreeTargetRefusal } from './worktree-target'
+import { pullFetchPlan, type PullFetchRequest } from '../shared/pull-work'
 import {
   isValidCloneUrl,
   expandCloneUrl,
@@ -117,6 +118,76 @@ async function git(cwd: string, args: string[]): Promise<Exec> {
     const err = e as { stdout?: string; stderr?: string; message?: string }
     return { ok: false, out: (err.stdout ?? '').trim(), err: (err.stderr || err.message || '').trim() }
   }
+}
+
+// The behind-main badge's background fetch (`GitService.mainDrift`): at most once per window per
+// repository (worktrees share one), the window doubling after each failure up to the cap, and
+// never a prompt of any kind. GIT_ASKPASS='' ends git's whole askpass chain (core.askPass and
+// SSH_ASKPASS included), SSH_ASKPASS_REQUIRE=never does the same for ssh, GCM_INTERACTIVE=never
+// for Git Credential Manager, and GIT_TERMINAL_PROMPT=0 rides GIT_ENV. On POSIX the fetch also
+// runs in its own session (`detached`), so it has no controlling terminal and ssh cannot open
+// /dev/tty for a passphrase or a host-key question when the app was started from a shell. A
+// stored credential (a keychain helper, an ssh agent) still answers; anything that would ask
+// fails, and backs off.
+// The window is a little under the renderer's 2-min poll, so a poll that lands a few ms early
+// still fetches.
+const MAIN_FETCH_EVERY_MS = 110_000
+const MAIN_FETCH_BACKOFF_MAX_MS = 30 * 60_000
+const MAIN_FETCH_TIMEOUT_MS = 60_000
+const QUIET_FETCH_ENV: NodeJS.ProcessEnv = {
+  ...GIT_ENV,
+  GIT_ASKPASS: '',
+  SSH_ASKPASS_REQUIRE: 'never',
+  GCM_INTERACTIVE: 'never'
+}
+
+function quietFetchOrigin(cwd: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    // Detached on POSIX: its own session (no terminal) and its own process group, so the timeout
+    // below ends git AND the ssh or https helper it started. Windows has no terminal to lose, and
+    // detached there opens a console window.
+    const group = process.platform !== 'win32'
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn('git', ['fetch', '--quiet', '--no-tags', 'origin'], {
+        cwd,
+        env: QUIET_FETCH_ENV,
+        stdio: 'ignore',
+        detached: group,
+        windowsHide: true
+      })
+    } catch {
+      resolve(false)
+      return
+    }
+    // SIGTERM, not SIGKILL: git removes its ref lock files on SIGTERM, so a timed-out fetch does
+    // not break the user's next one.
+    const timer = setTimeout(() => {
+      try {
+        if (group && child.pid) process.kill(-child.pid, 'SIGTERM')
+        else child.kill('SIGTERM')
+      } catch {
+        /* already gone */
+      }
+    }, MAIN_FETCH_TIMEOUT_MS)
+    child.once('error', () => {
+      clearTimeout(timer)
+      resolve(false)
+    })
+    child.once('exit', (code) => {
+      clearTimeout(timer)
+      resolve(code === 0)
+    })
+  })
+}
+
+/** The marker files of a merge, rebase, cherry-pick or revert that is still open in `cwd`. */
+async function gitOpInProgress(cwd: string): Promise<boolean> {
+  const markers = ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']
+  const r = await git(cwd, ['rev-parse', ...markers.flatMap((m) => ['--git-path', m])])
+  // ponytail: an unreadable answer counts as "in progress" so the update refuses rather than guesses.
+  if (!r.ok) return true
+  return r.out.split('\n').some((p) => !!p.trim() && fs.existsSync(path.resolve(cwd, p.trim())))
 }
 
 /**
@@ -228,6 +299,12 @@ function githubTokenFromGitCredentials(cwd: string): Promise<string | null> {
  * The repo root is the active project's working directory.
  */
 export class GitService {
+  /** Per repository (its common git dir): when the last main-drift fetch started, and how many
+   *  failed in a row. */
+  private readonly mainFetches = new Map<string, { at: number; failures: number }>()
+
+  constructor(private readonly now: () => number = Date.now) {}
+
   registerIpc(): void {
     platform().handle(IPC.gitStatus, (cwd: string) => this.status(cwd))
     platform().handle(IPC.gitInit, (cwd: string) => this.init(cwd))
@@ -267,6 +344,14 @@ export class GitService {
     )
     platform().handle(IPC.gitMerge, (cwd: string, ref: string) => this.merge(cwd, ref))
     platform().handle(IPC.gitRebase, (cwd: string, onto: string) => this.rebase(cwd, onto))
+    platform().handle(IPC.gitMainDrift, (cwd: unknown) =>
+      typeof cwd === 'string' ? this.mainDrift(cwd) : { ok: false, reason: 'no-repo' }
+    )
+    platform().handle(IPC.gitUpdateFromMain, (cwd: unknown, mode: unknown) =>
+      typeof cwd === 'string'
+        ? this.updateFromMain(cwd, mode as MainUpdateMode)
+        : { ok: false, reason: 'invalid', message: 'No folder.' }
+    )
     platform().handle(IPC.gitDeleteBranch, (cwd: string, name: string, force: boolean) =>
       this.deleteBranch(cwd, name, force)
     )
@@ -288,6 +373,11 @@ export class GitService {
     platform().handle(IPC.gitWorktreeList, (repoPath: string) => this.worktreeList(repoPath))
     platform().handle(IPC.gitWorktreeAdd, (repoPath: string, wtPath: string, branch: string, baseRef: string, isNew: boolean) =>
       this.worktreeAdd(repoPath, wtPath, branch, baseRef, isNew)
+    )
+    platform().handle(IPC.gitPullWorktreeAdd, (repoPath: unknown, wtPath: unknown, req: unknown) =>
+      typeof repoPath === 'string' && typeof wtPath === 'string'
+        ? this.pullWorktreeAdd(repoPath, wtPath, req as PullFetchRequest)
+        : { ok: false, message: 'Missing repo or worktree path.' }
     )
     platform().handle(IPC.gitWorktreeMerge, (repoPath: string, branch: string, baseRef: string, push?: boolean) =>
       this.worktreeMerge(repoPath, branch, baseRef, push)
@@ -331,6 +421,29 @@ export class GitService {
     const refusal = worktreeTargetRefusal(wtPath, repoPath)
     if (refusal) return Promise.resolve({ ok: false, message: refusal })
     return worktreeOps.worktreeAdd(git, repoPath, wtPath, branch, baseRef, isNew)
+  }
+  /**
+   * "Work on this PR": fetch the PR's head (`pullFetchPlan`, argv only) and open a FRESH worktree on
+   * the new local branch. An existing branch of that name is refused, never moved; a fork fetch whose
+   * worktree then fails is undone by deleting the branch it just made.
+   */
+  async pullWorktreeAdd(repoPath: string, wtPath: string, req: PullFetchRequest): Promise<worktreeOps.WorktreeOpResult> {
+    const plan = pullFetchPlan(req)
+    if (!plan) return { ok: false, message: 'Invalid pull request checkout.' }
+    if (isRemoteRepo(repoPath)) return REMOTE_WORKTREE_REFUSAL()
+    if (!repoPath || !wtPath || wtPath.startsWith('-')) return { ok: false, message: 'Invalid worktree path.' }
+    const refusal = worktreeTargetRefusal(wtPath, repoPath)
+    if (refusal) return { ok: false, message: refusal }
+    if ((await git(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${req.branch}`])).ok) {
+      return { ok: false, message: `The branch ${req.branch} already exists. Nothing was created.` }
+    }
+    const fetched = await git(repoPath, plan.fetch)
+    if (!fetched.ok) return { ok: false, message: `Could not fetch the pull request: ${fail(fetched).message}` }
+    const added = await worktreeOps.worktreeAdd(git, repoPath, wtPath, req.branch, plan.startPoint, plan.isNew)
+    // ponytail: a branch of the same name made by hand between the check above and the fetch would be
+    // fast-forwarded, and deleted here on a failed add; the window is one local git call wide.
+    if (!added.ok && !plan.isNew) await git(repoPath, ['branch', '-D', req.branch])
+    return added
   }
   worktreeMerge(
     repoPath: string,
@@ -611,6 +724,103 @@ export class GitService {
     if (!isValidRef(onto)) return { ok: false, message: 'Invalid branch name.' }
     const r = await git(cwd, ['rebase', onto.trim()])
     return r.ok ? { ok: true, message: r.out || `Rebased onto ${onto.trim()}.` } : fail(r)
+  }
+
+  /** `origin/<default>`, read from git (origin/HEAD, else origin/main, else origin/master). */
+  private async mainBase(cwd: string): Promise<string | null> {
+    const head = await git(cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
+    const candidates = [...(head.ok && head.out.trim() ? [head.out.trim()] : []), 'origin/main', 'origin/master']
+    for (const c of candidates) {
+      if (!c.startsWith('origin/') || !isValidRef(c)) continue
+      if ((await git(cwd, ['rev-parse', '--verify', '--quiet', `refs/remotes/${c}`])).ok) return c
+    }
+    return null
+  }
+
+  async mainDrift(cwd: string): Promise<MainDrift> {
+    if (!cwd) return { ok: false, reason: 'no-repo' }
+    // An SSH project's checkout is on the host; the quiet fetch runs local git only.
+    if (isRemoteRepo(cwd)) return { ok: false, reason: 'remote' }
+    const common = await git(cwd, ['rev-parse', '--git-common-dir'])
+    if (!common.ok || !common.out.trim()) return { ok: false, reason: 'no-repo' }
+    const origin = await git(cwd, ['remote', 'get-url', 'origin'])
+    if (!origin.ok || !origin.out.trim()) return { ok: false, reason: 'no-origin' }
+
+    let key = path.resolve(cwd, common.out.trim())
+    try {
+      key = fs.realpathSync(key)
+    } catch {
+      /* keep the resolved path */
+    }
+    const last = this.mainFetches.get(key)
+    const wait = last ? Math.min(MAIN_FETCH_EVERY_MS * 2 ** last.failures, MAIN_FETCH_BACKOFF_MAX_MS) : 0
+    let fetch: 'ok' | 'failed' | 'skipped' = 'skipped'
+    const now = this.now()
+    if (!last || now - last.at >= wait) {
+      // Claimed before the await, so a second caller inside the same fetch skips instead of racing.
+      this.mainFetches.set(key, { at: now, failures: last?.failures ?? 0 })
+      const ok = await quietFetchOrigin(cwd)
+      this.mainFetches.set(key, { at: now, failures: ok ? 0 : (last?.failures ?? 0) + 1 })
+      fetch = ok ? 'ok' : 'failed'
+    }
+
+    const base = await this.mainBase(cwd)
+    if (!base) return { ok: false, reason: 'no-default' }
+    const head = await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    const branch = head.out.trim()
+    if (!head.ok || !branch) return { ok: false, reason: 'no-default' }
+    if (branch === 'HEAD') return { ok: false, reason: 'detached' }
+    const counts = await git(cwd, ['rev-list', '--left-right', '--count', `${base}...HEAD`])
+    if (!counts.ok) return { ok: false, reason: 'no-default' }
+    const [behind, ahead] = counts.out.trim().split(/\s+/).map((n) => Number(n) || 0)
+    return { ok: true, base, branch, behind: behind ?? 0, ahead: ahead ?? 0, fetch }
+  }
+
+  async updateFromMain(cwd: string, mode: MainUpdateMode): Promise<MainUpdateResult> {
+    if (mode !== 'merge' && mode !== 'rebase') return { ok: false, reason: 'invalid', message: 'Unknown update mode.' }
+    // First of all: a rebase stopped at `edit` has a clean tree (and a detached HEAD), and aborting
+    // it on a failed update would throw the user's own work away.
+    if (!cwd || isRemoteRepo(cwd)) return { ok: false, reason: 'no-base', message: "Can't update this folder from here." }
+    if (await gitOpInProgress(cwd)) {
+      return { ok: false, reason: 'in-progress', message: 'A merge or rebase is already in progress here. Finish it first.' }
+    }
+    const drift = await this.mainDrift(cwd)
+    if (!drift.ok) {
+      const message =
+        drift.reason === 'detached'
+          ? 'This checkout is not on a branch.'
+          : drift.reason === 'no-origin'
+            ? 'This folder has no origin remote.'
+            : "Can't find origin's default branch here."
+      return { ok: false, reason: 'no-base', message }
+    }
+    const status = await git(cwd, ['status', '--porcelain', '--untracked-files=no'])
+    if (!status.ok) return { ok: false, reason: 'failed', message: fail(status).message }
+    if (status.out.trim()) {
+      return { ok: false, reason: 'dirty', message: 'This checkout has uncommitted changes. Commit or stash them first.' }
+    }
+    if (drift.behind === 0) return { ok: false, reason: 'up-to-date', message: `Already up to date with ${drift.base}.` }
+    const r = await git(cwd, mode === 'merge' ? ['merge', '--no-edit', drift.base] : ['rebase', drift.base])
+    if (r.ok) {
+      return { ok: true, message: mode === 'merge' ? `Merged ${drift.base} into ${drift.branch}.` : `Rebased ${drift.branch} onto ${drift.base}.` }
+    }
+    // A conflict is never resolved here: undo the operation so the tree is exactly as it was.
+    if (await gitOpInProgress(cwd)) {
+      const aborted = await git(cwd, [mode, '--abort'])
+      if (!aborted.ok) {
+        return {
+          ok: false,
+          reason: 'conflict',
+          message: `The ${mode} with ${drift.base} hit conflicts and could not be undone: ${fail(aborted).message} Finish or abort it in a terminal on ${drift.branch}.`
+        }
+      }
+      return {
+        ok: false,
+        reason: 'conflict',
+        message: `The ${mode} with ${drift.base} hit conflicts, so it was stopped and undone. Nothing changed. Resolve it in a terminal on ${drift.branch}.`
+      }
+    }
+    return { ok: false, reason: 'failed', message: fail(r).message }
   }
 
   async deleteBranch(cwd: string, name: string, force: boolean): Promise<GitResult> {

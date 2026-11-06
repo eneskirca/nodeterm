@@ -40,6 +40,11 @@ export function useContextLinkSync(live: LiveContextLinks): void {
         const edges = snapshot.edges.filter((e) => byId.has(e.source) && byId.has(e.target))
         Object.assign(map, buildLinkMap(edges, (id) => {
           const n = byId.get(id)!
+          const pull = n.type === 'pull' ? n.data.pull as { repository: string; pullNumber: number } | undefined : undefined
+          if (pull) {
+            return { id, title: n.data.title as string || id, sticky: false,
+              pull: { projectId: liveId, repository: pull.repository, pullNumber: pull.pullNumber } }
+          }
           const sticky = n.type === 'sticky'
           const agentId = n.type !== 'terminal' ? undefined : (
             n.data.agentId as string | undefined ??

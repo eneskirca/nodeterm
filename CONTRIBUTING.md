@@ -746,6 +746,37 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   credentials, license or pairing belongs in `src/shared/host-control.ts` instead — refused to every
   relay peer.
 
+- **A GitHub write made with the host's token is owner-only.** Every pull request node write,
+  "New pull request"'s create and the issues node's comment are in `OWNER_ONLY`
+  (`src/core/relay/access-policy.ts`): `githubIssues:pull-comment`, `:pull-review`, `:pull-merge`,
+  `:pull-request-reviewer`, `:pull-line-comment`, `:pull-create`, `:pull-update-branch`,
+  `:pull-auto-merge`, `:pull-auto-merge-off`, `:pull-file-viewed`, `:pull-thread-resolved`,
+  `:pull-apply-suggestion`, `:pull-labels`, `:pull-assignees`, `:pull-state`, `:pull-ready`,
+  `:pull-delete-branch`, `:pull-rerun-failed` and `:issue-comment`. Every relay
+  peer but the host's owner is refused, hosted Editors included, because the write posts as the host
+  owner on GitHub. Editor is shell access, not identity. All of them are also in `SCOPED_REFUSED`. The
+  `open-pr` canvas-control verb only opens or links a node and has no path to a GitHub write. A
+  verified agent's `gh pr create` (Claude Code and Codex PostToolUse, `src/shared/pr-created-hook.ts`)
+  runs that same `open-pr` case from the hook payload alone, desktop only. A verified agent's own
+  `gh` PR write to the project's repository (`src/shared/pr-write-hook.ts`) is denied by its
+  PreToolUse hook with a reason that names `pr-propose`, so it reaches GitHub only through the
+  node's Confirm. That gate FAILS OPEN on every error and timeout (a broken gate must not wedge an
+  agent), so it is a habit guard, not a sandbox: never rely on it to keep a write from GitHub.
+  `pr-show` only moves a linked pull node's view. `pr-propose` only stages one write on the node, and
+  only the user's Confirm there sends it (armed one second after the proposal appears, behind the
+  node's own guards). `src/core/github/pull-writes.guard.test.ts` fails if a control source names a
+  write. A new channel that writes to GitHub as the host owner goes in both sets.
+
+- **Two local pull node controls are owner-only too.** Notes for agents (`pullNotes:list`, `:add`,
+  `:delete`, `:clear`) write the host owner's disk. The Watch switch (`githubIssues:pull-watch-set`)
+  makes the host poll GitHub with its token and wake an agent. Both are in `OWNER_ONLY` and
+  `SCOPED_REFUSED`, and their refusal names the control, not GitHub (`OWNER_ONLY_LOCAL`). The pull
+  node's newer reads (`githubIssues:pull-check-log`, `:pull-since-review`,
+  `:pull-since-review-file-contents`, `:pull-watch`) are classified like the other pull reads:
+  `EDITOR_ONLY`, a `relay-project-scope.ts` row, and `SCOPED` with a project check. Watch wakes
+  arrive as agent messages, so they need agent messaging on for the project. CLAUDE.md has the
+  Watch rules (search "Pull node Watch").
+
 - **Live links: a new broadcast channel needs nothing, a new per-session pty channel needs a
   decision.** Live-link viewers are quiet clients, so no broadcast ever reaches them. A per-session pty
   event reaches a viewer only once it is added to `watcherEventAllowed`

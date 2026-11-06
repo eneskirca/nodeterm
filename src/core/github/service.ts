@@ -14,6 +14,7 @@ import type {
   IssuePageResult,
   LabelPageResult,
   ListIssueOptions,
+  GitHubIssueUser,
   NormalisedProjectKanbanGitHub,
   UpdateIssueInput
 } from '../../shared/github-issues'
@@ -26,8 +27,56 @@ import {
 import { classifyGitHubFailure } from './failure'
 import type { GitHubRequestCoordinator } from './request-coordinator'
 import type { PullStatusRead } from './graphql-pulls'
+import { isPullTimelineCursor, type GitHubPullTimelineResult, type PullTimelinePage } from '../../shared/github-pull-timeline'
 import { GitHubPullStatusTracker } from './pull-status-tracker'
 import type { GitHubPullBoard, GitHubPullChecksResult, PullLifecycle } from '../../shared/github-pull-status'
+import { actionsJobOf, type GitHubPullCheckLogResult } from '../../shared/github-pull-check-log'
+import type {
+  GitHubPullConversationResult,
+  GitHubIssueConversationResult,
+  GitHubPullDetail,
+  GitHubPullDetailResult,
+  GitHubPullFileContentsResult,
+  GitHubPullFilesResult,
+  PullFile,
+  PullFileContents,
+  PullFileRead,
+  PullFileSide,
+  PullFilesPage,
+  PullConversationItem,
+  PullConversationPage,
+  PullLineComment,
+  PullLineCommentRequest,
+  PullLineCommentWrite,
+  PullLineCommentsPage,
+  PullLineDraft,
+  PullReadFailure,
+  GitHubRepoMergeMethodsResult,
+  GitHubRepoCollaboratorsResult,
+  GitHubPullForBranchResult,
+  PullCreateDraft,
+  PullCreateResult,
+  PullMergeMethod,
+  PullRefusal,
+  PullReviewEvent,
+  PullViewedState,
+  PullWriteReason,
+  PullWriteResult
+} from '../../shared/github-pull-detail'
+import {
+  GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft, isPullPath
+} from '../../shared/github-pull-detail'
+import { parseGitHubRepository } from './config'
+import { mergePullReviewers, type GitHubRepoLabelsResult, type PullLabel, type PullSidebar, type PullSidebarRead } from '../../shared/github-pull-sidebar'
+import {
+  isCommitSha, type GitHubPullCommitFilesResult, type GitHubPullCommitsResult, type PullCommit, type PullCommitFilesPage,
+  type PullCommitsPage
+} from '../../shared/github-pull-commits'
+import { suggestionOf, withSuggestion } from './pull-suggestion'
+import {
+  MAX_COMPARE_FILES, type GitHubPullSinceReviewResult, type PullCompare, type PullViewerReview
+} from '../../shared/github-pull-since-review'
+import type { GitHubHostError } from './host'
 
 const MAX_ISSUES = 10_000
 const MAX_CACHE_BYTES = 64 * 1024 * 1024
@@ -52,7 +101,19 @@ export const FULL_REFRESH_MIN_INTERVAL_MS = 120_000
  *  shares one read, and a project gets at most `PULL_CHECKS_PER_MINUTE` reads a minute. Both are
  *  checked before anything is resolved or sent. */
 export const PULL_CHECKS_REUSE_MS = 15_000
+/** Query bounds, checked before anything is read. */
+const MAX_QUERY_SEARCH = 200
+const MAX_QUERY_LABELS = 50
+const MAX_QUERY_LABEL = 100
 export const PULL_CHECKS_PER_MINUTE = 10
+
+/** One review comment as "Apply suggestion" needs it (`GET /pulls/comments/{id}`). `line` null =
+ *  outdated; `startLine` null = a one-line comment; `startSide` = the side `startLine` counts on;
+ *  `commitId` = the head its line refers to. */
+export interface PullSuggestionComment {
+  pullNumber: number; path: string; side: 'LEFT' | 'RIGHT'; startSide: 'LEFT' | 'RIGHT'; line: number | null; startLine: number | null
+  commitId: string; body: string; author: string | null
+}
 
 export interface GitHubIssuesClientLike {
   listIssues(repository: string, options: ListIssueOptions): Promise<IssuePageResult>
@@ -77,6 +138,74 @@ export interface GitHubIssuesClientLike {
    *  then shows none, which is the honest answer. */
   pullRequestStatuses?(repository: string): Promise<PullStatusRead>
   pullRequestChecks?(repository: string, pullNumber: number): Promise<GitHubPullChecksResult>
+  /** One PR's overview for the pull request node. Optional for the same reason as the two above. */
+  getPull?(repository: string, pullNumber: number): Promise<GitHubPullDetail>
+  /** One page each of a PR's issue comments and reviews (the Conversation tab). Optional, as above. */
+  listPullComments?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
+  listPullReviews?(repository: string, pullNumber: number, page: number): Promise<PullConversationPage>
+  /** One page of a PR's changed files, and one file at one commit (the Files tab). Optional, as above. */
+  listPullFiles?(repository: string, pullNumber: number, page: number): Promise<PullFilesPage>
+  getFileAt?(repository: string, path: string, ref: string): Promise<PullFileRead>
+  /** The merge base of two commits, the base side GitHub diffs a PR against. Optional, as above. */
+  mergeBase?(repository: string, base: string, head: string): Promise<string>
+  /** The repository's allowed merge methods, and a merge tied to the head `sha`. Optional, as above. */
+  repoMergeMethods?(repository: string): Promise<{ methods: PullMergeMethod[]; autoMerge: boolean }>
+  mergePull?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
+  /** "Update branch": merge the base into the head, tied to the head `sha`. Optional, as above. */
+  updatePullBranch?(repository: string, pullNumber: number, sha: string): Promise<void>
+  /** "Merge when ready": GitHub's auto-merge on (tied to the head `sha`) and off. Optional, as above. */
+  enablePullAutoMerge?(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void>
+  disablePullAutoMerge?(repository: string, pullNumber: number): Promise<void>
+  pullViewedStates?(repository: string, pullNumber: number): Promise<Record<string, PullViewedState>>
+  setFileViewed?(repository: string, pullNumber: number, path: string, viewed: boolean): Promise<void>
+  /** Resolve or unresolve the review thread whose first comment is `threadId`. Optional, as above. */
+  setReviewThreadResolved?(repository: string, pullNumber: number, threadId: number, resolved: boolean): Promise<void>
+  /** "Apply suggestion": the comment, one file with its blob SHA, and a contents-API commit pinned
+   *  to that SHA. Optional, as above. */
+  pullSuggestionComment?(repository: string, commentId: number): Promise<PullSuggestionComment>
+  fileBlobAt?(repository: string, path: string, ref: string): Promise<{ sha: string; text: string }>
+  putFile?(repository: string, file: { path: string; branch: string; sha: string; text: string; message: string }): Promise<void>
+  /** Submit one review on a PR (the node's Approve / Request changes). Optional, as above. */
+  reviewPull?(
+    repository: string, pullNumber: number,
+    review: { event: PullReviewEvent; body: string; commitId: string; comments?: PullLineDraft[] }
+  ): Promise<{ id: number }>
+  /** The review comments on diff lines, one page, and one new line comment or reply. Optional, as above. */
+  listPullLineComments?(repository: string, pullNumber: number, page: number): Promise<PullLineCommentsPage>
+  pullResolvedThreads?(repository: string, pullNumber: number): Promise<number[]>
+  /** The Commits tab: one page of a PR's commits, and one page of one commit's files. Optional, as above. */
+  listPullCommits?(repository: string, pullNumber: number, after?: string): Promise<PullCommitsPage>
+  getCommitFiles?(repository: string, sha: string, page: number): Promise<PullCommitFilesPage>
+  createPullLineComment?(
+    repository: string, pullNumber: number,
+    comment: PullLineCommentWrite
+  ): Promise<{ id: number }>
+  /** The node's "Request review": the collaborators, and one reviewer request. Optional, as above. */
+  listCollaborators?(repository: string): Promise<GitHubIssueUser[]>
+  requestPullReviewer?(repository: string, pullNumber: number, login: string): Promise<void>
+  /** The sidebar's label and assignee edits, one name per call. Optional, as above. */
+  setPullLabel?(repository: string, pullNumber: number, label: string, add: boolean): Promise<void>
+  setPullAssignee?(repository: string, pullNumber: number, login: string, add: boolean): Promise<void>
+  /** The merge box's close / reopen, ready for review and delete head branch. Optional, as above. */
+  setPullState?(repository: string, pullNumber: number, open: boolean): Promise<void>
+  markPullReady?(repository: string, pullNumber: number): Promise<void>
+  deleteBranchRef?(repository: string, branch: string): Promise<void>
+  /** The Checks tab's Actions extras: a failed job's log tail, and re-run a run's failed jobs. Optional, as above. */
+  jobLogTail?(repository: string, jobId: number): Promise<string[]>
+  rerunFailedJobs?(repository: string, runId: number): Promise<void>
+  /** "New pull request": the form's start, and the create. Optional, as above. */
+  pullForBranch?(repository: string, head: string): Promise<{ defaultBranch: string; existing?: number }>
+  createPull?(repository: string, pull: PullCreateDraft): Promise<{ number: number }>
+  /** The pull node sidebar (one GraphQL read). Optional, as above. */
+  pullSidebar?(repository: string, pullNumber: number): Promise<PullSidebarRead>
+  /** One page of a PR's Conversation timeline (GraphQL `timelineItems`). Optional, as above. */
+  pullTimeline?(repository: string, pullNumber: number, after?: string): Promise<PullTimelinePage>
+  /** One page of an issue's timeline (GraphQL `timelineItems`). Optional, as above. */
+  issueTimeline?(repository: string, issueNumber: number, after?: string): Promise<PullTimelinePage>
+  /** "Since my last review" (F-10): the viewer's latest review, and a compare of two commits
+   *  (null = no such comparison). Optional, as above. */
+  viewerLatestReview?(repository: string, pullNumber: number): Promise<PullViewerReview | null>
+  compareCommits?(repository: string, base: string, head: string): Promise<PullCompare | null>
 }
 
 export interface GitHubIssueProjectContext {
@@ -154,6 +283,97 @@ type RepositoryControl = {
   clearCutoff: number
   deletion?: Promise<void>
 }
+
+/** The host's coded refusals (host.ts `GitHubHostError`; read by shape at runtime, since host
+ *  imports this module, but keyed by its code union so a renamed code fails to compile). */
+const PULL_REFUSALS: Partial<Record<GitHubHostError['code'], PullRefusal>> = {
+  'not-approved': 'not-approved',
+  'not-authenticated': 'signed-out',
+  'invalid-token': 'signed-out',
+  'repository-mismatch': 'repository-mismatch',
+  'project-not-found': 'not-configured',
+  'invalid-configuration': 'not-configured',
+  'repository-not-found': 'not-configured'
+}
+
+/** What a failed pull read means, decided only by `classifyGitHubFailure`. */
+function pullReadFailure(error: unknown): { reason: PullReadFailure; retryAt?: number } {
+  const failure = classifyGitHubFailure(error)
+  if (failure.kind === 'unauthorized') return { reason: 'signed-out' }
+  if (failure.kind === 'not-found') return { reason: 'not-found' }
+  if (failure.kind === 'rate-limited') {
+    return failure.retryAt !== undefined ? { reason: 'throttled', retryAt: failure.retryAt } : { reason: 'throttled' }
+  }
+  return { reason: 'unreachable' }
+}
+
+/** A host refusal (coded context error) as the node names it, else undefined. */
+function pullRefusalOf(error: unknown): PullRefusal | undefined {
+  const code = (error as { code?: unknown } | null)?.code
+  return typeof code === 'string' ? PULL_REFUSALS[code as GitHubHostError['code']] : undefined
+}
+
+/** Why a pull write that reached GitHub (or the coordinator) did not land. A write has answers a
+ *  read never gets (own-pull, a 403 that means "may not write", a 422); everything else is
+ *  decided by `classifyGitHubFailure`, as for reads. */
+function pullWriteFailure(error: unknown): PullWriteReason {
+  const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+  if (code === 'own-pull') return 'own-pull'
+  if (code === 'suggestion-stale' || code === 'from-fork') return code
+  // A write the token may not make: a 403 that is not a rate limit.
+  if (code === 'insufficient-permission' || (code === 'request-failed' && status === 403)) {
+    return 'forbidden'
+  }
+  if (code === 'request-failed' && status === 422) return 'validation'
+  // A merge: 409 = the head is no longer the sha the node sent; 405 = GitHub will not merge it now.
+  if (code === 'request-failed' && status === 409) return 'head-moved'
+  if (code === 'request-failed' && status === 405) return 'not-mergeable'
+  const failure = classifyGitHubFailure(error)
+  if (failure.kind === 'unauthorized') return 'signed-out'
+  if (failure.kind === 'not-found') return 'not-found'
+  if (failure.kind === 'rate-limited') return 'throttled'
+  return 'network'
+}
+
+/** Update branch and auto-merge are tied to a head like a merge, but GitHub answers a head that is
+ *  no longer the one sent with 422 there (a merge gets 409). ponytail: any 422 reads as head-moved
+ *  (for auto-merge also "the PR can merge now"); either way the node reloads and the user looks again. */
+async function headMovedOn422<T>(write: Promise<T>): Promise<T> {
+  try {
+    return await write
+  } catch (error) {
+    const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+    if (code === 'request-failed' && status === 422) throw Object.assign(new Error('head-moved'), { code, status: 409 })
+    throw error
+  }
+}
+
+/** What every pull node read answers: fresh (or the last good answer, marked stale), a refusal
+ *  made before any request, or a failure. `GitHubPullDetailResult` and the conversation's share it. */
+type PullOk = { status: 'ok'; observedAt: number; stale?: PullReadFailure; retryAt?: number }
+type PullResult<O extends PullOk> =
+  | O
+  | { status: 'refused'; reason: PullRefusal }
+  | { status: 'failed'; reason: PullReadFailure; retryAt?: number }
+
+/** A read that produced no fresh answer: the last good answer marked stale, else the failure. */
+function stalePull<O extends PullOk>(last: O | undefined, error: unknown): PullResult<O> {
+  const failure = pullReadFailure(error)
+  return last
+    ? { ...last, stale: failure.reason, ...(failure.retryAt !== undefined ? { retryAt: failure.retryAt } : {}) }
+    : { status: 'failed', ...failure }
+}
+
+/** Pull read entries kept for the stale fallback and the refresh floor. Oldest go first. */
+const MAX_PULL_READS = 100
+
+/** Pages of 100 read per list for the Conversation tab; past it the node says the rest is on GitHub. */
+const MAX_CONVERSATION_PAGES = 10
+
+/** Files the Files tab lists (3 pages of 100); past it the node says the rest is on GitHub. */
+const MAX_PULL_FILES = 300
+/** Pages of 100 commits the Commits tab reads; GitHub lists at most 250 commits of a PR anyway. */
+const MAX_COMMIT_PAGES = 3
 
 function repositoryKey(context: GitHubIssueServiceContext): string {
   return `${context.userId}\0${context.repository}`
@@ -247,6 +467,18 @@ export class GitHubIssueService {
   private readonly pulls: GitHubPullStatusTracker
   private readonly checkReads = new Map<string, { at: number; result: Promise<GitHubPullChecksResult> }>()
   private readonly checkStarts = new Map<string, number[]>()
+  /** Allowed merge methods per identity and repository, held for this core's run (GitHub's repo
+   *  settings rarely change, and a merge GitHub refuses still says why). Successful reads only. */
+  private readonly mergeMethods = new Map<string, { methods: PullMergeMethod[]; autoMerge: boolean }>()
+  private readonly collaborators = new Map<string, GitHubIssueUser[]>()
+  private readonly repoLabelLists = new Map<string, PullLabel[]>()
+  /** Merge base per `base\0head` SHA pair. Commits are immutable, so an answer never ages. */
+  private readonly mergeBases = new Map<string, string>()
+  private readonly pullReads = new Map<string, {
+    last?: PullOk
+    floorUntil: number
+    reading?: Promise<PullResult<PullOk>>
+  }>()
   private operationSequence = 0
   private readonly now: () => number
   private readonly schedule: NonNullable<ServiceOptions['setInterval']>
@@ -397,7 +629,18 @@ export class GitHubIssueService {
     if (!Number.isSafeInteger(request.pageSize) || request.pageSize < 1 || request.pageSize > 50) {
       throw new Error('invalid-query')
     }
+    // Bounded before anything is read: both strings arrive from a renderer or a relay peer.
+    if ((request.search !== undefined && (typeof request.search !== 'string' || request.search.length > MAX_QUERY_SEARCH)) ||
+        (request.labelFilter !== undefined && (!Array.isArray(request.labelFilter) ||
+          request.labelFilter.length > MAX_QUERY_LABELS ||
+          request.labelFilter.some((label) => typeof label !== 'string' || label.length > MAX_QUERY_LABEL)))) {
+      throw new Error('invalid-query')
+    }
     const context = await this.cacheContext(request.projectId)
+    if (request.repository !== undefined &&
+        (typeof request.repository !== 'string' || request.repository.toLowerCase() !== context.repository.toLowerCase())) {
+      throw new Error('repository-mismatch')
+    }
     const { state, userId } = await this.cachedState(context)
     const throttle = userId ? this.options.coordinator.throttle(userId) : undefined
     // One snapshot holds both kinds (they arrive on the same endpoint), so the kind filter is
@@ -414,7 +657,11 @@ export class GitHubIssueService {
         String(item.number).includes(search))
       .filter((item) => filters.size === 0 || item.labels.some((label) =>
         filters.has(foldLabel(label.name))))
-    const visible = filtered.filter((item) => item.columnId === request.columnId)
+    // The issues node lists every column at once, open only, optionally the signed-in user's.
+    const visible = filtered.filter((item) => request.anyColumn === true || item.columnId === request.columnId)
+      .filter((item) => request.openOnly !== true || item.state === 'open')
+      .filter((item) => request.assignedToMe !== true ||
+        (!!userId && item.assignees.some((user) => String(user.id) === userId)))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.number - a.number)
     const offset = request.cursor ? Number(request.cursor) : 0
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid-query')
@@ -737,7 +984,12 @@ export class GitHubIssueService {
   async pullStatus(request: { projectId: string }): Promise<GitHubPullBoard> {
     const context = await this.cacheContext(request.projectId)
     const { key } = await this.cachedState(context)
-    return this.pulls.board(key)
+    const board = this.pulls.board(key)
+    // The add menu's open PR list: avatars of open PR authors, from the hardened fetcher's cache.
+    const avatarDataUrls = await this.pullAvatars(board.pulls
+      .filter((pull) => pull.lifecycle === 'open' || pull.lifecycle === 'draft')
+      .map((pull) => pull.authorUser ?? null))
+    return avatarDataUrls ? { ...board, avatarDataUrls } : board
   }
 
   /**
@@ -872,6 +1124,987 @@ export class GitHubIssueService {
         ? { status: 'hidden' }
         : { status: 'unavailable' }
     }
+  }
+
+  /** One PR's overview for the pull request node (`pullRead` holds the refusal, floor and stale rules).
+   *  `background` (the Watch poller) is held by the rate budget below the floor, like the board poll
+   *  (`refreshWithinFloor`): it asks `core` (the REST read) and `graphql` (the sidebar, and the
+   *  checks Watch reads next) before anything is sent. A user-opened read never sets it. */
+  async pullDetail(request: { projectId: string; repository: string; pullNumber: number; background?: boolean }): Promise<GitHubPullDetailResult> {
+    if (request?.background === true) {
+      let userId: string
+      try {
+        userId = (await this.options.contextForProject(request.projectId)).userId
+      } catch (error) {
+        return this.pullContextFailure(error)
+      }
+      const throttle = this.options.coordinator.throttle(userId) ??
+        this.options.coordinator.throttle(userId, this.now(), 'graphql')
+      if (throttle) return { status: 'failed', reason: 'throttled', retryAt: throttle.until }
+    }
+    return this.pullRead('detail', request, async (captured, repository, pullNumber) => {
+      if (!captured.client.getPull) return null
+      const [read, sidebar] = await Promise.all([
+        this.readWithEpoch(captured, () => captured.client.getPull!(repository, pullNumber)),
+        this.pullSidebar(captured, repository, pullNumber)
+      ])
+      const detail = sidebar ? { ...read, sidebar } : read
+      // The numeric id, not the login: a login can be renamed.
+      const ownPull = detail.author !== null && String(detail.author.id) === captured.userId
+      const avatarDataUrls = await this.pullAvatars([
+        detail.author, detail.mergedBy ?? null, ...(detail.requestedReviewers ?? []), ...(sidebar?.reviewers ?? []).map((reviewer) => reviewer.user),
+        ...(sidebar?.assignees ?? []), ...(sidebar?.participants ?? [])
+      ])
+      return {
+        status: 'ok', detail, observedAt: this.now(), ...(ownPull ? { ownPull: true as const } : {}),
+        ...(avatarDataUrls ? { avatarDataUrls } : {})
+      }
+    })
+  }
+
+  /**
+   * One PR's issue comments and submitted reviews, merged into one list oldest first, for the
+   * Conversation tab. Same refusals, floor and stale rules as `pullDetail`. Each page is its own
+   * coordinated read; at most `MAX_CONVERSATION_PAGES` per list, past which `truncated` is set.
+   */
+  async pullConversation(
+    request: { projectId: string; repository: string; pullNumber: number }
+  ): Promise<GitHubPullConversationResult> {
+    return this.pullRead('conversation', request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.listPullComments || !client.listPullReviews) return null
+      const pages = async <T>(list: (page: number) => Promise<{ items: T[]; nextPage?: number }>) => {
+        const items: T[] = []
+        let page = 1
+        for (let read = 0; read < MAX_CONVERSATION_PAGES; read += 1) {
+          const result = await this.readWithEpoch(captured, () => list(page))
+          items.push(...result.items)
+          if (!result.nextPage) return { items, truncated: false }
+          page = result.nextPage
+        }
+        return { items, truncated: true }
+      }
+      const listLines = client.listPullLineComments?.bind(client)
+      const readResolved = client.pullResolvedThreads?.bind(client)
+      const [comments, reviews, lines, resolvedThreads] = await Promise.all([
+        pages<PullConversationItem>((page) => client.listPullComments!(repository, pullNumber, page)),
+        pages<PullConversationItem>((page) => client.listPullReviews!(repository, pullNumber, page)),
+        // ponytail: a client without line comments answers none; the real client always has them.
+        listLines
+          ? pages<PullLineComment>((page) => listLines(repository, pullNumber, page)
+            .then(({ comments: items, nextPage }) => ({ items, nextPage })))
+          : { items: [], truncated: false },
+        // Only "Send to agent" uses it: a failed read leaves it unknown, never fails the tab.
+        readResolved
+          ? this.readWithEpoch(captured, () => readResolved(repository, pullNumber)).catch(() => undefined)
+          : undefined
+      ])
+      const items = [...comments.items, ...reviews.items].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+      const avatarDataUrls = await this.pullAvatars([...items, ...lines.items].map((item) => item.author))
+      return {
+        status: 'ok', items, lineComments: lines.items, truncated: comments.truncated || reviews.truncated || lines.truncated,
+        ...(resolvedThreads ? { resolvedThreads } : {}),
+        ...(avatarDataUrls ? { avatarDataUrls } : {}),
+        observedAt: this.now()
+      }
+    })
+  }
+
+  /**
+   * One page of a PR's Conversation timeline, oldest first; `after` = the page's cursor (absent = the
+   * first page). Each page is held apart under the same refusals, floor and stale rules as `pullDetail`.
+   */
+  async pullTimeline(
+    request: { projectId: string; repository: string; pullNumber: number; after?: string }
+  ): Promise<GitHubPullTimelineResult> {
+    const after = request?.after
+    if (after !== undefined && !isPullTimelineCursor(after)) return { status: 'refused', reason: 'not-configured' }
+    return this.pullRead(after ? `timeline\0${after}` : 'timeline', request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.pullTimeline) return null
+      const page = await this.readWithEpoch(captured, () => client.pullTimeline!(repository, pullNumber, after))
+      const avatarDataUrls = await this.pullAvatars([page.author ?? null, ...page.items.flatMap((item) =>
+        item.kind === 'assigned' || item.kind === 'unassigned' ? [item.actor, item.assignee] : [item.actor])])
+      return { status: 'ok', ...page, observedAt: this.now(), ...(avatarDataUrls ? { avatarDataUrls } : {}) }
+    })
+  }
+
+  /**
+   * One PR's changed files for the Files tab, 100 per page, at most `MAX_PULL_FILES`, past which
+   * `truncated` is set. Same refusals, floor and stale rules as `pullDetail`.
+   */
+  async pullFiles(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullFilesResult> {
+    return this.pullRead('files', request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.listPullFiles) return null
+      const files: PullFile[] = []
+      let page: number | undefined = 1
+      while (page && files.length < MAX_PULL_FILES) {
+        const next: number = page
+        const result = await this.readWithEpoch(captured, () => client.listPullFiles!(repository, pullNumber, next))
+        files.push(...result.files)
+        // An empty page ends the list even if it names a next one, or a bad answer loops forever.
+        page = result.files.length ? result.nextPage : undefined
+      }
+      // Only the Viewed boxes use it: a failed read leaves them unknown, never fails the tab.
+      const readViewed = client.pullViewedStates?.bind(client)
+      const viewed = readViewed
+        ? await this.readWithEpoch(captured, () => readViewed(repository, pullNumber)).catch(() => undefined)
+        : undefined
+      const listed = files.slice(0, MAX_PULL_FILES).map((file) => {
+        const state = viewed && Object.hasOwn(viewed, file.path) ? viewed[file.path] : undefined
+        return state ? { ...file, viewerViewedState: state } : file
+      })
+      return {
+        status: 'ok', files: listed, truncated: !!page || files.length > MAX_PULL_FILES,
+        observedAt: this.now()
+      }
+    })
+  }
+
+  /**
+   * The base and head versions of one changed file: head at the latest `pullDetail` head, base at
+   * the merge base of that base and head (what GitHub's diff is against). A rename's base is read
+   * from its previous path; the missing side of an added or removed file is `empty` (no read). A
+   * binary file or one over 1 MB answers `unavailable`. The SHAs are part of the key, so a moved
+   * head reads again; the floor and stale rules are `pullRead`'s.
+   */
+  async pullFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; path: string }
+  ): Promise<GitHubPullFileContentsResult> {
+    if (typeof request?.path !== 'string') return { status: 'refused', reason: 'not-configured' }
+    const detail = await this.pullDetail(request)
+    if (detail.status !== 'ok') return detail
+    const listed = await this.pullFiles(request)
+    if (listed.status !== 'ok') return listed
+    const file = listed.files.find((item) => item.path === request.path)
+    const { base, head } = detail.detail
+    const mergeBase = await this.pullMergeBase(request, base.sha, head.sha)
+    if (mergeBase.status !== 'ok') return mergeBase
+    return this.pullRead(`contents\0${base.sha}\0${head.sha}\0${request.path}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.getFileAt) return null
+      if (!file) return { status: 'ok', contents: { kind: 'unavailable', reason: 'not-in-pull' }, observedAt: this.now() }
+      return this.pullFileDiff(captured, repository, file, mergeBase.sha, head.sha)
+    })
+  }
+
+  /**
+   * One PR's commits, oldest first, for the Commits tab: GraphQL pages of 100 by cursor, at most
+   * `MAX_COMMIT_PAGES`, past which `truncated` is set. Same refusals, floor and stale rules as `pullDetail`.
+   */
+  async pullCommits(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullCommitsResult> {
+    return this.pullRead('commits', request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.listPullCommits) return null
+      const commits: PullCommit[] = []
+      let after: string | undefined
+      for (let read = 0; read < MAX_COMMIT_PAGES; read += 1) {
+        const cursor = after
+        const page = await this.readWithEpoch(captured, () => client.listPullCommits!(repository, pullNumber, cursor))
+        commits.push(...page.commits)
+        after = page.after
+        if (!after) break
+      }
+      const avatarDataUrls = await this.pullAvatars(commits.map((commit) => commit.author))
+      return {
+        status: 'ok', commits, truncated: !!after, observedAt: this.now(), ...(avatarDataUrls ? { avatarDataUrls } : {})
+      }
+    })
+  }
+
+  /** The files one commit changed and its first parent, for that commit's own diff. Pages and cap
+   *  as `pullFiles`; rules as `pullDetail`. A SHA that is not a full commit SHA, or not one of this
+   *  PR's commits (the held `pullCommits` read), is refused with no commit request. */
+  async pullCommitFiles(
+    request: { projectId: string; repository: string; pullNumber: number; sha: string }
+  ): Promise<GitHubPullCommitFilesResult> {
+    if (!isCommitSha(request?.sha)) return { status: 'refused', reason: 'not-configured' }
+    const { sha } = request
+    const commits = await this.pullCommits(request)
+    if (commits.status !== 'ok') return commits
+    // ponytail: a commit past the `MAX_COMMIT_PAGES` cap is refused too; the Commits tab never lists it.
+    if (!commits.commits.some((commit) => commit.oid === sha)) return { status: 'refused', reason: 'not-configured' }
+    return this.pullRead(`commit-files\0${sha}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.getCommitFiles) return null
+      const files: PullFile[] = []
+      let parent: string | undefined
+      let page: number | undefined = 1
+      while (page && files.length < MAX_PULL_FILES) {
+        const next: number = page
+        const result = await this.readWithEpoch(captured, () => client.getCommitFiles!(repository, sha, next))
+        files.push(...result.files)
+        parent ??= result.parent
+        page = result.nextPage
+      }
+      return {
+        status: 'ok', files: files.slice(0, MAX_PULL_FILES), truncated: !!page || files.length > MAX_PULL_FILES,
+        ...(parent ? { parent } : {}), observedAt: this.now()
+      }
+    })
+  }
+
+  /**
+   * One file of one commit as a diff: its first parent against the commit, the Files tab's path and
+   * answer (`pullFileContents`). A root commit's base side is `empty`; a path the commit did not
+   * change answers `unavailable: not-in-pull`.
+   */
+  async pullCommitFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; sha: string; path: string }
+  ): Promise<GitHubPullFileContentsResult> {
+    if (typeof request?.path !== 'string') return { status: 'refused', reason: 'not-configured' }
+    const listed = await this.pullCommitFiles(request)
+    if (listed.status !== 'ok') return listed
+    const { sha, path } = request
+    const file = listed.files.find((item) => item.path === path)
+    return this.pullRead(`commit-contents\0${sha}\0${path}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.getFileAt) return null
+      if (!file) return { status: 'ok', contents: { kind: 'unavailable', reason: 'not-in-pull' }, observedAt: this.now() }
+      return this.pullFileDiff(captured, repository, file, listed.parent, sha)
+    })
+  }
+
+  /**
+   * "Since my last review" (F-10): the viewer's latest submitted review, compared to the head of
+   * the latest `pullDetail` (three-dot compare). The head is part of the key, so a push reads again.
+   * A force-push answers `unavailable` (the reviewed commit is gone, or the head no longer contains
+   * it), never a failure. Same refusals, floor and stale rules as `pullDetail`.
+   */
+  async pullSinceReview(request: { projectId: string; repository: string; pullNumber: number }): Promise<GitHubPullSinceReviewResult> {
+    const detail = await this.pullDetail(request)
+    if (detail.status !== 'ok') return detail
+    const head = detail.detail.head.sha
+    return this.pullRead(`since-review\0${head}`, request, async (captured, repository, pullNumber) => {
+      const { client } = captured
+      if (!client.viewerLatestReview || !client.compareCommits) return null
+      const review = await this.readWithEpoch(captured, () => client.viewerLatestReview!(repository, pullNumber))
+      const ok = (since: Extract<GitHubPullSinceReviewResult, { status: 'ok' }>['since']) =>
+        ({ status: 'ok' as const, since, observedAt: this.now() })
+      if (!review) return ok({ kind: 'none' })
+      if (review.commitOid === head) return ok({ kind: 'current', ...review })
+      const compared = await this.readWithEpoch(captured, () => client.compareCommits!(repository, review.commitOid, head))
+      if (!compared) return ok({ kind: 'unavailable', reason: 'commit-gone', ...review })
+      if (compared.status === 'identical') return ok({ kind: 'current', ...review })
+      if (compared.status !== 'ahead') return ok({ kind: 'unavailable', reason: 'history-rewritten', ...review })
+      return ok({
+        kind: 'moved', ...review, head, commits: compared.aheadBy, files: compared.files,
+        truncated: compared.files.length >= MAX_COMPARE_FILES
+      })
+    })
+  }
+
+  /** One file of `pullSinceReview` as a diff: the reviewed commit against the head. With nothing to
+   *  compare, or a path the comparison does not list, it answers `unavailable: not-in-pull`. */
+  async pullSinceReviewFileContents(
+    request: { projectId: string; repository: string; pullNumber: number; path: string }
+  ): Promise<GitHubPullFileContentsResult> {
+    if (typeof request?.path !== 'string') return { status: 'refused', reason: 'not-configured' }
+    const since = await this.pullSinceReview(request)
+    if (since.status !== 'ok') return since
+    const { path } = request
+    const notInPull = { status: 'ok' as const, contents: { kind: 'unavailable' as const, reason: 'not-in-pull' as const }, observedAt: this.now() }
+    if (since.since.kind !== 'moved') return notInPull
+    const { commitOid, head, files } = since.since
+    const file = files.find((item) => item.path === path)
+    if (!file) return notInPull
+    return this.pullRead(`since-review-contents\0${commitOid}\0${head}\0${path}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.getFileAt) return null
+      return this.pullFileDiff(captured, repository, file, commitOid, head)
+    })
+  }
+
+  /**
+   * Both sides of one changed file: the base at `baseRef`, the head at `headRef`. An added file,
+   * or no `baseRef` (a root commit), reads an empty base; a removed file reads an empty head.
+   * The caller has checked `client.getFileAt`.
+   */
+  private async pullFileDiff(
+    captured: GitHubIssueServiceContext, repository: string,
+    file: Pick<PullFile, 'path' | 'previousPath' | 'status'>, baseRef: string | undefined, headRef: string
+  ): Promise<PullOk & { contents: PullFileContents }> {
+    const side = async (at: string, ref: string): Promise<PullFileRead> =>
+      this.readWithEpoch(captured, () => captured.client.getFileAt!(repository, at, ref))
+    const [before, after] = await Promise.all([
+      file.status === 'added' || !baseRef ? { kind: 'empty' as const } : side(file.previousPath ?? file.path, baseRef),
+      file.status === 'removed' ? { kind: 'empty' as const } : side(file.path, headRef)
+    ])
+    const unavailable = [before, after].find((item) => item.kind === 'unavailable')
+    return {
+      status: 'ok',
+      contents: unavailable?.kind === 'unavailable'
+        ? { kind: 'unavailable', reason: unavailable.reason }
+        : { kind: 'diff', base: before as PullFileSide, head: after as PullFileSide },
+      observedAt: this.now()
+    }
+  }
+
+  /** The merge base of `base` and `head`, read once per pair through `pullRead`. */
+  private async pullMergeBase(
+    request: { projectId: string; repository: string; pullNumber: number }, base: string, head: string
+  ): Promise<PullResult<PullOk & { sha: string }>> {
+    const key = `${base}\0${head}`
+    return this.pullRead(`merge-base\0${key}`, request, async (captured, repository) => {
+      const { client } = captured
+      let sha = this.mergeBases.get(key)
+      if (!sha) {
+        if (!client.mergeBase) return null
+        sha = await this.readWithEpoch(captured, () => client.mergeBase!(repository, base, head))
+        this.mergeBases.set(key, sha)
+        if (this.mergeBases.size > MAX_PULL_READS) this.mergeBases.delete(this.mergeBases.keys().next().value!)
+      }
+      return { status: 'ok', sha, observedAt: this.now() }
+    })
+  }
+
+  /** Post a comment on a PR from its node: the issue-comment call (a PR is an issue to GitHub). */
+  async commentOnPull(
+    request: { projectId: string; repository: string; pullNumber: number; body: string }
+  ): Promise<PullWriteResult> {
+    if (typeof request?.body !== 'string' || !request.body.trim()) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, (client, repository, pullNumber) =>
+      client.createIssueComment(repository, pullNumber, request.body))
+  }
+
+  /**
+   * One issue's comments, oldest first, for the issues node's detail. The PR conversation's read
+   * without reviews or line comments (an issue has neither): same refusals, floor and stale rules.
+   */
+  async issueConversation(
+    request: { projectId: string; repository: string; issueNumber: number }
+  ): Promise<GitHubIssueConversationResult> {
+    return this.pullRead('issue-conversation', { ...request, pullNumber: request?.issueNumber }, async (captured, repository, issueNumber) => {
+      const { client } = captured
+      if (!client.listPullComments) return null
+      const items: PullConversationItem[] = []
+      let page = 1
+      for (let read = 0; read < MAX_CONVERSATION_PAGES; read += 1) {
+        // `/issues/{n}/comments`: the same list for an issue as for a PR.
+        const result = await this.readWithEpoch(captured, () => client.listPullComments!(repository, issueNumber, page))
+        items.push(...result.items)
+        if (!result.nextPage) return { status: 'ok', items, truncated: false, observedAt: this.now() }
+        page = result.nextPage
+      }
+      return { status: 'ok', items, truncated: true, observedAt: this.now() }
+    })
+  }
+
+  /**
+   * One page of an issue's timeline for the issues node, oldest first; `after` = the page's cursor.
+   * The pull timeline's read for an issue: same refusals, floor and stale rules, one entry per page.
+   */
+  async issueTimeline(
+    request: { projectId: string; repository: string; issueNumber: number; after?: string }
+  ): Promise<GitHubPullTimelineResult> {
+    const after = request?.after
+    if (after !== undefined && !isPullTimelineCursor(after)) return { status: 'refused', reason: 'not-configured' }
+    const kind = after ? `issue-timeline\0${after}` as const : 'issue-timeline'
+    return this.pullRead(kind, { ...request, pullNumber: request?.issueNumber }, async (captured, repository, issueNumber) => {
+      const { client } = captured
+      if (!client.issueTimeline) return null
+      const page = await this.readWithEpoch(captured, () => client.issueTimeline!(repository, issueNumber, after))
+      const avatarDataUrls = await this.pullAvatars(page.items.flatMap((item) =>
+        item.kind === 'assigned' || item.kind === 'unassigned' ? [item.actor, item.assignee] : [item.actor]))
+      return { status: 'ok', ...page, observedAt: this.now(), ...(avatarDataUrls ? { avatarDataUrls } : {}) }
+    })
+  }
+
+  /** Post a comment on an issue from the issues node. A user click only; never an agent verb. */
+  async commentOnIssue(
+    request: { projectId: string; repository: string; issueNumber: number; body: string }
+  ): Promise<PullWriteResult> {
+    if (!isPullCommentBody(request?.body)) return { ok: false, reason: 'validation' }
+    return this.pullWrite({ ...request, pullNumber: request.issueNumber }, (client, repository, issueNumber) =>
+      client.createIssueComment(repository, issueNumber, request.body))
+  }
+
+  /** Post one line comment from the Files tab: a new thread tied to `headSha` (the head the node
+   *  read), or a reply to `inReplyTo`. A user click only; never an agent verb. */
+  async commentOnPullLine(request: PullLineCommentRequest): Promise<PullWriteResult> {
+    let comment: PullLineCommentWrite
+    if (request && 'inReplyTo' in request) {
+      if (!Number.isSafeInteger(request.inReplyTo) || request.inReplyTo < 1 || !isPullCommentBody(request.body)) {
+        return { ok: false, reason: 'validation' }
+      }
+      comment = { inReplyTo: request.inReplyTo, body: request.body }
+    } else {
+      if (typeof request?.headSha !== 'string' || !request.headSha || !isPullLineDraft(request.comment)) {
+        return { ok: false, reason: 'validation' }
+      }
+      const { path, line, side, body } = request.comment
+      comment = { commitId: request.headSha, draft: { path, line, side, body } }
+    }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot comment on a line reads as network; the real client always can.
+      if (!client.createPullLineComment) throw new Error('unsupported')
+      return client.createPullLineComment(repository, pullNumber, comment)
+    })
+  }
+
+  /**
+   * Submit a review from the node, tied to `headSha` (the head the node last read), so GitHub
+   * refuses it if that commit is no longer the PR's. REQUEST_CHANGES needs a message; COMMENT needs
+   * a message or a line comment. `comments` = the pending line comments, sent in the same review.
+   */
+  async reviewPull(request: {
+    projectId: string; repository: string; pullNumber: number; event: PullReviewEvent; body: string; headSha: string
+    comments?: PullLineDraft[]
+  }): Promise<PullWriteResult> {
+    const { event, body, headSha, comments = [] } = request ?? {}
+    if (typeof body !== 'string' || typeof headSha !== 'string' || !headSha ||
+        (event !== 'APPROVE' && event !== 'REQUEST_CHANGES' && event !== 'COMMENT') ||
+        !Array.isArray(comments) || comments.length > MAX_PULL_REVIEW_COMMENTS || !comments.every(isPullLineDraft) ||
+        (event === 'REQUEST_CHANGES' && !body.trim()) ||
+        (event === 'COMMENT' && !body.trim() && !comments.length)) return { ok: false, reason: 'validation' }
+    const drafts = comments.map(({ path, line, side, body: text }) => ({ path, line, side, body: text }))
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot review reads as network; the real client always can.
+      if (!client.reviewPull) throw new Error('unsupported')
+      return client.reviewPull(repository, pullNumber, { event, body, commitId: headSha, ...(drafts.length ? { comments: drafts } : {}) })
+    })
+  }
+
+  /**
+   * Merge from the node's confirmation, tied to `headSha` (the head the Overview showed), so GitHub
+   * refuses it with 409 (`head-moved`) if the PR moved since.
+   */
+  async mergePull(request: {
+    projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
+  }): Promise<PullWriteResult> {
+    const { method, headSha } = request ?? {}
+    if (typeof headSha !== 'string' || !headSha || (method !== 'merge' && method !== 'squash' && method !== 'rebase')) {
+      return { ok: false, reason: 'validation' }
+    }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot merge reads as network; the real client always can.
+      if (!client.mergePull) throw new Error('unsupported')
+      return client.mergePull(repository, pullNumber, { method, sha: headSha })
+    })
+  }
+
+  /** "Update branch" from the node (a user click only): GitHub merges the base into the head, and
+   *  refuses (422, reported as head-moved) if the head is no longer `headSha`, the commit the
+   *  Overview showed. */
+  async updatePullBranch(
+    request: { projectId: string; repository: string; pullNumber: number; headSha: string }
+  ): Promise<PullWriteResult> {
+    const headSha = request?.headSha
+    if (typeof headSha !== 'string' || !headSha) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot update reads as network; the real client always can.
+      if (!client.updatePullBranch) throw new Error('unsupported')
+      return headMovedOn422(client.updatePullBranch(repository, pullNumber, headSha))
+    })
+  }
+
+  /** "Merge when ready" from the node's confirmation (a user click only): GitHub's auto-merge with
+   *  `method`, tied to `headSha` (the head the Overview showed), so GitHub refuses it if the PR moved. */
+  async enablePullAutoMerge(request: {
+    projectId: string; repository: string; pullNumber: number; method: PullMergeMethod; headSha: string
+  }): Promise<PullWriteResult> {
+    const { method, headSha } = request ?? {}
+    if (typeof headSha !== 'string' || !headSha || (method !== 'merge' && method !== 'squash' && method !== 'rebase')) {
+      return { ok: false, reason: 'validation' }
+    }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot arm auto-merge reads as network; the real client always can.
+      if (!client.enablePullAutoMerge) throw new Error('unsupported')
+      return headMovedOn422(client.enablePullAutoMerge(repository, pullNumber, { method, sha: headSha }))
+    })
+  }
+
+  /** Cancel "Merge when ready" from the node (a user click only). */
+  async disablePullAutoMerge(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult> {
+    if (!request) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.disablePullAutoMerge) throw new Error('unsupported')
+      return client.disablePullAutoMerge(repository, pullNumber)
+    })
+  }
+
+  /** Tick or clear GitHub's own "Viewed" mark on one changed file (a user click only). */
+  async setFileViewed(request: {
+    projectId: string; repository: string; pullNumber: number; path: string; viewed: boolean
+  }): Promise<PullWriteResult> {
+    const { path, viewed } = request ?? {}
+    if (!isPullPath(path) || typeof viewed !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.setFileViewed) throw new Error('unsupported')
+      return client.setFileViewed(repository, pullNumber, path, viewed)
+    })
+  }
+
+  /** Resolve or unresolve one review thread, named by its first comment's id (a user click only). */
+  async setReviewThreadResolved(request: {
+    projectId: string; repository: string; pullNumber: number; threadId: number; resolved: boolean
+  }): Promise<PullWriteResult> {
+    const { threadId, resolved } = request ?? {}
+    if (!Number.isSafeInteger(threadId) || threadId < 1 || typeof resolved !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.setReviewThreadResolved) throw new Error('unsupported')
+      return client.setReviewThreadResolved(repository, pullNumber, threadId, resolved)
+    })
+  }
+
+  /**
+   * "Apply suggestion" (a user click only): commit one comment's suggestion block to the head branch
+   * through the contents API, pinned to the file's blob SHA at `headSha` (the head the user saw), so
+   * GitHub refuses it (409, `suggestion-stale`) if the file changed since. A fork head is refused
+   * (`from-fork`) before the comment is read.
+   */
+  async applySuggestion(request: {
+    projectId: string; repository: string; pullNumber: number; headSha: string; commentId: number
+  }): Promise<PullWriteResult> {
+    const { headSha, commentId } = request ?? {}
+    if (!isCommitSha(headSha) || !Number.isSafeInteger(commentId) || commentId < 1) {
+      return { ok: false, reason: 'validation' }
+    }
+    const refuse = (code: string) => Object.assign(new Error(code), code === 'validation' ? { code: 'request-failed', status: 422 } : { code })
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.getPull || !client.pullSuggestionComment || !client.fileBlobAt || !client.putFile) throw new Error('unsupported')
+      const pull = await client.getPull(repository, pullNumber)
+      if (pull.fromFork) throw refuse('from-fork')
+      const comment = await client.pullSuggestionComment(repository, commentId)
+      const lines = suggestionOf(comment.body)
+      if (comment.pullNumber !== pullNumber || comment.side !== 'RIGHT' || comment.line === null || !lines) throw refuse('validation')
+      // The comment's line numbers are for its commit; on any other head they may point elsewhere.
+      if (comment.commitId !== headSha) throw refuse('suggestion-stale')
+      // A range that starts on the base side counts its first line in the old file, not this one.
+      if (comment.startLine !== null && comment.startSide !== 'RIGHT') throw refuse('suggestion-stale')
+      const file = await client.fileBlobAt(repository, comment.path, headSha)
+      const text = withSuggestion(file.text, comment.startLine ?? comment.line, comment.line, lines)
+      if (text === null) throw refuse('suggestion-stale')
+      const message = comment.author ? `Apply suggestion from review by ${comment.author}` : 'Apply suggestion from review'
+      try {
+        await client.putFile(repository, { path: comment.path, branch: pull.head.ref, sha: file.sha, text, message })
+      } catch (error) {
+        const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+        if (code === 'request-failed' && status === 409) throw refuse('suggestion-stale')
+        throw error
+      }
+    })
+  }
+
+  /**
+   * The merge methods the project's repository allows, for the merge confirmation. Refused like a
+   * pull read (another repository is refused before a credential is resolved). Held per repository.
+   */
+  async repoMergeMethods(request: { projectId: string; repository: string }): Promise<GitHubRepoMergeMethodsResult> {
+    const result = await this.heldRepoRead(this.mergeMethods, request, (client) => client.repoMergeMethods?.bind(client))
+    return result.status === 'ok'
+      ? { status: 'ok', methods: result.value.methods, ...(result.value.autoMerge ? { autoMerge: true as const } : {}) }
+      : result
+  }
+
+  /** The repository's collaborators, for the node's "Request review". Held per repository like the
+   *  merge methods (ponytail: a new collaborator shows after an app restart). */
+  async repoCollaborators(request: { projectId: string; repository: string }): Promise<GitHubRepoCollaboratorsResult> {
+    const result = await this.heldRepoRead(this.collaborators, request, (client) => client.listCollaborators?.bind(client))
+    return result.status === 'ok' ? { status: 'ok', users: result.value } : result
+  }
+
+  /** One read per (user, repository), held for the app run. `read` answers undefined when this
+   *  client cannot make it at all. Never throws. */
+  private async heldRepoRead<T>(
+    held: Map<string, T> | null,
+    request: { projectId: string; repository: string },
+    read: (client: GitHubIssuesClientLike) => ((repository: string) => Promise<T>) | undefined
+  ): Promise<{ status: 'ok'; value: T } | { status: 'refused'; reason: PullRefusal } | { status: 'failed'; reason: PullReadFailure; retryAt?: number }> {
+    const repository = parseGitHubRepository(request?.repository)
+    if (typeof request?.projectId !== 'string' || !repository) return { status: 'refused', reason: 'not-configured' }
+    let captured: GitHubIssueServiceContext
+    try {
+      if ((await this.cacheContext(request.projectId)).repository.toLowerCase() !== repository.toLowerCase()) {
+        return { status: 'refused', reason: 'repository-mismatch' }
+      }
+      captured = await this.options.contextForProject(request.projectId)
+    } catch (error) {
+      const refusal = pullRefusalOf(error)
+      return refusal ? { status: 'refused', reason: refusal } : { status: 'failed', ...pullReadFailure(error) }
+    }
+    // The project's repository may have changed between the two awaits, as in readPull.
+    if (captured.repository.toLowerCase() !== repository.toLowerCase()) return { status: 'refused', reason: 'repository-mismatch' }
+    const key = `${captured.userId}\0${captured.repository.toLowerCase()}`
+    const hit = held?.get(key)
+    if (hit !== undefined) return { status: 'ok', value: hit }
+    const readRepo = read(captured.client)
+    if (!readRepo) return { status: 'failed', reason: 'unreachable' }
+    try {
+      const value = await this.readWithEpoch(captured, () => readRepo(captured.repository))
+      held?.set(key, value)
+      return { status: 'ok', value }
+    } catch (error) {
+      return { status: 'failed', ...pullReadFailure(error) }
+    }
+  }
+
+  /** "New pull request"'s start for a branch: the default branch and the branch's open PR. Refused
+   *  like a pull read; never held (a PR for the branch may have opened a moment ago). */
+  async pullForBranch(
+    request: { projectId: string; repository: string; head: string }
+  ): Promise<GitHubPullForBranchResult> {
+    if (!isPullBranchName(request?.head)) return { status: 'refused', reason: 'not-configured' }
+    const result = await this.heldRepoRead(null, request, (client) =>
+      client.pullForBranch ? (repository: string) => client.pullForBranch!(repository, request.head) : undefined)
+    return result.status === 'ok' ? { status: 'ok', ...result.value } : result
+  }
+
+  /** Open a pull request from a branch, from the "New pull request" form (a user click only). */
+  async createPull(request: { projectId: string; repository: string } & PullCreateDraft): Promise<PullCreateResult> {
+    if (!isPullCreateDraft(request)) return { ok: false, reason: 'validation' }
+    const { head, base, title, body, draft } = request
+    const result = await this.repoWrite(request, async (client, repository) => {
+      // ponytail: a client that cannot create reads as network; the real client always can.
+      if (!client.createPull) throw new Error('unsupported')
+      return client.createPull(repository, { head, base, title, body, draft })
+    })
+    if (!result.ok) return { ok: false, reason: result.reason }
+    this.afterWrite(request.projectId)
+    return { ok: true, pullNumber: result.value.number }
+  }
+
+  /** Ask one collaborator to review the PR, from the node's "Request review" (a user click only). */
+  async requestPullReviewer(
+    request: { projectId: string; repository: string; pullNumber: number; reviewer: string }
+  ): Promise<PullWriteResult> {
+    if (typeof request?.reviewer !== 'string' || !GITHUB_LOGIN.test(request.reviewer)) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot request reads as network; the real client always can.
+      if (!client.requestPullReviewer) throw new Error('unsupported')
+      return client.requestPullReviewer(repository, pullNumber, request.reviewer)
+    })
+  }
+
+  /** Add or remove one existing repository label on the PR, from the sidebar (a user click only). */
+  async setPullLabels(
+    request: { projectId: string; repository: string; pullNumber: number; label: string; add: boolean }
+  ): Promise<PullWriteResult> {
+    const { label, add } = request ?? {}
+    if (typeof label !== 'string' || !label.trim() || label.length > 50 || typeof add !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot edit labels reads as network; the real client always can.
+      if (!client.setPullLabel) throw new Error('unsupported')
+      return client.setPullLabel(repository, pullNumber, label, add)
+    })
+  }
+
+  /** Add or remove one assignee on the PR, from the sidebar (a user click only). */
+  async setPullAssignees(
+    request: { projectId: string; repository: string; pullNumber: number; login: string; add: boolean }
+  ): Promise<PullWriteResult> {
+    const { login, add } = request ?? {}
+    if (typeof login !== 'string' || !GITHUB_LOGIN.test(login) || typeof add !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.setPullAssignee) throw new Error('unsupported')
+      return client.setPullAssignee(repository, pullNumber, login, add)
+    })
+  }
+
+  /** Close (`open` false) or reopen the PR, from the merge box (a user click only). */
+  async setPullState(request: { projectId: string; repository: string; pullNumber: number; open: boolean }): Promise<PullWriteResult> {
+    const { open } = request ?? {}
+    if (typeof open !== 'boolean') return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: a client that cannot do it reads as network; the real client always can.
+      if (!client.setPullState) throw new Error('unsupported')
+      return client.setPullState(repository, pullNumber, open)
+    })
+  }
+
+  /** Mark a draft PR ready for review, from the merge box (a user click only). */
+  async markPullReady(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult> {
+    return this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.markPullReady) throw new Error('unsupported')
+      return client.markPullReady(repository, pullNumber)
+    })
+  }
+
+  /**
+   * "Delete branch" after a merge (a user click only). The PR is read again here, never taken from the
+   * renderer: only a merged PR whose head lives in this repository and is not its default branch.
+   * GitHub's 422 on the delete (a protected branch, or one already deleted) answers `branch-protected`.
+   */
+  async deleteHeadBranch(request: { projectId: string; repository: string; pullNumber: number }): Promise<PullWriteResult> {
+    // ponytail: pullWriteFailure has no branch-protected code, so the 422 is flagged here and read after.
+    let refusedDelete = false
+    const result = await this.pullWrite(request, async (client, repository, pullNumber) => {
+      // ponytail: as above.
+      if (!client.getPull || !client.pullForBranch || !client.deleteBranchRef) throw new Error('unsupported')
+      const pull = await client.getPull(repository, pullNumber)
+      if (pull.fromFork) throw Object.assign(new Error('from-fork'), { code: 'from-fork' })
+      const invalid = Object.assign(new Error('validation'), { code: 'request-failed', status: 422 })
+      if (pull.lifecycle !== 'merged') throw invalid
+      // ponytail: the default branch comes from "New pull request"'s read (one extra pulls query).
+      if ((await client.pullForBranch(repository, pull.head.ref)).defaultBranch === pull.head.ref) throw invalid
+      try {
+        await client.deleteBranchRef(repository, pull.head.ref)
+      } catch (error) {
+        const { code, status } = (error ?? {}) as { code?: unknown; status?: unknown }
+        refusedDelete = code === 'request-failed' && status === 422
+        throw error
+      }
+    })
+    return !result.ok && refusedDelete ? { ok: false, reason: 'branch-protected' } : result
+  }
+
+  /** The head checks' Actions run and job ids (only checks of `repository`). */
+  private async headActionsJobs(request: { projectId: string; repository: string; pullNumber: number }) {
+    const checks = await this.pullChecks(request)
+    if (checks.status !== 'ok') return []
+    return checks.checks.flatMap((check) => {
+      const job = actionsJobOf(check.url, request.repository)
+      return job ? [{ ...job, failed: check.state === 'failed' }] : []
+    })
+  }
+
+  /** The failing step's last lines of one Actions job, for the Checks tab's inline excerpt. A job that
+   *  is not one of this PR's head checks is refused with no log request. Rules as `pullDetail`. */
+  async pullCheckLog(
+    request: { projectId: string; repository: string; pullNumber: number; jobId: number }
+  ): Promise<GitHubPullCheckLogResult> {
+    const jobId = request?.jobId
+    if (!Number.isSafeInteger(jobId) || jobId < 1 || typeof request.repository !== 'string') {
+      return { status: 'refused', reason: 'not-configured' }
+    }
+    if (!(await this.headActionsJobs(request)).some((job) => job.jobId === jobId)) {
+      return { status: 'refused', reason: 'not-configured' }
+    }
+    return this.pullRead(`check-log\0${jobId}`, request, async (captured, repository) => {
+      const { client } = captured
+      if (!client.jobLogTail) return null
+      const lines = await this.readWithEpoch(captured, () => client.jobLogTail!(repository, jobId))
+      return { status: 'ok', lines, observedAt: this.now() }
+    })
+  }
+
+  /** "Re-run failed" from the Checks tab (a user click only): GitHub re-runs the failed jobs of one
+   *  Actions run, which must hold a failed check of this PR's head. */
+  async rerunFailedJobs(
+    request: { projectId: string; repository: string; pullNumber: number; runId: number }
+  ): Promise<PullWriteResult> {
+    const runId = request?.runId
+    if (!Number.isSafeInteger(runId) || runId < 1) return { ok: false, reason: 'validation' }
+    return this.pullWrite(request, async (client, repository) => {
+      // ponytail: as above.
+      if (!client.rerunFailedJobs) throw new Error('unsupported')
+      if (!(await this.headActionsJobs(request)).some((job) => job.runId === runId && job.failed)) {
+        throw Object.assign(new Error('validation'), { code: 'request-failed', status: 422 })
+      }
+      await client.rerunFailedJobs(repository, runId)
+    })
+  }
+
+  /** The repository's labels for the sidebar's "Add label", name and color. Held per repository like
+   *  the collaborators (ponytail: first 100 labels only; a label made on GitHub shows after a restart). */
+  async repoLabels(request: { projectId: string; repository: string }): Promise<GitHubRepoLabelsResult> {
+    const result = await this.heldRepoRead(this.repoLabelLists, request, (client) => async (repository: string) =>
+      (await client.listRepositoryLabels(repository, { page: 1, perPage: 100 })).items.map(({ name, color }) => ({ name, color })))
+    return result.status === 'ok' ? { status: 'ok', labels: result.value } : result
+  }
+
+  /**
+   * The shared path of every pull node write (comment, review, merge). Only a user's click reaches it, so it
+   * needs the approved repository but not the label-mapping approval. The node's repository must be
+   * the project's; the write runs on the coordinator's mutation path. A landed write drops this PR's
+   * held reads (so the node's next read is fresh) and refreshes the board. Never throws.
+   */
+  private async pullWrite(
+    request: { projectId: string; repository: string; pullNumber: number },
+    write: (client: GitHubIssuesClientLike, repository: string, pullNumber: number) => Promise<unknown>
+  ): Promise<PullWriteResult> {
+    const { projectId, pullNumber } = request
+    if (!Number.isSafeInteger(pullNumber) || pullNumber < 1) return { ok: false, reason: 'validation' }
+    const result = await this.repoWrite(request, (client, repository) => write(client, repository, pullNumber))
+    // The head moved: the node reloads, and that read must not answer from the held one.
+    if (result.ok || result.reason === 'head-moved' || result.reason === 'suggestion-stale') this.dropPullReads(projectId, result.repository!, pullNumber)
+    if (!result.ok) return { ok: false, reason: result.reason }
+    this.afterWrite(projectId)
+    return { ok: true }
+  }
+
+  /**
+   * The shared path of every write a user's click makes (the pull node's, and "New pull request").
+   * It needs the approved repository but not the label-mapping approval. The named repository must
+   * be the project's, or nothing is sent. `repository` is the project's spelling, once resolved.
+   */
+  private async repoWrite<T>(
+    request: { projectId: string; repository: string },
+    write: (client: GitHubIssuesClientLike, repository: string) => Promise<T>
+  ): Promise<{ ok: true; value: T; repository: string } | { ok: false; reason: PullWriteReason; repository?: string }> {
+    const repository = parseGitHubRepository(request.repository)
+    const { projectId } = request
+    if (typeof projectId !== 'string' || !repository) return { ok: false, reason: 'validation' }
+    let captured: GitHubIssueServiceContext
+    try {
+      captured = await this.options.contextForProject(projectId)
+    } catch (error) {
+      const refusal = pullRefusalOf(error)
+      if (refusal) return { ok: false, reason: refusal === 'signed-out' ? 'signed-out' : 'not-approved' }
+      return { ok: false, reason: pullWriteFailure(error) }
+    }
+    if (captured.repository.toLowerCase() !== repository.toLowerCase()) return { ok: false, reason: 'not-approved' }
+    try {
+      const value = await this.options.coordinator.runMutation(captured.userId, async () => {
+        if (epoch(captured) !== epoch(await this.options.contextForProject(projectId))) {
+          throw new ConfigurationChangedError()
+        }
+        return write(captured.client, captured.repository)
+      })
+      return { ok: true, value, repository: captured.repository }
+    } catch (error) {
+      return { ok: false, reason: pullWriteFailure(error), repository: captured.repository }
+    }
+  }
+
+  /** A write is a reason to look again: the board's incremental refresh skips its caller floor once
+   *  (the full-reconcile floor stays). */
+  private afterWrite(projectId: string): void {
+    const floor = this.refreshFloors.get(projectId)
+    if (floor) this.refreshFloors.set(projectId, { ...floor, any: 0 })
+    void this.refresh({ projectId }).catch(() => undefined)
+  }
+
+  /**
+   * An agent's own shell wrote to a pull request (@shared/pr-write-hook, a verified PostToolUse): its
+   * held reads go, so the pull node's refresh reads GitHub instead of answering from the floor.
+   * `repository` undefined (the agent's shell repo) matches every repository; `pullNumber` undefined
+   * (gh's current-branch PR) every pull request.
+   */
+  forgetPull(repository: string | undefined, pullNumber: number | undefined): void {
+    for (const key of [...this.pullReads.keys()]) {
+      const [repo, num] = key.split('\0').slice(-2)
+      if ((pullNumber === undefined || num === String(pullNumber)) &&
+          (!repository || repo.toLowerCase() === repository.toLowerCase())) this.pullReads.delete(key)
+    }
+  }
+
+  private dropPullReads(projectId: string, repository: string, pullNumber: number): void {
+    const kinds = new Set(['detail', 'conversation', 'files', 'commits', 'issue-conversation', 'timeline', 'issue-timeline'])
+    const suffix = `\0${projectId}\0${repository}\0${pullNumber}`
+    // The checks read carries the review state the lead button reads (readiness.ts nextStep).
+    this.checkReads.delete(`${projectId}\0${pullNumber}`)
+    for (const key of [...this.pullReads.keys()]) {
+      if (!key.endsWith(suffix)) continue
+      const kind = key.slice(0, -suffix.length)
+      // A timeline's later pages are held by cursor (`timeline\0<cursor>`): every one is dropped.
+      if (kinds.has(kind) || kind.startsWith('timeline\0') || kind.startsWith('issue-timeline\0')) this.pullReads.delete(key)
+    }
+  }
+
+  /** The sidebar part of `pullDetail`, reviewers merged. Undefined when this client has no such read
+   *  or it failed. ponytail: a failed sidebar hides the sidebar parts and never fails the detail. */
+  private async pullSidebar(captured: GitHubIssueServiceContext, repository: string, pullNumber: number): Promise<PullSidebar | undefined> {
+    const read = captured.client.pullSidebar?.bind(captured.client)
+    if (!read) return undefined
+    const answer: PullSidebarRead | undefined = await this.readWithEpoch(captured, () => read(repository, pullNumber)).catch(() => undefined)
+    if (!answer) return undefined
+    const { requested, reviews, ...rest } = answer
+    return { ...(requested && reviews ? { reviewers: mergePullReviewers(requested, reviews) } : {}), ...rest }
+  }
+
+  /** The avatars of a pull read's users as data URLs keyed by user id (the kanban cards' shape), or
+   *  undefined when none loaded. Never throws: an avatar is decoration, never a reason a read fails. */
+  private async pullAvatars(users: readonly (GitHubIssueUser | null)[]): Promise<Record<string, string> | undefined> {
+    if (!this.options.avatarFetcher) return undefined
+    const known = users.filter((user): user is GitHubIssueUser => user !== null)
+    if (!known.length) return undefined
+    const { dataUrls } = await this.options.avatarFetcher.forPage(known).catch(() => ({ dataUrls: new Map<number, string>() }))
+    return dataUrls.size ? Object.fromEntries([...dataUrls].map(([id, url]) => [String(id), url])) : undefined
+  }
+
+  /**
+   * The shared path of every pull node read, run on mount and on Refresh. The node names the
+   * repository it was opened for; anything but the project's approved repository is refused before
+   * a credential is resolved, so a shared project file cannot point this token at another repo. A
+   * read inside `REFRESH_MIN_INTERVAL_MS` of the last good one answers from memory; a failed read
+   * keeps the last good answer, marks it stale, and does not hold the floor. Never throws.
+   * `read` answers null when this client cannot make the read at all.
+   */
+  private async pullRead<O extends PullOk>(
+    // `contents\0…` carries the file and SHAs, so a held entry is one file at one head;
+    // `merge-base\0…` carries the base and head SHAs.
+    kind: 'detail' | 'conversation' | 'files' | 'issue-conversation' | `contents\0${string}` | `merge-base\0${string}`
+      // `commit-…\0<sha>…`: one commit's files or one file of it (07).
+      | 'commits' | `commit-files\0${string}` | `commit-contents\0${string}`
+      | 'timeline' | `timeline\0${string}`
+      | 'issue-timeline' | `issue-timeline\0${string}`
+      | `check-log\0${string}`
+      // `since-review…\0<head>…`: the comparison to the viewer's last review, and one file of it (F-10).
+      | `since-review\0${string}` | `since-review-contents\0${string}`,
+    request: { projectId: string; repository: string; pullNumber: number },
+    read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
+  ): Promise<PullResult<O>> {
+    const repository = parseGitHubRepository(request?.repository)
+    if (typeof request?.projectId !== 'string' || !repository || !Number.isSafeInteger(request.pullNumber) ||
+        request.pullNumber < 1) return { status: 'refused', reason: 'not-configured' }
+    let projectRepository: string
+    try {
+      projectRepository = (await this.cacheContext(request.projectId)).repository
+    } catch (error) {
+      return this.pullContextFailure<O>(error)
+    }
+    if (repository.toLowerCase() !== projectRepository.toLowerCase()) {
+      return { status: 'refused', reason: 'repository-mismatch' }
+    }
+    const key = `${kind}\0${request.projectId}\0${projectRepository}\0${request.pullNumber}`
+    let entry = this.pullReads.get(key)
+    if (!entry) {
+      entry = { floorUntil: 0 }
+      this.pullReads.set(key, entry)
+      if (this.pullReads.size > MAX_PULL_READS) this.pullReads.delete(this.pullReads.keys().next().value!)
+    }
+    // ponytail: one map for every kind; the key carries the kind, so an entry only ever holds its own O.
+    const held = entry as { last?: O; floorUntil: number; reading?: Promise<PullResult<O>> }
+    if (held.reading) return held.reading
+    const startedAt = this.now()
+    if (held.last && startedAt < held.floorUntil) return held.last
+    const reading = this.readPull(request.projectId, projectRepository, request.pullNumber, held.last, read)
+      .then((result) => {
+        if (result.status === 'ok' && !result.stale) {
+          held.last = result
+          held.floorUntil = startedAt + REFRESH_MIN_INTERVAL_MS
+        }
+        return result
+      })
+      .finally(() => { held.reading = undefined })
+    held.reading = reading
+    return reading
+  }
+
+  private async readPull<O extends PullOk>(
+    projectId: string,
+    repository: string,
+    pullNumber: number,
+    last: O | undefined,
+    read: (captured: GitHubIssueServiceContext, repository: string, pullNumber: number) => Promise<O | null>
+  ): Promise<PullResult<O>> {
+    let captured: GitHubIssueServiceContext
+    try {
+      captured = await this.options.contextForProject(projectId)
+    } catch (error) {
+      return this.pullContextFailure(error, last)
+    }
+    if (captured.repository !== repository) return { status: 'refused', reason: 'repository-mismatch' }
+    try {
+      return await read(captured, repository, pullNumber) ?? { status: 'failed', reason: 'unreachable' }
+    } catch (error) {
+      return stalePull(last, error)
+    }
+  }
+
+  /** A context that could not be resolved: a coded host refusal, else a failure to reach GitHub. */
+  private pullContextFailure<O extends PullOk>(error: unknown, last?: O): PullResult<O> {
+    const refusal = pullRefusalOf(error)
+    if (refusal) return { status: 'refused', reason: refusal }
+    return stalePull(last, error)
   }
 
   private readPullStatusAfterHeartbeat(

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   PULL_CHASE_MAX,
   PULL_STATUS_GREY_AFTER_MS,
+  checkDuration,
   checkRunState,
   ciState,
   isUndecided,
@@ -191,5 +192,15 @@ describe('checks', () => {
     expect(sortChecks([
       { name: 'b', state: 'passed' }, { name: 'a', state: 'failed' }, { name: 'c', state: 'pending' }
     ]).map((check) => check.name)).toEqual(['a', 'c', 'b'])
+  })
+
+  it('words a finished run\'s duration; a running or untimed check has none', () => {
+    const run = (startedAt?: string, completedAt?: string) => ({ name: 'x', state: 'passed' as const, startedAt, completedAt })
+    expect(checkDuration(run('2026-11-01T10:00:00Z', '2026-11-01T10:00:42Z'))).toBe('42s')
+    expect(checkDuration(run('2026-11-01T10:00:00Z', '2026-11-01T10:02:05Z'))).toBe('2m 5s')
+    expect(checkDuration(run('2026-11-01T10:00:00Z', '2026-11-01T11:03:00Z'))).toBe('1h 3m')
+    expect(checkDuration(run('2026-11-01T10:00:00Z'))).toBeUndefined()
+    expect(checkDuration(run(undefined, '2026-11-01T10:00:00Z'))).toBeUndefined()
+    expect(checkDuration(run('2026-11-01T10:00:05Z', '2026-11-01T10:00:00Z'))).toBeUndefined()
   })
 })

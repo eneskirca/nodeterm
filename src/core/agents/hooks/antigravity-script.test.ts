@@ -191,17 +191,21 @@ describe('the managed script for antigravity', () => {
     // RECOMPUTED again for #1150/#1175 on top of that: the shared codex prelude changed, so every
     // IDENTITY-ROOT variant (the second hash of each pair) moved — codex's most, since it reads its
     // payload first. The no-root (remote) variants did not.
+    //
+    // RECOMPUTED for the PR write gate (claude and codex only): a Bash PreToolUse that looks like a
+    // `gh` PR write holds for desktop main's answer (managed-script.pr-gate.test.ts). The other four
+    // are untouched.
     const expected: Record<string, [string, string]> = {
       // claude changed DELIBERATELY (issues #1112/#1153): it now reports which process ran the
       // hook (`$CLAUDE_PID`, foreground, tty — claude-pane-origin.ts). Recomputed from this
       // branch's builder; the other five are untouched, which is what this test still proves.
       claude: [
-        '0e3e1e0d89e7b3ca269effe57067047f9321897c79bf53a3edeadf2bb30ca992',
-        '84a8fc82dede3cf252138376b209e6469a22bfdc9b72f953eb35cb94ccd4fbe3'
+        'cb38809e7ca99e0206915481ec4b7258bf23c728bfbc0ebd595b74867c4bea6a',
+        '342f16c395612b1818d0b33f8d3092c6658c8d1551cc8637de37150681f1d6e3'
       ],
       codex: [
-        '592fe88ee069db002c9f5c385a2e0465f9659bade3f0bd18c86b5b51f7644e59',
-        '0399f289c489544c377f90b747437621e6f7b8fe813bb2c46a364975bc8c6bbe'
+        '4f949ad15c041f72e63f4b19cc783d89d3f6a26c2a97ffabda308b12f182d5ea',
+        '633a64306de52619db0edf53c35de3b5a5bfdac10540661610cf6c87de430aaf'
       ],
       gemini: [
         'c3fb01424ff2a78012ffd6e87200430badfe60b05f603731bf205ee3b791f988',

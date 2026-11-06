@@ -9,6 +9,8 @@
 //  - a rollup counts only when it was taken at the PR's current head commit;
 //  - a failed read keeps the last snapshot and says it is stale, instead of going blank.
 
+import type { GitHubIssueUser } from './github-issues'
+
 /** The PR's checks, summarised. `none` = GitHub reports no rollup at all: the board shows nothing
  *  for CI — not a green tick. */
 export type PullCiState = 'passed' | 'failed' | 'pending' | 'none'
@@ -50,7 +52,19 @@ export interface PullStatusFacts {
   rollupOid: string | null
   /** Issues in the SAME repository this PR closes on merge (GitHub's own linking). */
   closes: number[]
+  /** The author's login. Absent for a deleted account. */
+  author?: string
+  /** GitHub's review decision. Absent when the repository needs no review or the value is new. */
+  review?: PullReviewDecision
+  /** The signed-in user is a requested reviewer (a team request does not count). */
+  reviewRequested?: true
+  /** The PR title, for the add menu's open PR list. Absent when GitHub sent none. */
+  title?: string
+  /** The author as a user (id + avatar URL), for the list's avatar. Absent for a bot or a deleted account. */
+  authorUser?: GitHubIssueUser
 }
+
+export type PullReviewDecision = 'approved' | 'changes-requested' | 'required'
 
 /** One PR's state on the board. `ci`/`merge` are ABSENT when unknown — the token cannot read them,
  *  the PR is not open, or the only rollup we have belongs to another commit. Absent renders nothing. */
@@ -67,6 +81,13 @@ export interface GitHubPullStatus {
   merge?: PullMergeState
   /** Open PRs only. */
   closes: number[]
+  /** Open PRs only: the review facts of the last read (see `PullStatusFacts`). */
+  author?: string
+  review?: PullReviewDecision
+  reviewRequested?: true
+  /** Open PRs only: the title and the author as a user (see `PullStatusFacts`). */
+  title?: string
+  authorUser?: GitHubIssueUser
   /** This machine has seen the PR open or as a draft (remembered across restarts, per repository). */
   openSeen?: true
   /** Epoch ms when this machine first saw the PR merged AFTER having seen it open — an OBSERVED
@@ -94,6 +115,8 @@ export interface GitHubPullBoard {
   undecided: boolean
   /** More open PRs exist than one read covers; the oldest-updated ones carry no status. */
   truncated: boolean
+  /** Open PR authors' avatars as data URLs keyed by user id (`pullStatus` only; absent when none loaded). */
+  avatarDataUrls?: Record<string, string>
 }
 
 export const EMPTY_PULL_BOARD: GitHubPullBoard = {
@@ -169,7 +192,12 @@ export function pullStatusFrom(
     headRefOid: facts.headRefOid,
     ...(ci !== undefined ? { ci } : {}),
     ...(merge !== undefined ? { merge } : {}),
-    closes: facts.closes
+    closes: facts.closes,
+    ...(facts.author ? { author: facts.author } : {}),
+    ...(facts.review ? { review: facts.review } : {}),
+    ...(facts.reviewRequested ? { reviewRequested: true as const } : {}),
+    ...(facts.title ? { title: facts.title } : {}),
+    ...(facts.authorUser ? { authorUser: facts.authorUser } : {})
   }
 }
 
@@ -248,12 +276,16 @@ export interface GitHubPullCheck {
   state: PullCheckState
   /** https only; absent when GitHub gave none or it was not an https URL. */
   url?: string
+  /** ISO times of a check run (a commit status has none), for its duration. */
+  startedAt?: string
+  completedAt?: string
 }
 
 export type GitHubPullChecksResult =
-  | { status: 'ok'; headRefOid: string; checks: GitHubPullCheck[]; truncated: boolean }
+  /** `review` = the PR's review decision (absent = none required, or not known). */
+  | { status: 'ok'; headRefOid: string; checks: GitHubPullCheck[]; truncated: boolean; review?: PullReviewDecision }
   /** GitHub reports no rollup for the head commit: there are no checks to show. */
-  | { status: 'no-checks' }
+  | { status: 'no-checks'; review?: PullReviewDecision }
   /** The token may not read checks. Nothing is shown. */
   | { status: 'hidden' }
   /** The read raced a push: the checks belong to another commit. */
@@ -268,6 +300,17 @@ const CHECK_ORDER: Record<PullCheckState, number> = {
 export function sortChecks(checks: GitHubPullCheck[]): GitHubPullCheck[] {
   return [...checks].sort((a, b) =>
     CHECK_ORDER[a.state] - CHECK_ORDER[b.state] || a.name.localeCompare(b.name))
+}
+
+/** A finished check run's duration in words ("42s", "2m 5s", "1h 3m"). Undefined while it runs, for
+ *  a commit status (no times), or for times that do not add up. */
+export function checkDuration(check: Pick<GitHubPullCheck, 'startedAt' | 'completedAt'>): string | undefined {
+  if (!check.startedAt || !check.completedAt) return undefined
+  const seconds = Math.round((Date.parse(check.completedAt) - Date.parse(check.startedAt)) / 1000)
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
 }
 
 /** A check run's `status` + `conclusion`, or a commit status context's `state`, as one of ours. */

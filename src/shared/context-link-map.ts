@@ -5,7 +5,7 @@
 // (Canvas.tsx). The Server Edition has no renderer holding a canvas — it derives the whole map
 // from persisted project files instead (src/server/context-link.ts). Same rules either way, so
 // they belong in one place rather than two that drift.
-import type { BridgeLink, CanvasNodeState, ContextLinkInfo, ContextLinkMap } from './types'
+import type { BridgeLink, CanvasNodeState, ContextLinkInfo, ContextLinkMap, ContextLinkPull } from './types'
 import { linkReadPairs, type LinkEdge } from './canvas-link'
 
 export interface LinkNodeInfo {
@@ -17,6 +17,8 @@ export interface LinkNodeInfo {
   agentId?: string
   sessionId?: string
   accountId?: string
+  /** A pull request node. Like a sticky it cannot read; the other end reads its Overview. */
+  pull?: ContextLinkPull
 }
 
 /**
@@ -33,6 +35,7 @@ export function buildLinkMap(
   const map: ContextLinkMap = {}
   const entryOf = (n: LinkNodeInfo): ContextLinkInfo => {
     if (n.sticky) return { id: n.id, title: n.title, note: n.note ?? '' }
+    if (n.pull) return { id: n.id, title: n.title, pull: n.pull }
     const e: ContextLinkInfo = { id: n.id, title: n.title, cwd: n.cwd ?? '' }
     if (n.agentId) e.agentId = n.agentId
     if (n.sessionId) e.sessionId = n.sessionId
@@ -42,10 +45,10 @@ export function buildLinkMap(
   for (const e of edges) {
     const s = infoOf(e.source)
     const t = infoOf(e.target)
-    if (s.sticky && t.sticky) continue
-    if (s.sticky) {
+    if ((s.sticky || s.pull) && (t.sticky || t.pull)) continue
+    if (s.sticky || s.pull) {
       ;(map[t.id] ??= []).push(entryOf(s))
-    } else if (t.sticky) {
+    } else if (t.sticky || t.pull) {
       ;(map[s.id] ??= []).push(entryOf(t))
     } else {
       for (const { reader } of linkReadPairs(e)) {
@@ -88,6 +91,9 @@ export function buildBackgroundLinkMaps(
       const n = byId.get(id)!
       const sticky = n.kind === 'sticky'
       const agentId = sticky ? undefined : (n.agentId ?? agentIdOf?.(id))
+      if (n.kind === 'pull' && n.pull) {
+        return { id, title: n.title || id, sticky: false, pull: { projectId: p.id, repository: n.pull.repository, pullNumber: n.pull.pullNumber } }
+      }
       return {
         id,
         title: n.title || id,

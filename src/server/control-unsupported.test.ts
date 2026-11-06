@@ -216,7 +216,16 @@ describe('the enabled Server Edition handler parses and dispatches the v1 surfac
     run: vi.fn(async () => ({ ok: true as const })),
     reportOutcome: vi.fn(async () => ({ ok: true as const, message: 'recorded' })),
     githubRead: vi.fn(async () => ({ ok: true as const, message: 'lane' })),
+    openPr: vi.fn(async () => ({ ok: true as const, message: 'pr' })),
     deliver: vi.fn(async () => ({ ok: true as const, message: 'queued' }))
+  })
+
+  it('refuses pr-show and pr-propose by edition: the bar and the highlight live in the desktop renderer', async () => {
+    const handler = createServerEditionControlHandler(actions())
+    for (const verb of ['pr-show', 'pr-propose']) {
+      const reply = await handler({ verb, nodeId: 'src', args: { node: 'p', tab: 'files' }, verified: true })
+      expect(reply, verb).toMatchObject({ ok: false, error: CONTROL_UNSUPPORTED_ERROR })
+    }
   })
 
   it('routes report-outcome to its action, after the shared parse', async () => {
@@ -549,6 +558,7 @@ describe('the enabled Server Edition handler, behind the request ledger', () => 
       run: vi.fn(),
       reportOutcome: vi.fn(),
       githubRead: vi.fn(),
+      openPr: vi.fn(),
       deliver: vi.fn()
     })
     hookServer.setControlHandler(handler)

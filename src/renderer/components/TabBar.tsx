@@ -16,6 +16,9 @@ import { commandTooltip } from '../lib/keybindingOverrides'
 import { IconCanvasView, IconKanban, IconMoreVertical, IconPlus, IconUpdate } from './icons'
 import { runPendingUpdate, usePendingUpdate } from '../state/pendingUpdate'
 import { ProjectGlyph } from './ProjectGlyph'
+import { MainDriftBadge } from './MainDriftBadge'
+import type { BusyCheckNode } from '../lib/mainUpdate'
+import { readBranchStatus } from '../state/gitBranches'
 import { useTooltip } from './Tooltip'
 import { projectTabTooltip } from '../lib/projectTabTooltip'
 import { useDragAutoScroll } from '../lib/dragAutoScroll'
@@ -69,6 +72,8 @@ interface TabBarProps {
   onCancelPendingPauses: (id: string) => void
   /** Resume every PAUSED session of the ACTIVE project (offered only there). */
   onResumeAllProject: (id: string) => void
+  /** The active project's live React Flow nodes (the store's copy lags them), for the behind-main chip. */
+  liveActiveNodes?: readonly BusyCheckNode[] | null
 }
 
 /**
@@ -148,7 +153,8 @@ export function TabBar({
   shareBlockedReason,
   onPauseProject,
   onCancelPendingPauses,
-  onResumeAllProject
+  onResumeAllProject,
+  liveActiveNodes
 }: TabBarProps) {
   // Select the raw array and filter in a memo, a `.filter()` inside the selector returns a
   // fresh array every store snapshot, which re-rendered the TabBar on EVERY projects change.
@@ -506,6 +512,17 @@ export function TabBar({
                   />
                 ) : (
                   <span className="tab__name">{p.name}</span>
+                )}
+
+                {active && p.cwd && !p.ssh && (
+                  // Behind-main chip on the tab you are on: always in view, and one poll, not one per tab.
+                  <MainDriftBadge
+                    projectId={p.id}
+                    cwd={p.cwd}
+                    // A node with no cwd of its own runs in the project folder.
+                    nodes={() => (liveActiveNodes ?? p.nodes).map((n) => ({ ...n, cwd: n.cwd ?? p.cwd }))}
+                    onUpdated={() => void readBranchStatus(sessionForProject(p.id).api.git, p.cwd!).catch(() => {})}
+                  />
                 )}
 
                 {multiSession && <TabSessionLabel projectId={p.id} />}

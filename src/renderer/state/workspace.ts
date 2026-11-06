@@ -37,6 +37,8 @@ import { sshHostKey } from '@shared/ssh'
 import { normalizeNodeIcon } from '@shared/node-icon'
 import { normalizeIssueRef, type IssueRef } from '@shared/github-issue-ref'
 import { isSafeNodeId } from '@shared/safe-id'
+import { normalizePullRef, savedPullRef, type PullNodeRef } from '@shared/pull-node'
+import { normalizeIssuesRef, type IssuesNodeRef } from '@shared/issues-node'
 import { openerByTarget, recordedOpenerOf } from '../lib/teamProgress'
 import { normalizePendingLaunch } from '@shared/pending-launch-shape'
 import { normalizeTerminalFontSize } from '../terminal/terminal-font-zoom'
@@ -88,6 +90,10 @@ const FILES_SIZE = { width: 340, height: 460 }
 const SIMULATOR_SIZE = { width: 360, height: 760 }
 /** Landscape and roomy: a whiteboard is for sketching, and the board pans and zooms inside itself. */
 const WHITEBOARD_SIZE = { width: 900, height: 600 }
+/** Wide enough for a side-by-side diff in the Files tab, like the Diff node. */
+const PULL_SIZE = { width: 860, height: 600 }
+/** A list beside one issue's detail. */
+const ISSUES_SIZE = { width: 820, height: 580 }
 
 // Height of a node when collapsed (header only). Defined in lib/nodeSizing (a light module, so the
 // control listing can report a collapsed node's size without importing this one) and re-exported.
@@ -195,6 +201,10 @@ export interface NodeData {
   /** whiteboard-only: epoch ms of the last editing session that changed the board. Written once
    *  per session (never per stroke) — what a linked agent's "the board changed" keys on. */
   boardRev?: number
+  /** pull-only: which PR the node shows and the view it was left on (shared/pull-node.ts). */
+  pull?: PullNodeRef
+  /** issues-only: the repository and the selected issue (shared/issues-node.ts). */
+  issues?: IssuesNodeRef
   /** whiteboard-only, renderer-only (never serialized): open the editor as soon as the board has
    *  loaded. Set by `createWhiteboardNode` so a new board opens ready to draw; cleared on use. */
   autoEdit?: boolean
@@ -396,7 +406,9 @@ export const BUILTIN_NODE_SIZES: Readonly<Record<SizableNodeKind, NodeSize>> = {
   dino: DINO_SIZE,
   trigger: TRIGGER_SIZE,
   simulator: SIMULATOR_SIZE,
-  whiteboard: WHITEBOARD_SIZE
+  whiteboard: WHITEBOARD_SIZE,
+  pull: PULL_SIZE,
+  issues: ISSUES_SIZE
 }
 
 /**
@@ -1379,6 +1391,37 @@ export function createWhiteboardNode(index: number, center?: { x: number; y: num
       color: '#64d2ff',
       group: null,
       autoEdit: true
+    }
+  }
+}
+
+/** Creates an issues node (nodes/IssuesNode.tsx): the open issues of `repository`. */
+export function createIssuesNode(index: number, repository: string, center?: { x: number; y: number }): CanvasNode {
+  return {
+    id: nextId('issues'),
+    type: 'issues',
+    ...placeSized('issues', center, index),
+    data: { title: 'Issues', color: '#3fb950', group: null, issues: { repository } }
+  }
+}
+
+/** Creates a pull request node (nodes/PullNode.tsx). The title names only the number: the PR's own
+ *  title is PR text, which the git-shared project file never holds. */
+export function createPullNode(
+  index: number,
+  repository: string,
+  pullNumber: number,
+  center?: { x: number; y: number }
+): CanvasNode {
+  return {
+    id: nextId('pull'),
+    type: 'pull',
+    ...placeSized('pull', center, index),
+    data: {
+      title: `PR #${pullNumber}`,
+      color: '#a371f7',
+      group: null,
+      pull: { repository, pullNumber, tab: 'conversation' }
     }
   }
 }
@@ -2964,6 +3007,9 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         whiteboardSource:
           typeof n.whiteboardSource === 'string' && isSafeNodeId(n.whiteboardSource) ? n.whiteboardSource : undefined,
         boardRev: typeof n.boardRev === 'number' && Number.isFinite(n.boardRev) ? n.boardRev : undefined,
+        // Hostile-input seam (git-shared file → live data): a malformed reference shows no PR.
+        pull: n.kind === 'pull' ? normalizePullRef(n.pull) : undefined,
+        issues: n.kind === 'issues' ? normalizeIssuesRef(n.issues) : undefined,
         url: n.url,
         partition: n.partition,
         dockTo: n.kind === 'browser' && typeof n.dockTo === 'string' && RUN_NODE_ID.test(n.dockTo) ? n.dockTo : undefined,
@@ -3025,7 +3071,11 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
                           ? SIMULATOR_SIZE
                           : kind === 'whiteboard'
                             ? WHITEBOARD_SIZE
-                            : TERMINAL_SIZE
+                            : kind === 'pull'
+                              ? PULL_SIZE
+                              : kind === 'issues'
+                                ? ISSUES_SIZE
+                                : TERMINAL_SIZE
   return nodes
     .map((n) => {
       const kind: NodeKind = (n.type as NodeKind) ?? 'terminal'
@@ -3067,6 +3117,12 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         fileMissing: n.data.fileMissing,
         whiteboardSource: n.data.whiteboardSource,
         boardRev: n.data.boardRev,
+        // Exactly the four reference fields, re-validated on the way OUT: no PR text reaches the file.
+        // ponytail: the remote-host mutation round trip also passes here, so it resets a live
+        // Commits/Checks tab to Conversation. Accepted: the tab is view state.
+        pull: kind === 'pull' ? savedPullRef(n.data.pull) : undefined,
+        // Exactly the reference, re-validated on the way OUT: no issue text reaches the file.
+        issues: kind === 'issues' ? normalizeIssuesRef(n.data.issues) : undefined,
         url: n.data.url,
         partition: n.data.partition,
         dockTo: kind === 'browser' && typeof n.data.dockTo === 'string' && RUN_NODE_ID.test(n.data.dockTo) ? n.data.dockTo : undefined,

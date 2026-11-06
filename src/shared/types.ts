@@ -1,8 +1,12 @@
 import type { ChatInterruptResult, ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
 import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from './push-webhook'
 import type { IdentitySeedEntry } from './agent-identity-seed'
+import type { PullCreatedEvent } from './pr-created-hook'
+import type { PrWriteEvent } from './pr-write-hook'
 import type { AgentStatusSnapshotEntry } from './agent-status-snapshot'
 import type { WhiteboardFile, WhiteboardSaveResult } from './whiteboard'
+import type { PullNodeRef } from './pull-node'
+import type { IssuesNodeRef } from './issues-node'
 import type { PrWaitHold } from './pr-wait'
 import type { SessionBackend } from './session-backend'
 import type { AgentIntegrationsSettings } from './agent-integrations'
@@ -459,7 +463,7 @@ export interface RecycledInfo {
 // 'subagent' and 'loop' are render-only (ephemeral hook-driven viz) and never persisted.
 // 'trigger' is a first-class PERSISTED kind (issue #493) — the canvas-owned schedule node; its
 // spec rides `CanvasNodeState.trigger` and is sanitized on every load path (@shared/trigger).
-export type NodeKind = 'terminal' | 'sticky' | 'group' | 'editor' | 'diff' | 'video' | 'web' | 'browser' | 'files' | 'subagent' | 'loop' | 'dino' | 'trigger' | 'simulator' | 'whiteboard'
+export type NodeKind = 'terminal' | 'sticky' | 'group' | 'editor' | 'diff' | 'video' | 'web' | 'browser' | 'files' | 'subagent' | 'loop' | 'dino' | 'trigger' | 'simulator' | 'whiteboard' | 'pull' | 'issues'
 
 /** Persisted state of a single canvas node (terminal, sticky note, group frame, or editor). */
 /**
@@ -656,6 +660,10 @@ export interface CanvasNodeState {
   /** whiteboard-only: epoch ms of the last editing session that changed the board. Written once
    *  per session (never per stroke) — what a linked agent's "the board changed" keys on. */
   boardRev?: number
+  /** pull-only: which PR the node shows and the view it was left on. Never PR text (shared/pull-node.ts). */
+  pull?: PullNodeRef
+  /** issues-only: the repository and the selected issue. Never issue text (shared/issues-node.ts). */
+  issues?: IssuesNodeRef
   // dino-only: best score reached in the T-Rex Runner game.
   highScore?: number
   // editor / diff
@@ -2907,6 +2915,23 @@ export interface GitStatus {
   changes: GitFileChange[]
 }
 
+/** How far a checkout's branch sits from `origin/<default>` (`GitApi.mainDrift`). `fetch` says
+ *  whether this read fetched origin (`skipped` = inside the 2-min window or a failure backoff). */
+export type MainDrift =
+  | { ok: true; base: string; branch: string; behind: number; ahead: number; fetch: 'ok' | 'failed' | 'skipped' }
+  | { ok: false; reason: 'no-repo' | 'no-origin' | 'no-default' | 'detached' | 'remote' }
+
+export type MainUpdateMode = 'merge' | 'rebase'
+
+/** `GitApi.updateFromMain`. A refusal or a conflict changes nothing in the tree. */
+export type MainUpdateResult =
+  | { ok: true; message: string }
+  | {
+      ok: false
+      reason: 'invalid' | 'no-base' | 'up-to-date' | 'dirty' | 'in-progress' | 'conflict' | 'failed'
+      message: string
+    }
+
 export interface GitResult {
   ok: boolean
   message: string
@@ -2963,6 +2988,12 @@ export interface GitApi {
   merge(cwd: string, ref: string): Promise<GitResult>
   /** Rebase the current branch onto another. */
   rebase(cwd: string, onto: string): Promise<GitResult>
+  /** Quiet fetch of origin (at most once per 2 min per repository, backed off on failure), then
+   *  behind/ahead of the branch vs `origin/<default>`. */
+  mainDrift(cwd: string): Promise<MainDrift>
+  /** Merge `origin/<default>` into the branch, or rebase onto it. Refuses a dirty tree; a conflict
+   *  is aborted, never resolved. */
+  updateFromMain(cwd: string, mode: MainUpdateMode): Promise<MainUpdateResult>
   /** Delete a branch (force = -D, for unmerged). */
   deleteBranch(cwd: string, name: string, force: boolean): Promise<GitResult>
   /** Rename the current branch. */
@@ -2985,6 +3016,8 @@ export interface GitApi {
   /** `{ ok: false, entries: [] }` when git itself could not be read — which is NOT the same fact as
    *  "this repo has no worktrees", and no caller may treat it as one (see worktree-ops). */
   worktreeList(repoPath: string): Promise<import('./worktree').WorktreeListResult>
+  /** "Work on this PR": fetch the PR's head and open a fresh worktree on `req.branch` (`pullFetchPlan`). */
+  pullWorktreeAdd(repoPath: string, wtPath: string, req: import('./pull-work').PullFetchRequest): Promise<GitResult>
   worktreeAdd(repoPath: string, wtPath: string, branch: string, baseRef: string, isNew: boolean): Promise<GitResult>
   /** `push`: also publish `baseRef` to origin after a successful merge (only if a remote exists).
    *  Opt-in — a merge must never publish to a shared remote the user was not told about. */
@@ -3136,6 +3169,15 @@ export interface ContextLinkInfo {
   sessionId?: string
   /** Managed Claude account of the linked node — scopes the claude locator fallback. */
   accountId?: string
+  /** Set when the linked node is a pull request node: which PR, in which project. A read renders
+   *  its latest Overview through the core's `pullDetail` (which refuses a non-approved repository). */
+  pull?: ContextLinkPull
+}
+
+export interface ContextLinkPull {
+  projectId: string
+  repository: string
+  pullNumber: number
 }
 
 /** Map of node id → the nodes it is context-linked to. Sent to main so it can write link files. */
@@ -4881,6 +4923,15 @@ export interface NodeTerminalApi {
       args: Record<string, string>
     }) => void
   ): () => void
+  /** Fires when a verified agent's `gh pr create` made a PR (@shared/pr-created-hook): the canvas
+   *  opens its pull node beside that agent. Desktop only. Returns unsubscribe. */
+  onPullCreated(listener: (e: PullCreatedEvent) => void): () => void
+  /** The PR write gate (@shared/pr-write-hook): main asks whether a verified agent's PR write must go
+   *  through the pull node's Confirm bar; answer with `sendPrWriteGateResult`. Desktop only. */
+  onPrWriteGate(listener: (req: { requestId: string } & PrWriteEvent) => void): () => void
+  sendPrWriteGateResult(payload: { requestId: string; deny?: string }): void
+  /** A verified agent's PR write ran: refresh that PR's pull nodes. Desktop only. */
+  onPrWritten(listener: (e: PrWriteEvent) => void): () => void
   /** Reply to an agent control request (resolves the awaiting CLI call in main). */
   sendAgentControlResult(payload: {
     requestId: string

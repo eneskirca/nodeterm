@@ -115,7 +115,16 @@ import {
 } from '../terminal/window-backgrounded'
 import { StickyNode } from '../nodes/StickyNode'
 import { GroupNode, setWorktreeActionHandler } from '../nodes/GroupNode'
-import { LazyEditorNode, LazyDiffNode } from '../nodes/lazyMonacoNodes'
+import { LazyEditorNode, LazyDiffNode, LazyPullNode, LazyIssuesNode } from '../nodes/lazyMonacoNodes'
+import { PULL_REFRESH_EVENT, pullPickerChoices, type PullNodeRef } from '@shared/pull-node'
+import { NO_GITHUB_REMOTE_TEXT } from '../lib/openPullMenu'
+import { useOpenPullSection } from '../state/openPulls'
+import { ISSUE_WORK_EVENT, issueWorkPrompt, type IssueWorkRequest } from '@shared/issues-node'
+import { parsePrPropose, parsePrShow } from '@shared/pull-agent-verbs'
+import { nodesJoined, usePullAgent } from '../state/pullAgent'
+import { openPrArgsRefusal, planOpenPr } from '@shared/open-pr-verb'
+import { openPrLanding, planPullCreated, pullCreatedControl, type PullCreated } from '@shared/pr-created-hook'
+import { prRefreshTargets, prWriteGateDecision, type GatePullNode } from '@shared/pr-write-hook'
 import { WhiteboardNode } from '../nodes/WhiteboardNode'
 import { DinoNode } from '../nodes/DinoNode'
 import { TriggerNode } from '../nodes/TriggerNode'
@@ -129,6 +138,7 @@ import VideoNode from '../nodes/VideoNode'
 import WebNode from '../nodes/WebNode'
 import { withNodeBoundary } from '../components/NodeBoundary'
 import { Dock } from '../components/Dock'
+import { CreatePullDialog } from '../components/CreatePullDialog'
 import { TabBar } from '../components/TabBar'
 import { ContextMenu, type MenuItem } from '../components/ContextMenu'
 import { tidySeparators } from '../lib/tidySeparators'
@@ -567,6 +577,7 @@ import {
   effectiveWorktreeBaseRef,
   effectiveWorktreeTemplate,
   isRemoteSessionNode,
+  isValidGitRef,
   resolveBaseRef,
   sanitizeWorktreeBranch,
   worktreeFromEntry,
@@ -620,7 +631,7 @@ import { OpenLinkSheet } from '../components/OpenLinkSheet'
 import { NEW_PROJECT_KEY, nextSheetAction, type LinkPermissionView } from '../lib/openLinkSheet'
 import { withPermissionMode } from '@shared/agents/approval-mode'
 import { promptFilePathError } from '@shared/agents/launch'
-import { encodeUtf8Base64, launchPromptFor } from '../lib/promptSpill'
+import { encodeUtf8Base64, launchPromptFor, promptExceedsLineBudget, type PromptSpillIo } from '../lib/promptSpill'
 import { parseTeamSpec } from '../lib/teamSpec'
 import { relativeTime } from '../lib/relativeTime'
 import { AgentIcon } from '../lib/agentIcons'
@@ -663,6 +674,10 @@ import {
 import { dispatchEntry, useBoardDispatch, type DispatchCardEntry } from '../state/boardDispatch'
 import type { GitHubIssueCardView as DispatchIssueCard } from '@shared/github-issues'
 import { planIssueWorktree } from '@shared/issue-worktree'
+import { PULL_WORK_EVENT, planPullWorktree, pullWorkPrompt, type PullWorkRequest } from '@shared/pull-work'
+import { ISSUE_OPEN_EVENT, openIssueInNodes, type IssueOpenRequest } from '../lib/openIssueNode'
+import { isGitHubPage, PULL_OPEN_EVENT, PULL_WEB_EVENT, type PullOpenRequest, type PullWebRequest } from '../lib/openPullNode'
+import { PULL_LINK_EVENT, pullLinkPlan, type PullLinkRequest } from '../lib/sendTo'
 import { sharedBasePathOf, sharedWorktreeLocationRefusal } from '@shared/worktree-location'
 import {
   frameAgentPlacement,
@@ -951,6 +966,8 @@ import {
   createBrowserNode,
   createDinoNode,
   createWhiteboardNode,
+  createPullNode,
+  createIssuesNode,
   createTriggerNode,
   createFilesNode,
   createRunNode,
@@ -1072,6 +1089,26 @@ interface HostedMountOpts {
 
 /** What the agent-control handler's `reply` accepts, for helpers that build one outside it. */
 type ControlReply = { ok: boolean; message?: string; result?: unknown; error?: string }
+
+/** How an issue start differs when the issues node's "Work on this" asks for it. */
+type IssueStartOptions = {
+  /** The issues node's own first prompt (`issueWorkPrompt`: reference and link only), already
+   *  spilled to a file when it is too long for a typed line (#706). */
+  launch?: { prompt?: string; promptFile?: string }
+  /** The issues node: a rope from it to the new agent. */
+  opener?: string
+  /** Where the agent opens (no worktree). */
+  center?: { x: number; y: number }
+}
+/** A "Work on this" prompt too long for a typed line goes to a file the pane's shell reads (#706).
+ *  When it cannot (an SSH pane, a failed write) the shorter `fallback` is typed instead. */
+async function launchOrSpill(
+  prompt: string, localFs: boolean, saveUpload: PromptSpillIo['saveUpload'], fallback = prompt
+): Promise<{ prompt?: string; promptFile?: string }> {
+  const launch = await launchPromptFor({ prompt, localFs }, { saveUpload, encodeBase64: encodeUtf8Base64 })
+  return !launch.promptFile && promptExceedsLineBudget(launch.prompt) ? { prompt: fallback } : launch
+}
+
 /** An accepted `nodeterm://open` link, as main answered it (prompt possibly spilled to a file). */
 type LinkOpen = Extract<OpenLinkAcceptResult, { ok: true }>['open']
 /** An accepted link waiting for its project to load is dropped after this (see pendingLinkRef). */
@@ -2403,6 +2440,8 @@ export function Canvas() {
       group: withNodeBoundary(GroupNode),
       editor: withNodeBoundary(LazyEditorNode),
       diff: withNodeBoundary(LazyDiffNode),
+      pull: withNodeBoundary(LazyPullNode),
+      issues: withNodeBoundary(LazyIssuesNode),
       subagent: withNodeBoundary(SubagentNode),
       loop: withNodeBoundary(LoopNode),
       dino: withNodeBoundary(DinoNode),
@@ -11670,6 +11709,215 @@ export function Canvas() {
     ]
   }, [])
 
+  // The project's approved GitHub repository, asking once to allow the folder's git origin.
+  // Repository access comes from the folder's git origin, never from the board. The one click
+  // stays: it is the machine-local consent that lets this token (and agents' verbs) touch it.
+  const approvedRepoFor = useCallback(
+    async (projectId: string): Promise<{ repository?: string; approved: boolean } | undefined> => {
+      const toast = (message: string): void => {
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message } }))
+      }
+      const { api } = sessionForProject(projectId)
+      const view = await api.githubControl.status(projectId).catch(() => undefined)
+      let repo = view?.project
+      if (!repo?.repository) {
+        toast(NO_GITHUB_REMOTE_TEXT)
+        return undefined
+      }
+      if (!repo.approved) {
+        const repository = repo.repository
+        const allowed = await new Promise<boolean>((resolve) =>
+          setConfirm({
+            message: `Allow nodeterm to use ${repository} on this computer? It is this folder's git origin. Pull request and issues nodes and agents on this canvas can then read and act on its pull requests and issues.`,
+            confirmLabel: 'Allow',
+            onConfirm: () => {
+              setConfirm(null)
+              resolve(true)
+            },
+            onCancel: () => resolve(false)
+          })
+        )
+        if (!allowed) return undefined
+        try {
+          repo = (await api.githubControl.approve({
+            projectId,
+            repository,
+            expectedRevision: view!.control.revision
+          })).project
+        } catch {
+          toast(`Could not allow ${repository}. Try again.`)
+          return undefined
+        }
+        // ponytail: the first refresh fills the open-PR list for the picker (it also reads issues).
+        await api.githubIssues.refresh(projectId).catch(() => undefined)
+      }
+      return repo?.approved && repo.repository ? repo : undefined
+    },
+    [setConfirm]
+  )
+
+  // Open PR `input` (a number) of the approved repository as a node, or frame its node: the same
+  // plan as the `open-pr` verb. False when the input is not a PR number.
+  const placePullNode = useCallback(
+    (projectId: string, repo: { repository?: string; approved: boolean }, input: string, at?: { x: number; y: number }): boolean => {
+      // The awaits before this are where a tab switch can land; never write into another project.
+      if (useProjects.getState().activeProjectId !== projectId) return true
+      const plan = planOpenPr({
+        args: { pr: input },
+        repo,
+        pullNodes: nodesRef.current.filter((n) => n.type === 'pull').map((n) => ({ id: n.id, pull: n.data.pull }))
+      })
+      if (plan.kind === 'refuse') return false
+      if (plan.kind === 'reuse') {
+        travelToNodeRef.current(plan.nodeId)
+        return true
+      }
+      setNodes((ns) => [...ns, createPullNode(ns.length, plan.ref.repository, plan.ref.pullNumber, at ?? emptyNodePos())])
+      markDirty()
+      return true
+    },
+    [setNodes, markDirty, emptyNodePos]
+  )
+
+  // The add menu's "Pull request…": one of the open PRs the board's poll already holds (no new
+  // read), or a typed number for a closed or merged one. The repository is the host's approved one,
+  // as for `open-pr`. An existing node for that PR is framed instead of a second one.
+  const addPull = useCallback(
+    async (at?: { x: number; y: number }) => {
+      const projectId = useProjects.getState().activeProjectId
+      if (!projectId) return
+      const repo = await approvedRepoFor(projectId)
+      if (!repo?.repository) return
+      const board = await sessionForProject(projectId).api.githubIssues.pullStatus(projectId).catch(() => undefined)
+      const input = await promptDialog({
+        message: `Open a pull request of ${repo.repository}. Pick an open one, or type a number:`,
+        placeholder: '#123',
+        confirmLabel: 'Open',
+        choices: pullPickerChoices(board)
+      })
+      if (input === null) return
+      if (!placePullNode(projectId, repo, input, at)) {
+        window.dispatchEvent(new CustomEvent('nodeterm:toast', {
+          detail: { kind: 'error', message: 'Type a pull request number, for example 123.' }
+        }))
+      }
+    },
+    [approvedRepoFor, placePullNode]
+  )
+
+  // The add menu's and the Dock's open PR rows: the same plan as "Pull request…", so a PR that
+  // already has a node is framed instead of a second one.
+  const openListedPull = useCallback(
+    async (pullNumber: number, at?: { x: number; y: number }) => {
+      const projectId = useProjects.getState().activeProjectId
+      if (!projectId) return
+      const repo = await approvedRepoFor(projectId)
+      if (repo?.repository) placePullNode(projectId, repo, String(pullNumber), at)
+    },
+    [approvedRepoFor, placePullNode]
+  )
+
+  // The issues node's cross-referenced PR: the add menu's open-PR path, so a PR with a node is framed.
+  // ponytail: the issues node sends only PRs of its own repository, which the core holds to the approved one.
+  useEffect(() => {
+    const onOpen = (e: Event): void => {
+      const pullNumber = (e as CustomEvent<PullOpenRequest>).detail?.pullNumber
+      if (Number.isSafeInteger(pullNumber) && pullNumber > 0) void openListedPull(pullNumber)
+    }
+    window.addEventListener(PULL_OPEN_EVENT, onOpen)
+    return () => window.removeEventListener(PULL_OPEN_EVENT, onOpen)
+  }, [openListedPull])
+
+  // The pull node's Checks tab "Log": the run's GitHub page in a web node beside that pull node.
+  useEffect(() => {
+    const onOpen = (e: Event): void => {
+      const { nodeId, url } = (e as CustomEvent<PullWebRequest>).detail ?? {}
+      const source = nodesRef.current.find((n) => n.id === nodeId && n.type === 'pull')
+      if (!source || !isGitHubPage(url)) return
+      setNodes((ns) => [...ns, placeSpawned(createWebNode(ns.length, { url }), besideNode(source))])
+      markDirty()
+    }
+    window.addEventListener(PULL_WEB_EVENT, onOpen)
+    return () => window.removeEventListener(PULL_WEB_EVENT, onOpen)
+  }, [setNodes, markDirty, placeSpawned, besideNode])
+
+  // A pull node's "Send to…" (F-06): the context link from the picked agent to that pull node,
+  // the open-pr link (the pull end declared readable). Answers in the event's detail.
+  useEffect(() => {
+    const onLink = (e: Event): void => {
+      const req = (e as CustomEvent<PullLinkRequest>).detail
+      if (!req || !nodesRef.current.some((n) => n.id === req.pullId && n.type === 'pull')) return
+      const plan = pullLinkPlan(req.agentNodeId, req.pullId, linkEdgesRef.current, linkEndpointOf)
+      if (plan.edges.length) {
+        setLinkEdges((es) => appendBridgeEdges(es, plan.edges))
+        markDirty()
+      }
+      req.linked = plan.linked.length > 0 || plan.skipped.some((s) => s.why === 'already linked')
+    }
+    window.addEventListener(PULL_LINK_EVENT, onLink)
+    return () => window.removeEventListener(PULL_LINK_EVENT, onLink)
+  }, [nodesRef, linkEdgesRef, linkEndpointOf, setLinkEdges, markDirty])
+
+  // The add menu's "Issues…": the open issues of the folder's approved repository. One node per
+  // repository: an existing one is framed instead of a second one.
+  const addIssues = useCallback(
+    async (at?: { x: number; y: number }) => {
+      const projectId = useProjects.getState().activeProjectId
+      if (!projectId) return
+      const repo = await approvedRepoFor(projectId)
+      // The awaits above are where a tab switch can land; never write into another project.
+      if (!repo?.repository || useProjects.getState().activeProjectId !== projectId) return
+      const repository = repo.repository
+      const existing = nodesRef.current.find((n) => n.type === 'issues' &&
+        n.data.issues?.repository.toLowerCase() === repository.toLowerCase())
+      if (existing) {
+        travelToNodeRef.current(existing.id)
+        return
+      }
+      setNodes((ns) => [...ns, createIssuesNode(ns.length, repository, at ?? emptyNodePos())])
+      markDirty()
+    },
+    [approvedRepoFor, setNodes, markDirty, emptyNodePos]
+  )
+
+  // A pull node's linked issue: the repository's Issues node, focused on it, or a new one on it.
+  // ponytail: a new node opens at the free spot, not beside the pull node.
+  useEffect(() => {
+    const onOpen = (e: Event): void => {
+      const request = (e as CustomEvent<IssueOpenRequest>).detail
+      const plan = openIssueInNodes(nodesRef.current, request)
+      if ('focus' in plan) {
+        setNodes((ns) => { const latest = openIssueInNodes(ns, request); return 'focus' in latest ? latest.nodes : ns })
+        travelToNodeRef.current(plan.focus)
+      } else {
+        const node = createIssuesNode(nodesRef.current.length, request.repository, emptyNodePos())
+        setNodes((ns) => [...ns, { ...node, data: { ...node.data, issues: { repository: request.repository, issueNumber: request.issueNumber } } }])
+      }
+      markDirty()
+    }
+    window.addEventListener(ISSUE_OPEN_EVENT, onOpen)
+    return () => window.removeEventListener(ISSUE_OPEN_EVENT, onOpen)
+  }, [setNodes, markDirty, emptyNodePos])
+
+  // "New pull request…" (add menu, Source Control): a PR from the current branch of `cwd` (the
+  // project folder, or the Source Control panel's worktree). The dialog does the push and the
+  // create on its own click; the new PR, or the branch's open one, opens as a node.
+  const [newPull, setNewPull] = useState<{
+    projectId: string; repo: { repository: string; approved: boolean }; cwd: string; at?: { x: number; y: number }
+  } | null>(null)
+  const addNewPull = useCallback(
+    async (at?: { x: number; y: number }, scopeCwd?: string) => {
+      const projectId = useProjects.getState().activeProjectId
+      const project = projectId ? useProjects.getState().getProject(projectId) : undefined
+      const cwd = scopeCwd ?? project?.ssh?.remoteCwd ?? project?.cwd
+      if (!projectId || !cwd) return
+      const repo = await approvedRepoFor(projectId)
+      if (!repo?.repository || useProjects.getState().activeProjectId !== projectId) return
+      setNewPull({ projectId, repo: { repository: repo.repository, approved: true }, cwd, at })
+    },
+    [approvedRepoFor]
+  )
+
   // The shared bag of creation callbacks + project context that every "add" menu derives its
   // CONTENT items from (see lib/addMenuSpec.ts). Built once here so the pane menu, the sidebar
   // project-header "+", and any other ContextMenu-based surface pass the same handlers and can no
@@ -11685,6 +11933,7 @@ export function Canvas() {
     }),
     [activeProjectId, isSshProject, isWindowsCore]
   )
+  const { section: openPullsSection, prime: primeOpenPulls } = useOpenPullSection(activeProjectId)
   const addHandlers = useMemo<AddHandlers>(
     () => ({
       terminal: (at) => addTerminal(at),
@@ -11698,6 +11947,10 @@ export function Canvas() {
       dino: (at) => addDino(at),
       whiteboard: (at) => addWhiteboard(at),
       trigger: (at) => addTrigger(at),
+      pull: (at) => void addPull(at),
+      openPull: (pullNumber, at) => void openListedPull(pullNumber, at),
+      issues: (at) => void addIssues(at),
+      newPull: (at) => void addNewPull(at),
       openFile: (at) => void openFileDialog(at),
       newFile: (at) => void newProjectFile(at),
       spawnTeam: (at) => setSpawnTeamDialog({ at }),
@@ -11715,6 +11968,9 @@ export function Canvas() {
       addDino,
       addWhiteboard,
       addTrigger,
+      addPull,
+      openListedPull,
+      addNewPull,
       openFileDialog,
       newProjectFile,
       openWorktreeDialog
@@ -11730,10 +11986,11 @@ export function Canvas() {
       // `New agent ▸` / `New view ▸` / `Files ▸` / `Orchestrate ▸`. The spec is still the single
       // source for WHICH kinds appear, in what order, and with which disabled reason — this
       // surface only chooses to render the grouped tree rather than the flat list.
+      primeOpenPulls()
       const items = buildGroupedAddMenu(
         CONTENT_ADD_ITEMS,
         addHandlers,
-        addCtx,
+        { ...addCtx, pulls: openPullsSection },
         agentCreationEntries(at),
         at,
         screenPos
@@ -11790,6 +12047,8 @@ export function Canvas() {
       agentCreationEntries,
       addHandlers,
       addCtx,
+      openPullsSection,
+      primeOpenPulls,
       selectAll,
       fitAll,
       arrangeAllNodes,
@@ -12187,10 +12446,16 @@ export function Canvas() {
       columnId: string | null,
       ref: IssueRef,
       created: { node: CanvasNode; placed: CanvasNode; projectId: string },
-      agentId: AgentId
+      agentId: AgentId,
+      // The issues node whose "Work on this" started it: a rope from it, like a browser popup's.
+      opener?: string
     ) => {
       const { node, projectId: targetProjectId } = created
       const nodeId = node.id
+      if (opener) {
+        setControlEdges((es) => [...es, ropeEdge(`ctrl-${opener}-${nodeId}`, opener, nodeId)])
+        markDirty()
+      }
       // The project addAgentNode charged the node to (its guarded, live read) — not a second read.
       const board = useProjects.getState().getProject(targetProjectId)?.kanban ?? defaultKanban(targetProjectId)
       const column = columnId ? board.columns.find((c) => c.id === columnId) : undefined
@@ -12221,24 +12486,31 @@ export function Canvas() {
       })
       if (started) useBoardLog.getState().append(sessionForProject(targetProjectId).api, targetProjectId, started)
     },
-    [markDirty, castNewNodeNow]
+    [markDirty, castNewNodeNow, setControlEdges]
   )
 
   /** The reference + first prompt of an issue start, or a notice saying why nothing started. The
    *  reference comes from the card's GitHub URL and is validated before anything is created; a card
-   *  whose URL does not parse starts nothing. The issue's title and body never reach the prompt. */
+   *  whose URL does not parse starts nothing. The issue's title and body never reach the prompt,
+   *  except from the issues node's "Work on this" (`opts.launch`), which composed them as marked,
+   *  untrusted data (`issueWorkPrompt`). */
   const issueStartPrompt = useCallback(
-    (issue: GitHubIssueCardView): { ref: IssueRef; prompt: string } | undefined => {
+    (issue: GitHubIssueCardView, opts: IssueStartOptions = {}):
+      { ref: IssueRef; prompt: string; promptFile?: string; opener?: string } | undefined => {
       const ref = issueRefFromHtmlUrl(issue.htmlUrl, issue.number)
-      const prompt = ref ? issueLaunchPrompt(ref) : undefined
-      if (!ref || !prompt) {
+      const prompt = ref ? (opts.launch ? opts.launch.prompt ?? '' : issueLaunchPrompt(ref)) : undefined
+      if (!ref || (!prompt && !opts.launch?.promptFile)) {
         setNotice({
           kind: 'error',
           text: `Could not start an agent on #${issue.number}: its GitHub address could not be read. Nothing was started.`
         })
         return undefined
       }
-      return { ref, prompt }
+      return {
+        ref, prompt: prompt ?? '',
+        ...(opts.launch?.promptFile ? { promptFile: opts.launch.promptFile } : {}),
+        ...(opts.opener ? { opener: opts.opener } : {})
+      }
     },
     []
   )
@@ -12251,14 +12523,15 @@ export function Canvas() {
    * and the issue card's run history gets `run-started` (`fileIssueSession`).
    */
   const startIssueAgent = useCallback(
-    (issue: GitHubIssueCardView, agentId: AgentId, accountId?: string | null) => {
-      const start = issueStartPrompt(issue)
+    (issue: GitHubIssueCardView, agentId: AgentId, accountId?: string | null, opts: IssueStartOptions = {}) => {
+      const start = issueStartPrompt(issue, opts)
       if (!start) return
-      const created = addAgentNode(agentId, undefined, undefined, accountId, start.prompt, {
-        issueRef: start.ref
+      const created = addAgentNode(agentId, opts.center, undefined, accountId, start.prompt, {
+        issueRef: start.ref,
+        promptFile: start.promptFile
       })
       if (!created) return // addAgentNode already said why
-      fileIssueSession(issue.columnId, start.ref, created, agentId)
+      fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)
     },
     [addAgentNode, issueStartPrompt, fileIssueSession]
   )
@@ -12663,12 +12936,14 @@ export function Canvas() {
    * between — a zustand write flushes one — would mirror the ref back to a node list without it,
    * so the agent's cwd would fall back to the project folder. The slot is the control opens' grid
    * (`frameAgentPlacement`), and the frame grows to hold the node as actually built.
+   * The pull node's "Work on this PR" opens its agent the same way with `issue` null: no issue
+   * binding and no board filing, only the rope from the pull node.
    */
   const openIssueAgentInFrame = useCallback(
     (
       groupId: string,
-      issue: GitHubIssueCardView,
-      start: { ref: IssueRef; prompt: string },
+      issue: GitHubIssueCardView | null,
+      start: { ref?: IssueRef; prompt: string; promptFile?: string; opener?: string },
       agentId: AgentId,
       accountId: string | null | undefined
     ): boolean => {
@@ -12686,7 +12961,7 @@ export function Canvas() {
         start.prompt,
         // A frame whose setup script is still preparing the checkout holds the launch, exactly like
         // a control open into it; a frame with nothing to prepare launches at once.
-        { issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId) }
+        { issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId), promptFile: start.promptFile }
       )
       if (!created) return false // addAgentNode already said why
       // Grow the frame to hold the node as BUILT (snap-to-grid can round its size up). Queued after
@@ -12706,10 +12981,15 @@ export function Canvas() {
         nodesRef.current = grow(nodesRef.current)
         setNodes((ns) => grow(ns as CanvasNode[]))
       }
-      fileIssueSession(issue.columnId, start.ref, created, agentId)
+      if (issue && start.ref) fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)
+      else if (start.opener) {
+        const id = created.node.id
+        setControlEdges((es) => [...es, ropeEdge(`ctrl-${start.opener}-${id}`, start.opener!, id)])
+        markDirty()
+      }
       return true
     },
-    [setNodes, addAgentNode, setupHoldGroup, fileIssueSession]
+    [setNodes, addAgentNode, setupHoldGroup, fileIssueSession, setControlEdges, markDirty]
   )
 
   /**
@@ -12726,13 +13006,13 @@ export function Canvas() {
    * fresh `-2`; nothing on disk is ever overwritten.
    */
   const startIssueAgentInWorktree = useCallback(
-    async (issue: GitHubIssueCardView, agentId: AgentId, accountId?: string | null) => {
+    async (issue: GitHubIssueCardView, agentId: AgentId, accountId?: string | null, opts: IssueStartOptions = {}) => {
       const refusal = issueWorktreeUnavailable()
       if (refusal) {
         setNotice({ kind: 'error', text: `Could not start on #${issue.number} in a new worktree: ${refusal}.` })
         return
       }
-      const start = issueStartPrompt(issue)
+      const start = issueStartPrompt(issue, opts)
       if (!start) return
       const key = issueKey(start.ref) ?? `#${issue.number}`
       const busy = (): void =>
@@ -12925,6 +13205,145 @@ export function Canvas() {
     [agentCreationEntries, issueWorktreeUnavailable, startIssueAgentInWorktree]
   )
 
+  // The issues node's "Work on this": the default agent on the issue, beside the node (or in a new
+  // worktree), with the issue's reference in its prompt and a rope from the node. A user click
+  // in the node is the only sender; no control verb reaches it.
+  useEffect(() => {
+    const onWork = async (e: Event): Promise<void> => {
+      const d = (e as CustomEvent<IssueWorkRequest>).detail
+      const source = nodesRef.current.find((n) => n.id === d?.nodeId && n.type === 'issues')
+      const ref = d?.issue ? issueRefFromHtmlUrl(d.issue.htmlUrl, d.issue.number) : undefined
+      const prompt = ref && issueWorkPrompt(ref)
+      if (!source || !ref || !prompt) return
+      const projectId = useProjects.getState().activeProjectId
+      const ssh = !!useProjects.getState().getProject(projectId)?.ssh
+      const launch = await launchOrSpill(prompt, !ssh, api.files.saveUpload, issueLaunchPrompt(ref))
+      // The await above is where a tab switch can land; never start into another project.
+      if (useProjects.getState().activeProjectId !== projectId) return
+      const agentId = resolveNewNodeAgent(undefined, projectId, useSettings.getState().settings)
+      const opts = { launch, opener: source.id }
+      if (d.worktree) {
+        void startIssueAgentInWorktree(d.issue, agentId, undefined, opts)
+        return
+      }
+      const all = nodesRef.current
+      const rect = nodeFitRect(source as FocusableNode, all as FocusableNode[])
+      startIssueAgent(d.issue, agentId, undefined, {
+        ...opts,
+        ...(rect ? { center: { x: rect.x + rect.width + 40 + terminalNodeSize().width / 2, y: rect.y + rect.height / 2 } } : {})
+      })
+    }
+    const listener = (e: Event): void => { void onWork(e) }
+    window.addEventListener(ISSUE_WORK_EVENT, listener)
+    return () => window.removeEventListener(ISSUE_WORK_EVENT, listener)
+  }, [startIssueAgent, startIssueAgentInWorktree, nodesRef, api])
+
+  // The pull node's "Work on this PR": the PR's head in a FRESH worktree (`pr-<n>-<slug>`, the next
+  // free `-k` when taken, never a reuse), a frame bound to it, the default agent inside with the PR
+  // named in its prompt (reference only; the agent reads the text with gh), and a rope from the pull node so
+  // `pr-show` / `pr-propose` work from that agent. A user click in the node is the only sender.
+  // "Resolve conflicts with agent" is the same path with `conflict`: the prompt adds the merge task.
+  useEffect(() => {
+    const onWork = async (e: Event): Promise<void> => {
+      const { nodeId, detail: pr, conflict } = (e as CustomEvent<PullWorkRequest>).detail ?? {}
+      const source = nodesRef.current.find((n) => n.id === nodeId && n.type === 'pull')
+      const pull = source?.data.pull as PullNodeRef | undefined
+      if (!source || !pull || !pr || pr.number !== pull.pullNumber) return
+      const n = pr.number
+      const refusal = issueWorktreeUnavailable()
+      if (refusal) {
+        setNotice({ kind: 'error', text: `Could not work on PR #${n} in a new worktree: ${refusal}.` })
+        return
+      }
+      const projectId = useProjects.getState().activeProjectId
+      const project = useProjects.getState().getProject(projectId ?? '')
+      const { repoRoot, entries, staleGroupIds } = useWorktrees.getState()
+      if (!projectId || !project || !repoRoot) return // issueWorktreeUnavailable already refused these
+      const agentId = resolveNewNodeAgent(undefined, projectId, useSettings.getState().settings)
+      const why = agentCreateRefusal(agentId, undefined)
+      if (why) {
+        setNotice({ kind: 'error', text: why })
+        return
+      }
+      const pw = projectLaunchInfoNow(project.id)?.resolved.worktree
+      const defaults = { basePath: pw?.basePath?.value, baseRef: pw?.baseRef?.value }
+      const template = effectiveWorktreeTemplate(defaults, useSettings.getState().settings.worktreePathTemplate)
+      // The frame merges back into the PR's base; one git would not take falls back to the usual base.
+      const baseRef = isValidGitRef(pr.base.ref) ? pr.base.ref : effectiveWorktreeBaseRef(defaults, entries)
+      const key = `${pull.repository}#${n}`
+      const ran = await runExclusive(issueWorktreeInFlightRef.current, key, async () => {
+        const status = await api.git.status(repoRoot).catch(() => null)
+        const plan = await planPullWorktree({
+          number: n,
+          headRef: pr.head.ref,
+          repoRoot,
+          template,
+          entries,
+          branches: status?.branches ?? null,
+          remoteBranches: status?.remoteBranches ?? [],
+          bound: issueWorktreeFrames(nodesRef.current, repoRoot, staleGroupIds),
+          sharedBasePath: sharedBasePathOf(pw)
+        }, (path) => api.fs.exists(path))
+        if (plan.kind === 'refused') {
+          setNotice({ kind: 'error', text: `Could not work on PR #${n} in a new worktree: ${plan.reason}` })
+          return
+        }
+        const { branch, path } = plan.target
+        const fork = !!pr.fromFork
+        const prompt = pullWorkPrompt({
+          repository: pull.repository, number: n, base: pr.base.ref, head: pr.head.ref, branch, fork, conflict: conflict === true, node: source.id
+        })
+        if (!prompt) return
+        // SSH never gets here.
+        const launch = await launchOrSpill(prompt, true, api.files.saveUpload)
+        if (useProjects.getState().activeProjectId !== projectId) {
+          setNotice({ kind: 'info', text: `The project changed, so nothing was started for PR #${n}.` })
+          return
+        }
+        const size = terminalNodeSize()
+        const { frame: need } = frameAgentPlacement({ x: 0, y: 0 }, 0, size)
+        const frame = {
+          width: Math.max(WORKTREE_GROUP_SIZE.width, need.width),
+          height: Math.max(WORKTREE_GROUP_SIZE.height, need.height)
+        }
+        let opened = false
+        const out = await createBoundWorktree(
+          {
+            // The core fetches the PR's head and adds the worktree on `branch` (never an existing one).
+            worktreeAdd: (repoPath, wtPath) => api.git.pullWorktreeAdd(repoPath, wtPath, { number: n, headRef: pr.head.ref, fork, branch }),
+            activeProjectId: () => useProjects.getState().activeProjectId,
+            attach: (t, wt) => {
+              const groupId = worktreeControlRef.current.attachWorktree(t, wt)
+              opened = openIssueAgentInFrame(groupId, null, {
+                prompt: launch.prompt ?? '', ...(launch.promptFile ? { promptFile: launch.promptFile } : {}), opener: source.id
+              }, agentId, undefined)
+              return groupId
+            }
+          },
+          { repoPath: repoRoot, mode: 'new', branch, baseRef, path },
+          { target: () => ({ groupId: null, at: emptyNodePos({ w: frame.width, h: frame.height }), size: frame, title: `PR #${n}` }), projectId }
+        )
+        if (!out.ok && out.reason === 'git') {
+          setNotice({ kind: 'error', text: `Could not check out PR #${n}: ${out.message}` })
+          return
+        }
+        if (!out.ok) {
+          setNotice({ kind: 'info', text: `Created worktree ${branch} at ${path}. The project changed, so no group or agent was started.` })
+          return
+        }
+        if (!opened) return // addAgentNode already said why
+        setNotice({
+          kind: 'info',
+          text: `${plan.renamedFrom ? `${plan.renamedFrom} is taken, so worktree` : 'Worktree'} ${branch} has PR #${n}'s head at ${path}; the agent opens there.`
+        })
+      })
+      if (!ran) setNotice({ kind: 'info', text: `A worktree for PR #${n} is already being prepared.` })
+    }
+    const listener = (e: Event): void => { void onWork(e) }
+    window.addEventListener(PULL_WORK_EVENT, listener)
+    return () => window.removeEventListener(PULL_WORK_EVENT, listener)
+  }, [issueWorktreeUnavailable, agentCreateRefusal, openIssueAgentInFrame, emptyNodePos, nodesRef, api])
+
     // Global kanban swimlane "New session" path — creates a node in the target project's
   // swimlane even when that project is not the active canvas. The per-column create
   // menu in GlobalKanbanView dispatches this, and we switch to the target project
@@ -12977,6 +13396,28 @@ export function Canvas() {
       focusNodeById(nodeId)
     },
     [focusNodeById]
+  )
+
+  // "Open as node" from the PR summary modal: reuse this PR's node if the canvas has one, else
+  // place a new one; then leave the board and frame it.
+  const openPullAsNode = useCallback(
+    (pull: PullNodeRef) => {
+      const existing = nodesRef.current.find((n) => n.type === 'pull' &&
+        n.data.pull?.repository === pull.repository && n.data.pull.pullNumber === pull.pullNumber)
+      const created = existing
+        ? undefined
+        : createPullNode(nodesRef.current.length, pull.repository, pull.pullNumber, emptyNodePos())
+      const nodeId = existing?.id ?? created!.id
+      if (created) {
+        setNodes((ns) => [...ns, created])
+        markDirty()
+      }
+      const id = useProjects.getState().activeProjectId
+      if (id) useViewMode.getState().toggle(id) // board → canvas
+      // ponytail: one tick so a just-added node is in nodesRef before it is framed.
+      setTimeout(() => focusNodeById(nodeId), 0)
+    },
+    [setNodes, markDirty, emptyNodePos, focusNodeById]
   )
 
   // Stable identity for the memoized KanbanView — an inline arrow here would re-render the
@@ -13231,7 +13672,12 @@ export function Canvas() {
   // reply on BOTH confirm and cancel. Every path replies EXACTLY ONCE so the awaiting CLI call in
   // main never hangs to its 120s timeout.
   useEffect(() => {
-    return api.onAgentControl(async ({ requestId, sourceNodeId, verb, args }) => {
+    const runControl = async (
+      { requestId, sourceNodeId, verb, args }: Parameters<Parameters<typeof api.onAgentControl>[0]>[0],
+      // Set only for the PR a verified agent's `gh pr create` made (@shared/pr-created-hook): the
+      // `open-pr` case runs as if that agent had called it, and no CLI waits for a reply.
+      fromHook?: PullCreated
+    ) => {
       // Set by the OFF-CANVAS branch below (`answersOffCanvas` / `answersFromStoredNodes`): the
       // verb runs against the owning project's SERIALIZED nodes because that project is not on
       // screen. It stays undefined on every other path, which is what makes the on-screen
@@ -13274,6 +13720,11 @@ export function Canvas() {
         // Say WHERE it went, once, in both voices. The verb bodies already say WHAT they made, so
         // none of them has to know about routing: the clause is appended here and the human strip
         // is raised here. A refusal decorates nothing — it created no node and moved no view.
+        // A hook-opened PR says so itself (the `open-pr` case), with no CLI to answer.
+        if (fromHook) {
+          if (!r.ok) console.info('[pr-created] no pull node opened:', r.error)
+          return
+        }
         if (offCanvas && r.ok && offCanvas.created.length) {
           const { project, closed, created } = offCanvas
           r = {
@@ -15274,6 +15725,102 @@ export function Canvas() {
             reply({ ok: true, message: `showing web ${id}`, result: { id } })
             return
           }
+          case 'open-pr': {
+            // The PR the agent just made (@shared/open-pr-verb): a pull node beside it plus a context
+            // link, or the existing node for that PR linked (and, on screen, framed). Open-only. The
+            // repository is the host's answer for this project; the agent cannot name one.
+            const prProjectId = ctlProject?.id ?? ''
+            const prRepo = (openPrArgsRefusal(args) || ctlProject?.remote)
+              ? undefined
+              : await api.githubControl.status(prProjectId).then((v) => v.project, () => undefined)
+            // The await above is the one window a tab switch can land in; never write the node
+            // into whatever became active meanwhile.
+            if (!offCanvas && useProjects.getState().activeProjectId !== prProjectId) {
+              reply({ ok: false, error: 'open-pr: the project changed while resolving its repository; run it again' })
+              return
+            }
+            const prPullNodes = ctlNodes().filter((n) => n.type === 'pull').map((n) => ({ id: n.id, pull: n.data.pull }))
+            // From the hook: only the project's own repository, and it opens even when not allowed yet
+            // (the node then offers Allow).
+            const prPlan = fromHook
+              ? planPullCreated({ created: fromHook, repo: prRepo, relayGuest: !!ctlProject?.remote, pullNodes: prPullNodes })
+              : planOpenPr({ args, repo: prRepo, relayGuest: !!ctlProject?.remote, pullNodes: prPullNodes })
+            if (prPlan.kind === 'refuse') {
+              reply({ ok: false, error: prPlan.error })
+              return
+            }
+            const prId = prPlan.kind === 'reuse'
+              ? prPlan.nodeId
+              : addAndConnect(createPullNode(nodeCount(), prPlan.ref.repository, prPlan.ref.pullNumber, placeBelow()))
+            // ponytail: classifyLink only links two agents (or a sticky + terminal), so the pull end
+            // is declared readable for THIS call; the link map treats a pull node as read-only.
+            const prLink = bridgeTo(sourceNodeId, [prId], (id) =>
+              id === prId ? { kind: 'pull', contextCapable: true } : ctlLinkEndpointOf(id))
+            // Never say "linked" when no link exists: an agent that cannot read context gets no edge.
+            const prSkip = prLink.skipped.find((s) => s.why !== 'already linked')
+            // The hook path never moves the camera: a toast offers the jump instead.
+            const prLanding = openPrLanding({
+              plan: prPlan,
+              onScreen: !offCanvas,
+              fromHook: !!fromHook
+            })
+            if (prLanding.travel) travelToNodeRef.current(prId)
+            if (prLanding.toast) {
+              setNotice({ kind: 'info', text: prLanding.toast, action: { label: 'Jump', run: () => travelToNodeRef.current(prId) } })
+            }
+            reply({
+              ok: true,
+              message: `${prPlan.kind === 'create' ? 'opened' : 'linked existing'} pull request node ${prId}` +
+                (prSkip ? ` (not context-linked: ${prSkip.why})` : ''),
+              result: { id: prId, created: prPlan.kind === 'create' }
+            })
+            return
+          }
+          case 'pr-show':
+          case 'pr-propose': {
+            // The linked agent drives its pull node on the user's word (@shared/pull-agent-verbs).
+            // `pr-show` moves the node's view; `pr-propose` only stages one action that the user's
+            // Confirm in the node runs. Neither reaches GitHub from here.
+            const prArgs = verb === 'pr-show' ? parsePrShow(args) : parsePrPropose(args)
+            if (!prArgs.ok) {
+              reply({ ok: false, error: prArgs.error })
+              return
+            }
+            if (ctlProject?.remote) {
+              reply({ ok: false, error: `${verb}-relay-refused: a relay guest cannot drive nodes on this canvas` })
+              return
+            }
+            const prNode = ctlNodes().find((n) => n.id === prArgs.node)
+            const prRef = prNode?.type === 'pull' ? prNode.data.pull : undefined
+            if (!prNode || !prRef) {
+              reply({ ok: false, error: `${verb}: ${prArgs.node} is not a pull request node on this canvas` })
+              return
+            }
+            // Only the agent joined to that node (open-pr's rope or context link) may drive it.
+            if (!nodesJoined([...linkEdgesRef.current, ...controlEdgesRef.current], sourceNodeId, prNode.id)) {
+              reply({ ok: false, error: `${verb}-not-linked: you are not linked to pull node ${prNode.id}; run open-pr --pr ${prRef.pullNumber} first` })
+              return
+            }
+            if ('show' in prArgs) {
+              const { show } = prArgs
+              setNodes((ns) => ns.map((n) => n.id === prNode.id && n.data.pull
+                ? { ...n, data: { ...n.data, pull: { ...n.data.pull, tab: show.tab, ...(show.file ? { selectedFile: show.file } : {}) } } }
+                : n))
+              markDirty()
+              usePullAgent.getState().show(prNode.id, show.file && show.lines ? { file: show.file, ...show.lines } : null)
+            } else {
+              usePullAgent.getState().propose(prNode.id, prArgs.proposal)
+            }
+            travelToNodeRef.current(prNode.id)
+            reply({
+              ok: true,
+              message: 'show' in prArgs
+                ? `showing ${prArgs.show.file ?? prArgs.show.tab} on pull node ${prNode.id}`
+                : `proposed ${prArgs.proposal.action} on pull node ${prNode.id}; nothing is sent until the user clicks Confirm on the node`,
+              result: { id: prNode.id }
+            })
+            return
+          }
           case 'open-browser': {
             if (!args.url) {
               reply({ ok: false, error: 'open-browser requires --url' })
@@ -16622,7 +17169,59 @@ export function Canvas() {
       } catch (e) {
         reply({ ok: false, error: String(e) })
       }
+    }
+    const offControl = api.onAgentControl((cmd) => void runControl(cmd))
+    // Same dispatch, same `open-pr` case: placement beside the agent, the dedupe, off-screen projects.
+    const offPullCreated = api.onPullCreated((event) => {
+      const { cmd, created } = pullCreatedControl(event)
+      void runControl(cmd, created)
     })
+    return () => {
+      offControl()
+      offPullCreated()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // A verified agent's own PR write (@shared/pr-write-hook). Before it runs, main asks whether it must go
+  // through a pull node's Confirm bar; after it ran, that PR's pull nodes refresh. The facts are the
+  // owning project's repository (open-pr's rule: the host's answer) and its pull nodes, linked first.
+  useEffect(() => {
+    const prFacts = async (nodeId: string): Promise<{ repo: string | undefined; pullNodes: GatePullNode[] } | undefined> => {
+      const st = useProjects.getState()
+      const live = st.activeProjectId && nodesRef.current.some((n) => n.id === nodeId) ? st.activeProjectId : undefined
+      const owner = st.getProject(live ?? st.projects.find((p) => p.nodes.some((n) => n.id === nodeId))?.id ?? '')
+      // A relay tab's agent posts its hooks to its own host, which decides there.
+      if (!owner || owner.remote) return undefined
+      const repo = await api.githubControl.status(owner.id).then((v) => v.project?.repository, () => undefined)
+      const edges = [...linkEdgesRef.current, ...controlEdgesRef.current]
+      // ponytail: off screen the links are not read, so every pull node there reads as unlinked.
+      const pullNodes = live
+        ? nodesRef.current.flatMap((n) => n.type === 'pull' && n.data.pull
+          ? [{ id: n.id, repository: n.data.pull.repository, pullNumber: n.data.pull.pullNumber, linked: nodesJoined(edges, nodeId, n.id) }]
+          : [])
+        : owner.nodes.flatMap((n) => n.kind === 'pull' && n.pull
+          ? [{ id: n.id, repository: n.pull.repository, pullNumber: n.pull.pullNumber, linked: false }]
+          : [])
+      return { repo, pullNodes }
+    }
+    const offGate = api.onPrWriteGate(({ requestId, nodeId, writes }) => {
+      void prFacts(nodeId).then(
+        (facts) => api.sendPrWriteGateResult({ requestId, ...(facts ? prWriteGateDecision({ writes, ...facts }) : {}) }),
+        () => api.sendPrWriteGateResult({ requestId })
+      )
+    })
+    const offWritten = api.onPrWritten(({ nodeId, writes }) => {
+      void prFacts(nodeId).then((facts) => {
+        for (const id of facts ? prRefreshTargets({ writes, ...facts }) : []) {
+          window.dispatchEvent(new CustomEvent(PULL_REFRESH_EVENT, { detail: id }))
+        }
+      }, () => {})
+    })
+    return () => {
+      offGate()
+      offWritten()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -17091,14 +17690,15 @@ export function Canvas() {
         items: buildGroupedAddMenu(
           CONTENT_ADD_ITEMS,
           addHandlers,
-          addCtx,
+          // Another project's "+" switches first; its PR list is not loaded yet, so it gets none.
+          projectId === activeProjectId ? { ...addCtx, pulls: openPullsSection } : addCtx,
           agentCreationEntries(),
           undefined,
           pos
         )
       })
     },
-    [activeProjectId, switchProject, addHandlers, addCtx, agentCreationEntries]
+    [activeProjectId, switchProject, addHandlers, addCtx, openPullsSection, agentCreationEntries]
   )
 
   // Sidebar drag-to-group: reparent a session into a canvas group (groupId) or out (null).
@@ -19549,6 +20149,7 @@ export function Canvas() {
     <AerialWallpaper />
     <div className="canvas-root" style={wallpaperStyle}>
       <TabBar
+        liveActiveNodes={liveActiveNodes}
         onSwitch={switchProject}
         onReconnect={reconnectRelay}
         onReorder={reorderProject}
@@ -19822,6 +20423,7 @@ export function Canvas() {
           onAutoMoveFromPulls={autoMoveCardFromPulls}
           issueAgentMenu={issueAgentMenu}
           issueWorktreeMenu={issueWorktreeMenu}
+          onOpenPullAsNode={openPullAsNode}
           teams={teamStations}
           onIssueMoved={dispatchOnUserMove}
         />
@@ -20291,6 +20893,23 @@ export function Canvas() {
           scopes={scmScopeList}
           defaultScope={defaultScmScope(scmScopeList, selectedGroupIdForScm)}
           onNewWorktree={() => openWorktreeDialog(null)}
+          onNewPull={(cwd) => {
+            setScOpen(false)
+            void addNewPull(undefined, cwd)
+          }}
+        />
+      )}
+      {newPull && (
+        <CreatePullDialog
+          api={sessionForProject(newPull.projectId).api}
+          projectId={newPull.projectId}
+          repository={newPull.repo.repository}
+          cwd={newPull.cwd}
+          onOpen={(pullNumber) => {
+            setNewPull(null)
+            placePullNode(newPull.projectId, newPull.repo, String(pullNumber), newPull.at)
+          }}
+          onClose={() => setNewPull(null)}
         />
       )}
 
@@ -20865,6 +21484,12 @@ export function Canvas() {
         onAddDino={addDino}
         onAddWhiteboard={addWhiteboard}
         onAddTrigger={addTrigger}
+        onAddPull={() => void addPull()}
+        openPulls={openPullsSection}
+        onOpenPull={(pullNumber) => void openListedPull(pullNumber)}
+        onAddMenuOpen={primeOpenPulls}
+        onAddIssues={() => void addIssues()}
+        onAddNewPull={() => void addNewPull()}
         onAddFiles={() => addFiles()}
         onAddRun={() => void addRun()}
         onAddSimulator={() => addSimulator()}

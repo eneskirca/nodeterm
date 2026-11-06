@@ -1,0 +1,7 @@
+/* Notes for agents (F-07): the tab row's "N notes for agent" and its clear question. */
+.pr-tabs__notes { display: flex; flex-shrink: 0; align-items: center; gap: 8px; margin-left: auto; font-family: var(--pr-sans); font-size: 12px; white-space: nowrap; }
+/* pr-btn--small is a 22px square icon button; these carry words. */
+.pr-tabs__notes .pr-btn--small { width: auto; padding: 0 8px; }
+.pr-tabs__size + .pr-tabs__notes { margin-left: 8px; }
+.pr-tabs__notes-ask { display: flex; align-items: center; gap: 6px; color: var(--pr-fg-2); }
+.pr-tabs__notes-error { color: var(--pr-closed); }

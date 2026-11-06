@@ -12,7 +12,7 @@ describe('classifyGitHubFailure', () => {
     ['a capped coordinator wait', new GitHubCoordinatorError('rate-limited', 5_000), { kind: 'rate-limited', retryAt: 5_000 }],
     ['a network failure or timeout', new GitHubClientError('request-failed'), { kind: 'unreachable' }],
     ['a 502', new GitHubClientError('request-failed', 502), { kind: 'unreachable' }],
-    ['a 404 from a flaky proxy', new GitHubClientError('request-failed', 404), { kind: 'unreachable' }],
+    ['a 404 (gone, or not visible to the token)', new GitHubClientError('request-failed', 404), { kind: 'not-found' }],
     ['a truncated body', new GitHubClientError('malformed-response'), { kind: 'unreachable' }],
     ['an oversized body', new GitHubClientError('response-too-large'), { kind: 'unreachable' }],
     ['an unreachable credential check', new GitHubReachabilityError('github-unreachable'), { kind: 'unreachable' }],

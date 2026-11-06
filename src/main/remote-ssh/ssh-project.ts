@@ -2043,12 +2043,14 @@ export class SshProjectManager {
   async writePendingAnswer(
     projectId: string,
     pendingId: string,
-    content: string
+    content: string,
+    // The PR write gate passes its own bound (@shared/pr-write-hook isPrGateAnswer).
+    bounded: (content: string) => boolean = isBoundedAnswerContent
   ): Promise<boolean> {
     const c = this.conns.get(projectId)
     if (!c) return false
     if (!/^[A-Za-z0-9_-]+$/.test(pendingId)) return false
-    if (typeof content !== 'string' || !isBoundedAnswerContent(content)) return false
+    if (typeof content !== 'string' || !bounded(content)) return false
     const file = `${this.pendingDirFor(c)}/${pendingId}.answer`
     try {
       // The hook polls for this file, so it must never see a truncated answer under its name.

@@ -381,3 +381,795 @@ describe('GitHubIssuesClient', () => {
     })
   })
 })
+
+const SHA_BASE = 'b'.repeat(40)
+const SHA_HEAD = 'c'.repeat(40)
+const pull = (over: Record<string, unknown> = {}) => ({
+  number: 7,
+  title: 'Add the pull node',
+  body: '## Why\nBecause.',
+  state: 'open',
+  draft: false,
+  merged: false,
+  user: { id: 2, login: 'octocat', avatar_url: 'https://avatars.githubusercontent.com/u/2?v=4' },
+  base: { ref: 'main', sha: SHA_BASE },
+  head: { ref: 'feat/pull', sha: SHA_HEAD },
+  mergeable: true,
+  mergeable_state: 'clean',
+  additions: 10,
+  deletions: 2,
+  changed_files: 3,
+  html_url: 'https://github.com/nodeterm/nodeterm/pull/7',
+  ...over
+})
+
+describe('GitHubIssuesClient.getPull', () => {
+  it('reads GET /repos/{r}/pulls/{n} and decodes the overview', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response(pull()) }
+    })
+    expect(await client.getPull('nodeterm/nodeterm', 7)).toEqual({
+      number: 7,
+      title: 'Add the pull node',
+      body: '## Why\nBecause.',
+      lifecycle: 'open',
+      author: { id: 2, login: 'octocat', avatarUrl: 'https://avatars.githubusercontent.com/u/2?v=4' },
+      base: { ref: 'main', sha: SHA_BASE },
+      head: { ref: 'feat/pull', sha: SHA_HEAD },
+      merge: 'ready',
+      additions: 10,
+      deletions: 2,
+      changedFiles: 3,
+      url: 'https://github.com/nodeterm/nodeterm/pull/7'
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://api.github.com/repos/nodeterm/nodeterm/pulls/7')
+    expect(calls[0].init.method).toBe('GET')
+  })
+
+  it('applies the board merge rules: conflict, blocked, unknown, and none once closed', async () => {
+    const read = async (over: Record<string, unknown>) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(pull(over))
+    }).getPull('nodeterm/nodeterm', 7)
+    expect((await read({ mergeable: false, mergeable_state: 'dirty' })).merge).toBe('conflict')
+    expect((await read({ mergeable: true, mergeable_state: 'blocked' })).merge).toBe('blocked')
+    expect((await read({ mergeable: null, mergeable_state: 'unknown' })).merge).toBe('undecided')
+    const merged = await read({ state: 'closed', merged: true })
+    expect(merged.lifecycle).toBe('merged')
+    expect(merged.merge).toBeUndefined()
+    expect((await read({ state: 'closed', merged: false })).lifecycle).toBe('closed')
+    expect((await read({ draft: true })).lifecycle).toBe('draft')
+    expect((await read({ body: null })).body).toBe('')
+  })
+
+  it('reads who merged it from merged_by, and leaves it out when GitHub hides it', async () => {
+    const read = async (over: Record<string, unknown>) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(pull(over))
+    }).getPull('nodeterm/nodeterm', 7)
+    const merger = { id: 9, login: 'merger', avatar_url: 'https://avatars.githubusercontent.com/u/9?v=4' }
+    expect((await read({ state: 'closed', merged: true, merged_by: merger })).mergedBy)
+      .toEqual({ id: 9, login: 'merger', avatarUrl: 'https://avatars.githubusercontent.com/u/9?v=4' })
+    expect('mergedBy' in await read({ state: 'closed', merged: true, merged_by: null })).toBe(false)
+    expect('mergedBy' in await read({ state: 'closed', merged: true, merged_by: { login: 'not a login!' } })).toBe(false)
+  })
+
+  it('marks a head in another repository (or in a deleted fork) as fromFork', async () => {
+    const read = async (over: Record<string, unknown>) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(pull(over))
+    }).getPull('nodeterm/nodeterm', 7)
+    const repo = (fullName: string) => ({ full_name: fullName })
+    expect((await read({ base: { ref: 'main', sha: SHA_BASE, repo: repo('o/r') }, head: { ref: 'x', sha: SHA_HEAD, repo: repo('O/R') } })).fromFork)
+      .toBeUndefined()
+    expect((await read({ base: { ref: 'main', sha: SHA_BASE, repo: repo('o/r') }, head: { ref: 'x', sha: SHA_HEAD, repo: repo('mate/r') } })).fromFork)
+      .toBe(true)
+    expect((await read({ base: { ref: 'main', sha: SHA_BASE, repo: repo('o/r') }, head: { ref: 'x', sha: SHA_HEAD, repo: null } })).fromFork)
+      .toBe(true)
+  })
+
+  it('refuses a malformed answer and an invalid pull number', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    await expect(client(pull({ head: { ref: 'x', sha: 'nope' } })).getPull('nodeterm/nodeterm', 7))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client(pull({ html_url: 'https://evil.example/pull/7' })).getPull('nodeterm/nodeterm', 7))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client(pull()).getPull('nodeterm/nodeterm', 0)).rejects.toMatchObject({ code: 'invalid-request' })
+  })
+
+  it('maps a 404 and a 401 to request-failed with the status', async () => {
+    const client = (status: number) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response({ message: 'x' }, { status })
+    })
+    await expect(client(404).getPull('nodeterm/nodeterm', 7)).rejects.toMatchObject({ code: 'request-failed', status: 404 })
+    await expect(client(401).getPull('nodeterm/nodeterm', 7)).rejects.toMatchObject({ code: 'request-failed', status: 401 })
+  })
+})
+
+const user = { id: 2, login: 'octocat', avatar_url: 'https://avatars.githubusercontent.com/u/2?v=4' }
+const author = { id: 2, login: 'octocat', avatarUrl: 'https://avatars.githubusercontent.com/u/2?v=4' }
+
+describe('GitHubIssuesClient pull conversation pages', () => {
+  it('reads one page of issue comments with its next page', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        calls.push(String(url))
+        return response([{
+          id: 11, user, body: 'Looks good', created_at: '2026-10-01T10:00:00Z',
+          html_url: 'https://github.com/o/r/pull/7#issuecomment-11'
+        }], { headers: { link: '<https://api.github.com/repos/o/r/issues/7/comments?per_page=100&page=2>; rel="next"' } })
+      }
+    })
+    expect(await client.listPullComments('o/r', 7, 1)).toEqual({
+      items: [{
+        kind: 'comment', id: 11, author, body: 'Looks good', at: '2026-10-01T10:00:00Z',
+        url: 'https://github.com/o/r/pull/7#issuecomment-11'
+      }],
+      nextPage: 2
+    })
+    expect(calls).toEqual(['https://api.github.com/repos/o/r/issues/7/comments?per_page=100&page=1'])
+  })
+
+  it('reads reviews with their verdict and skips an unsubmitted draft', async () => {
+    const calls: string[] = []
+    const review = (id: number, state: string) => ({
+      id, user, body: '', state, submitted_at: '2026-10-01T11:00:00Z',
+      html_url: `https://github.com/o/r/pull/7#pullrequestreview-${id}`
+    })
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        calls.push(String(url))
+        return response([review(1, 'APPROVED'), review(2, 'CHANGES_REQUESTED'), review(3, 'COMMENTED'),
+          review(4, 'DISMISSED'), { ...review(5, 'PENDING'), submitted_at: undefined }])
+      }
+    })
+    const page = await client.listPullReviews('o/r', 7, 3)
+    expect(page.nextPage).toBeUndefined()
+    expect(page.items.map((item) => item.kind === 'review' && item.verdict))
+      .toEqual(['approved', 'changes-requested', 'commented', 'dismissed'])
+    expect(calls).toEqual(['https://api.github.com/repos/o/r/pulls/7/reviews?per_page=100&page=3'])
+  })
+
+  it('refuses a malformed item and a link off github.com', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    await expect(client([{ id: 1, user, body: 'x', created_at: 'nope', html_url: 'https://github.com/o/r/pull/7' }])
+      .listPullComments('o/r', 7, 1)).rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([{ id: 1, user, body: 'x', created_at: '2026-10-01T10:00:00Z', html_url: 'https://evil.example/x' }])
+      .listPullComments('o/r', 7, 1)).rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([]).listPullReviews('o/r', 0, 1)).rejects.toMatchObject({ code: 'invalid-request' })
+  })
+})
+
+describe('GitHubIssuesClient pull line comments', () => {
+  const raw = (over: Record<string, unknown> = {}) => ({
+    id: 21, pull_request_review_id: 5, in_reply_to_id: null, user, body: 'Why?', created_at: '2026-10-01T10:00:00Z',
+    html_url: 'https://github.com/o/r/pull/7#discussion_r21', path: 'src/a.ts', line: 4, original_line: 4,
+    side: 'RIGHT', position: 4, subject_type: 'line', ...over
+  })
+  it('maps side, line, thread and review, and marks a comment whose line left the diff as outdated', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        calls.push(String(url))
+        return response([
+          raw(),
+          raw({ id: 22, in_reply_to_id: 21, side: 'LEFT', line: 2 }),
+          raw({ id: 23, line: null, position: null, original_line: 9 }),
+          raw({ id: 24, line: null, position: null, subject_type: 'file', side: undefined })
+        ], { headers: { link: '<https://api.github.com/repos/o/r/pulls/7/comments?page=2>; rel="next"' } })
+      }
+    })
+    const page = await client.listPullLineComments('o/r', 7, 1)
+    expect(calls).toEqual(['https://api.github.com/repos/o/r/pulls/7/comments?per_page=100&page=1'])
+    expect(page.nextPage).toBe(2)
+    expect(page.comments[0]).toEqual({
+      id: 21, reviewId: 5, author, body: 'Why?', at: '2026-10-01T10:00:00Z', url: 'https://github.com/o/r/pull/7#discussion_r21',
+      path: 'src/a.ts', side: 'RIGHT', line: 4, outdated: false
+    })
+    expect(page.comments.slice(1).map(({ id, inReplyTo, side, line, outdated }) => ({ id, inReplyTo, side, line, outdated })))
+      .toEqual([
+        { id: 22, inReplyTo: 21, side: 'LEFT', line: 2, outdated: false },
+        { id: 23, inReplyTo: undefined, side: 'RIGHT', line: null, outdated: true },
+        { id: 24, inReplyTo: undefined, side: 'RIGHT', line: null, outdated: false }
+      ])
+  })
+
+  it('refuses a malformed comment: a climbing path, a bad line, a link off github.com', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    for (const over of [{ path: '../x' }, { line: 0 }, { line: 'four' }, { html_url: 'https://evil.example/x' }]) {
+      await expect(client([raw(over)]).listPullLineComments('o/r', 7, 1)).rejects.toMatchObject({ code: 'malformed-response' })
+    }
+  })
+
+  it('posts a new line comment at a commit, and a reply with only its body and thread', async () => {
+    const sha = 'c'.repeat(40)
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ id: 31 }) }
+    })
+    expect(await client.createPullLineComment('o/r', 7, {
+      commitId: sha, draft: { path: 'src/a.ts', line: 4, side: 'LEFT', body: 'Why?' }
+    })).toEqual({ id: 31 })
+    await client.createPullLineComment('o/r', 7, { inReplyTo: 21, body: 'Because.' })
+    expect(calls.map((call) => [call.url, call.init.method])).toEqual([
+      ['https://api.github.com/repos/o/r/pulls/7/comments', 'POST'],
+      ['https://api.github.com/repos/o/r/pulls/7/comments', 'POST']
+    ])
+    expect(calls.map((call) => JSON.parse(String(call.init.body)))).toEqual([
+      { body: 'Why?', commit_id: sha, path: 'src/a.ts', line: 4, side: 'LEFT' },
+      { body: 'Because.', in_reply_to: 21 }
+    ])
+  })
+
+  it('refuses a bad line comment before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({ id: 1 }) } })
+    const draft = { path: 'a.ts', line: 1, side: 'RIGHT' as const, body: 'x' }
+    for (const comment of [
+      { commitId: 'main', draft },
+      { commitId: 'c'.repeat(40), draft: { ...draft, path: '/etc/passwd' } },
+      { commitId: 'c'.repeat(40), draft: { ...draft, body: '' } },
+      { inReplyTo: -1, body: 'x' }
+    ]) {
+      await expect(client.createPullLineComment('o/r', 7, comment)).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    expect(sent).toBe(0)
+  })
+})
+
+describe('pull request writes', () => {
+  const sha = 'c'.repeat(40)
+  it('sends pending line comments in the review', async () => {
+    const bodies: unknown[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return response({ id: 1 }) }
+    })
+    const comments = [{ path: 'src/a.ts', line: 2, side: 'RIGHT' as const, body: 'Rename.' }]
+    await client.reviewPull('o/r', 7, { event: 'COMMENT', body: '', commitId: sha, comments })
+    expect(bodies).toEqual([{ event: 'COMMENT', commit_id: sha, comments }])
+    await expect(client.reviewPull('o/r', 7, { event: 'COMMENT', body: '', commitId: sha, comments: [{ ...comments[0], side: 'UP' as 'LEFT' }] }))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+  })
+
+  it('posts a review with its event, body and the head commit it was made against', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ id: 91 }) }
+    })
+    expect(await client.reviewPull('o/r', 7, { event: 'REQUEST_CHANGES', body: 'Fix the test', commitId: sha }))
+      .toEqual({ id: 91 })
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/7/reviews')
+    expect(calls[0].init.method).toBe('POST')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ event: 'REQUEST_CHANGES', body: 'Fix the test', commit_id: sha })
+  })
+
+  it('sends no body field for an approval without a message', async () => {
+    const bodies: unknown[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return response({ id: 1 }) }
+    })
+    await client.reviewPull('o/r', 7, { event: 'APPROVE', body: '', commitId: sha })
+    expect(bodies).toEqual([{ event: 'APPROVE', commit_id: sha }])
+  })
+
+  it('refuses a bad event, commit or number before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({ id: 1 }) } })
+    await expect(client.reviewPull('o/r', 7, { event: 'DISMISS' as 'APPROVE', body: '', commitId: sha }))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.reviewPull('o/r', 7, { event: 'APPROVE', body: '', commitId: 'main' }))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.reviewPull('o/r', 0, { event: 'APPROVE', body: '', commitId: sha }))
+      .rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+
+  it('names GitHub\'s refusal to review your own pull request', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response({ message: 'Unprocessable Entity', errors: ['Can not approve your own pull request'] }, { status: 422 })
+    })
+    await expect(client.reviewPull('o/r', 7, { event: 'APPROVE', body: '', commitId: sha }))
+      .rejects.toMatchObject({ code: 'own-pull', status: 422 })
+  })
+
+  it('keeps any other 422, a 403 and a 401 as their statuses', async () => {
+    const failing = (status: number, body: unknown = { message: 'x' }) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(body, { status })
+    }).reviewPull('o/r', 7, { event: 'COMMENT', body: 'x', commitId: sha })
+    await expect(failing(422, { message: 'Validation Failed', errors: ['commit_id is not part of the pull request'] }))
+      .rejects.toMatchObject({ code: 'request-failed', status: 422 })
+    await expect(failing(403)).rejects.toMatchObject({ code: 'insufficient-permission', status: 403 })
+    await expect(failing(401)).rejects.toMatchObject({ code: 'request-failed', status: 401 })
+  })
+})
+
+describe('pull request merge', () => {
+  const sha = 'c'.repeat(40)
+  it('reads the merge methods the repository allows', async () => {
+    const urls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        urls.push(String(url))
+        return response({ allow_merge_commit: false, allow_squash_merge: true, allow_rebase_merge: true, allow_auto_merge: true })
+      }
+    })
+    expect(await client.repoMergeMethods('o/r')).toEqual({ methods: ['squash', 'rebase'], autoMerge: true })
+    expect(urls).toEqual(['https://api.github.com/repos/o/r'])
+  })
+
+  it('reads no method when the answer leaves the flags out (a token without write access)', async () => {
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => response({ full_name: 'o/r' }) })
+    expect(await client.repoMergeMethods('o/r')).toEqual({ methods: [], autoMerge: false })
+  })
+
+  it('merges with the chosen method and the head commit the user saw', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ merged: true, sha: 'd'.repeat(40) }) }
+    })
+    await client.mergePull('o/r', 7, { method: 'squash', sha })
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/7/merge')
+    expect(calls[0].init.method).toBe('PUT')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ merge_method: 'squash', sha })
+  })
+
+  it('refuses a bad method, commit or number before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({}) } })
+    await expect(client.mergePull('o/r', 7, { method: 'octopus' as 'merge', sha })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.mergePull('o/r', 7, { method: 'merge', sha: 'main' })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.mergePull('o/r', 0, { method: 'merge', sha })).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+
+  it('keeps 409 (head moved) and 405 (not mergeable) as their statuses', async () => {
+    const failing = (status: number) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response({ message: 'x' }, { status })
+    }).mergePull('o/r', 7, { method: 'merge', sha })
+    await expect(failing(409)).rejects.toMatchObject({ code: 'request-failed', status: 409 })
+    await expect(failing(405)).rejects.toMatchObject({ code: 'request-failed', status: 405 })
+  })
+})
+
+describe('GitHubIssuesClient update branch', () => {
+  const sha = 'c'.repeat(40)
+  it('merges the base into the head only if the head is still the commit the user saw', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ message: 'Updating pull request branch.' }, { status: 202 }) }
+    })
+    await client.updatePullBranch('o/r', 7, sha)
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/7/update-branch')
+    expect(calls[0].init.method).toBe('PUT')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ expected_head_sha: sha })
+  })
+
+  it('refuses a bad commit or number before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({}) } })
+    await expect(client.updatePullBranch('o/r', 7, 'main')).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.updatePullBranch('o/r', 0, sha)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+})
+
+describe('GitHubIssuesClient auto-merge', () => {
+  const sha = 'c'.repeat(40)
+  const graphql = (answers: unknown[]) => {
+    const calls: Array<{ query: string; variables: Record<string, unknown> }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => {
+        expect(String(url)).toBe('https://api.github.com/graphql')
+        calls.push(JSON.parse(String(init?.body)))
+        return response(answers[calls.length - 1])
+      }
+    })
+    return { client, calls }
+  }
+  const pullId = { data: { repository: { pullRequest: { id: 'PR_node' } } } }
+
+  it('enables auto-merge on the PR named by repository and number, with the method and the head the user saw', async () => {
+    const { client, calls } = graphql([pullId, { data: { enablePullRequestAutoMerge: { clientMutationId: null } } }])
+    await client.enablePullAutoMerge('o/r', 7, { method: 'squash', sha })
+    expect(calls[0].variables).toEqual({ owner: 'o', name: 'r', number: 7 })
+    expect(calls[1].query).toContain('enablePullRequestAutoMerge')
+    expect(calls[1].variables).toEqual({ id: 'PR_node', method: 'SQUASH', sha })
+  })
+
+  it('disables auto-merge on the PR named by repository and number', async () => {
+    const { client, calls } = graphql([pullId, { data: { disablePullRequestAutoMerge: { clientMutationId: null } } }])
+    await client.disablePullAutoMerge('o/r', 7)
+    expect(calls[1].query).toContain('disablePullRequestAutoMerge')
+    expect(calls[1].variables).toEqual({ id: 'PR_node' })
+  })
+
+  it('refuses a bad method, commit or number before any request', async () => {
+    const { client, calls } = graphql([])
+    await expect(client.enablePullAutoMerge('o/r', 7, { method: 'octopus' as 'merge', sha })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.enablePullAutoMerge('o/r', 7, { method: 'merge', sha: 'main' })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.enablePullAutoMerge('o/r', 0, { method: 'merge', sha })).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.disablePullAutoMerge('o/r', 0)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(calls).toEqual([])
+  })
+
+  it('a refusal GitHub answers in the body is a 403 for permission, else a 422; a missing PR is a 404', async () => {
+    const forbidden = graphql([pullId, { data: null, errors: [{ type: 'FORBIDDEN', message: 'x' }] }])
+    await expect(forbidden.client.enablePullAutoMerge('o/r', 7, { method: 'merge', sha })).rejects.toMatchObject({ code: 'request-failed', status: 403 })
+    const refused = graphql([pullId, { data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is in clean status' }] }])
+    await expect(refused.client.enablePullAutoMerge('o/r', 7, { method: 'merge', sha })).rejects.toMatchObject({ code: 'request-failed', status: 422 })
+    const missing = graphql([{ data: { repository: { pullRequest: null } }, errors: [{ type: 'NOT_FOUND' }] }])
+    await expect(missing.client.disablePullAutoMerge('o/r', 7)).rejects.toMatchObject({ code: 'request-failed', status: 404 })
+    expect(missing.calls).toHaveLength(1)
+  })
+})
+
+describe('GitHubIssuesClient pull files', () => {
+  it('reads one page of changed files with its next page, a rename with its previous path', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        calls.push(String(url))
+        return response([
+          { filename: 'src/a.ts', status: 'modified', additions: 3, deletions: 1, patch: '@@' },
+          { filename: 'src/new.ts', previous_filename: 'src/old.ts', status: 'renamed', additions: 0, deletions: 0 },
+          { filename: 'img.png', status: 'added', additions: 0, deletions: 0 },
+          { filename: 'gone.md', status: 'removed', additions: 0, deletions: 9 },
+          { filename: 'copy.ts', previous_filename: 'a.ts', status: 'copied', additions: 1, deletions: 0 },
+          { filename: 'mode.sh', status: 'changed', additions: 0, deletions: 0 }
+        ], { headers: { link: '<https://api.github.com/repos/o/r/pulls/7/files?per_page=100&page=3>; rel="next"' } })
+      }
+    })
+    expect(await client.listPullFiles('o/r', 7, 2)).toEqual({
+      files: [
+        { path: 'src/a.ts', status: 'modified', additions: 3, deletions: 1 },
+        { path: 'src/new.ts', previousPath: 'src/old.ts', status: 'renamed', additions: 0, deletions: 0 },
+        { path: 'img.png', status: 'added', additions: 0, deletions: 0 },
+        { path: 'gone.md', status: 'removed', additions: 0, deletions: 9 },
+        { path: 'copy.ts', status: 'added', additions: 1, deletions: 0 },
+        { path: 'mode.sh', status: 'modified', additions: 0, deletions: 0 }
+      ],
+      nextPage: 3
+    })
+    expect(calls).toEqual(['https://api.github.com/repos/o/r/pulls/7/files?per_page=100&page=2'])
+  })
+
+  it('refuses a malformed file and a bad request', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    await expect(client([{ filename: '', status: 'added', additions: 0, deletions: 0 }]).listPullFiles('o/r', 7, 1))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([{ filename: 'a', status: 'weird', additions: 0, deletions: 0 }]).listPullFiles('o/r', 7, 1))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([{ filename: 'a', status: 'constructor', additions: 0, deletions: 0 }]).listPullFiles('o/r', 7, 1))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client([]).listPullFiles('o/r', 7, 0)).rejects.toMatchObject({ code: 'invalid-request' })
+  })
+})
+
+describe('GitHubIssuesClient.getFileAt', () => {
+  const file = (bytes: Buffer, over: Record<string, unknown> = {}) =>
+    ({ type: 'file', size: bytes.length, encoding: 'base64', content: bytes.toString('base64'), ...over })
+
+  it('reads one file at a commit, each path segment encoded', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => { calls.push(String(url)); return response(file(Buffer.from('const a = 1\n'))) }
+    })
+    expect(await client.getFileAt('o/r', 'src/my file#1.ts', SHA_HEAD))
+      .toEqual({ kind: 'text', text: 'const a = 1\n' })
+    expect(calls).toEqual([`https://api.github.com/repos/o/r/contents/src/my%20file%231.ts?ref=${SHA_HEAD}`])
+  })
+
+  it('answers binary for a NUL byte or invalid UTF-8, too-large past 1 MB', async () => {
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    expect(await client(file(Buffer.from([0x89, 0x50, 0x00, 0x01]))).getFileAt('o/r', 'a.png', SHA_HEAD))
+      .toEqual({ kind: 'unavailable', reason: 'binary' })
+    expect(await client(file(Buffer.from([0xff, 0xfe, 0x41]))).getFileAt('o/r', 'a.bin', SHA_HEAD))
+      .toEqual({ kind: 'unavailable', reason: 'binary' })
+    expect(await client({ type: 'file', size: 1_048_577, encoding: 'none', content: '' }).getFileAt('o/r', 'big.json', SHA_HEAD))
+      .toEqual({ kind: 'unavailable', reason: 'too-large' })
+  })
+
+  it('refuses a path that could leave the contents endpoint, and a ref that is not a commit', async () => {
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { throw new Error('no request') } })
+    for (const path of ['../../pulls/7', 'a/./b', '/abs', 'a//b', 'a\u0000b', '']) {
+      await expect(client.getFileAt('o/r', path, SHA_HEAD)).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    await expect(client.getFileAt('o/r', 'a.ts', 'main')).rejects.toMatchObject({ code: 'invalid-request' })
+  })
+})
+
+describe('GitHubIssuesClient.mergeBase', () => {
+  it('reads merge_base_commit.sha from the compare API, on a page with no file list', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => { calls.push(String(url)); return response({ merge_base_commit: { sha: 'd'.repeat(40) }, commits: [] }) }
+    })
+    expect(await client.mergeBase('o/r', SHA_BASE, SHA_HEAD)).toBe('d'.repeat(40))
+    expect(calls).toEqual([`https://api.github.com/repos/o/r/compare/${SHA_BASE}...${SHA_HEAD}?per_page=1&page=2`])
+  })
+
+  it('refuses a ref that is not a commit, and a response without a merge base sha', async () => {
+    const none = new GitHubIssuesClient({ token: 'secret', fetch: async () => { throw new Error('no request') } })
+    await expect(none.mergeBase('o/r', 'main', SHA_HEAD)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(none.mergeBase('o/r', SHA_BASE, 'x')).rejects.toMatchObject({ code: 'invalid-request' })
+    const client = (body: unknown) => new GitHubIssuesClient({ token: 'secret', fetch: async () => response(body) })
+    await expect(client({}).mergeBase('o/r', SHA_BASE, SHA_HEAD)).rejects.toMatchObject({ code: 'malformed-response' })
+    await expect(client({ merge_base_commit: { sha: 'main' } }).mergeBase('o/r', SHA_BASE, SHA_HEAD))
+      .rejects.toMatchObject({ code: 'malformed-response' })
+  })
+})
+
+describe('pull request reviewers', () => {
+  const user = (id: number, login: string) => ({ id, login, avatar_url: `https://avatars.githubusercontent.com/u/${id}?v=4` })
+
+  it('reads the requested reviewers with the overview, skipping a malformed one', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async () => response(pull({ requested_reviewers: [user(5, 'ana'), { login: 'no-id' }] }))
+    })
+    expect((await client.getPull('nodeterm/nodeterm', 7)).requestedReviewers)
+      .toEqual([{ id: 5, login: 'ana', avatarUrl: 'https://avatars.githubusercontent.com/u/5?v=4' }])
+  })
+
+  it('reads the armed auto-merge and its method with the overview; none, or an unknown method, is absent', async () => {
+    const read = async (autoMerge: unknown) => new GitHubIssuesClient({
+      token: 'secret', fetch: async () => response(pull({ auto_merge: autoMerge }))
+    }).getPull('nodeterm/nodeterm', 7)
+    expect((await read({ merge_method: 'squash', enabled_by: user(5, 'ana') })).autoMerge).toEqual({ method: 'squash' })
+    expect((await read(null)).autoMerge).toBeUndefined()
+    expect((await read({ merge_method: 'octopus' })).autoMerge).toBeUndefined()
+  })
+
+  it('reads the repository collaborators (one page of 100)', async () => {
+    const urls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => { urls.push(String(url)); return response([user(5, 'ana'), user(6, 'bo')]) }
+    })
+    expect((await client.listCollaborators('o/r')).map((u) => u.login)).toEqual(['ana', 'bo'])
+    expect(urls).toEqual(['https://api.github.com/repos/o/r/collaborators?per_page=100'])
+  })
+
+  it('requests one reviewer by login', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response(pull()) }
+    })
+    await client.requestPullReviewer('o/r', 7, 'ana')
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls/7/requested_reviewers')
+    expect(calls[0].init.method).toBe('POST')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ reviewers: ['ana'] })
+  })
+
+  it('refuses a login GitHub could not have issued, before any request', async () => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({}) } })
+    await expect(client.requestPullReviewer('o/r', 7, '../x')).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.requestPullReviewer('o/r', 7, '')).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.requestPullReviewer('o/r', 0, 'ana')).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+})
+
+describe('create a pull request', () => {
+  const draft = { head: 'feat/x', base: 'main', title: 'Add x', body: 'Why', draft: true }
+
+  it('posts head, base, title, body and draft, and answers the new number', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response({ number: 12 }, { status: 201 }) }
+    })
+    expect(await client.createPull('o/r', draft)).toEqual({ number: 12 })
+    expect(calls[0].url).toBe('https://api.github.com/repos/o/r/pulls')
+    expect(calls[0].init.method).toBe('POST')
+    expect(JSON.parse(String(calls[0].init.body))).toEqual(draft)
+  })
+
+  it.each([
+    ['a head that is a flag', { head: '-x' }],
+    ['a head with a range', { head: 'a..b' }],
+    ['a base with a space', { base: 'ma in' }],
+    ['a base that is a reflog', { base: 'main@{1}' }],
+    ['a head with a .lock component', { head: 'a.lock/b' }],
+    ['a blank title', { title: '  ' }],
+    ['a title over 256', { title: 'x'.repeat(257) }],
+    ['a body over the limit', { body: 'x'.repeat(60_001) }],
+    ['a draft that is not a boolean', { draft: 'yes' }]
+  ])('refuses %s before any request', async (_, bad) => {
+    let sent = 0
+    const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => { sent += 1; return response({ number: 1 }) } })
+    await expect(client.createPull('o/r', { ...draft, ...bad } as typeof draft)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(sent).toBe(0)
+  })
+
+  it('reads the default branch and the open pull request of a branch', async () => {
+    const urls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => {
+        urls.push(String(url))
+        return String(url).includes('/pulls') ? response([{ number: 9 }]) : response({ default_branch: 'trunk' })
+      }
+    })
+    expect(await client.pullForBranch('o/r', 'feat/x')).toEqual({ defaultBranch: 'trunk', existing: 9 })
+    expect(urls).toEqual([
+      'https://api.github.com/repos/o/r',
+      'https://api.github.com/repos/o/r/pulls?head=o%3Afeat%2Fx&state=open&per_page=1'
+    ])
+  })
+
+  it('answers no existing pull request when the branch has none', async () => {
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url) => String(url).includes('/pulls') ? response([]) : response({ default_branch: 'main' })
+    })
+    expect(await client.pullForBranch('o/r', 'feat/x')).toEqual({ defaultBranch: 'main' })
+  })
+})
+
+describe('GitHubIssuesClient viewed files', () => {
+  const graphql = (answers: unknown[]) => {
+    const calls: Array<{ query: string; variables: Record<string, unknown> }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => {
+        expect(String(url)).toBe('https://api.github.com/graphql')
+        calls.push(JSON.parse(String(init?.body)))
+        return response(answers[calls.length - 1])
+      }
+    })
+    return { client, calls }
+  }
+  const page = (nodes: unknown[], endCursor?: string) =>
+    ({ data: { repository: { pullRequest: { files: { nodes, pageInfo: { hasNextPage: !!endCursor, endCursor: endCursor ?? null } } } } } })
+  const pullId = { data: { repository: { pullRequest: { id: 'PR_node' } } } }
+
+  it('reads the viewer\'s viewed state of every file, page by page', async () => {
+    const { client, calls } = graphql([
+      page([{ path: 'a.ts', viewerViewedState: 'VIEWED' }, { path: 'b.ts', viewerViewedState: 'UNVIEWED' }], 'C1'),
+      page([{ path: 'c.ts', viewerViewedState: 'DISMISSED' }])
+    ])
+    expect(await client.pullViewedStates('o/r', 7)).toEqual({ 'a.ts': 'VIEWED', 'b.ts': 'UNVIEWED', 'c.ts': 'DISMISSED' })
+    expect(calls[0].query).toContain('viewerViewedState')
+    expect(calls[0].variables).toEqual({ owner: 'o', name: 'r', number: 7 })
+    expect(calls[1].variables).toEqual({ owner: 'o', name: 'r', number: 7, after: 'C1' })
+  })
+
+  it('refuses a malformed answer', async () => {
+    const { client } = graphql([page([{ path: 'a.ts', viewerViewedState: 'SEEN' }])])
+    await expect(client.pullViewedStates('o/r', 7)).rejects.toMatchObject({ code: 'malformed-response' })
+  })
+
+  it('marks and unmarks one file as viewed on the PR named by repository and number', async () => {
+    const marked = graphql([pullId, { data: { markFileAsViewed: { clientMutationId: null } } }])
+    await marked.client.setFileViewed('o/r', 7, 'src/a.ts', true)
+    expect(marked.calls[1].query).toContain('markFileAsViewed')
+    expect(marked.calls[1].variables).toEqual({ id: 'PR_node', path: 'src/a.ts' })
+    const unmarked = graphql([pullId, { data: { unmarkFileAsViewed: { clientMutationId: null } } }])
+    await unmarked.client.setFileViewed('o/r', 7, 'src/a.ts', false)
+    expect(unmarked.calls[1].query).toContain('unmarkFileAsViewed')
+  })
+
+  it('refuses a bad path or number before any request', async () => {
+    const { client, calls } = graphql([])
+    await expect(client.setFileViewed('o/r', 7, '../x', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setFileViewed('o/r', 0, 'a.ts', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.pullViewedStates('o/r', 0)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(calls).toEqual([])
+  })
+})
+
+describe('GitHubIssuesClient pull labels and assignees', () => {
+  const recorder = () => {
+    const calls: Array<{ url: string; method?: string; body?: unknown }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+        return response([])
+      }
+    })
+    return { client, calls }
+  }
+
+  it('adds and removes one label by name on the PR\'s issue', async () => {
+    const { client, calls } = recorder()
+    await client.setPullLabel('o/r', 7, 'good first issue', true)
+    await client.setPullLabel('o/r', 7, 'a/b?c', false)
+    expect(calls).toEqual([
+      { url: 'https://api.github.com/repos/o/r/issues/7/labels', method: 'POST', body: { labels: ['good first issue'] } },
+      { url: 'https://api.github.com/repos/o/r/issues/7/labels/a%2Fb%3Fc', method: 'DELETE', body: undefined }
+    ])
+  })
+
+  it('adds and removes one assignee by login', async () => {
+    const { client, calls } = recorder()
+    await client.setPullAssignee('o/r', 7, 'ana', true)
+    await client.setPullAssignee('o/r', 7, 'ana', false)
+    expect(calls).toEqual([
+      { url: 'https://api.github.com/repos/o/r/issues/7/assignees', method: 'POST', body: { assignees: ['ana'] } },
+      { url: 'https://api.github.com/repos/o/r/issues/7/assignees', method: 'DELETE', body: { assignees: ['ana'] } }
+    ])
+  })
+
+  it('refuses a bad label, login, number or flag before any request', async () => {
+    const { client, calls } = recorder()
+    for (const label of ['', ' ', '..', '.', 'x'.repeat(51)]) {
+      await expect(client.setPullLabel('o/r', 7, label, false)).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    await expect(client.setPullLabel('o/r', 0, 'bug', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setPullLabel('o/r', 7, 'bug', 'yes' as unknown as boolean)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setPullAssignee('o/r', 7, '../x', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setPullAssignee('o/r', 0, 'ana', true)).rejects.toMatchObject({ code: 'invalid-request' })
+    expect(calls).toEqual([])
+  })
+})
+
+describe('GitHubIssuesClient pull lifecycle', () => {
+  const recorder = (answers: unknown[] = []) => {
+    const calls: Array<{ url: string; method?: string; body?: unknown }> = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+        return response(answers[calls.length - 1] ?? {})
+      }
+    })
+    return { client, calls }
+  }
+
+  it('closes and reopens the PR', async () => {
+    const { client, calls } = recorder()
+    await client.setPullState('o/r', 7, false)
+    await client.setPullState('o/r', 7, true)
+    expect(calls).toEqual([
+      { url: 'https://api.github.com/repos/o/r/pulls/7', method: 'PATCH', body: { state: 'closed' } },
+      { url: 'https://api.github.com/repos/o/r/pulls/7', method: 'PATCH', body: { state: 'open' } }
+    ])
+  })
+
+  it('marks a draft ready for review on the PR named by repository and number', async () => {
+    const { client, calls } = recorder([
+      { data: { repository: { pullRequest: { id: 'PR_node' } } } },
+      { data: { markPullRequestReadyForReview: { clientMutationId: null } } }
+    ])
+    await client.markPullReady('o/r', 7)
+    expect((calls[1].body as { query: string }).query).toContain('markPullRequestReadyForReview')
+    expect((calls[1].body as { variables: unknown }).variables).toEqual({ id: 'PR_node' })
+  })
+
+  it('deletes one branch ref, each path segment encoded', async () => {
+    const { client, calls } = recorder()
+    await client.deleteBranchRef('o/r', 'feat/a#b')
+    expect(calls).toEqual([{ url: 'https://api.github.com/repos/o/r/git/refs/heads/feat/a%23b', method: 'DELETE', body: undefined }])
+  })
+
+  it('refuses a bad number, flag or branch before any request', async () => {
+    const { client, calls } = recorder()
+    await expect(client.setPullState('o/r', 0, true)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.setPullState('o/r', 7, 'yes' as unknown as boolean)).rejects.toMatchObject({ code: 'invalid-request' })
+    await expect(client.markPullReady('o/r', 0)).rejects.toMatchObject({ code: 'invalid-request' })
+    for (const branch of ['', '../main', 'a//b', '-x']) {
+      await expect(client.deleteBranchRef('o/r', branch)).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    expect(calls).toEqual([])
+  })
+})

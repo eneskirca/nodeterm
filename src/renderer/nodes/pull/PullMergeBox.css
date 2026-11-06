@@ -1,0 +1,137 @@
+/* F-03 merge card (F1) and its states (F4): one card holding the agent proposal, the status rows and
+   the footer split button. Scoped under .pull-node so it outranks the older .pull-mergebox and
+   .pull-proposal rules in styles.css. */
+.pull-node .pr-mbox {
+  margin: 12px 0;
+  padding: 0;
+  overflow: visible;
+  border: 1px solid var(--pr-line);
+  border-radius: var(--pr-radius-card);
+  background: var(--pr-surface);
+  color: var(--pr-fg);
+  font-size: 13px;
+}
+.pull-node .pr-mbox code {
+  padding: 1px 6px;
+  border-radius: var(--pr-radius-control);
+  background: var(--pr-accent-bg);
+  color: var(--pr-accent);
+  font-family: var(--pr-mono);
+  font-size: 12px;
+}
+
+/* Status rows: icon, text, action link. */
+.pull-node .pr-mrow {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 14px;
+}
+.pull-node .pr-mrow + .pr-mrow, .pull-node .pr-mstate + .pr-mrow { border-top: 1px solid var(--pr-line); }
+.pull-node .pr-mrow > .pr-icon { margin-top: 2px; }
+.pull-node .pr-mrow__text strong { font-weight: 600; }
+.pull-node .pr-mrow__sub { color: var(--pr-muted); }
+.pull-node .pr-mrow__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pull-node .pr-mrow__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pr-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pull-node .pr-mrow__link:hover { text-decoration: underline; }
+.pull-node .pr-mrow__link:focus-visible { outline: 2px solid var(--pr-accent); outline-offset: 1px; }
+.pull-node .pr-btn--agent {
+  border-color: color-mix(in srgb, var(--pr-agent) 45%, transparent);
+  background: color-mix(in srgb, var(--pr-agent) 18%, var(--pr-raised));
+}
+.pull-node .pr-btn--agent .pr-icon { color: var(--pr-agent); }
+
+/* State header (draft, merged, closed). */
+.pull-node .pr-mstate { padding: 12px 14px; }
+.pull-node .pr-mstate__head { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: center; }
+.pull-node .pr-mstate__head strong { font-weight: 600; }
+.pull-node .pr-mstate__icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; }
+.pull-node .pr-mstate__sub { display: block; color: var(--pr-muted); font-size: 12px; }
+.pull-node .pr-mstate__actions { display: flex; align-items: center; gap: 8px; margin: 10px 0 0 38px; }
+.pull-node .pr-mstate__branch { color: var(--pr-muted); font-family: var(--pr-mono); font-size: 12px; }
+
+/* Footer: split button + Merge when ready. */
+.pull-node .pr-mbox__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--pr-line);
+  border-radius: 0 0 var(--pr-radius-card) var(--pr-radius-card);
+  background: color-mix(in srgb, var(--pr-raised) 50%, transparent);
+}
+.pull-node .pr-split { position: relative; display: inline-flex; }
+.pull-node .pr-split__main { border-radius: var(--pr-radius-control) 0 0 var(--pr-radius-control); }
+.pull-node .pr-split__chev { padding: 0 6px; border-left-color: #ffffff33; border-radius: 0 var(--pr-radius-control) var(--pr-radius-control) 0; }
+.pull-node .pr-split__menu { right: auto; left: 0; }
+.pull-node .pr-split__menu [aria-checked='true'] { background: var(--pr-raised); }
+.pull-node .pr-split__unchecked { visibility: hidden; }
+.pull-node .pr-mbox__auto { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 14px 12px; }
+.pull-node .pr-mbox__note { margin: 0; color: var(--pr-muted); font-size: 12px; }
+.pull-node .pr-mbox__error { margin: 0; padding: 0 14px 12px; color: var(--pr-closed); font-size: 12px; }
+.pull-node .pr-mstate .pr-mbox__error, .pull-node .pr-mstate .pr-mbox__note { padding: 8px 0 0 38px; }
+.pull-node .pull-merge__dialog { border-color: var(--pr-line-strong); background: var(--pr-surface); color: var(--pr-fg); }
+.pull-node .pr-mbox__dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* Agent proposal: a tinted box. On the Conversation tab it is the merge card's top section (F1). */
+.pull-node .pull-proposal { margin: 0 0 10px; padding: 0; border: 0; background: none; }
+.pull-node .pr-proposal {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--pr-agent) 30%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pr-agent) 9%, transparent);
+  color: var(--pr-fg);
+  font-size: 13px;
+}
+.pull-node .pr-mbox > .pull-proposal { margin: 0; padding: 12px 14px 4px; border-bottom: 1px solid var(--pr-line); }
+.pull-node .pr-proposal__head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.pull-node .pr-proposal__icon { color: var(--pr-agent); }
+.pull-node .pr-proposal__what strong { font-weight: 600; }
+.pull-node .pr-proposal__at { color: var(--pr-muted); font-family: var(--pr-mono); font-size: 12px; }
+.pull-node .pr-proposal__actions { display: flex; gap: 6px; margin-left: auto; }
+.pull-node .pr-proposal__actions .pr-btn { height: 26px; font-size: 12px; }
+.pull-node .pr-proposal__target { margin: 6px 0 0 26px; color: var(--pr-fg-2); font-size: 12px; }
+.pull-node .pr-proposal__target code {
+  padding: 1px 6px;
+  border-radius: var(--pr-radius-control);
+  background: var(--pr-accent-bg);
+  color: var(--pr-accent);
+  font-family: var(--pr-mono);
+}
+.pull-node .pr-proposal__message {
+  margin: 8px 0 0 26px;
+  padding: 6px 10px;
+  max-height: 160px;
+  overflow: auto;
+  border-left: 3px solid var(--pr-line-strong);
+  color: var(--pr-fg-2);
+  white-space: pre-wrap;
+}
+.pull-node .pr-proposal > .pr-mbox__note { margin: 6px 0 0 26px; }
+.pull-node .pr-proposal > .pr-mbox__error { padding: 6px 0 0 26px; }
+.pull-node .pr-proposal__details { margin: 6px 0 0 26px; color: var(--pr-muted); font-size: 12px; }
+.pull-node .pr-proposal__details summary { cursor: pointer; }
+.pull-node .pr-proposal__call {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--pr-line);
+  border-radius: var(--pr-radius-control);
+  background: var(--pr-canvas);
+  color: var(--pr-fg-2);
+  font-family: var(--pr-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

@@ -189,6 +189,26 @@ tool_use to the transcript before the hook fires.
 `allow`/`deny`; its plan approve now works through the script mapping once the host's script is current;
 structured answers from the phone are an iOS follow-up.
 
+## Second user: the PR write gate (2026-11)
+
+The same answer-file transport answers one more held hook: a Claude Code or Codex **PreToolUse** on
+a Bash command that looks like a `gh` pull request write (`docs/github-issues-kanban.md`, "Agent
+writes go through Confirm"; `src/shared/pr-write-hook.ts`). Differences from a held permission:
+
+- **Armed by the command text, not the env.** `PR_GATE_ARM_SH` (managed-script.ts) matches the
+  command with `case` patterns only; a match sets `nt_gate` = `gate-<node>-<ms>-$$`, makes the POST
+  run in the foreground, and adds `nodeterm_gate_id`. Every other tool call is unchanged. Claude:
+  only the pane's foreground claude, as for a permission. Codex too: its PreToolUse reads the same
+  deny JSON (`codex-rs/hooks/src/events/pre_tool_use.rs`).
+- **Desktop main writes the answer**, through the same `heldPermissionIoFor` legs (local fs, or the
+  SSH project's ControlMaster): `allow`, or one line starting with `PRE_TOOL_DENY_PREFIX`, under
+  its own bound (`isPrGateAnswer`, 4 KB; ticket ids start with `gate-`, so a held permission's
+  file never gets a gate answer). No request file, no "answered" POST, no badge change.
+- **Short hold, fail open.** The script polls 25 x 0.2 s (5 s); main allows after 3 s without a
+  canvas answer. A POST that reaches no server skips the poll. Anything but the deny prefix, and a
+  timeout, prints nothing: the command runs. A late answer file is left for the sweeper.
+- The Server Edition writes `allow` at once (no `pr-propose` there).
+
 ## Out of scope
 
 - "Always allow" via hook `updatedPermissions`.

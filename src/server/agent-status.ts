@@ -11,6 +11,8 @@ import { grokHomeDir, grokSessionDir, grokSessionsDir } from '../core/agents/gro
 import { join, resolve } from 'path'
 import { homedir } from 'os'
 import { hookServer } from '../core/agents/hook-server'
+import { writePendingAnswerLocal } from '../core/agents/pending-approvals'
+import { isPrGateAnswer, isPrGateId } from '../shared/pr-write-hook'
 import { recordAgentEvent, recordRawToolEvent, recordContextUsage,
   recordQuestionResult, turnInterruptEvent, ignoreQuestionHook
 } from '../core/agent-status-mirror'
@@ -249,6 +251,11 @@ export function wireAgentStatus(
   const SUBAGENT_TOOLS = new Set(['Agent', 'Task'])
   // Hook server validates session-env capacity and caller identity once for both shells.
   hooks.setRawListener((agentId, nodeId, payload, _meta) => {
+    // The PR write gate (@shared/pr-write-hook) is desktop only: pr-propose, the Confirm bar's way in,
+    // is not a Server Edition verb. Allow at once so the held hook does not wait out its hold.
+    // ponytail: no gate in the Server Edition until pr-propose is.
+    const gateId = payload.nodeterm_gate_id
+    if (isPrGateId(gateId)) void writePendingAnswerLocal(gateId, 'allow', homedir(), isPrGateAnswer)
     if (agentId === 'cursor') {
       // Same shared step as the desktop (core/cursor-chat.ts `applyCursorRaw`). The server has no
       // SSH projects, so nothing here is remote.

@@ -15,7 +15,7 @@
 // canvas and get a link map that is correct with zero tabs open.
 import type { ContextLinkMap } from '../shared/types'
 import { buildBackgroundLinkMaps } from '../shared/context-link-map'
-import { initContextLink, setContextLinks } from '../core/context-link'
+import { initContextLink, setContextLinks, type ContextLinkDeps } from '../core/context-link'
 import { transcriptPathOf } from '../core/context-link-core'
 import { sessionNameSweepEntries } from '../core/agent-status-mirror'
 import type { PtyManager } from '../core/pty-manager'
@@ -41,6 +41,8 @@ export interface ServerContextLinkDeps {
   /** nodeId → hook-fed transcript path; part of the change signature, not of the map. */
   transcriptOf?: (nodeId: string) => string
   sweepMs?: number
+  /** A linked pull request node's Overview (core/context-link.ts `pullReadVia`). */
+  pull?: ContextLinkDeps['pull']
 }
 
 /**
@@ -82,7 +84,7 @@ export function initServerContextLink(deps: ServerContextLinkDeps): {
 
   // No remote deps: the Server Edition runs ON the host whose transcripts and tmux it reads, so
   // the local-only behavior is the complete answer (SSH projects are a desktop-only concept here).
-  initContextLink(deps.ptyManager, {})
+  initContextLink(deps.ptyManager, { pull: deps.pull })
 
   // Skip a rewrite when nothing a link document depends on has changed. The map alone is not the
   // whole input — a link's transcript path is resolved at write time from the hook-fed table, and

@@ -4,6 +4,7 @@ import fs from 'fs'
 import { readAgentSessionName } from '../core/agent-session-name'
 import { startSessionNameSweep, displayNodeTitle } from '../core/session-name-sweep'
 import { startTriggerService } from '../core/trigger-service'
+import { startPullWatch } from '../core/github/pull-watch'
 import path from 'path'
 import http from 'http'
 
@@ -75,7 +76,7 @@ import {
   resolveIntegrationConsentAtBoot
 } from '../core/agent-integrations'
 import { registerIntegrationIpc } from '../core/agent-integrations-ipc'
-import { contextLinkShimPath } from '../core/context-link'
+import { contextLinkShimPath, pullReadVia } from '../core/context-link'
 import {
   initAgentStatusMirror,
   flush as flushAgentStatusMirror,
@@ -499,6 +500,21 @@ export async function startServer(
     // The shell's own CorePlatform instance (`platform` is this file's ServerPlatform local).
     handle: (channel, handler) => platform.handle(channel, handler)
   })
+  // A pull node's Watch switch (F-08): the same core poller the desktop boots (src/main/index.ts).
+  // Agent messaging exists here only with canvas control on, so without it a wake is refused by
+  // edition and the switch says so. `canvasControl` is read per wake: it comes up later in boot.
+  const pullWatch = startPullWatch({
+    userDataDir: config.dataDir,
+    listCanvases: () => workspaceStore.persistedCanvases(),
+    projectClosed: (projectId) => !!workspaceStore.linkProjectEntries()?.find((e) => e.id === projectId)?.closed,
+    messagingRefused: (projectId) =>
+      !canvasControl ? 'unsupported-edition' : canvasControl.watchMessagingEnabled(projectId) ? undefined : 'switch-off',
+    readDetail: (request) => github.service.pullDetail(request),
+    readChecks: (request) => github.service.pullChecks(request),
+    deliver: async (request) =>
+      canvasControl ? canvasControl.deliverWatchWake(request) : { kind: 'notPermitted', reason: 'unsupported-edition' },
+    handle: (channel, handler) => platform.handle(channel, handler)
+  })
   // Advertise launch settings to the mobile companion through the mirror (same provider the
   // desktop wires in src/main/index.ts). No SSH push exists server-side, so only the local
   // provider applies. The provider is consulted at every flush (heartbeat ≤60s), so a settings
@@ -797,7 +813,8 @@ export async function startServer(
   // src/server/context-link.ts.
   const contextLink = initServerContextLink({
     ptyManager,
-    canvases: () => workspaceStore.persistedCanvases()
+    canvases: () => workspaceStore.persistedCanvases(),
+    pull: pullReadVia(github.service)
   })
   // A governed project's outside edit goes to the canvas authority, which publishes the difference
   // as canvas ops and then the persisted project on `workspace:server-change` (its non-content
@@ -841,6 +858,8 @@ export async function startServer(
         // answer the issue lane gets from the GitHub host controller.
         issueRepository: (projectId) =>
           github.controller.status(projectId).then((view) => view.project?.repository ?? null),
+        // `open-pr`: the same host answer, with this machine's approval.
+        pullRepository: (projectId) => github.controller.status(projectId).then((view) => view.project),
         // `issues` / `prs`: the board's GitHub lane from the service's cache (no GitHub request).
         githubRead: {
           snapshot: (projectId) => github.service.controlSnapshot(projectId),
@@ -1213,6 +1232,8 @@ export async function startServer(
         pressure.stop()
         ptyPressure.stop()
         canvasControl?.stop()
+        // Watch (F-08): no tick after this, and its last write lands.
+        await pullWatch.stop()
         workspaceWatcher.dispose()
         await contextLink.stop()
         // Every save already queued lands while the authority still governs (see the serving close).
@@ -1288,6 +1309,8 @@ export async function startServer(
       pressure.stop()
       ptyPressure.stop()
       canvasControl?.stop()
+      // Watch (F-08): no tick after this, and its last write lands.
+      await pullWatch.stop()
       workspaceWatcher.dispose()
       await contextLink.stop()
       // Every save already queued lands while the authority still governs, then it writes what it owes.

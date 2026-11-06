@@ -274,7 +274,8 @@ describe('requestIdGate', () => {
       'show-video',
       'show-web',
       'open-browser',
-      'group'
+      'group',
+      'open-pr'
     ]) {
       expect(REQUEST_ID_VERBS.has(verb), verb).toBe(true)
     }

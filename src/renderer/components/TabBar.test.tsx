@@ -6,6 +6,11 @@ import type { Project } from '@shared/types'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+// The behind-main chip has its own tests (MainDriftBadge.test.tsx); here only where it sits.
+vi.mock('./MainDriftBadge', () => ({
+  MainDriftBadge: ({ projectId, cwd }: { projectId: string; cwd: string }) => <span data-drift={projectId} data-cwd={cwd} />
+}))
+
 class NoopResizeObserver {
   observe(): void {}
   unobserve(): void {}
@@ -282,6 +287,11 @@ describe('TabBar drag-reorder', () => {
   afterEach(() => {
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('shows the behind-main chip on the active tab only, for its folder', () => {
+    const chips = [...host.querySelectorAll<HTMLElement>('[data-drift]')]
+    expect(chips.map((c) => [c.dataset.drift, c.dataset.cwd])).toEqual([['p1', '/repo/alpha']])
   })
 
   it('drops a tab before the one it was released on', async () => {

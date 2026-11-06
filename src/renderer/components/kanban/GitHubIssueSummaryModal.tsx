@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { GitHubIssueCardView } from '@shared/github-issues'
-import type {
-  GitHubPullChecksResult,
-  GitHubPullStatus,
-  PullStatusFreshness
+import {
+  checkDuration,
+  type GitHubPullChecksResult,
+  type GitHubPullStatus,
+  type PullStatusFreshness
 } from '@shared/github-pull-status'
 import { PullRefChip, PullStatusLine } from './PullStatusBadges'
 import type { KanbanColumn } from '@shared/types'
@@ -36,7 +37,8 @@ export function GitHubIssueSummaryModal({
   worktreeMenu,
   runs = NO_ISSUE_RUNS,
   onOpenRun,
-  showRunHistory = false
+  showRunHistory = false,
+  onOpenAsNode
 }: {
   issue: GitHubIssueCardView
   columns: KanbanColumn[]
@@ -67,6 +69,8 @@ export function GitHubIssueSummaryModal({
   onOpenRun?: (nodeId: string) => void
   /** Show the issue card's read-only run history (its board-log feed). */
   showRunHistory?: boolean
+  /** Pull kind: open this PR as a canvas node (the canvas places it). Absent = no button. */
+  onOpenAsNode?: () => void
 }): React.JSX.Element {
   const isPull = kind === 'pull'
   const { api } = useSession()
@@ -177,6 +181,7 @@ export function GitHubIssueSummaryModal({
               {ISSUE_WORKTREE_BUTTON_LABEL} ▾
             </Button>
           )}
+          {isPull && onOpenAsNode && <Button onClick={onOpenAsNode}>Open as node</Button>}
           <Button onClick={() => void api.shell.openExternal(issue.htmlUrl)}>Open on GitHub</Button>
         </div>
         {!isPull && onOpenRun && runs.length > 0 && (
@@ -245,11 +250,13 @@ export function GitHubIssueSummaryModal({
 }
 
 /** Per-check detail for an open PR, read once when its modal opens (and again if its head moves). */
-function usePullChecks(
+export function usePullChecks(
   api: { pullChecks: (projectId: string, pullNumber: number) => Promise<GitHubPullChecksResult> },
   projectId: string | undefined,
   pullNumber: number,
-  headRefOid: string | undefined
+  headRefOid: string | undefined,
+  /** Read again when this moves (the pull node's Refresh: its review decision can change without a push). */
+  refreshKey?: number
 ): GitHubPullChecksResult | 'loading' | null {
   const [result, setResult] = useState<GitHubPullChecksResult | 'loading' | null>(null)
   useEffect(() => {
@@ -263,11 +270,11 @@ function usePullChecks(
       .then((value) => { if (live) setResult(value) })
       .catch(() => { if (live) setResult({ status: 'unavailable' }) })
     return () => { live = false }
-  }, [api, projectId, pullNumber, headRefOid])
+  }, [api, projectId, pullNumber, headRefOid, refreshKey])
   return result
 }
 
-const CHECK_GLYPH = { passed: '✓', failed: '✗', pending: '●', skipped: '–', neutral: '○' } as const
+export const CHECK_GLYPH = { passed: '✓', failed: '✗', pending: '●', skipped: '–', neutral: '○' } as const
 
 /** The checks list. A token that may not read checks (`hidden`) shows NOTHING, and a commit with no
  *  checks says so in words — never a green tick for checks that do not exist. */
@@ -295,6 +302,7 @@ export function PullChecks({
           {check.url
             ? <button className="pull-checks__name" onClick={() => onOpen(check.url!)}>{check.name}</button>
             : <span className="pull-checks__name">{check.name}</span>}
+          {checkDuration(check) && <span className="pull-checks__state">{checkDuration(check)}</span>}
           <span className="pull-checks__state">{check.state}</span>
         </li>
       ))}

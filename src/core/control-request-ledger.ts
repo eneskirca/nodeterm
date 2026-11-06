@@ -74,7 +74,10 @@ export const REQUEST_ID_VERBS: ReadonlySet<string> = new Set([
   'show-video',
   'show-web',
   'open-browser',
-  'group'
+  'group',
+  // Idempotent per PR already, but the desktop dispatch awaits the host's repository before it
+  // looks for an existing node, so a re-post inside that window would add a second one.
+  'open-pr'
 ])
 
 export const REQUEST_ID_MAX_LENGTH = 64
