@@ -1,8 +1,9 @@
 import { TEXT_NOT_SUBMITTED, isChatPromptBlocked } from '@shared/text-delivery'
 import { claudeScreenBlocksInput, type ChatScreenRead } from '@shared/agents/claude-screen'
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type SetStateAction } from 'react'
 import { renderMarkdown } from '../lib/markdown'
 import { inferInterruptAfterSettle, useAgentStatus } from '../state/agentStatus'
+import { useChatDraft } from '../state/chatDraft'
 import { useSession } from '../session/session'
 import { chipFor } from '../lib/keybindingOverrides'
 import {
@@ -266,7 +267,13 @@ export function ChatPanel({
   // Mirror for `load`, which must not depend on it (its identity drives the initial-load effect).
   const olderStateRef = useRef(olderState)
   olderStateRef.current = olderState
-  const [input, setInput] = useState('')
+  // The draft lives in a store keyed by node (state/chatDraft.ts): this panel unmounts on every
+  // project switch, and a draft in component state was lost with it.
+  const input = useChatDraft((s) => s.drafts[nodeId] ?? '')
+  const setInput = useCallback(
+    (next: SetStateAction<string>) => useChatDraft.getState().setDraft(nodeId, next),
+    [nodeId]
+  )
   const [readonly, setReadonly] = useState(false)
   // The last prompt this panel sent, for taking it back out of the agent's input box after an Esc.
   const lastSentRef = useRef<string | null>(null)

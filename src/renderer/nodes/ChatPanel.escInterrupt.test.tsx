@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentStatus } from '../state/agentStatus'
+import { useChatDraft } from '../state/chatDraft'
 import type { ChatInterruptResult } from '@shared/text-delivery'
 
 /**
@@ -59,6 +60,8 @@ const press = (ta: HTMLTextAreaElement, key: string): void => {
 }
 
 beforeEach(() => {
+  // Drafts outlive a panel (state/chatDraft.ts); one test's text must not reach the next.
+  useChatDraft.setState({ drafts: {} })
   interruptChat.mockClear()
   sendChatPrompt.mockClear()
   host = document.createElement('div')

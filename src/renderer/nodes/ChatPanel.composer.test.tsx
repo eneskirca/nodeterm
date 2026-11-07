@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentStatus } from '../state/agentStatus'
+import { useChatDraft } from '../state/chatDraft'
 import { useContextWindow } from '../state/contextWindow'
 import { deliverToComposer } from '../lib/chatComposerDictation'
 import { COMPOSER_EFFORT_MIN_WIDTH, COMPOSER_MODEL_MIN_WIDTH } from '../lib/chatComposer'
@@ -90,6 +91,8 @@ const flush = () => act(async () => {
 })
 
 beforeEach(() => {
+  // Drafts outlive a panel (state/chatDraft.ts); one test's text must not reach the next.
+  useChatDraft.setState({ drafts: {} })
   sendText.mockReset()
   sendText.mockResolvedValue(true)
   sendChatPrompt.mockClear()
