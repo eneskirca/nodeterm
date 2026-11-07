@@ -132,7 +132,8 @@ describe('every CSS variable resolves', () => {
     '--cmascot-h',
     '--cmascot-sheet-w',
     '--cmascot-sheet-h', // notch HUD sprite sheets
-    '--swimlane-color' // GlobalKanbanView swimlane left border, per project
+    '--swimlane-color', // GlobalKanbanView swimlane left border, per project
+    '--chat-complete-max' // ChatComposer, the `/` menu's room above the composer (completeMenuMax)
   ])
 
   it('references no variable that is never defined', () => {

@@ -885,20 +885,21 @@ export function ChatPanel({
   }, [maybeLoadOlder])
 
   // The panel's box changing size — above all a collapsed node being EXPANDED (display:none → a
-  // real box). Nothing else re-runs the checks then: while hidden, follow and anchor had zero
-  // geometry to work with and paging was refused. So: a user who was following lands at the
-  // bottom, and paging resumes (a short thread fetches older right away). Guarded: jsdom and old
-  // engines have no ResizeObserver, and the panel works without it.
+  // real box), and the composer growing or being resized under it. Nothing else re-runs the checks
+  // then: while hidden, follow and anchor had zero geometry to work with and paging was refused. So:
+  // a user who was following stays at the bottom, and paging resumes (a short thread fetches older
+  // right away). Guarded: jsdom and old engines have no ResizeObserver, and the panel works without
+  // it.
   const maybeLoadOlderRef = useRef(maybeLoadOlder)
   maybeLoadOlderRef.current = maybeLoadOlder
   useEffect(() => {
     const el = msgsRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    let hadBox = el.clientHeight > 0
+    let lastHeight = el.clientHeight
     const ro = new ResizeObserver(() => {
-      const hasBox = el.clientHeight > 0
-      if (hasBox && !hadBox && nearBottomRef.current) el.scrollTop = el.scrollHeight
-      hadBox = hasBox
+      const height = el.clientHeight
+      if (height > 0 && height !== lastHeight && nearBottomRef.current) el.scrollTop = el.scrollHeight
+      lastHeight = height
       maybeLoadOlderRef.current()
       attemptLiveRef.current() // a hook event held while the panel was hidden
     })
