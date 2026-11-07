@@ -359,6 +359,9 @@ function bashMode(): string {
     isMeta(user(CAVEAT)),
     user('<bash-input>cat missing.txt</bash-input>'),
     user('<bash-stdout></bash-stdout><bash-stderr>cat: missing.txt: No such file or directory</bash-stderr>'),
+    isMeta(user(CAVEAT)),
+    user('<bash-input>true</bash-input>'),
+    user('<bash-stdout></bash-stdout><bash-stderr></bash-stderr>'),
     user('What was in a.txt?'),
     assistant([text('Twelve bytes of demo text.')])
   ])

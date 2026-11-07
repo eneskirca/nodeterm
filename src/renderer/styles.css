@@ -3702,6 +3702,68 @@ body,
 .term-chat__interrupt-hook {
   font-family: ui-monospace, monospace;
 }
+/* A `!` shell command the user ran (nodes/ChatShellCommand.tsx), as Claude Code's TUI draws it: the
+   command after a pink `!`, and under it, behind a `⎿`, its output's first line. Opened, the first
+   line gives way to the whole output. No chip: it is the user's own line, not an agent tool call. */
+.term-chat__shell {
+  margin: 4px 0;
+  font-size: 12px;
+}
+.term-chat__shell summary {
+  display: block;
+  cursor: pointer;
+  list-style: none;
+}
+.term-chat__shell summary::-webkit-details-marker {
+  display: none;
+}
+.term-chat__shell-line,
+.term-chat__shell-out {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+}
+.term-chat__shell-bang {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--sys-pink);
+}
+.term-chat__shell-cmd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+}
+.term-chat__shell-out {
+  padding-left: 12px;
+  color: var(--muted);
+}
+.term-chat__shell-hook {
+  flex: 0 0 auto;
+}
+.term-chat__shell-first .term-chat__shell-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* More than one line: say there is more, the way a cut-off line would. */
+.term-chat__shell-first--more .term-chat__shell-text::after {
+  content: ' …';
+}
+.term-chat__shell[open] .term-chat__shell-first {
+  display: none;
+}
+.term-chat__shell pre.term-chat__shell-text {
+  margin: 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
 /* An Edit / Write call (nodes/ChatToolDiff.tsx): the chip's summary ends in the `+N −M` counts, and
    it opens to the line diff. The block is a one-column grid sized to its widest line (at least the
    chip's width), so a line's tint spans the whole row even while the block is scrolled sideways;
@@ -4081,6 +4143,37 @@ body,
 .term-chat__composer--drop {
   border-color: var(--accent);
   border-style: dashed;
+}
+/* Shell mode (lib/chatShellMode.ts): a draft starting with `!` is drawn as Claude Code's TUI draws
+   it — the `!` beside the text instead of in it, the box's border in the TUI's shell-mode pink, and
+   its "! for shell mode" hint under the box. The textarea and its highlight layer share one row with
+   the mark, so their own layout is unchanged. */
+.term-chat__composer-row {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+}
+.term-chat__composer-row > .term-chat__composer-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.term-chat__shell-mark {
+  flex: 0 0 auto;
+  padding: 4px 0 4px 6px;
+  font-family: var(--md-code-font-family, ui-monospace, monospace);
+  font-size: var(--md-font-size);
+  font-weight: 600;
+  line-height: normal;
+  color: var(--sys-pink);
+}
+.term-chat__composer--shell,
+.term-chat__composer--shell:focus-within {
+  border-color: var(--sys-pink);
+}
+.term-chat__shell-hint {
+  padding: 3px 8px 0;
+  font-size: 11px;
+  color: var(--sys-pink);
 }
 /* A text field in the ⌘M view: the plan "Revise…" textarea and the question "Other" input
    (ChatAnswerControls) — a visible, bordered field with an accent border on focus. */

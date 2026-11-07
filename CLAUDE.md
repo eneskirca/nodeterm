@@ -4594,6 +4594,17 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   terminal equivalent. Surfaces: Desktop + Server Edition identical (dictation and uploads already
   bridge — `files.saveUpload`, `speech.*`); SSH nodes upload to the host; kanban card modal shares
   ChatPanel and wires both props; relay tabs keep the panel's existing refusal; mobile N/A.
+  **Shell mode is drawn as Claude Code's TUI draws it** (`lib/chatShellMode.ts`, claude and custom
+  agents built on it; MEASURED on 2.1.319): a draft starting with `!` — typed into an empty box or at
+  the start of existing text, the TUI's rule — shows its `!` in `--sys-pink` beside the textarea, not
+  in it, with a pink border and the TUI's own "! for shell mode" under the box; Backspace at the very
+  start leaves it. The DRAFT keeps the `!` (it is what the send types and what puts the TUI in shell
+  mode); only the display changes, and the completion/highlight stand down (the caret snapshot holds
+  the shown text, not the draft). The `!` slot is always rendered so the textarea is never remounted.
+  A `!` command in the THREAD (`nodes/ChatShellCommand.tsx`) is the TUI's `! cmd` with its output's
+  first line under a `⎿`, opening to the whole output: the reader keeps a bash-family output's lines
+  (`BASH_OUTPUT_MAX`, 16384) instead of `summarizeResult`, and gives a command that printed nothing
+  `result: ""` (chat-fixtures README rules 4-5).
   Fix-round rules (same day): the composer is its OWN component (`nodes/ChatComposer.tsx`) so the
   thread and the composer restyle independently. A label click is an explicit "go to the
   terminal", so the flip FOCUSES the xterm whatever its entry state was

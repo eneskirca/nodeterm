@@ -27,6 +27,7 @@ import { Spinner } from '../components/Spinner'
 import { builtinSlashCommands, sanitizeChatCatalog, type ChatCatalogEntry } from '@shared/chat-catalog'
 import { prepareQuickOpenFiles, type QuickOpenIndexedFile } from '../lib/quickOpenSearch'
 import { commandSegments, mentionsSlashToken } from '../lib/chatComposerHighlight'
+import { SHELL_MODE_HINT, draftFromDisplay, isShellDraft, shellDisplayText, showsShellMode } from '../lib/chatShellMode'
 import {
   CATALOG_REUSE_MS,
   applyCompletion,
@@ -148,6 +149,24 @@ export function ChatComposer({
   // Until the core catalog answers — and for good on a surface that has none (a relay tab) — the `/`
   // menu shows the shared built-in table for this agent.
   const listboxId = useId()
+  // Shell mode (lib/chatShellMode.ts): a draft starting with `!` shows its `!` beside the textarea,
+  // not in it. The completion below then stands down by itself: the caret snapshot holds the TEXT
+  // the textarea shows, which is not the draft, so no trigger is derived (Claude's TUI offers no
+  // `/` menu in shell mode either).
+  const shell = showsShellMode(agentId) && isShellDraft(value)
+  const display = shellDisplayText(value, shell)
+  const shellHintId = useId()
+  // Where to put the caret after the textarea's text shifted by the `!` (entering or leaving shell
+  // mode): a controlled value change moves it to the end.
+  const pendingCaretRef = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const at = pendingCaretRef.current
+    const el = inputRef.current
+    if (at === null || el === null) return
+    pendingCaretRef.current = null
+    el.setSelectionRange(at, at)
+    // Keyed on the DRAFT: typing `!` into an empty box changes the draft but not what is shown.
+  }, [value])
   const [caretSnap, setCaretSnap] = useState<{ value: string; start: number; end: number } | null>(null)
   const trigger: CompletionTrigger | null =
     !disabled && caretSnap && caretSnap.value === value ? completionTriggerAt(value, caretSnap.start, caretSnap.end) : null
@@ -219,7 +238,8 @@ export function ChatComposer({
   // text or none, and a command name is not a word. A half-typed `/tid` keeps its underline: until it
   // names a command, it is a misspelling.
   const knownNames = useMemo(() => new Set(catalog.map((e) => e.name)), [catalog])
-  const segments = useMemo(() => commandSegments(value, knownNames), [value, knownNames])
+  // None in shell mode: the line is a shell command, not a prompt.
+  const segments = useMemo(() => (shell ? null : commandSegments(value, knownNames)), [shell, value, knownNames])
   const highlightRef = useRef<HTMLDivElement>(null)
   const syncHighlightScroll = useCallback(() => {
     const ta = inputRef.current
@@ -460,6 +480,14 @@ export function ChatComposer({
       })
       return
     }
+    // Backspace at the very start of a shell-mode line leaves shell mode, as in Claude's TUI: the `!`
+    // goes and the text stays.
+    if (shell && e.key === 'Backspace' && !composing && e.currentTarget.selectionStart === 0 && e.currentTarget.selectionEnd === 0) {
+      e.preventDefault()
+      pendingCaretRef.current = 0
+      onChange(display)
+      return
+    }
     if (menuOpen && e.key === 'Enter') closeMenu()
     // Shift+Enter falls through to the textarea's own newline; an IME commit is not a send.
     const action = chatKeyAction({
@@ -520,7 +548,7 @@ export function ChatComposer({
         ref={composerRef}
         className={`term-chat__composer${dropping ? ' term-chat__composer--drop' : ''}${
           disabled ? ' term-chat__composer--disabled' : ''
-        }`}
+        }${shell ? ' term-chat__composer--shell' : ''}`}
         // Read by the shortcut dictation paths (lib/chatComposerDictation.ts
         // `composerFromElement`) so ⌘⇧D / hold-to-talk with the caret here fills THIS draft.
         data-chat-composer-id={composerId}
@@ -529,6 +557,14 @@ export function ChatComposer({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        <div className="term-chat__composer-row">
+          {/* Always this slot, so the field after it keeps its position and the textarea is never
+              remounted (which would drop the keyboard) when shell mode starts or ends. */}
+          {shell && (
+            <span className="term-chat__shell-mark" aria-hidden="true">
+              !
+            </span>
+          )}
         <div className="term-chat__composer-field">
           {segments !== null && (
             <div ref={highlightRef} className="term-chat__composer-highlight" aria-hidden="true">
@@ -550,9 +586,15 @@ export function ChatComposer({
             className={`term-chat__composer-input${segments !== null ? ' term-chat__composer-input--over' : ''}`}
             spellCheck={segments === null}
             onScroll={syncHighlightScroll}
-            value={value}
+            value={display}
+            aria-describedby={shell ? shellHintId : undefined}
             onChange={(e) => {
-              onChange(e.target.value)
+              const next = draftFromDisplay(e.target.value, shell)
+              // A `!` typed at the very start enters shell mode: it leaves the text, so the caret
+              // moves back one.
+              const entering = !shell && showsShellMode(agentId) && isShellDraft(next)
+              if (entering) pendingCaretRef.current = Math.max(0, (e.target.selectionStart ?? 1) - 1)
+              onChange(next)
               const caret = e.target.selectionStart ?? e.target.value.length
               // A new token (or none) forgets an Esc on the previous one.
               if (dismissedAt !== null && completionTriggerAt(e.target.value, caret)?.start !== dismissedAt) setDismissedAt(null)
@@ -581,6 +623,7 @@ export function ChatComposer({
             disabled={disabled}
             rows={2}
           />
+        </div>
         </div>
         <div className="term-chat__toolbar">
           {pathsForFiles && (
@@ -657,6 +700,11 @@ export function ChatComposer({
           </button>
         </div>
       </div>
+      {shell && (
+        <div id={shellHintId} className="term-chat__shell-hint">
+          {SHELL_MODE_HINT}
+        </div>
+      )}
     </div>
   )
 }

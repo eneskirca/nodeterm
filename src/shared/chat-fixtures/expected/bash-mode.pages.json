@@ -13,7 +13,7 @@
               "kind": "tool",
               "name": "!",
               "arg": "ls /srv/demo",
-              "result": "a.txt b.txt ls: warning: demo"
+              "result": "a.txt\nb.txt\nls: warning: demo"
             }
           ],
           "at": 1790362801000,
@@ -33,6 +33,19 @@
           "key": 1636
         },
         {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "!",
+              "arg": "true",
+              "result": ""
+            }
+          ],
+          "at": 1790362807000,
+          "key": 2779
+        },
+        {
           "role": "user",
           "parts": [
             {
@@ -40,8 +53,8 @@
               "text": "What was in a.txt?"
             }
           ],
-          "at": 1790362806000,
-          "key": 2271
+          "at": 1790362809000,
+          "key": 3360
         },
         {
           "role": "assistant",
@@ -51,8 +64,8 @@
               "text": "Twelve bytes of demo text."
             }
           ],
-          "at": 1790362807000,
-          "key": 2538
+          "at": 1790362810000,
+          "key": 3627
         }
       ],
       "olderCursor": null,
