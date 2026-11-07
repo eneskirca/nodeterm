@@ -244,10 +244,11 @@ The full inventory of what nodeterm writes where (and what the script keeps, lik
 
 ## Sponsor
 
-nodeterm is an indie project, built with Claude across several Claude accounts — about
-**$2,000 a month** to keep running. There are **10 Founding Sponsor spots** at $200/month:
-your logo goes in this grid and on [nodeterm.dev](https://nodeterm.dev), and your feature
-requests go first.
+Put your logo in front of the people building with coding agents. nodeterm is an indie
+project with **2,400+ stars** and **17,000+ downloads**; ten **Founding Sponsor spots** at
+$200/month keep it running. Sponsors get their logo in this grid and on
+[nodeterm.dev](https://nodeterm.dev), and their feature requests ship first — the first
+sponsor's two requests landed within a week. Prefer a one-time payment? Invoices work too.
 
 <p align="center">
   <b>1 of 10 spots taken</b> · <a href="https://buy.stripe.com/3cI6oJfveehDeIL90w7EQ04">Become a Founding Sponsor →</a>
@@ -276,7 +277,7 @@ requests go first.
   </tr>
 </table>
 
-Prefer a smaller amount, need an invoice, or want a different arrangement? Write to
+Prefer a smaller amount, a one-time invoice, or a different arrangement? Write to
 support@nodeterm.dev — and a ⭐ helps too.
 
 ## 🛠 Build from source
