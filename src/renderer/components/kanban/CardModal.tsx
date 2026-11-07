@@ -81,6 +81,7 @@ import {
   type LocalFileTarget
 } from './LocalFilePreviewModal'
 import { ChatPanelFallback } from '../../nodes/ChatPanelFallback'
+import { carryDraftToChat, carryDraftToTerminal } from '../../lib/chatDraftCarry'
 
 // Code-split exactly like the canvas node's: ChatPanel carries the markdown renderer, and the
 // card modal must not pull it onto the board's first paint.
@@ -235,10 +236,8 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   useEffect(() => {
     setMdFor(initialView === 'md' ? session.id : null)
   }, [session.id, initialView])
-  const toggleMd = useCallback(() => {
-    setMdFor((cur) => (cur === session.id ? null : session.id))
-    setSearchOpen(false) // the FindBar searches the xterm the view now covers
-  }, [session.id])
+  // `toggleMd` (the user's own flip) carries a half-typed draft across, as on the canvas node
+  // (lib/chatDraftCarry.ts); it is declared below, once `useChat` is known.
   // Same decision the node makes (TerminalNode: `showChat` / `useChat`): the CREATED agent picks
   // the reader, ChatPanel only once the session id is known, else the output view.
   const createdAgent = session.agentId ?? session.spawn.agentId
@@ -252,6 +251,32 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
     cwd: session.spawn.cwd
   })
   const useChat = mdOpen && !!createdAgent && canChat(createdAgent) && !!transcript.sessionId
+  // Whether the ⌘M face is the chat panel, asked before it is open (the carry into the composer).
+  const chatFace = !!createdAgent && canChat(createdAgent) && !!transcript.sessionId
+  const chatFaceRef = useRef(chatFace)
+  chatFaceRef.current = chatFace
+  const mdOpenRef = useRef(mdOpen)
+  mdOpenRef.current = mdOpen
+  const carryingRef = useRef(false)
+  const toggleMd = useCallback(() => {
+    if (carryingRef.current) return
+    setSearchOpen(false) // the FindBar searches the xterm the view now covers
+    if (!mdOpenRef.current) {
+      setMdFor(session.id)
+      if (chatFaceRef.current) void carryDraftToChat(api.pty, session.id, createdAgent)
+      return
+    }
+    if (!chatFaceRef.current) {
+      setMdFor(null)
+      return
+    }
+    // While the draft is typed into the terminal, a second press would type it again.
+    carryingRef.current = true
+    void carryDraftToTerminal(api.pty, session.id, createdAgent).finally(() => {
+      carryingRef.current = false
+      setMdFor((cur) => (cur === session.id ? null : cur))
+    })
+  }, [api.pty, session.id, createdAgent])
   const captureFull = useCallback((nodeId: string) => api.pty.capture(nodeId, true), [api])
   const mdChip = chipFor('node.toggleMarkdown')
   // The chord (main-intercepted on desktop, bridged in the browser) toggles THIS view while the

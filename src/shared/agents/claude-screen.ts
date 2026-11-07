@@ -260,6 +260,50 @@ export function readClaudeDraft(styledScreen: string): string | null {
 }
 
 /**
+ * Why a draft in Claude Code's input box cannot be read back EXACTLY (`readClaudeDraftLine`):
+ * - `multi-line` — it takes more than one row. MEASURED (2.1.319): a line that wraps and a real
+ *   newline (M-Enter) look the same, a second row indented two spaces, and the wrap drops the space
+ *   at the break, so neither the newlines nor the spaces could be put back.
+ * - `placeholder` — it holds a collapsed paste or image (`[Pasted text #1 +12 lines]`, `[Image #1]`):
+ *   the screen shows the placeholder, not the text behind it.
+ * - `not-prompt` — the row does not start with the ordinary `❯` prompt (shell mode's `!`, say).
+ */
+export type ClaudeDraftLineRefusal = 'multi-line' | 'placeholder' | 'not-prompt'
+
+export type ClaudeDraftLine =
+  | { kind: 'empty' }
+  | { kind: 'line'; text: string }
+  | { kind: 'refused'; reason: ClaudeDraftLineRefusal }
+
+const DRAFT_PLACEHOLDER = /\[(?:Pasted text|Image) #\d+/
+
+/**
+ * The user's draft in Claude Code's input box, read from a STYLED capture, EXACTLY: only when it is
+ * one row with the ordinary prompt and no collapsed paste, so the text can be handed to the ⌘M chat
+ * composer as typed (the dim placeholder and any dim inline hint are not part of it; trailing spaces
+ * are lost, as tmux trims them). null when there is no live input box to read.
+ */
+export function readClaudeDraftLine(styledScreen: string): ClaudeDraftLine | null {
+  const composer = readClaudeComposer(styledScreen)
+  if (composer === 'empty') return { kind: 'empty' }
+  if (composer !== 'draft') return null
+  const styled = styledScreen.split(/\r?\n/)
+  const lines = styled.map((l) => l.replace(ANSI, '').trimEnd())
+  const box = inputBox(lines)
+  if (!box) return null
+  const promptAt = box[0] + 1
+  for (let i = promptAt + 1; i < box[1]; i++) {
+    if (lines[i].trim() !== '') return { kind: 'refused', reason: 'multi-line' }
+  }
+  if (!lines[promptAt].startsWith('❯')) return { kind: 'refused', reason: 'not-prompt' }
+  // The prompt is `❯` and one space; everything after it that is not dim is the draft.
+  const text = undimmedText(styled[promptAt], 1).replace(/^[ \u00a0]/, '').trimEnd()
+  if (text === '') return { kind: 'empty' }
+  if (DRAFT_PLACEHOLDER.test(text)) return { kind: 'refused', reason: 'placeholder' }
+  return { kind: 'line', text }
+}
+
+/**
  * The next prompt Claude Code suggests after a turn, read from a STYLED capture: the dim text on its
  * prompt line while the input box holds no draft. null when there is none to offer.
  *

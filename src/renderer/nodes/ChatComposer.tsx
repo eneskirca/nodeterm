@@ -27,6 +27,10 @@ import { Spinner } from '../components/Spinner'
 import { builtinSlashCommands, sanitizeChatCatalog, type ChatCatalogEntry } from '@shared/chat-catalog'
 import { prepareQuickOpenFiles, type QuickOpenIndexedFile } from '../lib/quickOpenSearch'
 import { commandSegments, mentionsSlashToken } from '../lib/chatComposerHighlight'
+import { useChatDraft } from '../state/chatDraft'
+
+/** How long the composer shows why a terminal draft was not carried over. */
+const CARRY_NOTE_MS = 12_000
 import {
   CATALOG_REUSE_MS,
   applyCompletion,
@@ -125,6 +129,14 @@ export function ChatComposer({
   const usage = useContextUsage({ sessionId, nodeId, scoped: false })
   const [composerWidth, setComposerWidth] = useState<number | null>(null)
   const [attachNote, setAttachNote] = useState<{ text: string; failed?: boolean } | null>(null)
+  // Why a terminal draft was not carried over on the last ⌘M flip (lib/chatDraftCarry.ts). Editing
+  // the draft clears it (the store does); otherwise it goes after CARRY_NOTE_MS.
+  const carryNote = useChatDraft((s) => s.notes[nodeId] ?? null)
+  useEffect(() => {
+    if (carryNote === null) return
+    const t = setTimeout(() => useChatDraft.getState().setNote(nodeId, null), CARRY_NOTE_MS)
+    return () => clearTimeout(t)
+  }, [carryNote, nodeId])
   const [dropping, setDropping] = useState(false)
   // A picker command on its way into the pane. `/model` and `/effort` are local pickers that fire
   // NO hook, so the agent state stays `done` and the send gate stays open: a second click (or an
@@ -582,6 +594,11 @@ export function ChatComposer({
             rows={2}
           />
         </div>
+        {carryNote !== null && (
+          <div className="term-chat__carry-note" role="status">
+            {carryNote}
+          </div>
+        )}
         <div className="term-chat__toolbar">
           {pathsForFiles && (
             <>

@@ -109,12 +109,17 @@ function loadDrafts(): Record<string, string> {
 
 interface ChatDraftState {
   drafts: Record<string, string>
+  /** One line the composer shows about its draft (lib/chatDraftCarry.ts: why a terminal draft was
+   *  not carried over). In memory only; any change to that node's draft clears it. */
+  notes: Record<string, string>
   /** Sets one node's draft; a function gets the current draft, as React's state setter does. */
   setDraft(nodeId: string, next: SetStateAction<string>): void
+  setNote(nodeId: string, note: string | null): void
 }
 
 export const useChatDraft = create<ChatDraftState>((set) => ({
   drafts: loadDrafts(),
+  notes: {},
   setDraft: (nodeId, next) =>
     set((s) => {
       const cur = s.drafts[nodeId] ?? ''
@@ -125,7 +130,18 @@ export const useChatDraft = create<ChatDraftState>((set) => ({
       else drafts[nodeId] = value
       pending.set(nodeId, value === '' ? null : { text: value, at: Date.now() })
       scheduleSave()
-      return { drafts }
+      if (s.notes[nodeId] === undefined) return { drafts }
+      const notes = { ...s.notes }
+      delete notes[nodeId]
+      return { drafts, notes }
+    }),
+  setNote: (nodeId, note) =>
+    set((s) => {
+      if ((s.notes[nodeId] ?? null) === note) return s
+      const notes = { ...s.notes }
+      if (note === null) delete notes[nodeId]
+      else notes[nodeId] = note
+      return { notes }
     })
 }))
 

@@ -344,6 +344,9 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.ptySendText,
   IPC.ptySendChatPrompt,
   IPC.ptySendToEmptyPrompt,
+  // Carrying a draft between the ⌘M composer and the input box types into, or clears, the pane.
+  IPC.ptyPutChatDraft,
+  IPC.ptyTakeChatDraft,
   // The composer's screen poll; only an editor has a composer.
   IPC.ptyReadChatScreen,
   IPC.ptyInterruptChat,

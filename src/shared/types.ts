@@ -1,4 +1,8 @@
-import type { ChatInterruptResult, ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
+import type {
+  ChatDraftPutResult,
+  ChatDraftTakeResult,
+  ChatInterruptResult,
+  ChatPromptResult, EmptyPromptResult, TextDeliveryResult } from './text-delivery'
 import type { ChatScreenRead } from './agents/claude-screen'
 import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from './push-webhook'
 import type { IdentitySeedEntry } from './agent-identity-seed'
@@ -1433,6 +1437,12 @@ export interface PtyApi {
    *  chat view's last send) lets core take it back out of the agent's input box when the Esc landed
    *  before the reply started; it comes back as `restored`. Never rejects on the desktop. */
   interruptChat(persistKey: string, agentId: string, sentText?: string): Promise<ChatInterruptResult>
+  /** ⌘M chat → terminal: type the chat draft into the agent's EMPTY input box, unsent. Never
+   *  rejects on the desktop. */
+  putChatDraft(persistKey: string, agentId: string, text: string): Promise<ChatDraftPutResult>
+  /** Terminal → ⌘M chat: take a draft that can be read back exactly out of the agent's input box
+   *  (it is cleared there). Never rejects on the desktop. */
+  takeChatDraft(persistKey: string, agentId: string): Promise<ChatDraftTakeResult>
   /** Is tmux available on this host (else the silent plain-shell fallback), plus a suggested
    *  install command for the "tmux not found" banner. */
   tmuxStatus(): Promise<TmuxStatus>

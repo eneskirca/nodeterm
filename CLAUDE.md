@@ -4601,6 +4601,16 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   debounced, flushed on pagehide, and merge only this window's changes into the stored map (two
   Server Edition tabs); bounded by age (30 days), count (50) and size (32,000 chars stays in memory
   only). Pruned by age, not node existence: a closed project still holds its nodes.
+  **A draft carries across the user's own ⌘M flip** (`lib/chatDraftCarry.ts`, claude only; core
+  `putChatDraft` / `takeChatDraft`). It MOVES, never copies, so it is never sent twice: chat → terminal
+  types it unsent (`sendTyped`, `submit: false`) into an EMPTY input box only; terminal → chat takes
+  only what `readClaudeDraftLine` can read back exactly (one row, the `❯` prompt, no `[Pasted text…]`
+  placeholder — MEASURED on 2.1.319: a wrap and an M-Enter newline draw the same, and the wrap drops
+  the space at the break), clears it with Ctrl-E Ctrl-U (Ctrl-U alone keeps what is right of a moved
+  cursor), and hands it over only once the box reads empty. Anything else stays put and is named
+  (a note under the chat box, or a toast). Only the chord and the header toggle carry; the composer's
+  own flips (`onShowTerminal`: a `/model` label, an interactive built-in) never do, a picker having
+  just opened there (`chat-draft-carry-wiring.test.ts`).
   Fix-round rules (same day): the composer is its OWN component (`nodes/ChatComposer.tsx`) so the
   thread and the composer restyle independently. A label click is an explicit "go to the
   terminal", so the flip FOCUSES the xterm whatever its entry state was
