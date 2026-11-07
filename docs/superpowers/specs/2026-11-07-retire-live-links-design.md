@@ -72,20 +72,26 @@ What the old desktop client does with each answer was read from its code
 |---|---|---|
 | `/v1/watch-links/:id/host-token` | `410 {"reason":"revoked"}` | `kind: 'gone'` → the host ends that link cleanly and stops minting for it. This is the one that matters: it is what a running old host calls on a timer. |
 | `/v1/watch-links` (create) | `410 {"error":"retired"}` | falls through to its `'network'` error copy. Not ideal wording, but no status maps to a "retired" message in old clients, and 402/403 would tell a paying Pro user "needs Pro", which is worse. |
-| `/v1/watch-links/:id/status` | `410 {"error":"retired"}` | any non-200 → `'unknown'`. |
+| `/v1/watch-links/:id/status` | `200 {"state":"revoked"}` | **Not a 410.** The only caller is the poll an old host runs every 60 s while a link is FULL (10 viewers, `link-host.ts` `armFullPoll`). A full link opens no idle listener, so it never calls `host-token`, and the relay never expires a bridged socket — with a non-200 (`'unknown'`) such a host would keep streaming until a viewer leaves. `revoked` ends it within 60 s through the same `gone()` path. |
 | `/v1/watch-links/:id/revoke`, `/v1/watch-links/revoke-all` | `204` | treated as success, so "Stop" / "Stop all" in an old app succeed instead of erroring. Stopping a link that can no longer run is truthfully done. |
-| `/v1/watch-links/:id/join` (viewer) | `410 {"error":"retired"}` | only an old, still-open viewer tab calls this; the new web page never does. |
+| `/v1/watch-links/:id/join` (viewer) | `410 {"reason":"revoked"}` | only an old, still-open viewer tab calls this; the new web page never does. The old viewer (`watch-viewer/controller.ts`) ends on a 410 and shows "ended" — but only if it can READ the answer, hence the CORS rule below. |
 
 - The stub keeps per-IP rate limiting at the same value the routes had (30/min) so it is not a
-  free amplifier, does no DB access, no license lookup, and no CORS (the only cross-origin caller
-  was the viewer page, which no longer calls it; an old open tab failing CORS is acceptable).
+  free amplifier, and does no DB access and no license lookup.
+- **CORS on `/join` only**, admitting exactly the viewer origin (`https://nodeterm.dev`, the
+  value `WATCH_LINK_VIEWER_ORIGIN` defaulted to — hard-coded in the stub, the env var goes).
+  Without it the old tab's preflight fails, the fetch reads as a network error, and the viewer
+  retries every 30 s forever showing "Can't reach the sharer… Retrying". No CORS on any other
+  route (their only caller is the desktop app, not a browser).
 - Keep the `/v1/watch-links/*` `logApi` registration in `app.ts` so the stub's traffic is visible
   in logs (that is how we see old clients dying off).
 - Remove: `resolveWatchLinkMaxTtl` and its env (`WATCH_LINK_MAX_TTL_SECONDS`,
   `WATCH_LINK_VIEWER_ORIGIN`) from `app.ts`, `.env.example`, README; the admin panel's links
   section and `/admin/watch-links/:id/revoke` route in `src/routes/admin.tsx` (+ the tests in
-  `test/admin.test.ts`); `test/watch-links.test.ts`; comments in `src/lib/google-entitlements.ts:16`
-  and `src/db/schema.ts:404` that cite live links (the `apple_entitlements` index itself stays —
+  `test/admin.test.ts`); `test/watch-links.test.ts`; `liveByLicenseId` in
+  `src/lib/google-entitlements.ts` if it becomes dead (builder checks); comments that cite live
+  links in `src/lib/google-entitlements.ts:16`, `src/db/schema.ts:404` and `:448`, and
+  `src/relay/limits.ts:32,45` (the `apple_entitlements` index itself stays —
   check whether anything else queries `originalTransactionId`; if nothing does, the index stays
   anyway: dropping it is a migration, out of scope).
 - **Keep** the `watchLinks` table definition in `schema.ts` (so drizzle does not generate a DROP on
@@ -169,8 +175,10 @@ and every edit site are in **Appendix A** (the removal map). Summary of the edit
 
 ### Data on users' machines
 
-- **Boot-time cleanup (my call):** on desktop boot, once, delete `<userData>/watch-links.json` and
-  any `watch-links.json.corrupt-*` sidelines if present. They hold sealed link secrets and password
+- **Boot-time cleanup (my call):** on desktop boot, once, delete `<userData>/watch-links.json`,
+  any `watch-links.json.corrupt-*` sidelines, and any crash-leftover atomic-write temps
+  (`watch-links.json.*.tmp` — they may hold the same sealed secrets) if present. Match those three
+  exact name shapes in userData's top level only; never a wider glob. They hold sealed link secrets and password
   scrypt hashes that nothing will read again. Fail silently (ENOENT is the normal case; any other
   error is logged once, never shown). Lives in `src/core` (e.g. `core/retired-data-cleanup.ts`) so
   the Server Edition runs it too against its data dir (where the file almost certainly never
