@@ -148,3 +148,28 @@ describe('carryDraftToChat', () => {
     expect(note()).toBeNull()
   })
 })
+
+describe('a pty method that throws instead of rejecting', () => {
+  const throwing = () => {
+    throw new Error('not a function')
+  }
+
+  it('leaves the chat draft in place on the way to the terminal', async () => {
+    useChatDraft.getState().setDraft(NODE, 'half a thought')
+    const p = pty({ put: true })
+    p.putChatDraft.mockImplementation(throwing)
+
+    await expect(carryDraftToTerminal(p, NODE, 'claude')).resolves.toBeUndefined()
+
+    expect(draft()).toBe('half a thought')
+  })
+
+  it('leaves the composer empty on the way to chat', async () => {
+    const p = pty({ put: true })
+    p.takeChatDraft.mockImplementation(throwing)
+
+    await expect(carryDraftToChat(p, NODE, 'claude')).resolves.toBeUndefined()
+
+    expect(draft()).toBe('')
+  })
+})

@@ -68,7 +68,11 @@ export async function carryDraftToTerminal(pty: DraftCarryPty, nodeId: string, a
   if (!carriesDraft(agentId)) return
   const draft = useChatDraft.getState().drafts[nodeId] ?? ''
   if (draft.trim() === '') return
-  const put = pty.putChatDraft(nodeId, agentId, draft).catch((): ChatDraftPutResult => ({ put: false, reason: 'failed' }))
+  // Called inside an async function so a synchronous throw is caught like a rejection: both callers
+  // `void` the carry, and an escaped throw would be an unhandled rejection.
+  const put = (async () => pty.putChatDraft(nodeId, agentId, draft))().catch(
+    (): ChatDraftPutResult => ({ put: false, reason: 'failed' })
+  )
   const settled = put.then((r) => {
     if (r.put) {
       // Only the draft that was typed: a draft changed meanwhile is the user's newer text.
@@ -86,7 +90,9 @@ export async function carryDraftToChat(pty: DraftCarryPty, nodeId: string, agent
   if (!carriesDraft(agentId)) return
   // Two drafts are never merged: a chat draft already waiting wins, and the terminal keeps its own.
   if ((useChatDraft.getState().drafts[nodeId] ?? '') !== '') return
-  const r = await pty.takeChatDraft(nodeId, agentId).catch((): ChatDraftTakeResult => ({ taken: false, reason: 'failed' }))
+  const r = await (async () => pty.takeChatDraft(nodeId, agentId))().catch(
+    (): ChatDraftTakeResult => ({ taken: false, reason: 'failed' })
+  )
   const store = useChatDraft.getState()
   if (r.taken) {
     // Typed into the composer while the take ran: the taken text goes first, as it was older.
