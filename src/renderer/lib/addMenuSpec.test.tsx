@@ -17,8 +17,11 @@ import {
   WORKTREE_NO_CWD_HINT,
   WORKTREE_SSH_HINT,
   type AddItem,
+  PULL_RELAY_HINT,
   type AddHandlers,
-  type AgentAddEntry
+  type AgentAddEntry,
+  type OpenPullSection,
+  openPullMenuRows
 } from './addMenuSpec'
 
 /** The SSH-gated row's label, spelled once so the assertions below read cleanly. */
@@ -32,6 +35,9 @@ const handlers = (overrides: Partial<AddHandlers> = {}): AddHandlers => ({
   web: noop,
   sticky: noop,
   files: noop,
+  pull: noop,
+  newPull: noop,
+  issues: noop,
   run: noop,
   simulator: noop,
   dino: noop,
@@ -54,6 +60,9 @@ const allKinds: AddItem['kind'][] = [
   'web',
   'sticky',
   'files',
+  'pull',
+  'new-pull',
+  'issues',
   'dino',
   'trigger',
   'open-file',
@@ -107,6 +116,64 @@ describe('Simulator row', () => {
   })
 })
 
+describe('Pull request row', () => {
+  it('opens the PR picker from the menu and the Dock, where the Dock row comes from the same list', () => {
+    const calls: unknown[] = []
+    const h = handlers({ pull: (at) => calls.push(at ?? 'dock') })
+    const ctx = { hasCwd: true, isSshProject: false }
+    const row = contentAddItemsToMenuItems(CONTENT_ADD_ITEMS, h, ctx, { x: 4, y: 2 })
+      .find((i) => 'label' in i && i.label === 'Pull request…')
+    const dock = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, h, ctx).find((r) => r.kind === 'pull')
+    expect(dock).toMatchObject({ label: 'Pull request…' })
+    if (row && 'onClick' in row) row.onClick()
+    dock?.onClick()
+    expect(calls).toEqual([{ x: 4, y: 2 }, 'dock'])
+  })
+  it('is disabled with its reason in a relay tab, menu and Dock alike: the approval lives on the host', () => {
+    const ctx = { hasCwd: true, isSshProject: false, isRelayTab: true }
+    const [row] = contentAddItemsToMenuItems([{ kind: 'pull' }], handlers(), ctx)
+    expect(row).toMatchObject({ label: 'Pull request…', disabled: true, hint: PULL_RELAY_HINT })
+    const [dock] = contentAddItemsToDockRows([{ kind: 'pull' }], handlers(), ctx)
+    expect(dock).toMatchObject({ kind: 'pull', disabled: true, hint: PULL_RELAY_HINT })
+  })
+})
+
+describe('Issues row', () => {
+  it('adds the issues node from the menu and the Dock, disabled in a relay tab', () => {
+    const calls: unknown[] = []
+    const h = handlers({ issues: (at) => calls.push(at ?? 'dock') })
+    const ctx = { hasCwd: true, isSshProject: false }
+    const row = contentAddItemsToMenuItems(CONTENT_ADD_ITEMS, h, ctx, { x: 4, y: 2 })
+      .find((i) => 'label' in i && i.label === 'Issues…')
+    const dock = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, h, ctx).find((r) => r.kind === 'issues')
+    if (row && 'onClick' in row) row.onClick()
+    dock?.onClick()
+    expect(calls).toEqual([{ x: 4, y: 2 }, 'dock'])
+    const [relay] = contentAddItemsToDockRows([{ kind: 'issues' }], handlers(), { ...ctx, isRelayTab: true })
+    expect(relay).toMatchObject({ kind: 'issues', disabled: true, hint: PULL_RELAY_HINT })
+  })
+})
+
+describe('New pull request row', () => {
+  it('opens the form from the menu and the Dock', () => {
+    const calls: unknown[] = []
+    const h = handlers({ newPull: (at) => calls.push(at ?? 'dock') })
+    const ctx = { hasCwd: true, isSshProject: false }
+    const row = contentAddItemsToMenuItems(CONTENT_ADD_ITEMS, h, ctx, { x: 4, y: 2 })
+      .find((i) => 'label' in i && i.label === 'New pull request…')
+    const dock = contentAddItemsToDockRows(CONTENT_ADD_ITEMS, h, ctx).find((r) => r.kind === 'new-pull')
+    if (row && 'onClick' in row) row.onClick()
+    dock?.onClick()
+    expect(calls).toEqual([{ x: 4, y: 2 }, 'dock'])
+  })
+  it('is disabled with its reason without a folder, and in a relay tab', () => {
+    const [noCwd] = contentAddItemsToMenuItems([{ kind: 'new-pull' }], handlers(), { hasCwd: false, isSshProject: false })
+    expect(noCwd).toMatchObject({ disabled: true, hint: NEW_FILE_NO_CWD_HINT })
+    const [relay] = contentAddItemsToDockRows([{ kind: 'new-pull' }], handlers(), { hasCwd: true, isSshProject: false, isRelayTab: true })
+    expect(relay).toMatchObject({ kind: 'new-pull', disabled: true, hint: PULL_RELAY_HINT })
+  })
+})
+
 describe('CONTENT_ADD_ITEMS', () => {
   it('lists every content kind in the canonical order', () => {
     expect(CONTENT_ADD_ITEMS.map((i) => i.kind)).toEqual(allKinds)
@@ -131,6 +198,9 @@ describe('contentAddItemsToMenuItems', () => {
       'New web view…',
       'New sticky note',
       'New file manager',
+      'Pull request…',
+      'New pull request…',
+      'Issues…',
       'New dino game',
       'New trigger…',
       'Open file…',
@@ -237,6 +307,9 @@ describe('contentAddItemsToDockRows', () => {
       'web',
       'sticky',
       'files',
+      'pull',
+      'new-pull',
+      'issues',
       'dino',
       'trigger',
       'open-file',
@@ -367,6 +440,9 @@ describe('buildGroupedAddMenu', () => {
       'New web view…',
       'New sticky note',
       'New file manager',
+      'Pull request…',
+      'New pull request…',
+      'Issues…',
       'New dino game'
     ])
     expect(children(ADD_GROUP_LABEL.files)).toEqual(['Open file…', 'New file…'])
@@ -497,6 +573,9 @@ describe('buildGroupedAddMenu', () => {
       web: () => calls.push('web'),
       sticky: () => calls.push('sticky'),
       files: () => calls.push('files'),
+      pull: () => calls.push('pull'),
+      newPull: () => calls.push('newPull'),
+      issues: () => calls.push('issues'),
       dino: () => calls.push('dino'),
       whiteboard: () => calls.push('whiteboard'),
       trigger: () => calls.push('trigger'),
@@ -516,8 +595,11 @@ describe('buildGroupedAddMenu', () => {
       'browser',
       'dino',
       'files',
+      'issues',
       'newFile',
+      'newPull',
       'openFile',
+      'pull',
       'remote',
       'scopedCheckout',
       'spawnTeam',
@@ -527,5 +609,77 @@ describe('buildGroupedAddMenu', () => {
       'web',
       'whiteboard'
     ])
+  })
+})
+
+describe('open pull requests first', () => {
+  const ctx = { hasCwd: true, isSshProject: false }
+  const user = { id: 7, login: 'ann', avatarUrl: '' }
+  const pulls: OpenPullSection = {
+    branch: 'feat/x',
+    rows: [
+      { number: 12, title: 'Fix login', headRefName: 'feat/login', draft: false, author: user },
+      { number: 9, headRefName: 'wip', draft: true, author: null }
+    ]
+  }
+  const labels = (items: MenuItem[]): (string | null)[] =>
+    items.map((i) => (i.type === 'separator' ? '---' : 'label' in i ? i.label : null))
+
+  it('puts the PRs, then Pull request…, New pull request from <branch> and Issues… above everything', () => {
+    const items = buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), { ...ctx, pulls }, [])
+    expect(labels(items).slice(0, 7)).toEqual([
+      '#12 Fix login · feat/login',
+      '#9 · wip (draft)',
+      'Pull request…',
+      'New pull request from feat/x',
+      'Issues…',
+      '---',
+      'New terminal'
+    ])
+    const view = items.find((i) => i.type === 'submenu' && i.label === ADD_GROUP_LABEL.view)
+    const viewLabels = view && view.type === 'submenu' ? labels(view.children) : []
+    expect(viewLabels).not.toContain('Issues…')
+    expect(viewLabels).not.toContain('Pull request…')
+  })
+
+  it('one click opens that PR at the menu position, from the menu and the Dock rows alike', () => {
+    const calls: unknown[] = []
+    const h = handlers({ openPull: (n, at) => calls.push([n, at ?? 'dock']) })
+    const [row] = buildGroupedAddMenu(CONTENT_ADD_ITEMS, h, { ...ctx, pulls }, [], { x: 1, y: 2 })
+    if ('onClick' in row) row.onClick()
+    openPullMenuRows(pulls, h)[1].onClick()
+    expect(calls).toEqual([[12, { x: 1, y: 2 }], [9, 'dock']])
+  })
+
+  it('caps the list at 8 PRs, then a "More pull requests…" row that opens the picker', () => {
+    const many: OpenPullSection = {
+      rows: Array.from({ length: 12 }, (_, i) => ({ number: 100 - i, headRefName: `b${i}`, draft: false, author: null }))
+    }
+    const picked: unknown[] = []
+    const rows = openPullMenuRows(many, handlers({ pull: (at) => picked.push(at ?? 'dock') }), { x: 3, y: 4 })
+    expect(rows.map((row) => row.label)).toEqual([
+      ...many.rows.slice(0, 8).map((row) => `#${row.number} · ${row.headRefName}`), 'More pull requests…'
+    ])
+    rows[8].onClick()
+    expect(picked).toEqual([{ x: 3, y: 4 }])
+    expect(openPullMenuRows(pulls, handlers()).map((row) => row.label)).not.toContain('More pull requests…')
+  })
+
+  it('an "allow this repository" reason is a clickable row that opens the picker (its Allow step)', () => {
+    const picked: unknown[] = []
+    const [row] = openPullMenuRows({ reason: 'Allow o/r.', allow: true }, handlers({ pull: (at) => picked.push(at ?? 'dock') }), { x: 5, y: 6 })
+    expect(row.disabled).toBeFalsy()
+    row.onClick()
+    expect(picked).toEqual([{ x: 5, y: 6 }])
+  })
+
+  it('shows the reason as one disabled row, never an empty list', () => {
+    const items = buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), { ...ctx, pulls: { reason: 'Sign in first.' } }, [])
+    expect(items[0]).toMatchObject({ label: 'Sign in first.', disabled: true })
+    expect(labels(items).slice(1, 4)).toEqual(['Pull request…', 'New pull request…', 'Issues…'])
+  })
+
+  it('keeps the old layout when no section is given', () => {
+    expect(labels(buildGroupedAddMenu(CONTENT_ADD_ITEMS, handlers(), ctx, []))[0]).toBe('New terminal')
   })
 })

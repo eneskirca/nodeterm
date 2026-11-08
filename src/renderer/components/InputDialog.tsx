@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useDialogStack } from './dialog-stack'
 
+/** A one-click answer listed above the field. */
+export interface PromptChoice {
+  label: string
+  value: string
+}
+
 interface InputDialogProps {
   message: string
   initialValue?: string
@@ -10,6 +16,8 @@ interface InputDialogProps {
   cancelLabel?: string
   /** Longest value the field accepts (the HTML attribute: typing and pasting stop there). */
   maxLength?: number
+  /** One-click answers listed above the field; a click submits its value. */
+  choices?: PromptChoice[]
   onSubmit: (value: string) => void
   onCancel: () => void
 }
@@ -26,6 +34,7 @@ export function InputDialog({
   confirmLabel = 'OK',
   cancelLabel = 'Cancel',
   maxLength,
+  choices,
   onSubmit,
   onCancel
 }: InputDialogProps) {
@@ -45,6 +54,15 @@ export function InputDialog({
     <div className="confirm-overlay" onClick={onCancel}>
       <div className="confirm" onClick={(e) => e.stopPropagation()}>
         <p className="confirm__msg">{message}</p>
+        {choices && choices.length > 0 && (
+          <div className="confirm__choices">
+            {choices.map((c) => (
+              <button key={c.value} className="confirm__btn" onClick={() => onSubmit(c.value)}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
         <input
           ref={inputRef}
           className="confirm__input"

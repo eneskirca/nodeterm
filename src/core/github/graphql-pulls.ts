@@ -19,6 +19,7 @@ import {
   type GitHubPullCheck,
   type GitHubPullChecksResult,
   type GitHubRollupState,
+  type PullReviewDecision,
   type PullStatusFacts
 } from '../../shared/github-pull-status'
 
@@ -26,14 +27,55 @@ export const OPEN_PULLS_PER_READ = 50
 export const RECENT_PULLS_PER_READ = 30
 const MAX_CLOSING_ISSUES = 10
 const MAX_CHECKS = 100
+const MAX_REVIEW_REQUESTS = 10
+
+const REVIEW_DECISIONS: Record<string, PullReviewDecision> = {
+  APPROVED: 'approved', CHANGES_REQUESTED: 'changes-requested', REVIEW_REQUIRED: 'required'
+}
+
+/** The review queue facts, decoded LENIENTLY: they only label the picker, so a value this build does
+ *  not understand claims nothing instead of failing the read. Logins compare case-insensitively. */
+function reviewFacts(node: Record<string, unknown>, viewer: string | undefined): Pick<PullStatusFacts, 'author' | 'review' | 'reviewRequested'> {
+  const author = object(node.author)?.login
+  const review = typeof node.reviewDecision === 'string' ? REVIEW_DECISIONS[node.reviewDecision] : undefined
+  const requests = object(node.reviewRequests)?.nodes
+  const asked = viewer !== undefined && Array.isArray(requests) && requests.some((request) => {
+    const login = object(object(request)?.requestedReviewer)?.login
+    return typeof login === 'string' && login.toLowerCase() === viewer
+  })
+  return {
+    ...(typeof author === 'string' && author ? { author } : {}),
+    ...(review ? { review } : {}),
+    ...(asked ? { reviewRequested: true as const } : {})
+  }
+}
+
+/** The add menu's open PR list facts, decoded LENIENTLY like the review facts: they only label a
+ *  row. `authorUser` needs a `User` with a database id (a bot or a deleted account has none). */
+function listFacts(node: Record<string, unknown>): Pick<PullStatusFacts, 'title' | 'authorUser'> {
+  const login = object(node.author)?.login
+  const user = object(node.authorUser)
+  const id = user?.databaseId
+  const avatarUrl = user?.avatarUrl
+  return {
+    ...(typeof node.title === 'string' && node.title ? { title: node.title.slice(0, 256) } : {}),
+    ...(typeof login === 'string' && login && positive(id) && typeof avatarUrl === 'string'
+      ? { authorUser: { id, login, avatarUrl } }
+      : {})
+  }
+}
 
 export const PULL_STATUS_QUERY = `query($owner:String!,$name:String!){
   rateLimit{ cost remaining limit resetAt }
+  viewer{ login }
   repository(owner:$owner,name:$name){
     open: pullRequests(states:OPEN, first:${OPEN_PULLS_PER_READ}, orderBy:{field:UPDATED_AT,direction:DESC}){
       totalCount
       nodes{
         number headRefName headRefOid isCrossRepository isDraft mergeable mergeStateStatus
+        author{ login } reviewDecision
+        title authorUser: author{ avatarUrl ... on User{ databaseId } }
+        reviewRequests(first:${MAX_REVIEW_REQUESTS}){ nodes{ requestedReviewer{ __typename ... on User{ login } } } }
         closingIssuesReferences(first:${MAX_CLOSING_ISSUES}){ nodes{ number repository{ nameWithOwner } } }
         commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state } } } }
       }
@@ -48,14 +90,25 @@ export const PULL_CHECKS_QUERY = `query($owner:String!,$name:String!,$number:Int
   rateLimit{ cost remaining limit resetAt }
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      headRefOid
+      headRefOid reviewDecision
       commits(last:1){ nodes{ commit{ oid statusCheckRollup{ state
         contexts(first:${MAX_CHECKS}){ totalCount nodes{
           __typename
-          ... on CheckRun{ name status conclusion detailsUrl }
+          ... on CheckRun{ name status conclusion detailsUrl startedAt completedAt }
           ... on StatusContext{ context state targetUrl }
         } }
       } } } }
+    }
+  }
+}`
+
+/** Which review threads are resolved, for the pull node's "Send to agent" checklist. REST line
+ *  comments do not say; a thread is named by its first comment's REST id (`databaseId`).
+ *  ponytail: the first 100 threads only; a thread past them is offered as unresolved. */
+export const PULL_RESOLVED_THREADS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      reviewThreads(first:100){ nodes{ isResolved comments(first:1){ nodes{ databaseId } } } }
     }
   }
 }`
@@ -179,6 +232,8 @@ export function parsePullStatusResponse(body: unknown, repository: string): Pull
   const openConnection = object(repositoryValue.open)
   if (!openConnection || !nonNegative(openConnection.totalCount)) throw new GraphQLShapeError()
   const repositoryFolded = repository.toLocaleLowerCase('en-US')
+  const viewerLogin = object(object(object(body)?.data)?.viewer)?.login
+  const viewer = typeof viewerLogin === 'string' ? viewerLogin.toLowerCase() : undefined
   const open = list(openConnection, OPEN_PULLS_PER_READ).map((entry): PullStatusFacts => {
     const node = object(entry)
     if (!node || !positive(node.number) || !refName(node.headRefName) || !oid(node.headRefOid) ||
@@ -238,7 +293,9 @@ export function parsePullStatusResponse(body: unknown, repository: string): Pull
       mergeStateStatus,
       rollup,
       rollupOid,
-      closes: [...new Set(closes)]
+      closes: [...new Set(closes)],
+      ...reviewFacts(node, viewer),
+      ...listFacts(node)
     }
   })
   const recent = list(repositoryValue.recent, RECENT_PULLS_PER_READ).map((entry) => {
@@ -276,6 +333,15 @@ function checkName(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : null
 }
 
+/** A check run's start and finish time, for its duration. Lenient: a bad time is left out, never a
+ *  failed read. */
+function runTimes(node: Record<string, unknown>): { startedAt?: string; completedAt?: string } {
+  const time = (value: unknown) => typeof value === 'string' && value.length <= 64 && Number.isFinite(Date.parse(value)) ? value : undefined
+  const startedAt = time(node.startedAt)
+  const completedAt = time(node.completedAt)
+  return { ...(startedAt ? { startedAt } : {}), ...(completedAt ? { completedAt } : {}) }
+}
+
 /** Decodes the per-PR checks read. Throws `GraphQLShapeError` for a malformed body or an error it
  *  cannot classify. */
 export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
@@ -288,7 +354,10 @@ export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
   const commit = object(object(list(pull.commits, 1)[0])?.commit)
   if (!commit || !oid(commit.oid)) throw new GraphQLShapeError()
   if (commit.oid !== pull.headRefOid) return { status: 'moved' }
-  if (commit.statusCheckRollup === null) return { status: 'no-checks' }
+  // Lenient, as in reviewFacts: it only words the node's merge sentence.
+  const decision = typeof pull.reviewDecision === 'string' ? REVIEW_DECISIONS[pull.reviewDecision] : undefined
+  const review = decision ? { review: decision } : {}
+  if (commit.statusCheckRollup === null) return { status: 'no-checks', ...review }
   const rollup = object(commit.statusCheckRollup)
   const contexts = object(rollup?.contexts)
   if (!contexts || !nonNegative(contexts.totalCount)) throw new GraphQLShapeError()
@@ -300,7 +369,7 @@ export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
       if (!name || typeof node.status !== 'string' ||
           !(node.conclusion === null || typeof node.conclusion === 'string')) throw new GraphQLShapeError()
       const url = httpsUrl(node.detailsUrl)
-      return [{ name, state: checkRunState(node.status, node.conclusion), ...(url ? { url } : {}) }]
+      return [{ name, state: checkRunState(node.status, node.conclusion), ...(url ? { url } : {}), ...runTimes(node) }]
     }
     if (node.__typename === 'StatusContext') {
       const name = checkName(node.context)
@@ -314,6 +383,23 @@ export function parsePullChecksResponse(body: unknown): GitHubPullChecksResult {
     status: 'ok',
     headRefOid: pull.headRefOid,
     checks: sortChecks(checks),
-    truncated: contexts.totalCount > checks.length
+    truncated: contexts.totalCount > checks.length,
+    ...review
   }
+}
+
+/** The first comment id of every resolved thread. Throws `GraphQLShapeError` for a malformed body or
+ *  any error: an unknown answer must never read as "nothing is resolved". */
+export function parsePullResolvedThreads(body: unknown): number[] {
+  if (graphQLErrors(body).length) throw new GraphQLShapeError()
+  const pull = object(object(object(object(body)?.data)?.repository)?.pullRequest)
+  if (!pull) throw new GraphQLShapeError()
+  return list(pull.reviewThreads, 100).flatMap((entry) => {
+    const thread = object(entry)
+    if (!thread || typeof thread.isResolved !== 'boolean') throw new GraphQLShapeError()
+    const first = object(list(thread.comments, 1)[0])
+    const id = first?.databaseId
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new GraphQLShapeError()
+    return thread.isResolved ? [id] : []
+  })
 }

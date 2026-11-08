@@ -4,7 +4,9 @@ import { pullStatusFrom } from '../../shared/github-pull-status'
 import {
   GraphQLShapeError,
   PULL_STATUS_QUERY,
+  PULL_RESOLVED_THREADS_QUERY,
   parsePullChecksResponse,
+  parsePullResolvedThreads,
   parsePullStatusResponse
 } from './graphql-pulls'
 
@@ -164,12 +166,40 @@ describe('parsePullChecksResponse', () => {
     })
   })
 
+  it('carries a check run\'s start and finish time, for its duration; a bad or missing time is left out', () => {
+    const result = parsePullChecksResponse(checks(HEAD, { state: 'PENDING', contexts: { totalCount: 3, nodes: [
+      { __typename: 'CheckRun', name: 'done', status: 'COMPLETED', conclusion: 'SUCCESS',
+        startedAt: '2026-11-01T10:00:00Z', completedAt: '2026-11-01T10:02:05Z' },
+      { __typename: 'CheckRun', name: 'running', status: 'IN_PROGRESS', conclusion: null,
+        startedAt: '2026-11-01T10:00:00Z', completedAt: null },
+      { __typename: 'CheckRun', name: 'odd', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: 'yesterday', completedAt: 7 }
+    ] } }))
+    expect(result).toEqual({
+      status: 'ok', headRefOid: HEAD, truncated: false, checks: [
+        { name: 'running', state: 'pending', startedAt: '2026-11-01T10:00:00Z' },
+        { name: 'done', state: 'passed', startedAt: '2026-11-01T10:00:00Z', completedAt: '2026-11-01T10:02:05Z' },
+        { name: 'odd', state: 'passed' }
+      ]
+    })
+  })
+
   it('says "no checks" for a null rollup, "moved" for another commit, "hidden" when refused', () => {
     expect(parsePullChecksResponse(checks(HEAD, null))).toEqual({ status: 'no-checks' })
     expect(parsePullChecksResponse(checks('b'.repeat(40), { state: 'SUCCESS', contexts: { totalCount: 0, nodes: [] } })))
       .toEqual({ status: 'moved' })
     expect(parsePullChecksResponse({ ...checks(HEAD, null), errors: [{ type: 'FORBIDDEN', path: ['repository'] }] }))
       .toEqual({ status: 'hidden' })
+  })
+
+  it('carries the review decision, for the node\'s merge sentence; an unknown value claims nothing', () => {
+    const withReview = (reviewDecision: unknown, rollup: unknown) => {
+      const body = checks(HEAD, rollup)
+      return { data: { repository: { pullRequest: { ...body.data.repository.pullRequest, reviewDecision } } } }
+    }
+    expect(parsePullChecksResponse(withReview('REVIEW_REQUIRED', null))).toEqual({ status: 'no-checks', review: 'required' })
+    expect(parsePullChecksResponse(withReview('CHANGES_REQUESTED', { state: 'SUCCESS', contexts: { totalCount: 0, nodes: [] } })))
+      .toEqual({ status: 'ok', headRefOid: HEAD, truncated: false, checks: [], review: 'changes-requested' })
+    expect(parsePullChecksResponse(withReview('SOMETHING_NEW', null))).toEqual({ status: 'no-checks' })
   })
 })
 
@@ -230,5 +260,113 @@ describe('GitHubIssuesClient GraphQL', () => {
   it('reports a malformed GraphQL body as malformed', async () => {
     const client = new GitHubIssuesClient({ token: 'secret', fetch: async () => json({ data: { repository: null } }) })
     await expect(client.pullRequestStatuses(REPO)).rejects.toMatchObject({ code: 'malformed-response' })
+  })
+})
+
+describe('review queue facts', () => {
+  const withViewer = (nodes: unknown[], login = 'me') => {
+    const value = body(nodes)
+    return { ...value, data: { ...value.data, viewer: { login } } }
+  }
+  const requests = (...logins: string[]) => ({
+    nodes: logins.map((login) => ({ requestedReviewer: { __typename: 'User', login } }))
+  })
+
+  it('reads the author, the review decision and whether the viewer is asked to review', () => {
+    const read = parsePullStatusResponse(withViewer([
+      node(1, { author: { login: 'bot' }, reviewDecision: 'REVIEW_REQUIRED', reviewRequests: requests('someone', 'Me') }),
+      node(2, { author: { login: 'me' }, reviewDecision: 'APPROVED', reviewRequests: requests('someone') })
+    ]), REPO)
+    expect(read.open[0]).toMatchObject({ author: 'bot', review: 'required', reviewRequested: true })
+    expect(read.open[1]).toMatchObject({ author: 'me', review: 'approved' })
+    expect(read.open[1].reviewRequested).toBeUndefined()
+  })
+
+  it('claims nothing for a deleted author, a team request or an unknown decision', () => {
+    const read = parsePullStatusResponse(withViewer([node(1, {
+      author: null,
+      reviewDecision: 'SOMETHING_NEW',
+      reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'Team', slug: 'me' } }] }
+    })]), REPO)
+    expect(read.open[0].author).toBeUndefined()
+    expect(read.open[0].review).toBeUndefined()
+    expect(read.open[0].reviewRequested).toBeUndefined()
+  })
+
+  it('asks GitHub for the viewer, the author, the decision and the review requests', () => {
+    expect(PULL_STATUS_QUERY).toMatch(/viewer\{\s*login\s*\}/)
+    expect(PULL_STATUS_QUERY).toContain('author{ login }')
+    expect(PULL_STATUS_QUERY).toContain('reviewDecision')
+    expect(PULL_STATUS_QUERY).toContain('reviewRequests(first:')
+  })
+
+  it('carries the review facts onto the board status', () => {
+    const [facts] = parsePullStatusResponse(withViewer([
+      node(1, { author: { login: 'bot' }, reviewDecision: 'CHANGES_REQUESTED', reviewRequests: requests('me') })
+    ]), REPO).open
+    expect(pullStatusFrom(facts, { ci: true, merge: true })).toMatchObject({
+      author: 'bot', review: 'changes-requested', reviewRequested: true
+    })
+  })
+})
+
+describe('open PR list facts (add menu and Dock)', () => {
+  it('asks for the title and the author avatar in the same list query', () => {
+    expect(PULL_STATUS_QUERY).toContain('title authorUser: author{ avatarUrl ... on User{ databaseId } }')
+  })
+
+  it('reads the title and the author as a user, and carries both onto the board status', () => {
+    const [facts] = parsePullStatusResponse(body([node(1, {
+      title: 'Fix login', author: { login: 'bot' },
+      authorUser: { avatarUrl: 'https://avatars.githubusercontent.com/u/7?v=4', databaseId: 7 }
+    })]), REPO).open
+    expect(facts).toMatchObject({
+      title: 'Fix login', author: 'bot',
+      authorUser: { id: 7, login: 'bot', avatarUrl: 'https://avatars.githubusercontent.com/u/7?v=4' }
+    })
+    expect(pullStatusFrom(facts, { ci: true, merge: true })).toMatchObject({
+      title: 'Fix login', authorUser: { id: 7, login: 'bot' }
+    })
+  })
+
+  it('claims nothing for a missing title, a bot author with no database id, or a deleted author', () => {
+    const read = parsePullStatusResponse(body([
+      node(1, { title: 42, author: { login: 'app' }, authorUser: { avatarUrl: 'https://x' } }),
+      node(2, { author: null, authorUser: null })
+    ]), REPO)
+    expect(read.open[0].title).toBeUndefined()
+    expect(read.open[0].authorUser).toBeUndefined()
+    expect(read.open[1].authorUser).toBeUndefined()
+  })
+})
+
+describe('parsePullResolvedThreads', () => {
+  const threads = (nodes: unknown[]) => ({ data: { repository: { pullRequest: { reviewThreads: { nodes } } } } })
+  const thread = (isResolved: unknown, databaseId: unknown) => ({ isResolved, comments: { nodes: [{ databaseId }] } })
+
+  it('answers the first comment id of every resolved thread', () => {
+    // The shape builtbyd3v/nodeterm-pr-sandbox#5 returned on 2026-11-02, one thread marked resolved.
+    expect(parsePullResolvedThreads(threads([thread(false, 4447909746), thread(true, 4447927864)]))).toEqual([4447927864])
+  })
+
+  it('rejects a malformed body or an error, never answering "nothing is resolved"', () => {
+    expect(() => parsePullResolvedThreads(threads([thread('yes', 1)]))).toThrow(GraphQLShapeError)
+    expect(() => parsePullResolvedThreads(threads([thread(true, 'x')]))).toThrow(GraphQLShapeError)
+    expect(() => parsePullResolvedThreads({ errors: [{ type: 'FORBIDDEN' }] })).toThrow(GraphQLShapeError)
+    expect(() => parsePullResolvedThreads({ data: {} })).toThrow(GraphQLShapeError)
+  })
+
+  it('is read with one query by the client', async () => {
+    const calls: string[] = []
+    const client = new GitHubIssuesClient({
+      token: 'secret',
+      fetch: async (_url, init) => {
+        calls.push(String(init?.body))
+        return new Response(JSON.stringify(threads([thread(true, 9)])), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+    })
+    expect(await client.pullResolvedThreads(REPO, 5)).toEqual([9])
+    expect(JSON.parse(calls[0])).toEqual({ query: PULL_RESOLVED_THREADS_QUERY, variables: { owner: 'eneskirca', name: 'nodeterm', number: 5 } })
+    await expect(client.pullResolvedThreads(REPO, 0)).rejects.toThrow(GitHubClientError)
   })
 })

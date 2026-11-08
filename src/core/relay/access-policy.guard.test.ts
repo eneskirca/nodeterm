@@ -1,10 +1,10 @@
 // Forces a decision whenever the relay API gains a channel: every IPC.* a relay tab can send must
-// be VIEW, COMMENT or reviewed-EDITOR_ONLY. Also pins that the allowlists name real channels.
+// be VIEW, COMMENT, reviewed-EDITOR_ONLY or OWNER_ONLY. Also pins that the allowlists name real channels.
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
 import { IPC } from '../../shared/ipc'
-import { VIEW, COMMENT, EDITOR_ONLY, VIEW_EVENTS } from './access-policy'
+import { VIEW, COMMENT, EDITOR_ONLY, OWNER_ONLY, VIEW_EVENTS } from './access-policy'
 import { HOSTED_VIEW_METHODS, HOSTED_COMMENT_METHODS } from '../../shared/hosted-access'
 import type { HostedRole } from '../../shared/types'
 import type { TeamRole } from './team-store'
@@ -23,7 +23,7 @@ function body(src: string, fn: string): string {
 describe('access-policy guard', () => {
   const ipcValues = new Set((Object.values(IPC) as unknown[]).filter((v): v is string => typeof v === 'string'))
   it('every allowlisted method is a real IPC channel', () => {
-    for (const m of [...Object.keys(VIEW), ...Object.keys(COMMENT), ...EDITOR_ONLY]) expect(ipcValues.has(m), m).toBe(true)
+    for (const m of [...Object.keys(VIEW), ...Object.keys(COMMENT), ...EDITOR_ONLY, ...OWNER_ONLY]) expect(ipcValues.has(m), m).toBe(true)
   })
   it('every VIEW / COMMENT method carries a declared argument check', () => {
     for (const [m, check] of [...Object.entries(VIEW), ...Object.entries(COMMENT)]) expect(typeof check, m).toBe('function')
@@ -31,6 +31,7 @@ describe('access-policy guard', () => {
   it('no channel is decided twice', () => {
     const view = new Set(Object.keys(VIEW))
     for (const m of Object.keys(COMMENT)) expect(view.has(m), `${m} is in VIEW and COMMENT`).toBe(false)
+    for (const m of OWNER_ONLY) expect(EDITOR_ONLY.has(m) || Object.hasOwn(VIEW, m) || Object.hasOwn(COMMENT, m), m).toBe(false)
     for (const m of EDITOR_ONLY) {
       expect(Object.hasOwn(VIEW, m) || Object.hasOwn(COMMENT, m), `${m} is allowlisted AND editor-only`).toBe(false)
     }
@@ -46,7 +47,7 @@ describe('access-policy guard', () => {
     const undecided = [...names]
       .map((n) => (IPC as Record<string, unknown>)[n])
       .filter((v): v is string => typeof v === 'string')
-      .filter((v) => !Object.hasOwn(VIEW, v) && !Object.hasOwn(COMMENT, v) && !EDITOR_ONLY.has(v))
+      .filter((v) => !Object.hasOwn(VIEW, v) && !Object.hasOwn(COMMENT, v) && !EDITOR_ONLY.has(v) && !OWNER_ONLY.has(v))
     expect(undecided, `classify these in access-policy.ts: ${undecided.join(', ')}`).toEqual([])
   })
   it('the renderer\'s mirror names exactly the host\'s viewer and commenter channels', () => {

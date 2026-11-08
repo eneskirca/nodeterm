@@ -151,8 +151,9 @@ describe('buildManagedScript', () => {
         const script = buildManagedScript(agent)
         expect(script, `${agent} script arms the perm wait`).not.toContain('"$NODETERM_PERM_WAIT_SECS"')
         expect(script, `${agent} script holds`).not.toContain('nt_wait')
-        expect(script, `${agent} script polls the answer file`).not.toContain('.answer')
-        expect(script, `${agent} script can print a decision`).not.toContain('hookSpecificOutput')
+        // Codex carries the PR write gate's own answer poll and PreToolUse deny (managed-script.pr-gate.test.ts).
+        expect(script, `${agent} script polls the answer file`).not.toContain(agent === 'codex' ? '$nt_pending.answer' : '.answer')
+        expect(script, `${agent} script can print a decision`).not.toContain(agent === 'codex' ? '"PermissionRequest"' : 'hookSpecificOutput')
         expect(script).toContain(`/hook/${agent}`)
       }
       // And claude keeps the whole branch.
@@ -384,7 +385,7 @@ describe('buildManagedScript', () => {
     it('perm-wait branch advertises the ask in the FOREGROUND (before the poll), non-perm backgrounds it', () => {
       // Foreground in perm-wait (pendingId reaches primary-or-fallback before the answer poll begins),
       // backgrounded otherwise so a live session's hot path never blocks.
-      expect(s).toContain('if [ -n "$nt_pending" ]; then\n  nt_send_request\nelse\n')
+      expect(s).toContain('if [ -n "$nt_pending" ]; then\n  nt_send_request\nelif [ -n "$nt_gate" ]; then\n')
       // Non-perm-wait backgrounds the POST and self-deletes the payload temp file after it (and its
       // one fallback retry) return, so the file never outlives its reader.
       expect(s).toContain('  { nt_send_request; rm -f "$nt_payload_file" 2>/dev/null || :; } &\nfi')

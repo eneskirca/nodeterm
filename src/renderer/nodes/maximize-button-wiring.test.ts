@@ -17,11 +17,15 @@ const HEADER_NODES = [
   'WebNode.tsx',
   'VideoNode.tsx',
   'FilesNode.tsx',
-  'WhiteboardNode.tsx'
+  'WhiteboardNode.tsx',
+  'pull/PullNodeShell.tsx'
 ]
 
 describe('maximize header button', () => {
   it.each(HEADER_NODES)('%s renders MaximizeButton bound to premaxRect', (file) => {
     expect(read(file)).toMatch(/<MaximizeButton id=\{id\} maximized=\{!!data\.premaxRect\} \/>/)
+  })
+  it.each(['PullNode.tsx', 'IssuesNode.tsx'])('%s gets it from the shared PullNodeShell', (file) => {
+    expect(read(file)).toMatch(/<PullNodeShell\b/)
   })
 })

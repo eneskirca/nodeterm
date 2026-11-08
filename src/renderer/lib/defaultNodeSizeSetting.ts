@@ -25,6 +25,8 @@ export const NODE_SIZE_CHOICE_LABELS: Record<NodeSizeChoice, string> = {
   terminal: 'Terminal & agent',
   sticky: 'Sticky note',
   whiteboard: 'Whiteboard',
+  pull: 'Pull request',
+  issues: 'Issues',
   browser: 'Browser',
   web: 'Web view',
   editor: 'Editor',

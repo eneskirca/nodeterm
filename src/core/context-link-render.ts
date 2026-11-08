@@ -10,6 +10,9 @@
 // remote side becomes a thin sh+curl client and the desktop does the reading and the parsing.
 import type { LinkDoc, LinkDocEntry } from './context-link-core'
 import { linesFromCursor } from './cursor-chat'
+import { UNTRUSTED_TEXT_NOTE } from './github/control-read'
+import type { GitHubPullDetailResult } from '../shared/github-pull-detail'
+import type { GitHubPullChecksResult } from '../shared/github-pull-status'
 
 export type ContextLinkVerb = 'list' | 'summary' | 'transcript' | 'terminal'
 
@@ -490,16 +493,48 @@ export function pickLinkNode(doc: LinkDoc, want?: string): { node: LinkDocEntry 
   return {
     message: [
       'Several linked nodes — re-run with --node <id|title>:',
-      ...links.map((n) => `- ${n.title}${n.note != null ? ' (note)' : ''} (id: ${n.id})`)
+      ...links.map((n) => `- ${n.title}${linkMark(n)} (id: ${n.id})`)
     ].join('\n')
   }
 }
+
+const linkMark = (n: LinkDocEntry): string => n.note != null ? ' (note)' : n.pull ? ' (pull request)' : ''
 
 export function renderList(doc: LinkDoc): string {
   if (!doc.links.length) return 'No linked nodes.'
   return [
     'Linked nodes:',
-    ...doc.links.map((n) => `- ${n.title}${n.note != null ? ' (note)' : ''} (id: ${n.id})`)
+    ...doc.links.map((n) => `- ${n.title}${linkMark(n)} (id: ${n.id})`)
+  ].join('\n')
+}
+
+/** A pull request node: its reference plus the latest Overview. The description is not shown: PR
+ *  text is written by other people, and the agent can read it with `gh pr view` when it needs it. */
+export function renderPull(node: LinkDocEntry, verb: ContextLinkVerb, read: PullRead | null): string {
+  if (verb === 'terminal') return `"${node.title}" is a pull request; it has no terminal.`
+  const ref = `${node.pull!.repository}#${node.pull!.pullNumber}`
+  const head = `=== ${node.title}: pull request ${ref} ===`
+  if (!read) return `${head}\nThis session cannot read pull requests.`
+  const { detail: r, checks } = read
+  if (r.status !== 'ok') return `${head}\nCould not read ${ref}: ${r.status} (${r.reason}).`
+  const d = r.detail
+  const counts = checks?.status === 'ok'
+    ? Object.entries(checks.checks.reduce<Record<string, string[]>>((acc, c) => {
+        (acc[c.state] ??= []).push(c.name)
+        return acc
+      }, {})).map(([state, names]) => `${names.length} ${state}${state === 'failed' ? ` (${names.join(', ')})` : ''}`).join(', ')
+    : checks?.status === 'no-checks' ? 'no checks' : 'unknown'
+  return [
+    head,
+    UNTRUSTED_TEXT_NOTE,
+    ...(r.stale ? [`(stale: the latest read failed, ${r.stale}; this is the last good Overview)`] : []),
+    `Title: ${d.title}`,
+    `State: ${d.lifecycle}`,
+    `Branches: ${d.head.ref} → ${d.base.ref}`,
+    `Merge state: ${d.merge ?? 'n/a'}`,
+    `Checks: ${counts}`,
+    `Changes: +${d.additions} -${d.deletions} in ${d.changedFiles} files`,
+    `URL: ${d.url}`
   ].join('\n')
 }
 
@@ -538,6 +573,13 @@ export interface ContextLinkFetch {
   terminal: (node: LinkDocEntry) => Promise<string>
   /** `opencode export <sessionId>` output, or null when it could not be produced. */
   opencodeExport: (node: LinkDocEntry) => Promise<string | null>
+  /** A pull request node's Overview, through the core's reads. Absent = this shell cannot read. */
+  pull?: (node: LinkDocEntry) => Promise<PullRead>
+}
+
+export interface PullRead {
+  detail: GitHubPullDetailResult
+  checks?: GitHubPullChecksResult
 }
 
 /**
@@ -557,6 +599,7 @@ export async function renderContextLink(
   const node = picked.node
 
   if (node.note != null) return renderNote(node, verb)
+  if (node.pull) return renderPull(node, verb, fetch.pull && verb !== 'terminal' ? await fetch.pull(node) : null)
 
   if (verb === 'terminal') return renderTerminal(node, await fetch.terminal(node))
 

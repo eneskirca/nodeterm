@@ -255,6 +255,14 @@ export const IPC = {
   /** hud → main: dismiss one HUD row by hand (a stuck session). Arg: `nodeId: string`. */
   hudDismiss: 'hud:dismiss',
   agentControl: 'agent:control',
+  /** main → renderer: a verified agent's `gh pr create` made this PR (@shared/pr-created-hook). */
+  agentPullCreated: 'agent:pr-created',
+  /** main → renderer: is this verified agent's PR write to a PR of its project (@shared/pr-write-hook)?
+   *  The renderer answers on `agentPrWriteGateResult`; main fails open after PR_GATE_ASK_MS. */
+  agentPrWriteGate: 'agent:pr-write-gate',
+  agentPrWriteGateResult: 'agent:pr-write-gate-result',
+  /** main → renderer: a verified agent's PR write ran; its pull nodes refresh. */
+  agentPrWritten: 'agent:pr-written',
   agentControlResult: 'agent:control-result',
   agentMessageDeliver: 'agent:message-deliver',
   /** Renderer → main: deliver ONE mentioned session's copy of a board comment the local user just
@@ -575,8 +583,65 @@ export const IPC = {
   githubIssuesPullStatus: 'githubIssues:pull-status',
   githubIssuesChasePulls: 'githubIssues:chase-pulls',
   githubIssuesPullChecks: 'githubIssues:pull-checks',
+  githubIssuesPullDetail: 'githubIssues:pull-detail',
+  githubIssuesPullConversation: 'githubIssues:pull-conversation',
+  githubIssuesPullTimeline: 'githubIssues:pull-timeline',
+  githubIssuesPullFiles: 'githubIssues:pull-files',
+  githubIssuesPullFileContents: 'githubIssues:pull-file-contents',
+  // The Commits tab's reads (07).
+  githubIssuesPullCommits: 'githubIssues:pull-commits',
+  githubIssuesPullCommitFiles: 'githubIssues:pull-commit-files',
+  githubIssuesPullCommitFileContents: 'githubIssues:pull-commit-file-contents',
+  // "Since my last review" (F-10): reads, classified like the pull reads above.
+  githubIssuesPullSinceReview: 'githubIssues:pull-since-review',
+  githubIssuesPullSinceReviewFileContents: 'githubIssues:pull-since-review-file-contents',
+  // Pull node WRITES: a user click only. Owner-only for relay peers; no canvas-control verb calls them.
+  githubIssuesPullComment: 'githubIssues:pull-comment',
+  githubIssuesPullReview: 'githubIssues:pull-review',
+  githubIssuesPullMerge: 'githubIssues:pull-merge',
+  githubIssuesPullRequestReviewer: 'githubIssues:pull-request-reviewer',
+  // "New pull request": the create is a write like the ones above (a user click only); the form's
+  // start (default branch, the branch's open PR) is a read, classified like the pull reads.
+  githubIssuesPullCreate: 'githubIssues:pull-create',
+  githubIssuesPullForBranch: 'githubIssues:pull-for-branch',
+  githubIssuesPullLineComment: 'githubIssues:pull-line-comment',
+  githubIssuesPullAutoMergeOff: 'githubIssues:pull-auto-merge-off',
+  githubIssuesPullAutoMerge: 'githubIssues:pull-auto-merge',
+  githubIssuesPullUpdateBranch: 'githubIssues:pull-update-branch',
+  githubIssuesPullFileViewed: 'githubIssues:pull-file-viewed',
+  githubIssuesPullThreadResolved: 'githubIssues:pull-thread-resolved',
+  githubIssuesPullApplySuggestion: 'githubIssues:pull-apply-suggestion',
+  githubIssuesPullLabels: 'githubIssues:pull-labels',
+  githubIssuesPullAssignees: 'githubIssues:pull-assignees',
+  githubIssuesPullState: 'githubIssues:pull-state',
+  githubIssuesPullReady: 'githubIssues:pull-ready',
+  githubIssuesPullDeleteBranch: 'githubIssues:pull-delete-branch',
+  // The Checks tab (F-05): a failed Actions job's log tail (a read, classified like the pull reads)
+  // and "Re-run failed" (a write like the ones above: a user click only, owner-only for relay peers).
+  githubIssuesPullCheckLog: 'githubIssues:pull-check-log',
+  githubIssuesPullRerunFailed: 'githubIssues:pull-rerun-failed',
+  // A pull node's Watch switch (F-08, core/github/pull-watch.ts): its state (a read) and the toggle
+  // (a local control, not a GitHub write: owner-only for relay peers, refused for scoped guests).
+  githubIssuesPullWatch: 'githubIssues:pull-watch',
+  githubIssuesPullWatchSet: 'githubIssues:pull-watch-set',
+  // The issues node: one issue's comments (a read, classified like the pull reads) and a comment on
+  // it (a write like the pull writes: a user click only, owner-only for relay peers).
+  githubIssuesIssueConversation: 'githubIssues:issue-conversation',
+  githubIssuesIssueTimeline: 'githubIssues:issue-timeline',
+  githubIssuesIssueComment: 'githubIssues:issue-comment',
+  // The merge confirmation's allowed methods: a read, classified like the pull reads above.
+  githubIssuesRepoMergeMethods: 'githubIssues:repo-merge-methods',
+  // "Request review"'s people list: a read, classified like the pull reads above.
+  githubIssuesRepoCollaborators: 'githubIssues:repo-collaborators',
+  githubIssuesRepoLabels: 'githubIssues:repo-labels',
   githubIssuesClaimPullAutoMove: 'githubIssues:claim-pull-auto-move',
   githubIssuesNotePullWaits: 'githubIssues:note-pull-waits',
+  // Notes for agents (F-07): machine-local editor actions on the owner's disk, not GitHub writes.
+  // Owner-only for relay peers, refused to a scoped guest.
+  pullNotesList: 'pullNotes:list',
+  pullNotesAdd: 'pullNotes:add',
+  pullNotesDelete: 'pullNotes:delete',
+  pullNotesClear: 'pullNotes:clear',
   githubIssuesChanged: (projectId: string) => `githubIssues:changed:${projectId}`,
   githubProjectAvatar: 'github:projectAvatar',
   githubControlStatus: 'githubControl:status',
@@ -675,6 +740,9 @@ export const IPC = {
   gitRemoteCommitUrl: 'git:remote-commit-url',
   gitMerge: 'git:merge',
   gitRebase: 'git:rebase',
+  gitMainDrift: 'git:main-drift',
+  gitPullWorktreeAdd: 'git:pull-worktree-add',
+  gitUpdateFromMain: 'git:update-from-main',
   gitDeleteBranch: 'git:delete-branch',
   gitRenameBranch: 'git:rename-branch',
   gitFetch: 'git:fetch',

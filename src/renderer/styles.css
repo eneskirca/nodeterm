@@ -7566,6 +7566,21 @@ body,
   resize: vertical;
 }
 
+/* One-click answers above a prompt's field (the add menu's pull request picker). */
+.confirm__choices {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: -6px 0 14px;
+}
+
+.confirm__choices .confirm__btn {
+  text-align: left;
+}
+
 .confirm__input:focus {
   outline: none;
   border-color: var(--accent);
@@ -8359,6 +8374,29 @@ body,
 .group-node__wt-behind {
   font-style: normal;
   font-weight: 500;
+  color: var(--muted);
+}
+
+/* Behind-main chip (MainDriftBadge): project header in the sidebar and worktree frames; its menu is the shared ContextMenu. */
+.main-drift {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.main-drift button {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 6px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-sunken);
+  color: var(--attention-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.main-drift button:disabled {
+  cursor: default;
   color: var(--muted);
 }
 
@@ -19082,4 +19120,21 @@ body.focus-mode .dock:hover {
   height: 100%;
   color: var(--muted);
   font-size: 13px;
+}
+
+/* Pull avatars stay global: the startup add menu shows them before a pull node loads its CSS. */
+.pull-avatar {
+  flex: none;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px rgba(var(--tint-rgb), 0.16);
+}
+.pull-avatar--letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--tint-rgb), 0.15);
+  color: var(--text-strong);
+  font-weight: 700;
+  line-height: 1;
 }

@@ -31,6 +31,36 @@ describe('access policy', () => {
     expect(decideAccess('req', IPC.fsWrite, ['/x', 'y'], ctx('editor'))).toEqual({ allow: true })
     expect(decideAccess('req', IPC.ptyCreate, [{ persistKey: 'n2' }], ctx('owner'))).toEqual({ allow: true })
   })
+  it('pull request writes run on the owner\'s GitHub token, so only an owner may send them', () => {
+    for (const m of [IPC.githubIssuesPullComment, IPC.githubIssuesPullReview, IPC.githubIssuesPullMerge, IPC.githubIssuesPullRequestReviewer,
+      IPC.githubIssuesPullLineComment, IPC.githubIssuesPullCreate, IPC.githubIssuesPullUpdateBranch, IPC.githubIssuesPullAutoMerge, IPC.githubIssuesPullAutoMergeOff,
+      IPC.githubIssuesPullFileViewed, IPC.githubIssuesPullThreadResolved, IPC.githubIssuesPullApplySuggestion, IPC.githubIssuesIssueComment, IPC.githubIssuesPullLabels, IPC.githubIssuesPullAssignees,
+      IPC.githubIssuesPullState, IPC.githubIssuesPullReady, IPC.githubIssuesPullDeleteBranch, IPC.githubIssuesPullRerunFailed, IPC.githubIssuesPullWatchSet]) {
+      const args = [{ projectId: 'P', repository: 'o/r', pullNumber: 7, body: 'x' }]
+      expect(decideAccess('req', m, args, ctx('owner'))).toEqual({ allow: true })
+      for (const role of ['editor', 'commenter', 'viewer'] as const) {
+        expect(decideAccess('req', m, args, ctx(role)).allow, `${m} ${role}`).toBe(false)
+      }
+    }
+  })
+  it('notes for agents write the owner\'s disk, so only an owner may send them', () => {
+    for (const m of [IPC.pullNotesList, IPC.pullNotesAdd, IPC.pullNotesDelete, IPC.pullNotesClear]) {
+      const args = [{ repository: 'o/r', pullNumber: 7 }]
+      expect(decideAccess('req', m, args, ctx('owner'))).toEqual({ allow: true })
+      for (const role of ['editor', 'commenter', 'viewer'] as const) {
+        expect(decideAccess('req', m, args, ctx(role)), `${m} ${role}`)
+          .toEqual({ allow: false, message: 'Only owners can keep notes for agents here.' })
+      }
+    }
+  })
+  it('the Watch switch is local, so its refusal says Watch, not GitHub', () => {
+    for (const role of ['editor', 'commenter', 'viewer'] as const) {
+      expect(decideAccess('req', IPC.githubIssuesPullWatchSet, [{ projectId: 'P', nodeId: 'n', on: true }], ctx(role)))
+        .toEqual({ allow: false, message: 'Only owners can switch Watch on or off here.' })
+    }
+    expect(decideAccess('req', IPC.githubIssuesPullComment, [{}], ctx('editor')))
+      .toEqual({ allow: false, message: 'Only owners can post to GitHub from here.' })
+  })
   it('a viewer may not write, destroy, send text or mutate the canvas', () => {
     for (const m of [IPC.fsWrite, IPC.ptyDestroy, IPC.ptySendText, IPC.gitCommit, IPC.settingsLoad]) {
       expect(decideAccess('req', m, [], ctx('viewer')).allow).toBe(false)

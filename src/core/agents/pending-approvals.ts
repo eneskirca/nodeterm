@@ -43,10 +43,12 @@ export function pendingDir(homeDir: string = os.homedir()): string {
 export async function writePendingAnswerLocal(
   pendingId: string,
   content: string,
-  homeDir: string = os.homedir()
+  homeDir: string = os.homedir(),
+  // What the hook that polls this file would print. The PR write gate passes its own (@shared/pr-write-hook).
+  bounded: (content: string) => boolean = isBoundedAnswerContent
 ): Promise<boolean> {
   if (!isValidPendingId(pendingId)) return false
-  if (typeof content !== 'string' || !isBoundedAnswerContent(content)) return false
+  if (typeof content !== 'string' || !bounded(content)) return false
   const dir = pendingDir(homeDir)
   const file = path.join(dir, `${pendingId}.answer`)
   try {
@@ -173,9 +175,13 @@ export function startPendingSweep(
 }
 
 /** The local-fs I/O pair for `answerHeldPermission` (the host the agent runs on IS this machine). */
-export function localHeldPermissionIo(pendingId: string, homeDir: string = os.homedir()): HeldPermissionIo {
+export function localHeldPermissionIo(
+  pendingId: string,
+  homeDir: string = os.homedir(),
+  bounded: (content: string) => boolean = isBoundedAnswerContent
+): HeldPermissionIo {
   return {
     readPending: () => readPendingRequestLocal(pendingId, homeDir),
-    write: (content) => writePendingAnswerLocal(pendingId, content, homeDir)
+    write: (content) => writePendingAnswerLocal(pendingId, content, homeDir, bounded)
   }
 }

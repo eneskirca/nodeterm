@@ -133,14 +133,15 @@ describe('Start with agent (issue card)', () => {
     expect(prompt).toContain('issueRefFromHtmlUrl(issue.htmlUrl, issue.number)')
     expect(prompt).toContain('issueLaunchPrompt(ref)')
     expect(prompt).not.toMatch(/issue\.title|issue\.body/)
-    expect(code(src).match(/issueLaunchPrompt\(ref\)/g) ?? []).toHaveLength(1)
+    // The second one is the issues node's fallback when its quoted prompt cannot be spilled.
+    expect(code(src).match(/issueLaunchPrompt\(ref\)/g) ?? []).toHaveLength(2)
   })
 
   it('launches with the reference prompt and binds the node — never the issue title or body', () => {
     const body = code(between('const startIssueAgent = useCallback(', 'const issueAgentMenu = useCallback('))
-    expect(body).toContain('issueStartPrompt(issue)')
-    expect(body).toContain('start.prompt, {\n        issueRef: start.ref\n      }')
-    expect(body).toContain('fileIssueSession(issue.columnId, start.ref, created, agentId)')
+    expect(body).toContain('issueStartPrompt(issue, opts)')
+    expect(body).toContain('start.prompt, {\n        issueRef: start.ref,\n        promptFile: start.promptFile\n      }')
+    expect(body).toContain('fileIssueSession(issue.columnId, start.ref, created, agentId, start.opener)')
     // The attacker-writable fields of the issue never reach this function's launch.
     expect(body).not.toMatch(/issue\.title|issue\.body/)
   })
@@ -148,10 +149,10 @@ describe('Start with agent (issue card)', () => {
   it('in a new worktree: the title reaches ONLY the branch planner, never a prompt or a launch line', () => {
     const open = code(between('const openIssueAgentInFrame = useCallback(', 'const startIssueAgentInWorktree = useCallback('))
     expect(open).toContain('start.prompt,')
-    expect(open).toContain('{ issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId) }')
+    expect(open).toContain('{ issueRef: start.ref, awaitSetupGroup: setupHoldGroup(groupId), promptFile: start.promptFile }')
     expect(open).not.toMatch(/issue\.title|issue\.body/)
     const body = code(between('const startIssueAgentInWorktree = useCallback(', 'const issueWorktreeMenu = useCallback('))
-    expect(body).toContain('issueStartPrompt(issue)')
+    expect(body).toContain('issueStartPrompt(issue, opts)')
     // Exactly one read of the title: the slug input of `planIssueWorktree` (@shared/issue-worktree
     // owns every rule about it — allowlist, cap, check-ref-format; proven there against git).
     expect(body.match(/issue\.title/g) ?? []).toHaveLength(1)
@@ -159,6 +160,18 @@ describe('Start with agent (issue card)', () => {
     expect(body).not.toMatch(/issue\.body/)
     // The frame is named after the NUMBER, not the title.
     expect(body).toContain('title: `Issue #${start.ref.number}`')
+  })
+
+  it('the issues node\'s "Work on this" prompt carries the reference only (issueWorkPrompt)', () => {
+    expect(code(src).match(/issueWorkPrompt\(/g) ?? []).toHaveLength(1)
+    const listener = code(between('const onWork = async (e: Event): Promise<void> => {', 'window.addEventListener(ISSUE_WORK_EVENT, listener)'))
+    expect(listener).toContain('issueWorkPrompt(ref)')
+    expect(listener).not.toMatch(/issue\.title|issue\.body/)
+    expect(listener).toContain("n.type === 'issues'")
+    // Spilled to a file when too long for a typed line (#706); else the reference-only prompt.
+    expect(listener).toContain('launchOrSpill(prompt, !ssh, api.files.saveUpload, issueLaunchPrompt(ref))')
+    // `opts.launch` is set nowhere else.
+    expect(code(src).match(/\blaunch, opener\b/g) ?? []).toHaveLength(1)
   })
 
   it('the menu reuses the canvas agent + account picker instead of a fourth copy', () => {

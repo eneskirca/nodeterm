@@ -197,6 +197,11 @@ export function buildRelayApi(
     // Agent canvas-control (`agent:control`) is not wired over the relay (matches the Server
     // Edition); inert no-ops rather than a local subscription that never carries the host's events.
     onAgentControl: stub.onAgentControl,
+    // The host's own canvas opens its agents' PRs; a relay tab never does.
+    onPullCreated: stub.onPullCreated,
+    onPrWriteGate: stub.onPrWriteGate,
+    sendPrWriteGateResult: stub.sendPrWriteGateResult,
+    onPrWritten: stub.onPrWritten,
     sendAgentControlResult: stub.sendAgentControlResult,
     // Browser control never rides the relay either (no CDP off the desktop) — inert no-ops.
     onBrowserControlResolve: stub.onBrowserControlResolve,

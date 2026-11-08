@@ -177,6 +177,18 @@ describe('GitHubHostController', () => {
     })
   })
 
+  it('approves and reads the folder origin for a project with no board, and never allows board writes', async () => {
+    const { controller, controls, setProject } = fixture()
+    const { kanban: _board, ...boardless } = project
+    setProject(boardless)
+    expect((await controller.status('project-1')).project).toMatchObject({ repository: 'owner/repo', approved: false })
+    await controller.approve({ projectId: 'project-1', repository: 'owner/repo', expectedRevision: 0 })
+    expect(controls.approve.mock.calls[0][0]).not.toHaveProperty('mappingDigest')
+    const context = await controller.contextForProject('project-1')
+    expect(context).toMatchObject({ repository: 'owner/repo', mappingApproved: false })
+    expect(context.config.columnMappings).toEqual([])
+  })
+
   it('stops writes when a pulled commit changes the column mapping, until this machine approves it again', async () => {
     const { controller, setProject } = fixture()
     await controller.approve({ projectId: 'project-1', repository: 'owner/repo', expectedRevision: 0 })

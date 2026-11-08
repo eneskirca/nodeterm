@@ -12,6 +12,7 @@ import {
   filterScopedEvent,
   scopeForTest,
   scopedGuestHooks,
+  SCOPED_REFUSED,
   type ScopedGuestDeps
 } from './scoped-guest-policy'
 import { connectRelayHost, type PeerAttach } from './relay-host'
@@ -64,6 +65,12 @@ describe('scoped guest — refused outright', () => {
   it('refuses an unknown or new channel (fail closed)', () => {
     expect(allowed('some:new-channel')).toBe(false)
     expect(allowed('constructor')).toBe(false)
+  })
+  it('refuses notes for agents: they live on the host owner\'s disk', () => {
+    for (const m of [IPC.pullNotesList, IPC.pullNotesAdd, IPC.pullNotesDelete, IPC.pullNotesClear]) {
+      expect(SCOPED_REFUSED.has(m), m).toBe(true)
+      expect(allowed(m, { repository: 'o/r', pullNumber: 7 }), m).toBe(false)
+    }
   })
   it('refuses the host settings, license and whole-workspace writes', () => {
     expect(allowed(IPC.settingsSave, {})).toBe(false)
@@ -171,6 +178,54 @@ describe('scoped guest — canvas, board and GitHub', () => {
     expect(allowed(IPC.boardLogSubscribe, 'beta')).toBe(false)
     expect(allowed(IPC.githubIssuesQuery, { projectId: 'beta' })).toBe(false)
     expect(allowed(IPC.githubIssuesQuery, { projectId: 'alpha' })).toBe(true)
+  })
+  it('refuses pull request writes, even for the shared project', () => {
+    const write = { projectId: 'alpha', repository: 'o/r', pullNumber: 7, body: 'x' }
+    expect(allowed(IPC.githubIssuesPullComment, write)).toBe(false)
+    expect(allowed(IPC.githubIssuesPullReview, { ...write, event: 'APPROVE', headSha: 'c'.repeat(40) })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullMerge, { ...write, method: 'merge', headSha: 'c'.repeat(40) })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullConversation, 'alpha', 'o/r', 7)).toBe(true)
+    expect(allowed(IPC.githubIssuesPullFiles, 'alpha', 'o/r', 7)).toBe(true)
+    expect(allowed(IPC.githubIssuesPullFileContents, 'alpha', 'o/r', 7, 'a.ts')).toBe(true)
+    expect(allowed(IPC.githubIssuesPullFileContents, 'beta', 'o/r', 7, 'a.ts')).toBe(false)
+    expect(allowed(IPC.githubIssuesPullCommits, 'alpha', 'o/r', 7)).toBe(true)
+    expect(allowed(IPC.githubIssuesPullCommitFiles, 'beta', 'o/r', 7, 'c'.repeat(40))).toBe(false)
+    expect(allowed(IPC.githubIssuesPullCommitFileContents, 'alpha', 'o/r', 7, 'c'.repeat(40), 'a.ts')).toBe(true)
+    expect(allowed(IPC.githubIssuesPullSinceReview, 'alpha', 'o/r', 7)).toBe(true)
+    expect(allowed(IPC.githubIssuesPullSinceReviewFileContents, 'beta', 'o/r', 7, 'a.ts')).toBe(false)
+    expect(allowed(IPC.githubIssuesRepoMergeMethods, 'alpha', 'o/r')).toBe(true)
+    expect(allowed(IPC.githubIssuesRepoMergeMethods, 'beta', 'o/r')).toBe(false)
+    expect(allowed(IPC.githubIssuesPullRequestReviewer, { ...write, reviewer: 'ana' })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullLineComment, { ...write, inReplyTo: 9 })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullCreate, { projectId: 'alpha', repository: 'o/r', head: 'x', base: 'main', title: 't', body: '', draft: false })).toBe(false)
+    expect(allowed(IPC.githubIssuesIssueComment, { projectId: 'alpha', repository: 'o/r', issueNumber: 5, body: 'x' })).toBe(false)
+    expect(allowed(IPC.githubIssuesIssueConversation, 'alpha', 'o/r', 5)).toBe(true)
+    expect(allowed(IPC.githubIssuesIssueConversation, 'beta', 'o/r', 5)).toBe(false)
+    expect(allowed(IPC.githubIssuesIssueTimeline, 'alpha', 'o/r', 5)).toBe(true)
+    expect(allowed(IPC.githubIssuesIssueTimeline, 'beta', 'o/r', 5)).toBe(false)
+    expect(allowed(IPC.githubIssuesPullUpdateBranch, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40) })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullAutoMerge, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, method: 'squash', headSha: 'c'.repeat(40) })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullAutoMergeOff, { projectId: 'alpha', repository: 'o/r', pullNumber: 12 })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullFileViewed, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, path: 'a.ts', viewed: true })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullThreadResolved, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, threadId: 4, resolved: true })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullApplySuggestion, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, headSha: 'c'.repeat(40), commentId: 4 })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullLabels, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, label: 'bug', add: true })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullAssignees, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, login: 'ana', add: true })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullState, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, open: false })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullReady, { projectId: 'alpha', repository: 'o/r', pullNumber: 12 })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullDeleteBranch, { projectId: 'alpha', repository: 'o/r', pullNumber: 12 })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullRerunFailed, { projectId: 'alpha', repository: 'o/r', pullNumber: 12, runId: 5 })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullCheckLog, 'alpha', 'o/r', 12, 34)).toBe(true)
+    expect(allowed(IPC.githubIssuesPullCheckLog, 'beta', 'o/r', 12, 34)).toBe(false)
+    expect(allowed(IPC.githubIssuesPullWatchSet, { projectId: 'alpha', nodeId: 'pr1', on: true })).toBe(false)
+    expect(allowed(IPC.githubIssuesPullWatch, 'alpha', 'pr1')).toBe(true)
+    expect(allowed(IPC.githubIssuesPullWatch, 'beta', 'pr1')).toBe(false)
+    expect(allowed(IPC.githubIssuesPullForBranch, 'alpha', 'o/r', 'x')).toBe(true)
+    expect(allowed(IPC.githubIssuesPullForBranch, 'beta', 'o/r', 'x')).toBe(false)
+    expect(allowed(IPC.githubIssuesRepoCollaborators, 'alpha', 'o/r')).toBe(true)
+    expect(allowed(IPC.githubIssuesRepoCollaborators, 'beta', 'o/r')).toBe(false)
+    expect(allowed(IPC.githubIssuesRepoLabels, 'alpha', 'o/r')).toBe(true)
+    expect(allowed(IPC.githubIssuesRepoLabels, 'beta', 'o/r')).toBe(false)
   })
   it('refuses a canvas mutation into another project, or adopting another project\'s node id', () => {
     const node = (id: string) => ({ op: 'upsert', node: { id, kind: 'terminal', position: { x: 0, y: 0 } } })

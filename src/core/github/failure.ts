@@ -16,6 +16,8 @@ export type GitHubFailure =
   | { kind: 'unauthorized' }
   | { kind: 'rate-limited'; retryAt?: number }
   | { kind: 'unreachable' }
+  /** GitHub answered 404: the thing is gone, or this token may not see it. */
+  | { kind: 'not-found' }
   /** Not a statement about GitHub at all: configuration, approval, a programming error. */
   | { kind: 'other' }
 
@@ -40,7 +42,8 @@ export function classifyGitHubFailure(error: unknown): GitHubFailure {
     case 'insufficient-permission':
       return { kind: 'unauthorized' }
     case 'request-failed':
-      return value.status === 401 ? { kind: 'unauthorized' } : { kind: 'unreachable' }
+      if (value.status === 401) return { kind: 'unauthorized' }
+      return value.status === 404 ? { kind: 'not-found' } : { kind: 'unreachable' }
     case 'malformed-response':
     case 'response-too-large':
     case 'github-unreachable':

@@ -559,10 +559,115 @@ export function buildGitHubApi(
       client.request(IPC.githubIssuesPullChecks, projectId, pullNumber) as ReturnType<
         GitHubIssuesApi['pullChecks']
       >,
+    pullDetail: (projectId, repository, pullNumber) =>
+      client.request(IPC.githubIssuesPullDetail, projectId, repository, pullNumber) as ReturnType<
+        GitHubIssuesApi['pullDetail']
+      >,
+    pullConversation: (projectId, repository, pullNumber) =>
+      client.request(IPC.githubIssuesPullConversation, projectId, repository, pullNumber) as ReturnType<
+        GitHubIssuesApi['pullConversation']
+      >,
+    pullTimeline: (projectId, repository, pullNumber, after) =>
+      client.request(IPC.githubIssuesPullTimeline, projectId, repository, pullNumber, after) as ReturnType<
+        GitHubIssuesApi['pullTimeline']
+      >,
+    pullFiles: (projectId, repository, pullNumber) =>
+      client.request(IPC.githubIssuesPullFiles, projectId, repository, pullNumber) as ReturnType<
+        GitHubIssuesApi['pullFiles']
+      >,
+    pullFileContents: (projectId, repository, pullNumber, path) =>
+      client.request(IPC.githubIssuesPullFileContents, projectId, repository, pullNumber, path) as ReturnType<
+        GitHubIssuesApi['pullFileContents']
+      >,
+    pullCommits: (projectId, repository, pullNumber) =>
+      client.request(IPC.githubIssuesPullCommits, projectId, repository, pullNumber) as ReturnType<GitHubIssuesApi['pullCommits']>,
+    pullCommitFiles: (projectId, repository, pullNumber, sha) =>
+      client.request(IPC.githubIssuesPullCommitFiles, projectId, repository, pullNumber, sha) as ReturnType<
+        GitHubIssuesApi['pullCommitFiles']
+      >,
+    pullCommitFileContents: (projectId, repository, pullNumber, sha, path) =>
+      client.request(IPC.githubIssuesPullCommitFileContents, projectId, repository, pullNumber, sha, path) as ReturnType<
+        GitHubIssuesApi['pullCommitFileContents']
+      >,
+    pullSinceReview: (projectId, repository, pullNumber) =>
+      client.request(IPC.githubIssuesPullSinceReview, projectId, repository, pullNumber) as ReturnType<GitHubIssuesApi['pullSinceReview']>,
+    pullSinceReviewFileContents: (projectId, repository, pullNumber, path) =>
+      client.request(IPC.githubIssuesPullSinceReviewFileContents, projectId, repository, pullNumber, path) as ReturnType<
+        GitHubIssuesApi['pullSinceReviewFileContents']
+      >,
+    commentOnPull: (request) =>
+      client.request(IPC.githubIssuesPullComment, request) as ReturnType<GitHubIssuesApi['commentOnPull']>,
+    reviewPull: (request) =>
+      client.request(IPC.githubIssuesPullReview, request) as ReturnType<GitHubIssuesApi['reviewPull']>,
+    mergePull: (request) =>
+      client.request(IPC.githubIssuesPullMerge, request) as ReturnType<GitHubIssuesApi['mergePull']>,
+    repoMergeMethods: (projectId, repository) =>
+      client.request(IPC.githubIssuesRepoMergeMethods, projectId, repository) as ReturnType<
+        GitHubIssuesApi['repoMergeMethods']
+      >,
+    repoCollaborators: (projectId, repository) =>
+      client.request(IPC.githubIssuesRepoCollaborators, projectId, repository) as ReturnType<
+        GitHubIssuesApi['repoCollaborators']
+      >,
+    requestPullReviewer: (request) =>
+      client.request(IPC.githubIssuesPullRequestReviewer, request) as ReturnType<GitHubIssuesApi['requestPullReviewer']>,
+    pullForBranch: (projectId, repository, head) =>
+      client.request(IPC.githubIssuesPullForBranch, projectId, repository, head) as ReturnType<GitHubIssuesApi['pullForBranch']>,
+    createPull: (request) =>
+      client.request(IPC.githubIssuesPullCreate, request) as ReturnType<GitHubIssuesApi['createPull']>,
+    updatePullBranch: (request) =>
+      client.request(IPC.githubIssuesPullUpdateBranch, request) as ReturnType<GitHubIssuesApi['updatePullBranch']>,
+    setFileViewed: (request) =>
+      client.request(IPC.githubIssuesPullFileViewed, request) as ReturnType<GitHubIssuesApi['setFileViewed']>,
+    setReviewThreadResolved: (request) =>
+      client.request(IPC.githubIssuesPullThreadResolved, request) as ReturnType<GitHubIssuesApi['setReviewThreadResolved']>,
+    applySuggestion: (request) =>
+      client.request(IPC.githubIssuesPullApplySuggestion, request) as ReturnType<GitHubIssuesApi['applySuggestion']>,
+    setPullLabels: (request) =>
+      client.request(IPC.githubIssuesPullLabels, request) as ReturnType<GitHubIssuesApi['setPullLabels']>,
+    setPullAssignees: (request) =>
+      client.request(IPC.githubIssuesPullAssignees, request) as ReturnType<GitHubIssuesApi['setPullAssignees']>,
+    setPullState: (request) =>
+      client.request(IPC.githubIssuesPullState, request) as ReturnType<GitHubIssuesApi['setPullState']>,
+    markPullReady: (request) =>
+      client.request(IPC.githubIssuesPullReady, request) as ReturnType<GitHubIssuesApi['markPullReady']>,
+    deleteHeadBranch: (request) =>
+      client.request(IPC.githubIssuesPullDeleteBranch, request) as ReturnType<GitHubIssuesApi['deleteHeadBranch']>,
+    pullCheckLog: (projectId, repository, pullNumber, jobId) =>
+      client.request(IPC.githubIssuesPullCheckLog, projectId, repository, pullNumber, jobId) as ReturnType<GitHubIssuesApi['pullCheckLog']>,
+    rerunFailedJobs: (request) =>
+      client.request(IPC.githubIssuesPullRerunFailed, request) as ReturnType<GitHubIssuesApi['rerunFailedJobs']>,
+    pullWatch: (projectId, nodeId) =>
+      client.request(IPC.githubIssuesPullWatch, projectId, nodeId) as ReturnType<GitHubIssuesApi['pullWatch']>,
+    setPullWatch: (request) =>
+      client.request(IPC.githubIssuesPullWatchSet, request) as ReturnType<GitHubIssuesApi['setPullWatch']>,
+    repoLabels: (projectId, repository) =>
+      client.request(IPC.githubIssuesRepoLabels, projectId, repository) as ReturnType<GitHubIssuesApi['repoLabels']>,
+    enablePullAutoMerge: (request) =>
+      client.request(IPC.githubIssuesPullAutoMerge, request) as ReturnType<GitHubIssuesApi['enablePullAutoMerge']>,
+    disablePullAutoMerge: (request) =>
+      client.request(IPC.githubIssuesPullAutoMergeOff, request) as ReturnType<GitHubIssuesApi['disablePullAutoMerge']>,
+    commentOnPullLine: (request) =>
+      client.request(IPC.githubIssuesPullLineComment, request) as ReturnType<GitHubIssuesApi['commentOnPullLine']>,
+    issueConversation: (projectId, repository, issueNumber) =>
+      client.request(IPC.githubIssuesIssueConversation, projectId, repository, issueNumber) as ReturnType<
+        GitHubIssuesApi['issueConversation']
+      >,
+    issueTimeline: (projectId, repository, issueNumber, after) =>
+      client.request(IPC.githubIssuesIssueTimeline, projectId, repository, issueNumber, after) as ReturnType<
+        GitHubIssuesApi['issueTimeline']
+      >,
+    commentOnIssue: (request) =>
+      client.request(IPC.githubIssuesIssueComment, request) as ReturnType<GitHubIssuesApi['commentOnIssue']>,
     claimPullAutoMove: (request) =>
       client.request(IPC.githubIssuesClaimPullAutoMove, request) as Promise<boolean>,
     notePullWaits: (request) =>
       client.request(IPC.githubIssuesNotePullWaits, request) as Promise<number>,
+    pullNotes: (repository, pullNumber) =>
+      client.request(IPC.pullNotesList, repository, pullNumber) as ReturnType<GitHubIssuesApi['pullNotes']>,
+    addPullNote: (input) => client.request(IPC.pullNotesAdd, input) as ReturnType<GitHubIssuesApi['addPullNote']>,
+    deletePullNote: (request) => client.request(IPC.pullNotesDelete, request) as ReturnType<GitHubIssuesApi['deletePullNote']>,
+    clearPullNotes: (request) => client.request(IPC.pullNotesClear, request) as ReturnType<GitHubIssuesApi['clearPullNotes']>,
     projectAvatar: (projectId) =>
       client.request(IPC.githubProjectAvatar, projectId) as ReturnType<
         GitHubIssuesApi['projectAvatar']
@@ -653,6 +758,9 @@ export function buildFilesApi(
       client.request(IPC.gitRemoteCommitUrl, cwd, sha) as Promise<string | null>,
     merge: (cwd, ref) => client.request(IPC.gitMerge, cwd, ref) as ReturnType<GitApi['merge']>,
     rebase: (cwd, onto) => client.request(IPC.gitRebase, cwd, onto) as ReturnType<GitApi['rebase']>,
+    mainDrift: (cwd) => client.request(IPC.gitMainDrift, cwd) as ReturnType<GitApi['mainDrift']>,
+    updateFromMain: (cwd, mode) =>
+      client.request(IPC.gitUpdateFromMain, cwd, mode) as ReturnType<GitApi['updateFromMain']>,
     deleteBranch: (cwd, name, force) =>
       client.request(IPC.gitDeleteBranch, cwd, name, force) as ReturnType<GitApi['deleteBranch']>,
     renameBranch: (cwd, newName) =>
@@ -669,6 +777,8 @@ export function buildFilesApi(
     repoRoot: (cwd) => client.request(IPC.gitRepoRoot, cwd) as Promise<string | null>,
     worktreeList: (repoPath) =>
       client.request(IPC.gitWorktreeList, repoPath) as ReturnType<GitApi['worktreeList']>,
+    pullWorktreeAdd: (repoPath, wtPath, req) =>
+      client.request(IPC.gitPullWorktreeAdd, repoPath, wtPath, req) as ReturnType<GitApi['pullWorktreeAdd']>,
     worktreeAdd: (repoPath, wtPath, branch, baseRef, isNew) =>
       client.request(
         IPC.gitWorktreeAdd,

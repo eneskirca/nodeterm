@@ -12,27 +12,80 @@ import type {
   UpdateIssueInput
 } from '../../shared/github-issues'
 import { parseGitHubRepository } from './config'
-import type { GitHubPullChecksResult } from '../../shared/github-pull-status'
+import { mergeState, type GitHubPullChecksResult, type PullLifecycle } from '../../shared/github-pull-status'
+import type {
+  GitHubPullDetail,
+  PullConversationItem,
+  PullConversationPage,
+  PullCreateDraft,
+  PullFile,
+  PullFileRead,
+  PullFilesPage,
+  PullFileStatus,
+  PullLineComment,
+  PullLineCommentWrite,
+  PullLineCommentsPage,
+  PullLineDraft,
+  PullMergeMethod,
+  PullReviewEvent,
+  PullReviewVerdict,
+  PullViewedState
+} from '../../shared/github-pull-detail'
+import type { PullSuggestionComment } from './service'
+import {
+  GITHUB_LOGIN, MAX_PULL_REVIEW_COMMENTS, isPullBranchName, isPullCommentBody, isPullCreateDraft, isPullLineDraft, isPullPath
+} from '../../shared/github-pull-detail'
 import {
   GraphQLShapeError,
   PULL_CHECKS_QUERY,
+  PULL_RESOLVED_THREADS_QUERY,
   PULL_STATUS_QUERY,
   graphQLErrors,
   parsePullChecksResponse,
+  parsePullResolvedThreads,
   parsePullStatusResponse,
   rateLimitFrom,
   type PullStatusRead
 } from './graphql-pulls'
+import { PULL_SIDEBAR_QUERY, parsePullSidebar } from './graphql-pull-sidebar'
+import type { PullSidebarRead } from '../../shared/github-pull-sidebar'
+import { PULL_COMMITS_QUERY, parsePullCommits } from './graphql-pull-commits'
+import { isCommitSha, type PullCommitFilesPage, type PullCommitsPage } from '../../shared/github-pull-commits'
+import { PULL_TIMELINE_QUERY, parsePullTimelineResponse } from './graphql-pull-timeline'
+import { isPullTimelineCursor, type PullTimelinePage } from '../../shared/github-pull-timeline'
+import { ISSUE_TIMELINE_QUERY, parseIssueTimelineResponse } from './graphql-issue-timeline'
+import { failingStepTail } from './check-log'
+import { CHECK_LOG_LINES } from '../../shared/github-pull-check-log'
+import { PULL_VIEWER_REVIEW_QUERY, parsePullViewerReview } from './graphql-pull-since-review'
+import type { PullCompare, PullViewerReview } from '../../shared/github-pull-since-review'
+
+const MAX_VIEWED_PAGES = 3
+const PULL_VIEWED_QUERY = `query($owner:String!,$name:String!,$number:Int!,$after:String){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    files(first:100,after:$after){ nodes{ path viewerViewedState } pageInfo{ hasNextPage endCursor } }
+  } }
+}`
+
+const PULL_THREAD_IDS_QUERY = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    reviewThreads(first:100){ nodes{ id comments(first:1){ nodes{ databaseId } } } }
+  } }
+}`
 
 const API_ORIGIN = 'https://api.github.com'
+const REVIEW_EVENTS: ReadonlySet<unknown> = new Set<PullReviewEvent>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT'])
+const MERGE_METHODS: ReadonlyArray<[PullMergeMethod, string]> = [
+  ['merge', 'allow_merge_commit'], ['squash', 'allow_squash_merge'], ['rebase', 'allow_rebase_merge']
+]
 const API_VERSION = '2022-11-28'
 const DEFAULT_MAX_RESPONSE = 8 * 1024 * 1024
 const MAX_ERROR_METADATA_BYTES = 4 * 1024
+const MAX_JOB_LOG_TAIL = 512 * 1024
 
 export class GitHubClientError extends Error {
   constructor(
     readonly code: 'invalid-request' | 'malformed-response' | 'response-too-large' |
-      'request-failed' | 'rate-limited' | 'insufficient-permission',
+      'request-failed' | 'rate-limited' | 'insufficient-permission' | 'own-pull',
     readonly status?: number,
     readonly retryAt?: number,
     /** Which rate budget a PRIMARY limit belongs to (`x-ratelimit-resource`). `graphql` and `core`
@@ -131,6 +184,166 @@ function pullFrom(item: Record<string, unknown>): GitHubPullMeta | null | undefi
 }
 
 const KNOWN_STATE_REASONS: ReadonlySet<string> = new Set(['completed', 'not_planned', 'reopened', 'duplicate'])
+
+const SHA = /^[0-9a-f]{40}$/
+
+function pullRef(value: unknown): { ref: string; sha: string } | null {
+  const item = object(value)
+  if (!item || !string(item.ref, 255) || !item.ref || !string(item.sha, 40) || !SHA.test(item.sha)) return null
+  return { ref: item.ref, sha: item.sha }
+}
+
+/** Decodes `GET /pulls/{n}`. Merge state goes through the board's own rules (`mergeState`), with
+ *  REST's boolean `mergeable` and lower-case `mergeable_state` spelled as GraphQL spells them. */
+function pullDetailFrom(value: unknown): GitHubPullDetail | null {
+  const item = object(value)
+  if (!item || !positiveInteger(Number(item.number), 2_147_483_647) || !string(item.title, 1_024) ||
+      !(item.body === null || item.body === undefined || string(item.body, 262_144)) ||
+      (item.state !== 'open' && item.state !== 'closed') ||
+      !(item.draft === undefined || typeof item.draft === 'boolean') || typeof item.merged !== 'boolean' ||
+      !(item.mergeable === null || item.mergeable === undefined || typeof item.mergeable === 'boolean') ||
+      !(item.mergeable_state === undefined || string(item.mergeable_state, 32)) ||
+      !string(item.html_url, 2_048)) return null
+  const counts = [item.additions, item.deletions, item.changed_files].map(Number)
+  if (counts.some((count) => !Number.isSafeInteger(count) || count < 0)) return null
+  let url: URL
+  try { url = new URL(item.html_url) } catch { return null }
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') return null
+  const base = pullRef(item.base)
+  const head = pullRef(item.head)
+  if (!base || !head) return null
+  const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
+  if (item.user && !author) return null
+  // ponytail: display only, so a malformed merger is left out rather than failing the overview.
+  const mergedBy = item.merged_by ? issueUser(item.merged_by) : null
+  // ponytail: display only, so a malformed entry is skipped rather than failing the overview.
+  const requested = Array.isArray(item.requested_reviewers)
+    ? item.requested_reviewers.slice(0, 100).flatMap((user) => issueUser(user) ?? [])
+    : []
+  // ponytail: display only, as above; a method this build does not know claims nothing.
+  const autoMethod = object(item.auto_merge)?.merge_method
+  const autoMerge = MERGE_METHODS.find(([method]) => method === autoMethod)?.[0]
+  // A head in another repository (or in a fork since deleted, `repo: null`) is only on origin as pull/<n>/head.
+  const repoName = (side: unknown): unknown => {
+    const repo = object(side)?.repo
+    return repo === null ? null : object(repo)?.full_name
+  }
+  const headRepo = repoName(item.head)
+  const baseRepo = repoName(item.base)
+  const fromFork = headRepo === null ||
+    (typeof headRepo === 'string' && typeof baseRepo === 'string' && headRepo.toLowerCase() !== baseRepo.toLowerCase())
+  const lifecycle: PullLifecycle = item.state === 'closed'
+    ? item.merged ? 'merged' : 'closed'
+    : item.draft ? 'draft' : 'open'
+  const merge = item.state === 'open'
+    ? mergeState(
+      item.mergeable === true ? 'MERGEABLE' : item.mergeable === false ? 'CONFLICTING' : 'UNKNOWN',
+      typeof item.mergeable_state === 'string' ? item.mergeable_state.toUpperCase() : 'UNKNOWN')
+    : undefined
+  return {
+    number: Number(item.number),
+    title: item.title,
+    body: item.body ?? '',
+    lifecycle,
+    author,
+    ...(mergedBy ? { mergedBy } : {}),
+    base,
+    head,
+    ...(merge !== undefined ? { merge } : {}),
+    additions: counts[0],
+    deletions: counts[1],
+    changedFiles: counts[2],
+    url: url.toString(),
+    ...(requested.length ? { requestedReviewers: requested } : {}),
+    ...(autoMerge ? { autoMerge: { method: autoMerge } } : {}),
+    ...(fromFork ? { fromFork: true as const } : {}),
+    // ponytail: display only (the tab count), so an odd value is left out rather than failing the overview.
+    ...(Number.isSafeInteger(item.commits) && (item.commits as number) >= 0 ? { commits: item.commits as number } : {})
+  }
+}
+
+const REVIEW_VERDICTS: Record<string, PullReviewVerdict> = {
+  APPROVED: 'approved', CHANGES_REQUESTED: 'changes-requested', COMMENTED: 'commented', DISMISSED: 'dismissed'
+}
+
+/** An issue comment or a submitted review. `undefined` = a PENDING review (skipped), `null` = malformed. */
+function conversationItemFrom(value: unknown, kind: 'comment' | 'review'): PullConversationItem | null | undefined {
+  const item = object(value)
+  if (!item) return null
+  if (kind === 'review' && item.state === 'PENDING') return undefined
+  const at = kind === 'comment' ? item.created_at : item.submitted_at
+  if (!positiveInteger(Number(item.id), Number.MAX_SAFE_INTEGER) || !isoDate(at) ||
+      !(item.body === null || item.body === undefined || string(item.body, 262_144)) ||
+      !string(item.html_url, 2_048)) return null
+  let url: URL
+  try { url = new URL(item.html_url) } catch { return null }
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') return null
+  const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
+  if (item.user && !author) return null
+  const base = { id: Number(item.id), author, body: item.body ?? '', at, url: url.toString() }
+  if (kind === 'comment') return { kind, ...base }
+  const verdict = typeof item.state === 'string' ? REVIEW_VERDICTS[item.state] : undefined
+  return verdict ? { kind, ...base, verdict } : null
+}
+
+/** One review comment on a diff line. GitHub sends `line: null` (and `position: null`) once the line
+ *  left the diff (outdated); a whole-file comment has no line either. `null` = malformed. */
+function lineCommentFrom(value: unknown): PullLineComment | null {
+  const item = object(value)
+  if (!item || !positiveInteger(Number(item.id), Number.MAX_SAFE_INTEGER) || !isoDate(item.created_at) ||
+      !string(item.body, 262_144) || !string(item.html_url, 2_048) || !isPullPath(item.path)) return null
+  let url: URL
+  try { url = new URL(item.html_url) } catch { return null }
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') return null
+  const author = item.user === null || item.user === undefined ? null : issueUser(item.user)
+  if (item.user && !author) return null
+  // null = absent, undefined = present but not a positive id (malformed).
+  const optionalId = (key: string): number | null | undefined => item[key] === null || item[key] === undefined ? null
+    : positiveInteger(Number(item[key]), Number.MAX_SAFE_INTEGER) ? Number(item[key]) : undefined
+  const reviewId = optionalId('pull_request_review_id')
+  const inReplyTo = optionalId('in_reply_to_id')
+  const line = optionalId('line')
+  if (reviewId === undefined || inReplyTo === undefined || line === undefined) return null
+  // ponytail: a comment from before GitHub had `side` sits on the head side, as it did then.
+  const side = item.side === 'LEFT' ? 'LEFT' : 'RIGHT'
+  return {
+    id: Number(item.id), reviewId, ...(inReplyTo !== null ? { inReplyTo } : {}), author, body: item.body, at: item.created_at,
+    url: url.toString(), path: item.path, side, line, outdated: line === null && item.subject_type !== 'file'
+  }
+}
+
+const FILE_STATUSES: Record<string, PullFileStatus> = {
+  added: 'added', modified: 'modified', removed: 'removed', renamed: 'renamed',
+  copied: 'added', changed: 'modified', unchanged: 'modified'
+}
+
+/** The Files tab shows a file up to this size; past it the node says "cannot show this file". */
+const MAX_FILE_BYTES = 1_048_576
+
+/** A repository path as `GET /pulls/{n}/files` names it. No empty, `.` or `..` segment, so the URL
+ *  built from it cannot leave the contents endpoint. */
+function repoPath(value: unknown): value is string {
+  return string(value, 4_096) && value.length > 0 && !value.includes('\u0000') &&
+    value.split('/').every((part) => part !== '' && part !== '.' && part !== '..')
+}
+
+/** One changed file. `copied` keeps no previous path: it diffs against empty, like an add. */
+function pullFileFrom(value: unknown): PullFile | null {
+  const item = object(value)
+  const status = item && typeof item.status === 'string' && Object.hasOwn(FILE_STATUSES, item.status)
+    ? FILE_STATUSES[item.status] : undefined
+  if (!item || !status || !repoPath(item.filename) ||
+      !Number.isSafeInteger(item.additions) || (item.additions as number) < 0 ||
+      !Number.isSafeInteger(item.deletions) || (item.deletions as number) < 0) return null
+  if (status === 'renamed' && !repoPath(item.previous_filename)) return null
+  return {
+    path: item.filename,
+    ...(status === 'renamed' ? { previousPath: item.previous_filename as string } : {}),
+    status,
+    additions: item.additions as number,
+    deletions: item.deletions as number
+  }
+}
 
 /** GitHub grows this enum (`duplicate` arrived after the decoder was written, and one such issue
  *  failed the WHOLE scan as malformed, so that repository never synced). A value we do not know
@@ -239,7 +452,12 @@ async function boundedErrorMetadata(response: Response): Promise<string> {
     const documentation = value && string(value.documentation_url, 2_048)
       ? value.documentation_url
       : ''
-    return `${message}\n${documentation}`.toLocaleLowerCase('en-US')
+    // A 422 names its cause in `errors` (strings, or objects with a `message`).
+    const errors = value && Array.isArray(value.errors)
+      ? value.errors.slice(0, 10).map((item) => typeof item === 'string' ? item : object(item)?.message)
+        .filter((item): item is string => typeof item === 'string')
+      : []
+    return [message, documentation, ...errors].join('\n').toLocaleLowerCase('en-US')
   } catch {
     return ''
   }
@@ -432,15 +650,7 @@ export class GitHubIssuesClient {
         !body.trim()) {
       throw new GitHubClientError('invalid-request')
     }
-    const response = await this.request(`/repos/${repository}/issues/${issueNumber}/comments`, {
-      method: 'POST',
-      body: JSON.stringify({ body })
-    })
-    const value = object(await this.json(response))
-    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) {
-      throw new GitHubClientError('malformed-response')
-    }
-    return { id: Number(value.id) }
+    return this.postForId(`/repos/${repository}/issues/${issueNumber}/comments`, { body })
   }
 
   /**
@@ -459,6 +669,452 @@ export class GitHubIssuesClient {
     }
   }
 
+  /** One pull request's overview (`GET /pulls/{n}`), read when its node mounts or refreshes. */
+  async getPull(repository: string, pullNumber: number): Promise<GitHubPullDetail> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const value = await this.json(await this.request(`/repos/${repository}/pulls/${pullNumber}`, { method: 'GET' }))
+    const decoded = pullDetailFrom(value)
+    if (!decoded) throw new GitHubClientError('malformed-response')
+    return decoded
+  }
+
+  /** Submit one review (`POST /pulls/{n}/reviews`) against `commitId`, the head the user saw, so
+   *  GitHub ties it to that commit. An empty body is left out (an approval needs none). */
+  async reviewPull(
+    repository: string,
+    pullNumber: number,
+    review: { event: PullReviewEvent; body: string; commitId: string; comments?: PullLineDraft[] }
+  ): Promise<{ id: number }> {
+    safeRepository(repository)
+    const comments = review?.comments ?? []
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !REVIEW_EVENTS.has(review?.event) ||
+        typeof review.commitId !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(review.commitId) ||
+        typeof review.body !== 'string' || review.body.length > 60_000 ||
+        !Array.isArray(comments) || comments.length > MAX_PULL_REVIEW_COMMENTS || !comments.every(isPullLineDraft)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    return this.postForId(`/repos/${repository}/pulls/${pullNumber}/reviews`, {
+      event: review.event, ...(review.body.trim() ? { body: review.body } : {}), commit_id: review.commitId,
+      ...(comments.length
+        ? { comments: comments.map(({ path, line, side, body }) => ({ path, line, side, body })) }
+        : {})
+    })
+  }
+
+  /** The merge methods the repository allows, and whether it allows auto-merge (`GET /repos/{r}`).
+   *  GitHub sends the `allow_*` flags only to a token that may push; without them nothing is offered. */
+  async repoMergeMethods(repository: string): Promise<{ methods: PullMergeMethod[]; autoMerge: boolean }> {
+    const value = object(await this.json(await this.request(`/repos/${safeRepository(repository)}`, { method: 'GET' })))
+    if (!value) throw new GitHubClientError('malformed-response')
+    return {
+      methods: MERGE_METHODS.filter(([, flag]) => value[flag] === true).map(([method]) => method),
+      autoMerge: value.allow_auto_merge === true
+    }
+  }
+
+  /** The people with access to the repository (`GET /collaborators`), first page of 100. */
+  async listCollaborators(repository: string): Promise<GitHubIssueUser[]> {
+    const value = await this.json(await this.request(`/repos/${safeRepository(repository)}/collaborators?per_page=100`, { method: 'GET' }))
+    if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
+    return value.flatMap((user) => issueUser(user) ?? [])
+  }
+
+  /** Ask one user to review a PR (`POST /pulls/{n}/requested_reviewers`). */
+  async requestPullReviewer(repository: string, pullNumber: number, login: string): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !GITHUB_LOGIN.test(login)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    await this.request(`/repos/${repository}/pulls/${pullNumber}/requested_reviewers`, {
+      method: 'POST', body: JSON.stringify({ reviewers: [login] })
+    })
+  }
+
+  /** Add or remove one label, by name, on the PR's issue (`POST` / `DELETE /issues/{n}/labels`). */
+  async setPullLabel(repository: string, pullNumber: number, label: string, add: boolean): Promise<void> {
+    safeRepository(repository)
+    // `.` and `..` would resolve as path segments in the DELETE URL.
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !string(label, 50) || !label.trim() || /^\.{1,2}$/.test(label) ||
+        typeof add !== 'boolean') {
+      throw new GitHubClientError('invalid-request')
+    }
+    const path = `/repos/${repository}/issues/${pullNumber}/labels`
+    await this.request(add ? path : `${path}/${encodeURIComponent(label)}`,
+      add ? { method: 'POST', body: JSON.stringify({ labels: [label] }) } : { method: 'DELETE' })
+  }
+
+  /** Add or remove one assignee, by login, on the PR's issue (`POST` / `DELETE /issues/{n}/assignees`). */
+  async setPullAssignee(repository: string, pullNumber: number, login: string, add: boolean): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !GITHUB_LOGIN.test(login) || typeof add !== 'boolean') {
+      throw new GitHubClientError('invalid-request')
+    }
+    await this.request(`/repos/${repository}/issues/${pullNumber}/assignees`, {
+      method: add ? 'POST' : 'DELETE', body: JSON.stringify({ assignees: [login] })
+    })
+  }
+
+  /** Close (`open` false) or reopen the PR (`PATCH /pulls/{n}`). */
+  async setPullState(repository: string, pullNumber: number, open: boolean): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || typeof open !== 'boolean') throw new GitHubClientError('invalid-request')
+    await this.request(`/repos/${repository}/pulls/${pullNumber}`, {
+      method: 'PATCH', body: JSON.stringify({ state: open ? 'open' : 'closed' })
+    })
+  }
+
+  /** Mark a draft PR ready for review (GraphQL `markPullRequestReadyForReview`). */
+  async markPullReady(repository: string, pullNumber: number): Promise<void> {
+    const id = await this.pullNodeId(repository, pullNumber)
+    await this.graphqlWrite(
+      'mutation($id:ID!){ markPullRequestReadyForReview(input:{pullRequestId:$id}){ clientMutationId } }', { id })
+  }
+
+  /** Delete one branch of this repository (`DELETE /git/refs/heads/{branch}`). The caller decides it may go. */
+  async deleteBranchRef(repository: string, branch: string): Promise<void> {
+    safeRepository(repository)
+    if (!isPullBranchName(branch)) throw new GitHubClientError('invalid-request')
+    await this.request(`/repos/${repository}/git/refs/heads/${branch.split('/').map(encodeURIComponent).join('/')}`, { method: 'DELETE' })
+  }
+
+  /** Open a pull request (`POST /pulls`) from `head`, a branch of this repository, into `base`. */
+  async createPull(repository: string, pull: PullCreateDraft): Promise<{ number: number }> {
+    safeRepository(repository)
+    if (!isPullCreateDraft(pull)) throw new GitHubClientError('invalid-request')
+    const { head, base, title, body, draft } = pull
+    const value = object(await this.json(await this.request(`/repos/${repository}/pulls`, {
+      method: 'POST', body: JSON.stringify({ head, base, title, body, draft })
+    })))
+    if (!value || !positiveInteger(Number(value.number), 2_147_483_647)) throw new GitHubClientError('malformed-response')
+    return { number: Number(value.number) }
+  }
+
+  /** "New pull request"'s start: the default branch (`GET /repos/{r}`) and the open PR whose head is
+   *  `head` on this repository (`GET /pulls?head=owner:head`), if there is one. */
+  async pullForBranch(repository: string, head: string): Promise<{ defaultBranch: string; existing?: number }> {
+    const [owner] = safeRepository(repository).split('/')
+    if (!isPullBranchName(head)) throw new GitHubClientError('invalid-request')
+    const repo = object(await this.json(await this.request(`/repos/${repository}`, { method: 'GET' })))
+    if (!repo || !isPullBranchName(repo.default_branch)) throw new GitHubClientError('malformed-response')
+    const query = new URLSearchParams({ head: `${owner}:${head}`, state: 'open', per_page: '1' })
+    const pulls = await this.json(await this.request(`/repos/${repository}/pulls?${query}`, { method: 'GET' }))
+    if (!Array.isArray(pulls) || pulls.length > 1) throw new GitHubClientError('malformed-response')
+    const existing = Number(object(pulls[0])?.number)
+    return { defaultBranch: repo.default_branch, ...(positiveInteger(existing, 2_147_483_647) ? { existing } : {}) }
+  }
+
+  /** Merge a PR (`PUT /pulls/{n}/merge`) only if its head is still `sha`, the commit the user saw:
+   *  GitHub answers 409 when the head moved and 405 when the PR cannot merge. */
+  async mergePull(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !MERGE_METHODS.some(([method]) => method === merge?.method) ||
+        typeof merge.sha !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(merge.sha)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    // ponytail: a 2xx is the merge; its body (the merge commit) is not needed by anyone.
+    await this.request(`/repos/${repository}/pulls/${pullNumber}/merge`, {
+      method: 'PUT', body: JSON.stringify({ merge_method: merge.method, sha: merge.sha })
+    })
+  }
+
+  /** "Update branch" (`PUT /pulls/{n}/update-branch`): merge the base into the head, only if the
+   *  head is still `sha`, the commit the user saw. GitHub answers 202 and does it in the background. */
+  async updatePullBranch(repository: string, pullNumber: number, sha: string): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || typeof sha !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    await this.request(`/repos/${repository}/pulls/${pullNumber}/update-branch`, {
+      method: 'PUT', body: JSON.stringify({ expected_head_sha: sha })
+    })
+  }
+
+  /** "Merge when ready": GitHub's auto-merge (GraphQL `enablePullRequestAutoMerge`) with `method`,
+   *  only if the head is still `sha` (`expectedHeadOid`), the commit the user saw. */
+  async enablePullAutoMerge(repository: string, pullNumber: number, merge: { method: PullMergeMethod; sha: string }): Promise<void> {
+    if (!MERGE_METHODS.some(([method]) => method === merge?.method) ||
+        typeof merge.sha !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(merge.sha)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const id = await this.pullNodeId(repository, pullNumber)
+    await this.graphqlWrite(
+      'mutation($id:ID!,$method:PullRequestMergeMethod!,$sha:GitObjectID!){ enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method,expectedHeadOid:$sha}){ clientMutationId } }',
+      { id, method: merge.method.toUpperCase(), sha: merge.sha })
+  }
+
+  /** Cancel "Merge when ready" (GraphQL `disablePullRequestAutoMerge`). */
+  async disablePullAutoMerge(repository: string, pullNumber: number): Promise<void> {
+    const id = await this.pullNodeId(repository, pullNumber)
+    await this.graphqlWrite(
+      'mutation($id:ID!){ disablePullRequestAutoMerge(input:{pullRequestId:$id}){ clientMutationId } }', { id })
+  }
+
+  /** The signed-in user's "Viewed" mark per changed file (GraphQL `files.viewerViewedState`), at
+   *  most `MAX_VIEWED_PAGES` pages of 100, the same 300 files the Files tab lists. */
+  async pullViewedStates(repository: string, pullNumber: number): Promise<Record<string, PullViewedState>> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const states: Record<string, PullViewedState> = {}
+    let after: string | undefined
+    for (let read = 0; read < MAX_VIEWED_PAGES; read += 1) {
+      const body = await this.graphql(PULL_VIEWED_QUERY, { owner, name, number: pullNumber, ...(after ? { after } : {}) })
+      const files = object(object(object(object(object(body)?.data)?.repository)?.pullRequest)?.files)
+      const nodes = files?.nodes
+      const info = object(files?.pageInfo)
+      if (!Array.isArray(nodes) || !info) throw new GitHubClientError('malformed-response')
+      for (const node of nodes) {
+        const { path, viewerViewedState: state } = object(node) ?? {}
+        if (!isPullPath(path) || (state !== 'VIEWED' && state !== 'UNVIEWED' && state !== 'DISMISSED')) {
+          throw new GitHubClientError('malformed-response')
+        }
+        states[path] = state
+      }
+      if (info.hasNextPage !== true) break
+      if (!string(info.endCursor, 1_024) || !info.endCursor) throw new GitHubClientError('malformed-response')
+      after = info.endCursor
+    }
+    return states
+  }
+
+  /** Tick or clear GitHub's own "Viewed" mark on one file (GraphQL `markFileAsViewed` /
+   *  `unmarkFileAsViewed`), as the signed-in user. */
+  async setFileViewed(repository: string, pullNumber: number, path: string, viewed: boolean): Promise<void> {
+    if (!isPullPath(path) || typeof viewed !== 'boolean') throw new GitHubClientError('invalid-request')
+    const id = await this.pullNodeId(repository, pullNumber)
+    const mutation = viewed ? 'markFileAsViewed' : 'unmarkFileAsViewed'
+    await this.graphqlWrite(
+      `mutation($id:ID!,$path:String!){ ${mutation}(input:{pullRequestId:$id,path:$path}){ clientMutationId } }`, { id, path })
+  }
+
+  /** Resolve or unresolve the review thread whose first comment is `threadId` (GraphQL
+   *  `resolveReviewThread` / `unresolveReviewThread`). The thread's GraphQL id is looked up here,
+   *  never taken from a caller. ponytail: the first 100 threads, the same cap the resolved read has. */
+  async setReviewThreadResolved(repository: string, pullNumber: number, threadId: number, resolved: boolean): Promise<void> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !positiveInteger(threadId, Number.MAX_SAFE_INTEGER) ||
+        typeof resolved !== 'boolean') throw new GitHubClientError('invalid-request')
+    const body = await this.graphql(PULL_THREAD_IDS_QUERY, { owner, name, number: pullNumber })
+    const nodes = object(object(object(object(object(body)?.data)?.repository)?.pullRequest)?.reviewThreads)?.nodes
+    if (graphQLErrors(body).length || !Array.isArray(nodes)) throw new GitHubClientError('malformed-response')
+    const thread = nodes.map(object).find((node) => {
+      const comments = object(node?.comments)?.nodes
+      return Array.isArray(comments) && object(comments[0])?.databaseId === threadId
+    })
+    const id = thread?.id
+    // No such thread on this PR: GitHub would refuse it too.
+    if (!string(id, 256) || !id) throw new GitHubClientError('request-failed', 422)
+    const mutation = resolved ? 'resolveReviewThread' : 'unresolveReviewThread'
+    await this.graphqlWrite(`mutation($id:ID!){ ${mutation}(input:{threadId:$id}){ thread{ id } } }`, { id })
+  }
+
+  /** One review comment as "Apply suggestion" needs it (`GET /pulls/comments/{id}`). */
+  async pullSuggestionComment(repository: string, commentId: number): Promise<PullSuggestionComment> {
+    safeRepository(repository)
+    if (!positiveInteger(commentId, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
+    const item = object(await this.json(await this.request(`/repos/${repository}/pulls/comments/${commentId}`, { method: 'GET' })))
+    const pullNumber = Number(/\/pulls\/(\d+)$/.exec(string(item?.pull_request_url, 2_048) ? item!.pull_request_url as string : '')?.[1])
+    const lineOf = (value: unknown): number | null | undefined =>
+      value === null || value === undefined ? null : positiveInteger(Number(value), 1_000_000) ? Number(value) : undefined
+    const line = lineOf(item?.line)
+    const startLine = lineOf(item?.start_line)
+    if (!item || !positiveInteger(pullNumber, 2_147_483_647) || !isPullPath(item.path) || !string(item.body, 262_144) ||
+        !isCommitSha(item.commit_id) ||
+        line === undefined || startLine === undefined) throw new GitHubClientError('malformed-response')
+    const login = object(item.user)?.login
+    return {
+      pullNumber, path: item.path, side: item.side === 'LEFT' ? 'LEFT' : 'RIGHT',
+      startSide: item.start_side === 'LEFT' ? 'LEFT' : 'RIGHT',
+      line, startLine, commitId: item.commit_id,
+      body: item.body, author: typeof login === 'string' && GITHUB_LOGIN.test(login) ? login : null
+    }
+  }
+
+  /** One text file at one commit with its blob SHA (`GET /contents/{path}?ref=`), for a commit
+   *  pinned to that SHA. A file the contents API sends no text for (binary, over 1 MB) is refused. */
+  async fileBlobAt(repository: string, path: string, ref: string): Promise<{ sha: string; text: string }> {
+    safeRepository(repository)
+    if (!repoPath(path) || !isCommitSha(ref)) throw new GitHubClientError('invalid-request')
+    const encoded = path.split('/').map(encodeURIComponent).join('/')
+    const item = object(await this.json(await this.request(`/repos/${repository}/contents/${encoded}?ref=${ref}`, { method: 'GET' })))
+    if (!item || !isCommitSha(item.sha)) throw new GitHubClientError('malformed-response')
+    if (item.type !== 'file' || item.encoding !== 'base64' || typeof item.content !== 'string') {
+      throw new GitHubClientError('request-failed', 422)
+    }
+    try {
+      return { sha: item.sha, text: new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(item.content, 'base64')) }
+    } catch {
+      throw new GitHubClientError('request-failed', 422)
+    }
+  }
+
+  /** Commit one file to `branch` (`PUT /contents/{path}`), only if its blob is still `sha`: GitHub
+   *  answers 409 when the file changed. */
+  async putFile(repository: string, file: { path: string; branch: string; sha: string; text: string; message: string }): Promise<void> {
+    safeRepository(repository)
+    if (!repoPath(file?.path) || !isPullBranchName(file.branch) || !isCommitSha(file.sha) ||
+        typeof file.text !== 'string' || !string(file.message, 1_024) || !file.message) throw new GitHubClientError('invalid-request')
+    const encoded = file.path.split('/').map(encodeURIComponent).join('/')
+    // ponytail: a 2xx is the commit; its body (the new blob and commit) is not needed by anyone.
+    await this.request(`/repos/${repository}/contents/${encoded}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        message: file.message, content: Buffer.from(file.text, 'utf8').toString('base64'), sha: file.sha, branch: file.branch
+      })
+    })
+  }
+
+  /** The PR's GraphQL id, looked up here from the repository and number (never taken from a caller). */
+  private async pullNodeId(repository: string, pullNumber: number): Promise<string> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const body = await this.graphqlWrite(
+      'query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ id } } }',
+      { owner, name, number: pullNumber })
+    const id = object(object(object(object(body)?.data)?.repository)?.pullRequest)?.id
+    if (!string(id, 256) || !id) throw new GitHubClientError('malformed-response')
+    return id
+  }
+
+  /** A GraphQL call whose refusal arrives as `errors` in a 200: a permission refusal reads as a 403,
+   *  a missing object as a 404 and anything else as a 422, so the write maps it like a REST one.
+   *  ponytail: GitHub's message (auto-merge not allowed, PR already clean) is not kept. */
+  private async graphqlWrite(query: string, variables: Record<string, string | number>): Promise<unknown> {
+    const body = await this.graphql(query, variables)
+    const errors = graphQLErrors(body)
+    if (errors.some((error) => error.type === 'FORBIDDEN' || error.type === 'INSUFFICIENT_SCOPES')) {
+      throw new GitHubClientError('request-failed', 403)
+    }
+    if (errors.some((error) => error.type === 'NOT_FOUND')) throw new GitHubClientError('request-failed', 404)
+    if (errors.length) throw new GitHubClientError('request-failed', 422)
+    return body
+  }
+
+  /** One page of a PR's changed files (`GET /pulls/{n}/files`), for the Files tab. */
+  async listPullFiles(repository: string, pullNumber: number, page: number): Promise<PullFilesPage> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !positiveInteger(page, 100_000)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`/repos/${repository}/pulls/${pullNumber}/files?per_page=100&page=${page}`, { method: 'GET' })
+    const value = await this.json(response)
+    if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
+    const files = value.map(pullFileFrom)
+    if (files.some((file) => !file)) throw new GitHubClientError('malformed-response')
+    const next = nextPage(response.headers.get('link'))
+    return { files: files as PullFile[], ...(next ? { nextPage: next } : {}) }
+  }
+
+  /** The merge base of two commits (`GET /compare/{base}...{head}`, `merge_base_commit.sha`): the
+   *  commit GitHub diffs a pull request against. */
+  async mergeBase(repository: string, base: string, head: string): Promise<string> {
+    safeRepository(repository)
+    const commit = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+    if (typeof base !== 'string' || !commit.test(base) || typeof head !== 'string' || !commit.test(head)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    // ponytail: page 2 of 1 commit carries merge_base_commit but no file list (measured on cli/cli),
+    // so a big comparison stays far under the response cap.
+    const item = object(await this.json(await this.request(
+      `/repos/${repository}/compare/${base}...${head}?per_page=1&page=2`, { method: 'GET' })))
+    const sha = object(item?.merge_base_commit)?.sha
+    if (typeof sha !== 'string' || !commit.test(sha)) throw new GitHubClientError('malformed-response')
+    return sha
+  }
+
+  /** One file at one commit (`GET /contents/{path}?ref=`). Over 1 MB, or not UTF-8 text, answers
+   *  `unavailable` instead of content. */
+  async getFileAt(repository: string, path: string, ref: string): Promise<PullFileRead> {
+    safeRepository(repository)
+    if (!repoPath(path) || typeof ref !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(ref)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const encoded = path.split('/').map(encodeURIComponent).join('/')
+    const item = object(await this.json(await this.request(`/repos/${repository}/contents/${encoded}?ref=${ref}`, { method: 'GET' })))
+    if (!item || !Number.isSafeInteger(item.size) || (item.size as number) < 0) throw new GitHubClientError('malformed-response')
+    if ((item.size as number) > MAX_FILE_BYTES) return { kind: 'unavailable', reason: 'too-large' }
+    // ponytail: a symlink or submodule entry has no text to diff; it reads as binary.
+    if (item.type !== 'file' || item.encoding !== 'base64' || typeof item.content !== 'string') {
+      return { kind: 'unavailable', reason: 'binary' }
+    }
+    const bytes = Buffer.from(item.content, 'base64')
+    if (bytes.length > MAX_FILE_BYTES) return { kind: 'unavailable', reason: 'too-large' }
+    if (bytes.includes(0)) return { kind: 'unavailable', reason: 'binary' }
+    try {
+      return { kind: 'text', text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
+    } catch {
+      return { kind: 'unavailable', reason: 'binary' }
+    }
+  }
+
+  /** One page of a PR's review comments on diff lines (`GET /pulls/{n}/comments`), oldest first. */
+  async listPullLineComments(repository: string, pullNumber: number, page: number): Promise<PullLineCommentsPage> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !positiveInteger(page, 100_000)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100&page=${page}`, { method: 'GET' })
+    const value = await this.json(response)
+    if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
+    const comments = value.map(lineCommentFrom)
+    if (comments.includes(null)) throw new GitHubClientError('malformed-response')
+    const next = nextPage(response.headers.get('link'))
+    return { comments: comments as PullLineComment[], ...(next ? { nextPage: next } : {}) }
+  }
+
+  /** Post one line comment (`POST /pulls/{n}/comments`): a new thread on `commitId`, the head the
+   *  user saw, or a reply (`in_reply_to`, where GitHub ignores every field but the body). */
+  async createPullLineComment(
+    repository: string,
+    pullNumber: number,
+    comment: PullLineCommentWrite
+  ): Promise<{ id: number }> {
+    safeRepository(repository)
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    let body: Record<string, unknown>
+    if ('inReplyTo' in comment) {
+      if (!positiveInteger(comment.inReplyTo, Number.MAX_SAFE_INTEGER) || !isPullCommentBody(comment.body)) {
+        throw new GitHubClientError('invalid-request')
+      }
+      body = { body: comment.body, in_reply_to: comment.inReplyTo }
+    } else {
+      if (typeof comment?.commitId !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(comment.commitId) ||
+          !isPullLineDraft(comment.draft)) throw new GitHubClientError('invalid-request')
+      const { path, line, side, body: text } = comment.draft
+      body = { body: text, commit_id: comment.commitId, path, line, side }
+    }
+    return this.postForId(`/repos/${repository}/pulls/${pullNumber}/comments`, body)
+  }
+
+  /** One page of a PR's issue comments (`GET /issues/{n}/comments`), for the Conversation tab. */
+  async listPullComments(repository: string, pullNumber: number, page: number): Promise<PullConversationPage> {
+    return this.conversationPage(`/repos/${safeRepository(repository)}/issues/${pullNumber}/comments`, pullNumber, page, 'comment')
+  }
+
+  /** One page of a PR's submitted reviews (`GET /pulls/{n}/reviews`), each with its verdict. */
+  async listPullReviews(repository: string, pullNumber: number, page: number): Promise<PullConversationPage> {
+    return this.conversationPage(`/repos/${safeRepository(repository)}/pulls/${pullNumber}/reviews`, pullNumber, page, 'review')
+  }
+
+  private async conversationPage(
+    path: string, pullNumber: number, page: number, kind: 'comment' | 'review'
+  ): Promise<PullConversationPage> {
+    if (!positiveInteger(pullNumber, 2_147_483_647) || !positiveInteger(page, 100_000)) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const response = await this.request(`${path}?per_page=100&page=${page}`, { method: 'GET' })
+    const value = await this.json(response)
+    if (!Array.isArray(value) || value.length > 100) throw new GitHubClientError('malformed-response')
+    const items: PullConversationItem[] = []
+    for (const candidate of value) {
+      const decoded = conversationItemFrom(candidate, kind)
+      if (decoded === null) throw new GitHubClientError('malformed-response')
+      if (decoded) items.push(decoded)
+    }
+    const next = nextPage(response.headers.get('link'))
+    return { items, ...(next ? { nextPage: next } : {}) }
+  }
+
   /** Per-check detail for one PR — read only when someone opens that PR. */
   async pullRequestChecks(repository: string, pullNumber: number): Promise<GitHubPullChecksResult> {
     const [owner, name] = safeRepository(repository).split('/')
@@ -470,6 +1126,172 @@ export class GitHubIssuesClient {
       if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
       throw error
     }
+  }
+
+  /** The first comment id of each resolved review thread of one PR (graphql-pulls.ts). */
+  async pullResolvedThreads(repository: string, pullNumber: number): Promise<number[]> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const body = await this.graphql(PULL_RESOLVED_THREADS_QUERY, { owner, name, number: pullNumber })
+    try {
+      return parsePullResolvedThreads(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** The pull node sidebar's people, labels and closing issues: one GraphQL read (graphql-pull-sidebar.ts). */
+  async pullSidebar(repository: string, pullNumber: number): Promise<PullSidebarRead> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const body = await this.graphql(PULL_SIDEBAR_QUERY, { owner, name, number: pullNumber })
+    try {
+      return parsePullSidebar(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** One page of a PR's commits, oldest first (graphql-pull-commits.ts). `after` = the cursor of the
+   *  page before; absent = the first page. */
+  async listPullCommits(repository: string, pullNumber: number, after?: string): Promise<PullCommitsPage> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647) || (after !== undefined && !string(after, 1_024))) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const body = await this.graphql(PULL_COMMITS_QUERY, { owner, name, number: pullNumber, ...(after ? { after } : {}) })
+    try {
+      return parsePullCommits(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** One page of a PR's Conversation timeline (graphql-pull-timeline.ts); `after` = the cursor. */
+  async pullTimeline(repository: string, pullNumber: number, after?: string): Promise<PullTimelinePage> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647) || (after !== undefined && !isPullTimelineCursor(after))) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const body = await this.graphql(PULL_TIMELINE_QUERY, { owner, name, number: pullNumber, ...(after ? { after } : {}) })
+    try {
+      return parsePullTimelineResponse(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** One page of an issue's timeline (graphql-issue-timeline.ts); `after` = the cursor. */
+  async issueTimeline(repository: string, issueNumber: number, after?: string): Promise<PullTimelinePage> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(issueNumber, 2_147_483_647) || (after !== undefined && !isPullTimelineCursor(after))) {
+      throw new GitHubClientError('invalid-request')
+    }
+    const body = await this.graphql(ISSUE_TIMELINE_QUERY, { owner, name, number: issueNumber, ...(after ? { after } : {}) })
+    try {
+      return parseIssueTimelineResponse(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** One page of one commit's changed files and its first parent (`GET /commits/{sha}`), for a
+   *  commit's own diff in the Commits tab. */
+  async getCommitFiles(repository: string, sha: string, page: number): Promise<PullCommitFilesPage> {
+    safeRepository(repository)
+    if (!isCommitSha(sha) || !positiveInteger(page, 100_000)) throw new GitHubClientError('invalid-request')
+    const response = await this.request(`/repos/${repository}/commits/${sha}?per_page=100&page=${page}`, { method: 'GET' })
+    const item = object(await this.json(response))
+    if (!item || !Array.isArray(item.files) || item.files.length > 100 || !Array.isArray(item.parents)) {
+      throw new GitHubClientError('malformed-response')
+    }
+    const files = item.files.map(pullFileFrom)
+    if (files.some((file) => !file)) throw new GitHubClientError('malformed-response')
+    const parent = object(item.parents[0])?.sha
+    if (item.parents.length && !isCommitSha(parent)) throw new GitHubClientError('malformed-response')
+    const next = nextPage(response.headers.get('link'))
+    return { files: files as PullFile[], ...(isCommitSha(parent) ? { parent } : {}), ...(next ? { nextPage: next } : {}) }
+  }
+
+  /** The failing step's last lines of one Actions job (`GET /actions/jobs/{id}/logs`, a 302 to a
+   *  signed log URL that is fetched without the token). Only the log's last `MAX_JOB_LOG_TAIL` bytes are kept. */
+  async jobLogTail(repository: string, jobId: number): Promise<string[]> {
+    safeRepository(repository)
+    if (!positiveInteger(jobId, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
+    const redirect = await this.request(`/repos/${repository}/actions/jobs/${jobId}/logs`, { method: 'GET' }, true)
+    const location = redirect.headers.get('location')
+    let url: URL
+    try { url = new URL(location ?? '') } catch { throw new GitHubClientError('malformed-response') }
+    if (url.protocol !== 'https:') throw new GitHubClientError('malformed-response')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
+    try {
+      const response = await this.fetcher(url, { redirect: 'error', signal: controller.signal })
+      if (!response.ok || !response.body) throw new GitHubClientError('request-failed', response.status)
+      // ponytail: a huge log is read to its end but only the tail is held; the cut may split the first line.
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      let held = 0
+      for (let next = await reader.read(); !next.done; next = await reader.read()) {
+        chunks.push(next.value)
+        held += next.value.byteLength
+        while (held - chunks[0].byteLength >= MAX_JOB_LOG_TAIL) held -= chunks.shift()!.byteLength
+      }
+      return failingStepTail(new TextDecoder().decode(Buffer.concat(chunks)), CHECK_LOG_LINES)
+    } catch (error) {
+      throw error instanceof GitHubClientError ? error : new GitHubClientError('request-failed')
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** "Re-run failed" (`POST /actions/runs/{id}/rerun-failed-jobs`): GitHub re-runs the run's failed jobs. */
+  async rerunFailedJobs(repository: string, runId: number): Promise<void> {
+    safeRepository(repository)
+    if (!positiveInteger(runId, Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('invalid-request')
+    await this.request(`/repos/${repository}/actions/runs/${runId}/rerun-failed-jobs`, { method: 'POST' })
+  }
+
+  /** The viewer's latest submitted review on a PR (graphql-pull-since-review.ts); null = none. */
+  async viewerLatestReview(repository: string, pullNumber: number): Promise<PullViewerReview | null> {
+    const [owner, name] = safeRepository(repository).split('/')
+    if (!positiveInteger(pullNumber, 2_147_483_647)) throw new GitHubClientError('invalid-request')
+    const body = await this.graphql(PULL_VIEWER_REVIEW_QUERY, { owner, name, number: pullNumber })
+    try {
+      return parsePullViewerReview(body)
+    } catch (error) {
+      if (error instanceof GraphQLShapeError) throw new GitHubClientError('malformed-response')
+      throw error
+    }
+  }
+
+  /** `GET /compare/{base}...{head}`: how head relates to base, the commits it is ahead by, and the
+   *  files changed (page 1 carries every file, at most 300; one commit per page keeps it small).
+   *  Null = GitHub has no such comparison: a 404 (the base commit is gone) or a 422 (no merge base),
+   *  both what a force-push leaves. */
+  async compareCommits(repository: string, base: string, head: string): Promise<PullCompare | null> {
+    safeRepository(repository)
+    if (!isCommitSha(base) || !isCommitSha(head)) throw new GitHubClientError('invalid-request')
+    let response: Response
+    try {
+      response = await this.request(`/repos/${repository}/compare/${base}...${head}?per_page=1`, { method: 'GET' })
+    } catch (error) {
+      if (error instanceof GitHubClientError && error.code === 'request-failed' && (error.status === 404 || error.status === 422)) return null
+      throw error
+    }
+    const item = object(await this.json(response))
+    const status = item?.status
+    if (!item || (status !== 'ahead' && status !== 'behind' && status !== 'diverged' && status !== 'identical') ||
+        !Number.isSafeInteger(item.ahead_by) || (item.ahead_by as number) < 0 ||
+        !Array.isArray(item.files) || item.files.length > 300) throw new GitHubClientError('malformed-response')
+    const files = item.files.map(pullFileFrom)
+    if (files.some((file) => !file)) throw new GitHubClientError('malformed-response')
+    return { status, aheadBy: item.ahead_by as number, files: files as PullFile[] }
   }
 
   /**
@@ -552,7 +1374,14 @@ export class GitHubIssuesClient {
     return { ...base, description: item.description }
   }
 
-  private async request(path: string, init: RequestInit): Promise<Response> {
+  /** POST `body` as JSON to `path`; the created object's id is the whole answer. */
+  private async postForId(path: string, body: unknown): Promise<{ id: number }> {
+    const value = object(await this.json(await this.request(path, { method: 'POST', body: JSON.stringify(body) })))
+    if (!value || !positiveInteger(Number(value.id), Number.MAX_SAFE_INTEGER)) throw new GitHubClientError('malformed-response')
+    return { id: Number(value.id) }
+  }
+
+  private async request(path: string, init: RequestInit, acceptRedirect = false): Promise<Response> {
     const url = new URL(path, API_ORIGIN)
     if (url.origin !== API_ORIGIN) throw new GitHubClientError('invalid-request')
     const controller = new AbortController()
@@ -581,6 +1410,7 @@ export class GitHubIssuesClient {
       try { this.options.onRateLimit(sample) } catch { /* an observer never breaks a request */ }
     }
     if (response.status === 304) return response
+    if (acceptRedirect && response.status === 302) return response
     if (response.status === 403 || response.status === 429) {
       const retryAfter = Number(response.headers.get('retry-after'))
       const reset = Number(response.headers.get('x-ratelimit-reset')) * 1_000
@@ -606,6 +1436,10 @@ export class GitHubIssuesClient {
       const resource = primary ? response.headers.get('x-ratelimit-resource') ?? undefined : undefined
       throw new GitHubClientError('rate-limited', response.status, retryAt,
         resource && /^[a-z_]{1,32}$/.test(resource) ? resource : undefined)
+    }
+    // GitHub refuses a review of your own pull request with a 422 that says so (no status of its own).
+    if (response.status === 422 && /your own pull request/.test(await boundedErrorMetadata(response))) {
+      throw new GitHubClientError('own-pull', 422)
     }
     if (!response.ok) throw new GitHubClientError('request-failed', response.status)
     return response

@@ -660,6 +660,43 @@ describe('GitHubIssueService', () => {
     expect(page.counts).toEqual({ ungrouped: 1 })
   })
 
+  it('lists open issues of every column for the issues node, and the ones assigned to me', async () => {
+    const me = { id: 7, login: 'me', avatarUrl: '' }
+    const client = new FixtureClient([
+      issue(1, { labels: [{ id: 1, name: 'status:todo', color: 'd73a4a' }], assignees: [me] }),
+      issue(2, { labels: [{ id: 2, name: 'status:doing', color: '0a84ff' }] }),
+      issue(3, { state: 'closed', assignees: [me] })
+    ])
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir), coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => context(client, { userId: '7' })
+    })
+    await service.refresh({ projectId: 'project-1', full: true })
+    const open = await service.query({ projectId: 'project-1', columnId: null, anyColumn: true, openOnly: true, pageSize: 50 })
+    expect(open.items.map((item) => item.number)).toEqual([2, 1])
+    const mine = await service.query({
+      projectId: 'project-1', columnId: null, anyColumn: true, openOnly: true, assignedToMe: true, pageSize: 50
+    })
+    expect(mine.items.map((item) => item.number)).toEqual([1])
+    // A node opened for another repository than the project's gets no list.
+    await expect(service.query({ projectId: 'project-1', columnId: null, anyColumn: true, pageSize: 50, repository: 'x/y' }))
+      .rejects.toThrow('repository-mismatch')
+    expect((await service.query({ projectId: 'project-1', columnId: null, anyColumn: true, openOnly: true, pageSize: 50, repository: 'O/R' })).items)
+      .toHaveLength(2)
+  })
+
+  it('refuses an oversized search or label filter before reading anything', async () => {
+    const service = new GitHubIssueService({
+      cache: new GitHubIssueCache(userDataDir), coordinator: new GitHubRequestCoordinator(),
+      contextForProject: async () => { throw new Error('must not resolve') }
+    })
+    const base = { projectId: 'project-1', columnId: null, pageSize: 50 }
+    await expect(service.query({ ...base, search: 'x'.repeat(201) })).rejects.toThrow('invalid-query')
+    await expect(service.query({ ...base, labelFilter: ['x'.repeat(101)] })).rejects.toThrow('invalid-query')
+    await expect(service.query({ ...base, labelFilter: Array.from({ length: 51 }, (_, i) => `l${i}`) }))
+      .rejects.toThrow('invalid-query')
+  })
+
   it('closes in completion, reopens outside it, and preserves unrelated labels', async () => {
     const shown = issue(42, {
       state: 'closed',

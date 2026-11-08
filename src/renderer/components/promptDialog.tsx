@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { InputDialog } from './InputDialog'
+import { InputDialog, type PromptChoice } from './InputDialog'
 
 // Promise-based, singleton in-app replacement for window.prompt (unsupported in Electron).
 // Call `promptDialog({ message })` and await a `string` (submitted) or `null` (cancelled).
@@ -11,6 +11,7 @@ interface PromptOptions {
   placeholder?: string
   confirmLabel?: string
   maxLength?: number
+  choices?: PromptChoice[]
 }
 
 interface PromptState {
@@ -63,6 +64,7 @@ export function PromptDialogHost() {
       placeholder={current.placeholder}
       confirmLabel={current.confirmLabel}
       maxLength={current.maxLength}
+      choices={current.choices}
       onSubmit={submit}
       onCancel={cancel}
     />

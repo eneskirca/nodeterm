@@ -12,6 +12,7 @@ import {
   type AgentMessagingDeps
 } from '../core/agents/agent-messaging'
 import { paneOwnerProject } from '../core/agents/pane-ownership'
+import type { AgentMessageOutcome } from '../core/agents/agent-message-decide'
 import { StationNoticeMonitor } from '../core/agents/station-notice'
 import {
   StationOutcomeStore,
@@ -70,6 +71,8 @@ export interface ServerCanvasControlDeps {
    *  what `open-agent --issue #N` resolves against. Absent = only an explicitly configured
    *  repository counts. See HeadlessNodeFactoryDeps.issueRepository. */
   issueRepository?: (projectId: string) => Promise<string | null>
+  /** `open-pr`: see HeadlessNodeFactoryDeps.pullRepository. */
+  pullRepository?: (projectId: string) => Promise<{ repository?: string; approved: boolean } | undefined>
   /** The GitHub service's cache reads behind `issues` / `prs` (core/github/control-read.ts).
    *  Absent = those verbs answer that the GitHub lane is unavailable here. */
   githubRead?: Pick<GitHubReadDeps, 'snapshot' | 'dispatch'>
@@ -91,6 +94,10 @@ export interface ServerCanvasControl {
   stationOutcomes: StationOutcomeStore
   /** Stations with unfinished handed-over work in THIS server run (plain `--after` holds on them). */
   stationHandovers: StationHandoverTracker
+  /** A pull node's Watch wake (F-08, core/github/pull-watch.ts): the pull node to its linked agent. */
+  deliverWatchWake(req: { pullNodeId: string; agentNodeId: string; body: string }): Promise<AgentMessageOutcome>
+  /** The per-project agent messaging switch that wake passes, for the Watch switch's warning. */
+  watchMessagingEnabled(projectId: string): boolean
   stop(): void
 }
 
@@ -210,6 +217,7 @@ export async function initServerCanvasControl(
     // reflector). On a project the canvas authority governs, only what it heard as ops is written.
     publishProject: (project: Project) => platform().broadcast(IPC.workspaceServerChange, project),
     issueRepository: deps.issueRepository,
+    pullRepository: deps.pullRepository,
     // An issue card's run history lives in the same board log the messaging trace writes to.
     appendBoardLog: (projectId, entry) => deps.boardLog.append(projectId, entry)
   })
@@ -252,6 +260,14 @@ export async function initServerCanvasControl(
   if (deps.ownsDurableState === false) queueFile.standDown()
   const queue = createDeliveryQueue(messaging, { durable: queueFile })
   messaging.queue = queue
+  // Watch wakes (F-08) ride every messaging gate EXCEPT the creator ledger: that ledger answers
+  // "may this AGENT control that one", and a wake's author is the app, on the owner's switch, to the
+  // agent the user linked to the pull node (the body is composed in core). Their own queue, so a
+  // queued wake is flushed against these same deps.
+  const { callerOwnsTarget: _creatorLedger, ...watchBase } = messaging
+  const watchMessaging: AgentMessagingDeps = watchBase
+  const watchQueue = createDeliveryQueue(watchMessaging)
+  watchMessaging.queue = watchQueue
 
   // Station-failure notices. The recipient is the CREATOR LEDGER's answer — who opened the station
   // during this server run — which is this edition's ownership rule for every verb; a restart
@@ -293,6 +309,7 @@ export async function initServerCanvasControl(
     openAgent: (sourceNodeId, args, verified) => factory.openAgent(sourceNodeId, args, verified),
     close: (sourceNodeId, args, verified) => factory.close(sourceNodeId, args, verified),
     link: (sourceNodeId, args, verified) => factory.link(sourceNodeId, args, verified),
+    openPr: (sourceNodeId, args, verified) => factory.openPr(sourceNodeId, args, verified),
     group: (sourceNodeId, args) => factory.group(sourceNodeId, args),
     rename: (sourceNodeId, args) => factory.rename(sourceNodeId, args),
     color: (sourceNodeId, args) => factory.color(sourceNodeId, args),
@@ -377,12 +394,16 @@ export async function initServerCanvasControl(
       // A station starting a DIFFERENT session drops its old report before anything reads it.
       stationOutcomes.onAgentEvent(event)
       onMessagingAgentEvent(event, queue)
+      if (event.state === 'done') void watchQueue.onTargetIdle(event.nodeId)
       factory.onAgentEvent(event)
       stationNotices.onAgentEvent(event)
     },
     stationNotices,
     stationOutcomes,
     stationHandovers,
+    deliverWatchWake: async ({ pullNodeId, agentNodeId, body }) =>
+      (await deliverFromControl({ verb: 'send', sourceNodeId: pullNodeId, targetNodeId: agentNodeId, body }, watchMessaging)).outcome,
+    watchMessagingEnabled: (projectId) => watchMessaging.messagingEnabled(projectId),
     stop: () => {
       factory.stop()
       queue.resetForTests()

@@ -425,6 +425,10 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.gitRemoteCommitUrl,
   IPC.gitMerge,
   IPC.gitRebase,
+  // Also HOST_ONLY (host-control.ts): the behind-main fetch and update are the host user's own.
+  IPC.gitMainDrift,
+  IPC.gitUpdateFromMain,
+  IPC.gitPullWorktreeAdd,
   IPC.gitDeleteBranch,
   IPC.gitRenameBranch,
   IPC.gitFetch,
@@ -457,6 +461,24 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.githubIssuesPullStatus,
   IPC.githubIssuesChasePulls,
   IPC.githubIssuesPullChecks,
+  IPC.githubIssuesPullDetail,
+  IPC.githubIssuesPullConversation,
+  IPC.githubIssuesPullTimeline,
+  IPC.githubIssuesIssueConversation,
+  IPC.githubIssuesIssueTimeline,
+  IPC.githubIssuesPullFiles,
+  IPC.githubIssuesPullFileContents,
+  IPC.githubIssuesPullCommits,
+  IPC.githubIssuesPullCommitFiles,
+  IPC.githubIssuesPullCommitFileContents,
+  IPC.githubIssuesPullCheckLog,
+  IPC.githubIssuesPullSinceReview,
+  IPC.githubIssuesPullSinceReviewFileContents,
+  IPC.githubIssuesPullWatch,
+  IPC.githubIssuesRepoMergeMethods,
+  IPC.githubIssuesRepoCollaborators,
+  IPC.githubIssuesRepoLabels,
+  IPC.githubIssuesPullForBranch,
   IPC.githubIssuesClaimPullAutoMove,
   IPC.githubIssuesNotePullWaits,
   IPC.githubProjectAvatar,
@@ -507,9 +529,56 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.presencePeer
 ])
 
+/**
+ * Channels only an OWNER may send: writes made with the host owner's own GitHub token (a comment or
+ * review posts as that person). Editors are refused too; Editor is shell access, not identity. The
+ * guard test counts these as decided.
+ */
+export const OWNER_ONLY: ReadonlySet<string> = new Set<string>([
+  IPC.githubIssuesPullComment,
+  IPC.githubIssuesPullReview,
+  IPC.githubIssuesPullMerge,
+  IPC.githubIssuesPullRequestReviewer,
+  IPC.githubIssuesPullLineComment,
+  IPC.githubIssuesPullCreate,
+  IPC.githubIssuesPullUpdateBranch,
+  IPC.githubIssuesPullAutoMerge,
+  IPC.githubIssuesPullAutoMergeOff,
+  IPC.githubIssuesPullFileViewed,
+  IPC.githubIssuesPullThreadResolved,
+  IPC.githubIssuesPullApplySuggestion,
+  IPC.githubIssuesPullLabels,
+  IPC.githubIssuesPullAssignees,
+  IPC.githubIssuesPullState,
+  IPC.githubIssuesPullReady,
+  IPC.githubIssuesPullDeleteBranch,
+  IPC.githubIssuesIssueComment,
+  IPC.githubIssuesPullRerunFailed,
+  // Notes for agents (F-07): not GitHub writes, but they write the owner's own disk.
+  IPC.pullNotesList,
+  IPC.pullNotesAdd,
+  IPC.pullNotesDelete,
+  IPC.pullNotesClear,
+  // Not a GitHub write, but it makes this machine poll with its token and wake an agent (F-08).
+  IPC.githubIssuesPullWatchSet
+])
+
+/** The refusal for an OWNER_ONLY channel that is not a GitHub write. */
+const OWNER_ONLY_LOCAL: Readonly<Record<string, string>> = {
+  [IPC.pullNotesList]: 'Only owners can keep notes for agents here.',
+  [IPC.pullNotesAdd]: 'Only owners can keep notes for agents here.',
+  [IPC.pullNotesDelete]: 'Only owners can keep notes for agents here.',
+  [IPC.pullNotesClear]: 'Only owners can keep notes for agents here.',
+  [IPC.githubIssuesPullWatchSet]: 'Only owners can switch Watch on or off here.'
+}
+
 const ROLE_NAME: Readonly<Record<string, string>> = { owner: 'Owners', editor: 'Editors', commenter: 'Commenters', viewer: 'Viewers' }
 
 export function decideAccess(_kind: 'req' | 'cast', method: string, args: unknown[], ctx: AccessContext): AccessDecision {
+  if (typeof method === 'string' && OWNER_ONLY.has(method)) {
+    return ctx.role === 'owner' ? OK
+      : no(Object.hasOwn(OWNER_ONLY_LOCAL, method) ? OWNER_ONLY_LOCAL[method] : 'Only owners can post to GitHub from here.')
+  }
   if (isEditor(ctx.role)) return OK
   // Own keys only: a method named `constructor` must not find Object.prototype's.
   const check =

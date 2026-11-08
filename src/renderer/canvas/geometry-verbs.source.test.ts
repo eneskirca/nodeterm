@@ -27,7 +27,7 @@ function between(text: string, start: string, end: string): string {
   return code(text.slice(at, stop))
 }
 
-const dispatch = between(src, 'return api.onAgentControl(async ({ requestId, sourceNodeId, verb, args }) => {', "case 'open-terminal': {")
+const dispatch = between(src, 'const runControl = async (', "case 'open-terminal': {")
 const arrangeCase = between(src, "          case 'arrange':\n", "\n          case 'link': {")
 const groupBranch = arrangeCase.slice(arrangeCase.indexOf("if (verb === 'arrange' && args.group)"), arrangeCase.indexOf('const ids ='))
 const topBranch = groupBranch.slice(groupBranch.indexOf('if (isTopLevelGroupArg(gid))'), groupBranch.indexOf('const groupLayout'))

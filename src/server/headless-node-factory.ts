@@ -21,6 +21,7 @@ import {
   type NodeColor
 } from '../shared/node-colors'
 import { applyStickyWrite, parseStickyArgs, resolveStickyRef } from '../shared/sticky-write'
+import { openPrArgsRefusal, planOpenPr } from '../shared/open-pr-verb'
 import type { HeadlessLaunchFailure, HeadlessLaunchResult } from '../shared/headless-launch'
 import { localNodePtyOptions } from '../shared/node-pty-options'
 import type { WorkspaceStore } from '../core/workspace-store'
@@ -162,6 +163,9 @@ export interface HeadlessNodeFactoryDeps {
    * repository counts, and a `#N` against a board with none is refused — never guessed.
    */
   issueRepository?: (projectId: string) => Promise<string | null>
+  /** `open-pr`: the host's answer for the project's repository and whether this machine approved
+   *  it (the GitHub host controller's status). Absent/throwing = refused, never guessed. */
+  pullRepository?: (projectId: string) => Promise<{ repository?: string; approved: boolean } | undefined>
   /** Append to a project's board log (the issue card's run history). Absent = no history is
    *  written; the session still opens. */
   appendBoardLog?: (projectId: string, entry: BoardLogEntry) => Promise<boolean>
@@ -252,7 +256,7 @@ function token(): string {
   return randomBytes(4).toString('hex')
 }
 
-function nextId(prefix: 'term' | 'sticky' | 'group'): string {
+function nextId(prefix: 'term' | 'sticky' | 'group' | 'pull'): string {
   return `${prefix}-${Date.now().toString(36)}-${token()}`
 }
 
@@ -1753,6 +1757,67 @@ export class HeadlessNodeFactory {
           ...(issueRef ? { issue: `${issueRef.owner}/${issueRef.repo}#${issueRef.number}` } : {}),
           ...(successHold ? { afterSuccess: successHold.deps } : {})
         }
+      }
+    })
+  }
+
+  /**
+   * `open-pr --pr <n>` (@shared/open-pr-verb): a pull request node beside the caller, context-linked
+   * to it, or the existing node for that PR linked again. Writes the canvas only; no GitHub call.
+   */
+  openPr(sourceNodeId: string, args: Record<string, string>, verified: boolean): Promise<ServerControlReply> {
+    return this.runExclusive(async () => {
+      if (!verified) return { ok: false, error: 'open-pr-identity-refused: Server Edition open-pr requires verified node identity' }
+      const workspace = await this.loadForEdit()
+      const source = sourceProject(workspace, sourceNodeId)
+      if (!source) return { ok: false, error: 'source node is not in exactly one saved project' }
+      if (!sourceCanControl(source.node, this.deps.agentIdOf)) {
+        return { ok: false, error: 'source node is not a control-capable agent' }
+      }
+      const repo = openPrArgsRefusal(args)
+        ? undefined
+        : await this.deps.pullRepository?.(source.project.id).catch(() => undefined)
+      const plan = planOpenPr({
+        args,
+        repo,
+        pullNodes: source.project.nodes.filter((n) => n.kind === 'pull').map((n) => ({ id: n.id, pull: n.pull }))
+      })
+      if (plan.kind === 'refuse') return { ok: false, error: plan.error }
+      let id = plan.kind === 'reuse' ? plan.nodeId : ''
+      if (plan.kind === 'create') {
+        // ponytail: the built-in pull size (renderer/state/workspace.ts PULL_SIZE); the user's default
+        // node size for pull nodes is not read here.
+        const size = { width: 860, height: 600 }
+        id = nextId('pull')
+        source.project.nodes.push({
+          id,
+          kind: 'pull',
+          position: placeRight(source.project, source.node, size),
+          size,
+          title: `PR #${plan.ref.pullNumber}`,
+          color: '#a371f7',
+          group: null,
+          openedBy: sourceNodeId,
+          pull: plan.ref
+        })
+        const ropes = [...(source.project.ropes ?? [])]
+        addEdge(ropes, sourceNodeId, id, 'ctrl')
+        source.project.ropes = ropes
+      }
+      const bridges = [...(source.project.bridges ?? [])]
+      const before = bridges.length
+      // A context link (persisted bridge): the agent reads the PR's Overview through it.
+      addEdge(bridges, sourceNodeId, id, 'bridge')
+      source.project.bridges = bridges
+      if (plan.kind === 'create' || bridges.length !== before) {
+        await this.castAndSave(workspace)
+        if (plan.kind === 'create') this.ownership.record(id, { sourceNodeId, projectId: source.project.id })
+        await this.publishPersisted([source.project.id])
+      }
+      return {
+        ok: true,
+        message: `${plan.kind === 'create' ? 'opened' : 'linked existing'} pull request node ${id}`,
+        result: { id, created: plan.kind === 'create' }
       }
     })
   }

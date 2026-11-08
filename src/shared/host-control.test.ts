@@ -35,6 +35,12 @@ describe('isHostOnlyChannel', () => {
     expect(isHostOnlyChannel(IPC.ptyLaunchHeadless)).toBe(true)
   })
 
+  it('covers the behind-main fetch and update: a relay peer never merges or rebases a host checkout', () => {
+    expect(isHostOnlyChannel(IPC.gitMainDrift)).toBe(true)
+    expect(isHostOnlyChannel(IPC.gitUpdateFromMain)).toBe(true)
+    expect(isHostOnlyChannel(IPC.gitPullWorktreeAdd)).toBe(true)
+  })
+
   it('covers the board-comment delivery — a peer must never type a comment into a host pane', () => {
     // A board comment typed by a relay guest or a team-presence peer is cross-user prompt
     // injection. The channel is registered with a raw `ipcMain.handle` (invisible to peers), and

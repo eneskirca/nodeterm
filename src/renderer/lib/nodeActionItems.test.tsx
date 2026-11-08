@@ -476,3 +476,30 @@ describe('board allowlist carries the session sections', () => {
     for (const id of mod.BOARD_MODAL_ACTION_IDS) expect(BOARD_NODE_ACTION_IDS).toContain(id)
   })
 })
+
+describe('pull request node rows', () => {
+  const pull = { ...term('pull-1', { pull: { repository: 'o/r', pullNumber: 7, tab: 'conversation' } }), type: 'pull' } as CanvasNode
+
+  it('Refresh asks the mounted node to read again', () => {
+    const heard: string[] = []
+    const listener = (e: Event) => heard.push((e as CustomEvent<string>).detail)
+    window.addEventListener('nodeterm:pull-refresh', listener)
+    ;(row(buildNodeActionItems(['pull-1'], undefined, fakeCtx([pull])), 'Refresh pull request') as { onClick: () => void }).onClick()
+    window.removeEventListener('nodeterm:pull-refresh', listener)
+    expect(heard).toEqual(['pull-1'])
+  })
+
+  it('Open on GitHub opens the PR page', () => {
+    const openExternal = vi.fn(async () => {})
+    vi.stubGlobal('nodeTerminal', { shell: { openExternal } })
+    ;(row(buildNodeActionItems(['pull-1'], undefined, fakeCtx([pull])), 'Open on GitHub') as { onClick: () => void }).onClick()
+    vi.unstubAllGlobals()
+    expect(openExternal).toHaveBeenCalledWith('https://github.com/o/r/pull/7')
+  })
+
+  it('a terminal gets neither row', () => {
+    const items = buildNodeActionItems(['t'], undefined, fakeCtx([term('t')]))
+    expect(row(items, 'Refresh pull request')).toBeUndefined()
+    expect(row(items, 'Open on GitHub')).toBeUndefined()
+  })
+})

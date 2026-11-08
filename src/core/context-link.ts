@@ -19,7 +19,7 @@ import path from 'path'
 import { platform } from './platform'
 import { syncWindowsShLauncher, writeManagedHookFileAtomic } from './agents/hooks/install-helper'
 import { IPC } from '../shared/ipc'
-import type { ContextLinkInfo, ContextLinkMap } from '../shared/types'
+import type { ContextLinkInfo, ContextLinkMap, ContextLinkPull } from '../shared/types'
 import { type PtyManager } from './pty-manager'
 import { findInLoginPath } from './exec-path'
 import { isSafeOpencodeSessionId, runOpencodeExportAt } from './opencode-export'
@@ -37,7 +37,8 @@ import {
   CONTEXT_LINK_VERBS,
   renderContextLink,
   type ContextLinkFetch,
-  type ContextLinkVerb
+  type ContextLinkVerb,
+  type PullRead
 } from './context-link-render'
 import { hookServer } from './agents/hook-server'
 import {
@@ -97,6 +98,23 @@ export interface ContextLinkDeps {
   readRemoteFile?: (nodeId: string, filePath: string, maxBytes: number) => Promise<string | null>
   /** Run one command on a remote node's host and return stdout. null = it failed. */
   runRemoteCommand?: (nodeId: string, command: string) => Promise<string | null>
+  /** A linked pull request node's Overview: the GitHub service's `pullDetail` + `pullChecks` reads
+   *  (coordinator, refresh floor, approved-repository refusal). Absent = reads say so. */
+  pull?: (ref: ContextLinkPull) => Promise<PullRead>
+}
+
+/** The `pull` dep both shells pass: the Overview read first, checks only for a PR that was read
+ *  (the checks read has its own per-minute cap; a refused PR must not spend it). */
+export function pullReadVia(service: {
+  pullDetail(r: { projectId: string; repository: string; pullNumber: number }): Promise<PullRead['detail']>
+  pullChecks(r: { projectId: string; pullNumber: number }): Promise<NonNullable<PullRead['checks']>>
+}): (ref: ContextLinkPull) => Promise<PullRead> {
+  return async (ref) => {
+    const detail = await service.pullDetail(ref)
+    return detail.status === 'ok'
+      ? { detail, checks: await service.pullChecks({ projectId: ref.projectId, pullNumber: ref.pullNumber }) }
+      : { detail }
+  }
 }
 
 // Remote transcripts are read from the END: a long-running session's file reaches tens of MB,
@@ -146,7 +164,7 @@ async function writeLinkFiles(map: ContextLinkMap, revision: number): Promise<vo
   const verified = new Map<string, string>()
   for (const links of Object.values(map)) {
     for (const n of links) {
-      if (n.note != null || resolved.has(n.id)) continue
+      if (n.note != null || n.pull || resolved.has(n.id)) continue
       const identity = transcriptIdentity(n)
       resolved.set(
         n.id,
@@ -243,7 +261,11 @@ const fetchers: ContextLinkFetch = {
   // captureSession already knows a remote node's tmux lives on the host, so this one call
   // covers both surfaces.
   terminal: async (node) => (pty ? await pty.captureSession(node.id) : ''),
-  opencodeExport: fetchOpencodeExport
+  opencodeExport: fetchOpencodeExport,
+  // ponytail: `deps` is read at call time so a shell that boots without GitHub just says so.
+  pull: (node) => deps.pull
+    ? deps.pull(node.pull!)
+    : Promise.resolve({ detail: { status: 'failed', reason: 'unreachable' } })
 }
 
 /**
@@ -294,7 +316,7 @@ export function setContextLinks(map: ContextLinkMap): Promise<void> {
   const paths = new Map<string, string>()
   for (const links of Object.values(snapshot)) {
     for (const n of links) {
-      if (n.note != null) continue
+      if (n.note != null || n.pull) continue
       // Dependency lookup can fail; leave discovery to report the failure asynchronously.
       try {
         const identity = transcriptIdentity(n)

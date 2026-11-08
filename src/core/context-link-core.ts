@@ -1,7 +1,7 @@
 // Pure core for the context-link feature: the nodeId→transcript map, the link-document
 // builder, and the standalone CLI source. No electron / node-pty imports, so this module
 // (and CLI_SCRIPT) are unit-testable. The electron/fs/ipc wiring lives in context-link.ts.
-import type { ContextLinkInfo } from '../shared/types'
+import type { ContextLinkInfo, ContextLinkPull } from '../shared/types'
 import { sessionName } from './tmux-naming'
 import { HOOK_CURL_HEADERS_SH } from './agents/hook-curl-config-sh'
 import { CODEX_SANDBOX_BLOCKED_LINE, CODEX_SANDBOX_HINT_SH } from './agents/hook-sandbox-hint-sh'
@@ -153,6 +153,8 @@ export interface LinkDocEntry {
   sessionId?: string
   /** Present when this entry is a sticky note: its text. Note entries have no transcript/terminal. */
   note?: string
+  /** Present when this entry is a pull request node. No transcript/terminal; a read asks the core. */
+  pull?: ContextLinkPull
 }
 export interface LinkDoc {
   self: { id: string }
@@ -170,7 +172,7 @@ export function buildLinkDoc(
   return {
     self: { id: nodeId },
     links: links.map((n) => {
-      const isNote = n.note != null
+      const isNote = n.note != null || !!n.pull
       const entry: LinkDocEntry = {
         id: n.id,
         title: n.title,
@@ -180,7 +182,8 @@ export function buildLinkDoc(
       }
       if (!isNote && n.agentId) entry.agent = n.agentId
       if (!isNote && n.sessionId) entry.sessionId = n.sessionId
-      if (isNote) entry.note = n.note
+      if (n.note != null) entry.note = n.note
+      if (n.pull) entry.pull = n.pull
       return entry
     }),
     tmuxBin: ctx.tmuxBin,

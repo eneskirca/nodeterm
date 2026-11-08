@@ -277,8 +277,63 @@ const api: NodeTerminalApi = {
     chasePulls: (projectId) => ipcRenderer.invoke(IPC.githubIssuesChasePulls, projectId),
     pullChecks: (projectId, pullNumber) =>
       ipcRenderer.invoke(IPC.githubIssuesPullChecks, projectId, pullNumber),
+    pullDetail: (projectId, repository, pullNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullDetail, projectId, repository, pullNumber),
+    pullConversation: (projectId, repository, pullNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullConversation, projectId, repository, pullNumber),
+    pullTimeline: (projectId, repository, pullNumber, after) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullTimeline, projectId, repository, pullNumber, after),
+    pullFiles: (projectId, repository, pullNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullFiles, projectId, repository, pullNumber),
+    pullFileContents: (projectId, repository, pullNumber, path) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullFileContents, projectId, repository, pullNumber, path),
+    pullCommits: (projectId, repository, pullNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullCommits, projectId, repository, pullNumber),
+    pullCommitFiles: (projectId, repository, pullNumber, sha) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullCommitFiles, projectId, repository, pullNumber, sha),
+    pullCommitFileContents: (projectId, repository, pullNumber, sha, path) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullCommitFileContents, projectId, repository, pullNumber, sha, path),
+    pullSinceReview: (projectId, repository, pullNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullSinceReview, projectId, repository, pullNumber),
+    pullSinceReviewFileContents: (projectId, repository, pullNumber, path) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullSinceReviewFileContents, projectId, repository, pullNumber, path),
+    commentOnPull: (request) => ipcRenderer.invoke(IPC.githubIssuesPullComment, request),
+    reviewPull: (request) => ipcRenderer.invoke(IPC.githubIssuesPullReview, request),
+    mergePull: (request) => ipcRenderer.invoke(IPC.githubIssuesPullMerge, request),
+    repoMergeMethods: (projectId, repository) => ipcRenderer.invoke(IPC.githubIssuesRepoMergeMethods, projectId, repository),
+    repoCollaborators: (projectId, repository) => ipcRenderer.invoke(IPC.githubIssuesRepoCollaborators, projectId, repository),
+    repoLabels: (projectId, repository) => ipcRenderer.invoke(IPC.githubIssuesRepoLabels, projectId, repository),
+    requestPullReviewer: (request) => ipcRenderer.invoke(IPC.githubIssuesPullRequestReviewer, request),
+    pullForBranch: (projectId, repository, head) => ipcRenderer.invoke(IPC.githubIssuesPullForBranch, projectId, repository, head),
+    createPull: (request) => ipcRenderer.invoke(IPC.githubIssuesPullCreate, request),
+    commentOnPullLine: (request) => ipcRenderer.invoke(IPC.githubIssuesPullLineComment, request),
+    issueConversation: (projectId, repository, issueNumber) =>
+      ipcRenderer.invoke(IPC.githubIssuesIssueConversation, projectId, repository, issueNumber),
+    issueTimeline: (projectId, repository, issueNumber, after) =>
+      ipcRenderer.invoke(IPC.githubIssuesIssueTimeline, projectId, repository, issueNumber, after),
+    commentOnIssue: (request) => ipcRenderer.invoke(IPC.githubIssuesIssueComment, request),
+    disablePullAutoMerge: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAutoMergeOff, request),
+    enablePullAutoMerge: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAutoMerge, request),
+    updatePullBranch: (request) => ipcRenderer.invoke(IPC.githubIssuesPullUpdateBranch, request),
+    setFileViewed: (request) => ipcRenderer.invoke(IPC.githubIssuesPullFileViewed, request),
+    setReviewThreadResolved: (request) => ipcRenderer.invoke(IPC.githubIssuesPullThreadResolved, request),
+    applySuggestion: (request) => ipcRenderer.invoke(IPC.githubIssuesPullApplySuggestion, request),
+    setPullLabels: (request) => ipcRenderer.invoke(IPC.githubIssuesPullLabels, request),
+    setPullAssignees: (request) => ipcRenderer.invoke(IPC.githubIssuesPullAssignees, request),
+    setPullState: (request) => ipcRenderer.invoke(IPC.githubIssuesPullState, request),
+    markPullReady: (request) => ipcRenderer.invoke(IPC.githubIssuesPullReady, request),
+    deleteHeadBranch: (request) => ipcRenderer.invoke(IPC.githubIssuesPullDeleteBranch, request),
+    pullCheckLog: (projectId, repository, pullNumber, jobId) =>
+      ipcRenderer.invoke(IPC.githubIssuesPullCheckLog, projectId, repository, pullNumber, jobId),
+    rerunFailedJobs: (request) => ipcRenderer.invoke(IPC.githubIssuesPullRerunFailed, request),
+    pullWatch: (projectId, nodeId) => ipcRenderer.invoke(IPC.githubIssuesPullWatch, projectId, nodeId),
+    setPullWatch: (request) => ipcRenderer.invoke(IPC.githubIssuesPullWatchSet, request),
     claimPullAutoMove: (request) => ipcRenderer.invoke(IPC.githubIssuesClaimPullAutoMove, request),
     notePullWaits: (request) => ipcRenderer.invoke(IPC.githubIssuesNotePullWaits, request),
+    pullNotes: (repository, pullNumber) => ipcRenderer.invoke(IPC.pullNotesList, repository, pullNumber),
+    addPullNote: (input) => ipcRenderer.invoke(IPC.pullNotesAdd, input),
+    deletePullNote: (request) => ipcRenderer.invoke(IPC.pullNotesDelete, request),
+    clearPullNotes: (request) => ipcRenderer.invoke(IPC.pullNotesClear, request),
     projectAvatar: (projectId) => ipcRenderer.invoke(IPC.githubProjectAvatar, projectId),
     onChanged: (projectId, listener) => {
       const channel = IPC.githubIssuesChanged(projectId)
@@ -415,6 +470,8 @@ const api: NodeTerminalApi = {
     remoteCommitUrl: (cwd, sha) => ipcRenderer.invoke(IPC.gitRemoteCommitUrl, cwd, sha),
     merge: (cwd, ref) => ipcRenderer.invoke(IPC.gitMerge, cwd, ref),
     rebase: (cwd, onto) => ipcRenderer.invoke(IPC.gitRebase, cwd, onto),
+    mainDrift: (cwd) => ipcRenderer.invoke(IPC.gitMainDrift, cwd),
+    updateFromMain: (cwd, mode) => ipcRenderer.invoke(IPC.gitUpdateFromMain, cwd, mode),
     deleteBranch: (cwd, name, force) => ipcRenderer.invoke(IPC.gitDeleteBranch, cwd, name, force),
     renameBranch: (cwd, newName) => ipcRenderer.invoke(IPC.gitRenameBranch, cwd, newName),
     fetch: (cwd) => ipcRenderer.invoke(IPC.gitFetch, cwd),
@@ -426,6 +483,7 @@ const api: NodeTerminalApi = {
     checkoutCommit: (cwd, oid) => ipcRenderer.invoke(IPC.gitCheckoutCommit, cwd, oid),
     repoRoot: (cwd) => ipcRenderer.invoke(IPC.gitRepoRoot, cwd),
     worktreeList: (repoPath) => ipcRenderer.invoke(IPC.gitWorktreeList, repoPath),
+    pullWorktreeAdd: (repoPath, wtPath, req) => ipcRenderer.invoke(IPC.gitPullWorktreeAdd, repoPath, wtPath, req),
     worktreeAdd: (repoPath, wtPath, branch, baseRef, isNew) =>
       ipcRenderer.invoke(IPC.gitWorktreeAdd, repoPath, wtPath, branch, baseRef, isNew),
     worktreeMerge: (repoPath, branch, baseRef, push) =>
@@ -1015,6 +1073,22 @@ const api: NodeTerminalApi = {
     const handler = (_e: unknown, cmd: unknown) => listener(cmd as never)
     ipcRenderer.on(IPC.agentControl, handler)
     return () => ipcRenderer.removeListener(IPC.agentControl, handler)
+  },
+  onPullCreated: (listener) => {
+    const handler = (_e: unknown, event: unknown) => listener(event as never)
+    ipcRenderer.on(IPC.agentPullCreated, handler)
+    return () => ipcRenderer.removeListener(IPC.agentPullCreated, handler)
+  },
+  onPrWriteGate: (listener) => {
+    const handler = (_e: unknown, req: unknown) => listener(req as never)
+    ipcRenderer.on(IPC.agentPrWriteGate, handler)
+    return () => ipcRenderer.removeListener(IPC.agentPrWriteGate, handler)
+  },
+  sendPrWriteGateResult: (payload) => ipcRenderer.send(IPC.agentPrWriteGateResult, payload),
+  onPrWritten: (listener) => {
+    const handler = (_e: unknown, event: unknown) => listener(event as never)
+    ipcRenderer.on(IPC.agentPrWritten, handler)
+    return () => ipcRenderer.removeListener(IPC.agentPrWritten, handler)
   },
   sendAgentControlResult: (payload) => ipcRenderer.send(IPC.agentControlResult, payload),
   // The `browser` verb resolve round-trip (S8 PR 7): main asks the renderer which project owns the
