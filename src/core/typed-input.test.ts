@@ -7,7 +7,9 @@ import {
   typedInputScript,
   typedLines,
   typedStdin,
-  type TypedSurface
+  type TypedSurface,
+  typedRecords,
+  endsWithBackslash
 } from './typed-input'
 import { readClaudeDraft } from '../shared/agents/claude-screen'
 import composer from '../shared/agents/__fixtures__/claude/composer-capture.json'
@@ -31,8 +33,41 @@ describe('typedLines', () => {
 })
 
 describe('typedStdin', () => {
-  it('terminates every line, so the script reads the last one too', () => {
-    expect(typedStdin(['a', '', 'b'])).toBe('a\n\nb\n')
+  it('gives every line a carry line and terminates both, so the script reads the last one too', () => {
+    expect(typedStdin(['a', '', 'b'])).toBe('\na\n\n\n\nb\n')
+  })
+
+  it('carries a line\'s trailing backslashes onto the next line', () => {
+    expect(typedStdin(['cd . \\', 'popd'])).toBe('\ncd . \n\\\npopd\n')
+  })
+})
+
+describe('typedRecords', () => {
+  it('moves each trailing run of backslashes past the line break, whole', () => {
+    const records = typedRecords(['a \\', 'b \\\\', '\\', 'end'])
+
+    expect(records).toEqual([
+      { carry: '', text: 'a ' },
+      { carry: '\\', text: 'b ' },
+      { carry: '\\\\', text: '' },
+      { carry: '\\', text: 'end' }
+    ])
+  })
+
+  it('keeps the last line whole, and backslashes that do not end a line', () => {
+    expect(typedRecords(['a\\b', 'tail \\'])).toEqual([
+      { carry: '', text: 'a\\b' },
+      { carry: '', text: 'tail \\' }
+    ])
+  })
+})
+
+describe('endsWithBackslash', () => {
+  it('asks only about the last line', () => {
+    expect(endsWithBackslash(['tail \\'])).toBe(true)
+    expect(endsWithBackslash(['a \\', 'b'])).toBe(false)
+    expect(endsWithBackslash(['a\\b'])).toBe(false)
+    expect(endsWithBackslash([])).toBe(false)
   })
 })
 
@@ -86,7 +121,7 @@ describe('typeThenSubmitWhenSettled', () => {
     const result = await typeThenSubmitWhenSettled('hello there', surface, noWait)
 
     expect(result).toBe(true)
-    expect(surface.typed).toEqual(['hello there\n'])
+    expect(surface.typed).toEqual(['\nhello there\n'])
     expect(surface.submit).toHaveBeenCalledTimes(1)
   })
 

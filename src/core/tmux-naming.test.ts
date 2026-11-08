@@ -34,6 +34,12 @@ describe('localTmuxEnterArgs', () => {
     ])
     expect(localTmuxEnterArgs(TMUX_SOCKET, 'nt-x')).not.toContain('-l')
   })
+
+  it('steps the cursor left first for a typed message ending in a backslash', () => {
+    const args = localTmuxEnterArgs('sock', 'nt-x', { cursorLeftFirst: true })
+
+    expect(args.slice(-2)).toEqual(['Left', 'Enter'])
+  })
 })
 
 /**

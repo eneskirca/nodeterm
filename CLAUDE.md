@@ -4444,7 +4444,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   the dialog check `sendChatPrompt` makes is seconds old by then, and an Enter into a dialog that
   opened meanwhile would ANSWER it — the text stays in the composer and the caller hears
   `pasted-not-submitted`. The panel ignores a second Enter while a send is in flight (the draft is
-  cleared only once it lands). **"The text arrived" is read from the COMPOSER, never counted
+  cleared only once it lands). **A backslash is never typed right before a line break or the Enter**
+  (MEASURED, 2.1.319): the composer reads `\` + Enter and `\` + M-Enter alike as "new line" and eats
+  the backslash, so a `!` command's continuation lines ran as separate commands and a message ending
+  in `\` was never sent. A line's trailing backslashes are typed after its line break (Left, the
+  run, Right; `typedRecords`), and a message ending in one is submitted with Left then Enter
+  (`cursorLeftFirst`). **"The text arrived" is read from the COMPOSER, never counted
   across the screen** (`TypedSurface.draftOf` → `readClaudeDraft`, on a styled capture so the dim
   placeholder is not draft text): the draft must end with the message's tail and differ from the
   draft before typing. Typing also clears the placeholder and shortens the status line ("· ← for
