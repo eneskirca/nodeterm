@@ -4459,9 +4459,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   dialog), and the composer is EMPTY (with a draft, Esc means "never mind"). Core reads the screen
   first and refuses on a dialog, then sends a lone Esc through `sendPaneKeys`. An Esc before the
   reply's first token makes Claude put the prompt back into its own input box (measured 0.05-0.11 s);
-  core takes it back out ONLY when the box holds exactly the chat view's last send, and hands it to
-  the composer. It clears the box with Ctrl-U, never Ctrl-C: Ctrl-C clears it too but then arms
-  "Press Ctrl-C again to exit" for a few seconds. Claude still writes such a prompt to the
+  core takes it back out ONLY when the box holds the chat view's last send, and hands it to the
+  composer. It clears the box with Ctrl-U, never Ctrl-C: Ctrl-C clears it too but then arms
+  "Press Ctrl-C again to exit" for a few seconds. MEASURED on 2.1.319: one Ctrl-U clears one WRAPPED
+  ROW, not a whole line, and the box stops growing at about half the pane's height and scrolls, so a
+  long prompt shows only its end. So "holds the last send" accepts that end, each burst is two
+  Ctrl-Us per row on screen (`readClaudeDraftBox`) plus spares, and bursts repeat while what is left
+  ends earlier in the sent text (`endsEarlierIn`). Claude still writes such a prompt to the
   transcript as a branch it drops from its context, so the chat view keeps showing it (the reader
   does not follow `parentUuid`; known gap). The panel also makes the terminal's interrupt guess
   (`inferInterruptAfterSettle`), since an early Esc writes no transcript marker.

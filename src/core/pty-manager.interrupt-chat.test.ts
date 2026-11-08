@@ -16,6 +16,9 @@ const screen = (promptLine: string): string => [RULE, promptLine, RULE, '  ? for
 const EMPTY = screen('❯ ')
 const PLACEHOLDER = screen(`❯ ${DIM}finish the story${RESET}`)
 const draft = (text: string): string => screen(`❯ ${text}`)
+/** An input box showing `rows` as wrapped rows, the way Claude draws a long draft. */
+const rows = (shown: string[]): string =>
+  [RULE, `❯ ${shown[0]}`, ...shown.slice(1).map((r) => `  ${r}`), RULE, '  ? for shortcuts'].join('\n')
 const TRUST = [RULE, ' Accessing workspace:', ' ❯ No, exit', '   Yes, I trust this folder', ' Enter to confirm · Esc to cancel'].join('\n')
 
 type Private = { captureStyledScreen: (key: string) => Promise<string> }
@@ -132,5 +135,93 @@ describe('PtyManager.interruptChat', () => {
     const result = await pending
 
     expect(result).toEqual({ sent: true, restored: null })
+  })
+
+  it('clears a long single line wrapped onto several rows: two Ctrl-Us per row on screen', async () => {
+    const wrapped = ['w1 w2 w3', 'w4 w5 w6', 'w7 w8 w9', 'w10 w11', 'w12 w13', 'w14 w15']
+    const sent = wrapped.join(' ')
+    const { mgr, sendPaneKeys } = await manager({ plain: EMPTY, styled: [EMPTY, rows(wrapped), PLACEHOLDER] })
+
+    const pending = mgr.interruptChat(NODE, 'claude', sent)
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    // One line sent, six rows on screen: Ctrl-U clears a visual row (MEASURED, 2.1.319).
+    expect(sendPaneKeys.mock.calls.map((c) => c[1])).toEqual(['\x1b', '\x15'.repeat(14)])
+    expect(result).toEqual({ sent: true, restored: sent })
+  })
+
+  it('takes back a prompt taller than the box, which shows only its end, in rounds', async () => {
+    const sent = 'a1 a2 a3 a4 b1 b2 b3 b4 c1 c2 c3 c4'
+    const { mgr, sendPaneKeys } = await manager({
+      plain: EMPTY,
+      styled: [EMPTY, rows(['c1 c2', 'c3 c4']), rows(['a3 a4', 'b1 b2']), rows(['a1 a2']), PLACEHOLDER]
+    })
+
+    const pending = mgr.interruptChat(NODE, 'claude', sent)
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    expect(sendPaneKeys.mock.calls.map((c) => c[1])).toEqual(['\x1b', '\x15'.repeat(6), '\x15'.repeat(6), '\x15'.repeat(4)])
+    expect(result).toEqual({ sent: true, restored: sent })
+  })
+
+  it('stops clearing when what is left is not part of what was sent', async () => {
+    const sent = 'a1 a2 a3 a4 b1 b2'
+    const { mgr, sendPaneKeys } = await manager({
+      plain: EMPTY,
+      styled: [EMPTY, rows(['b1 b2']), rows(['typed meanwhile'])]
+    })
+
+    const pending = mgr.interruptChat(NODE, 'claude', sent)
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    expect(sendPaneKeys.mock.calls.map((c) => c[1])).toEqual(['\x1b', '\x15'.repeat(4)])
+    expect(result).toEqual({ sent: true, restored: null })
+  })
+
+  it('stops when a burst leaves the box as it was, even for text that repeats', async () => {
+    const { mgr, sendPaneKeys } = await manager({ plain: EMPTY, styled: [EMPTY, draft('ok ok')] })
+
+    const pending = mgr.interruptChat(NODE, 'claude', 'ok ok ok ok')
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    expect(sendPaneKeys.mock.calls.map((c) => c[1])).toEqual(['\x1b', '\x15'.repeat(4)])
+    expect(result).toEqual({ sent: true, restored: null })
+  })
+
+  it('does not take back text that is only the START of what was sent', async () => {
+    const { mgr, sendPaneKeys } = await manager({ plain: EMPTY, styled: [draft('Write a')] })
+
+    const pending = mgr.interruptChat(NODE, 'claude', 'Write a story')
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    expect(sendPaneKeys.mock.calls.map((c) => c[1])).toEqual(['\x1b'])
+    expect(result).toEqual({ sent: true, restored: null })
+  })
+})
+
+describe('endsEarlierIn', () => {
+  it('finds where the text ends, before the limit', async () => {
+    const { endsEarlierIn } = await import('./pty-manager')
+
+    expect(endsEarlierIn('a1a2b1b2c1c2', 'b1b2', 12)).toBe(8)
+  })
+
+  it('takes the latest place before the limit when the text repeats', async () => {
+    const { endsEarlierIn } = await import('./pty-manager')
+
+    expect(endsEarlierIn('abab', 'ab', 4)).toBe(2)
+    expect(endsEarlierIn('abab', 'ab', 2)).toBeNull()
+  })
+
+  it('is null for text that is not in it, or would not end earlier', async () => {
+    const { endsEarlierIn } = await import('./pty-manager')
+
+    expect(endsEarlierIn('a1a2b1b2', 'zz', 8)).toBeNull()
+    expect(endsEarlierIn('a1a2b1b2', 'a1a2b1b2', 8)).toBeNull()
   })
 })
