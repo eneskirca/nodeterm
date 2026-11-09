@@ -190,7 +190,7 @@
     "dompurify": "^3.4.17",
     "electron-updater": "^6.8.11",
     "emoji-picker-react": "^4.22.2",
-    "lucide-react": "^1.62.0",
+    "lucide-react": "^1.70.0",
     "marked": "^12.0.2",
     "monaco-editor": "^0.57.0",
     "node-pty": "^1.0.0",
@@ -199,7 +199,7 @@
     "smart-whisper": "^0.8.1",
     "ssh2": "^1.17.0",
     "tweetnacl": "^1.0.3",
-    "ws": "^8.22.0",
+    "ws": "^8.22.1",
     "zustand": "^5.0.16"
   },
   "devDependencies": {
