@@ -57,6 +57,10 @@ import {
 import { SshChildGate } from '../../core/remote-ssh/ssh-child-gate'
 import { claudeVersionProbeCommand, parseClaudeVersionProbe } from '../../core/remote-ssh/claude-version-probe'
 import { codexNoDaemonProbeCommand, parseCodexNoDaemonProbe } from '../../core/remote-ssh/codex-no-daemon-probe'
+import {
+  claudeSessionIdProbeCommand,
+  parseClaudeSessionIdProbe
+} from '../../core/remote-ssh/claude-session-id-probe'
 import { codexProbeHostKey } from '../../shared/agents/codex-daemon'
 import { NO_REMOTE_INTEGRATION, RemoteHooks, type RemoteIntegrationPlan } from './remote-hooks'
 import type { AgentToolsTrigger } from './agent-tools-freshness'
@@ -427,6 +431,10 @@ interface Conn {
   remoteClaudeVersion?: string | null
   /** This host's `codex` takes `--no-daemon` (probed after connect); undefined = not probed. */
   remoteCodexNoDaemon?: RemoteCodexNoDaemon
+  /** This host's `claude` advertises `--session-id` in its own `--help` (probed after connect);
+   * undefined = not probed / no claude found. Consumed only by the agent-status slice the phone
+   * reads (`remoteClaudeSessionIdFlagFor`) — no renderer contract hangs off it. */
+  remoteClaudeSessionIdFlag?: boolean
 }
 
 /**
@@ -1170,6 +1178,11 @@ export class SshProjectManager {
         // as the first one — shared/agents/codex-daemon.ts.) Unawaited and swallowed for the same
         // reasons; until it lands, remote Codex lines stay exactly as they were.
         if (entry) void this.probeRemoteCodexNoDaemon(projectId, entry).catch(() => {})
+        // And for the host's claude: does it take `--session-id`? Only the PHONE needs this (it
+        // launches Claude on this host itself and reads the answer off the pushed status slice),
+        // so it changes nothing about how this app's own nodes launch. Unawaited and swallowed
+        // like its two neighbours.
+        if (entry) void this.probeRemoteClaudeSessionIdFlag(projectId, entry).catch(() => {})
         return {
           controlPath,
           hookEndpointPath,
@@ -1903,6 +1916,11 @@ export class SshProjectManager {
     return this.conns.get(projectId)?.remoteCodexNoDaemon?.supported === true
   }
 
+  /** This connection's host claude takes `--session-id` — `true` only when its own probe said so. */
+  remoteClaudeSessionIdFlagFor(projectId: string): boolean {
+    return this.conns.get(projectId)?.remoteClaudeSessionIdFlag === true
+  }
+
   remoteAutoPermFor(projectId: string): boolean | undefined {
     return this.conns.get(projectId)?.claudeAutoPermissionMode
   }
@@ -2614,6 +2632,27 @@ export class SshProjectManager {
     const answer: RemoteCodexNoDaemon = { hostKey, supported }
     entry.remoteCodexNoDaemon = answer
     this.emitStatus({ projectId, status: 'connected', remoteCodexNoDaemon: answer })
+  }
+
+  /**
+   * One remote `claude --help` (login shell, marker-delimited — `claude-session-id-probe.ts`),
+   * cached on the connection. No retries and no status event: an unknown answer only means a
+   * phone-started Claude session on this host launches the bare command it always has, the next
+   * connect asks again, and the slice's 60 s heartbeat is what carries a landed answer to the phone.
+   */
+  private async probeRemoteClaudeSessionIdFlag(projectId: string, entry: Conn): Promise<void> {
+    let supported: boolean | null = null
+    try {
+      const { stdout } = await this.r.run(
+        childArgs(entry.conn, entry.controlPath, claudeSessionIdProbeCommand())
+      )
+      supported = parseClaudeSessionIdProbe(stdout)
+    } catch {
+      supported = null
+    }
+    // A probe that outlived its connection belongs to a dead Conn — never write it onto a new one.
+    if (supported === null || this.conns.get(projectId) !== entry) return
+    entry.remoteClaudeSessionIdFlag = supported
   }
 
   /**

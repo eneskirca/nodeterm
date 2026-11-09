@@ -833,6 +833,12 @@ export function createHostHandlers(
     // (appendProjectNode), which refuses the whole append rather than register a wrong identity.
     const accountId = str(node.accountId)
     if (accountId !== undefined) input.accountId = accountId
+    // The session id the phone launched the agent with (`claude --session-id <uuid>`). Same story
+    // as accountId one field over: the direct-SSH leg writes it into project.json itself, so
+    // dropping it here would make "was the phone on the LAN?" decide whether the node can open its
+    // chat view and cold-restore its conversation. Shape and agent are judged in the registrar.
+    const agentSessionId = str(node.agentSessionId)
+    if (agentSessionId !== undefined) input.agentSessionId = agentSessionId
     void registerNode(projectId, input)
       .then((registered) => socket.respond(req.id, true, { registered }))
       .catch(() => socket.respond(req.id, true, { registered: false }))
@@ -1731,7 +1737,7 @@ export function connectHostSession(opts: HostSessionOptions): HostSession {
  *  phone node registration). One bag so the init signatures stop growing positionally. */
 export interface HostBridgeDeps {
   git?: HostGitOps
-  registerNode?: (projectId: string, node: { id: string; title?: string; agentId?: string }) => Promise<boolean>
+  registerNode?: (projectId: string, node: RemoteNodeInput) => Promise<boolean>
   /** The phone's "End session" (`pty.destroy`): destroy the tmux session on every socket it could
    *  live on + take the node off its project's canvas — the desktop ×'s two steps. */
   destroyNode?: (nodeId: string) => Promise<void>

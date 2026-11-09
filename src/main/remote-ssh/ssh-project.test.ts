@@ -3321,3 +3321,51 @@ describe('SshProjectManager — remote codex --no-daemon probe', () => {
     expect(answered(events)).toBeUndefined()
   })
 })
+
+// The phone launches Claude on this host itself and may add `--session-id` only when the HOST's CLI
+// takes it (an unknown option makes claude exit). The answer rides the pushed agent-status slice;
+// this is where it is learned.
+describe('SshProjectManager — remote claude --session-id probe', () => {
+  function mgrWithClaudeHelp(answer: string) {
+    const run = vi.fn(async (args: string[]) => {
+      const cmd = args.join(' ')
+      if (cmd.includes('__NT_CLAUDE_SID__')) return { code: 0, stdout: `Welcome yes\n${answer}` }
+      if (cmd.includes('printf %s')) return { code: 0, stdout: '/home/u' }
+      return { code: 0, stdout: '' }
+    })
+    const mgr = new SshProjectManager({
+      userDataDir: '/ud',
+      spawnMaster: vi.fn(() => ({ kill: vi.fn(), on: vi.fn() })),
+      run,
+      runScp: vi.fn(async () => ({ code: 0 })),
+      getHook: () => ({ port: 1, token: 't', version: '1' }),
+      onStatus: () => {}
+    })
+    return { mgr, run }
+  }
+  const probed = (run: { mock: { calls: unknown[][] } }): boolean =>
+    run.mock.calls.some((c) => (c[0] as string[]).join(' ').includes('__NT_CLAUDE_SID__'))
+
+  it('answers true once the host\'s own claude advertised the flag', async () => {
+    const { mgr } = mgrWithClaudeHelp('__NT_CLAUDE_SID__yes__NT_CLAUDE_SID_END__')
+    expect(mgr.remoteClaudeSessionIdFlagFor('p1')).toBe(false) // not connected ⇒ unknown ⇒ no flag
+    await mgr.connect('p1', conn)
+    await vi.waitFor(() => expect(mgr.remoteClaudeSessionIdFlagFor('p1')).toBe(true))
+  })
+
+  it('an older host claude answers false', async () => {
+    const { mgr, run } = mgrWithClaudeHelp('__NT_CLAUDE_SID__no__NT_CLAUDE_SID_END__')
+    await mgr.connect('p1', conn)
+    await vi.waitFor(() => expect(probed(run)).toBe(true))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mgr.remoteClaudeSessionIdFlagFor('p1')).toBe(false)
+  })
+
+  it('no markers (no claude on the host, a failed probe) stays unknown — the phone keeps its bare command', async () => {
+    const { mgr, run } = mgrWithClaudeHelp('')
+    await mgr.connect('p1', conn)
+    await vi.waitFor(() => expect(probed(run)).toBe(true))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(mgr.remoteClaudeSessionIdFlagFor('p1')).toBe(false)
+  })
+})

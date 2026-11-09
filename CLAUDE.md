@@ -3548,7 +3548,19 @@ its agent status" under Hosted team relay.
   `settings` block (`claudePermissionMode`/`autoSupported`/`claudeAccounts`) so the phone can
   launch agents with the desktop's permission mode + managed accounts, and SSH slices get their
   **per-host** settings (remote CLI caps + host-matched accounts) injected via
-  `remote-status-push`'s `settingsFor` dep. `settings.customAgents` (`[{id, label, baseAgent?,
+  `remote-status-push`'s `settingsFor` dep. **`settings.claudeSessionIdFlag`** (present only as
+  `true`) is how a phone-started node gets the persisted conversation id every canvas-minted node
+  has: the phone launches `claude --session-id <uuid>` only when the HOST's own `claude --help`
+  advertised the flag (an unknown option makes claude exit), then hands that id over with the node
+  it registers — `RemoteNodeInput.agentSessionId` on `projects.registerNode`, the same key in the
+  node it writes over direct SSH — and `appendProjectNode` persists it as `data.agentSessionId`.
+  Before this a phone node had ONE route to its session (a hook event reaching this desktop), so
+  whenever none had arrived its ⌘M fell back to the markdown view, its title never adopted the
+  session name and a cold restore relaunched blank. Three writers publish the block and each must
+  answer with the probe for the machine its file describes — local claude caps in both shells, the
+  host's own probe (`core/remote-ssh/claude-session-id-probe.ts`) for an SSH slice; all three go
+  through `mirrorClaudeSessionIdFlag` and are pinned in `mirror-session-id-flag.test.ts`.
+  `settings.customAgents` (`[{id, label, baseAgent?,
   binaries}]`) lets the phone chat with a custom agent: built ONLY by `core/mirror-custom-agents.ts`
   (one definition for all three providers — local file, which relay `projects.list` also serves,
   SSH slices, Server Edition), `binaries` = `binariesFor` from the pane-owner predicate, published

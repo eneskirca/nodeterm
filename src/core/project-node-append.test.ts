@@ -296,3 +296,50 @@ describe('removeProjectNode', () => {
     expect(removeProjectNode(baseFile(two), '', NOW)).toBeNull()
   })
 })
+
+// The phone launches `claude --session-id <uuid>` and hands the id over with the registration, so a
+// phone-started node has the same two routes to its conversation a canvas-minted one has: the
+// hook-fed id AND a persisted one. Without the persisted leg the node depended on a hook event
+// reaching this desktop — and showed the markdown-of-output view instead of the chat view (and
+// cold-restored as a blank conversation) whenever none had.
+describe('appendProjectNode — agentSessionId', () => {
+  const SID = '6f1d2c3b-4a59-4e68-9f70-8192a3b4c5d6'
+
+  it('persists the session id the phone minted for an agent that launches with one', () => {
+    const f = JSON.parse(
+      appendProjectNode(baseFile([]), { id: 'term-c-1', agentId: 'claude', agentSessionId: SID }, NOW)!
+    )
+    expect(f.nodes[0].agentSessionId).toBe(SID)
+  })
+
+  it('writes no session id when the phone sent none (a pre-minting phone registers as before)', () => {
+    const f = JSON.parse(appendProjectNode(baseFile([]), { id: 'term-c-1', agentId: 'claude' }, NOW)!)
+    expect('agentSessionId' in f.nodes[0]).toBe(false)
+  })
+
+  it('drops the id for an agent that never launches with a caller-chosen one', () => {
+    // A codex/gemini/plain node carrying an id would be cold-restored with `resume <that id>` —
+    // an id no such CLI ever created.
+    for (const agentId of ['codex', 'gemini', undefined]) {
+      const f = JSON.parse(
+        appendProjectNode(baseFile([]), { id: 'term-c-1', agentId, agentSessionId: SID }, NOW)!
+      )
+      expect('agentSessionId' in f.nodes[0]).toBe(false)
+    }
+  })
+
+  it('drops an unsafe or non-string id but still registers the node', () => {
+    // The id ends up on a `claude --resume <id>` line typed into a pane. Dropping it degrades to
+    // the hook-only node this field exists to improve on; refusing the registration would orphan a
+    // session that is already running.
+    for (const bad of ['a; rm -rf ~', '--help', '', 'x'.repeat(300), 42, null, { id: SID }]) {
+      const out = appendProjectNode(
+        baseFile([]),
+        { id: 'term-c-1', agentId: 'claude', agentSessionId: bad as unknown as string },
+        NOW
+      )
+      expect(out).not.toBeNull()
+      expect('agentSessionId' in JSON.parse(out!).nodes[0]).toBe(false)
+    }
+  })
+})

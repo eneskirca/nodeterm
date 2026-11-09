@@ -119,6 +119,7 @@ import { boardLogRemotePath } from '../core/board-log'
 import { PtyManager } from '../core/pty-manager'
 import { desktopHeadlessRequest, launchHeadless } from '../core/headless-launch'
 import { WorkspaceStore } from '../core/workspace-store'
+import type { RemoteNodeInput } from '../core/project-node-append'
 import type { CardLabelEdit } from '../core/project-kanban-write'
 import { WorkspaceWatcher } from '../core/workspace-watcher'
 import { SettingsStore } from '../core/settings-store'
@@ -240,6 +241,7 @@ import {
   recordRawToolEvent,
   recordContextUsage,
   setMirrorSettingsProvider,
+  mirrorClaudeSessionIdFlag,
   setMirrorLiveNodesProvider,
   setMirrorUsageProvider,
   buildMirrorUsage,
@@ -2692,6 +2694,9 @@ app.whenReady().then(async () => {
     return {
       claudePermissionMode: s.claudePermissionMode,
       autoSupported: localClaudeCaps?.autoPermissionMode === true,
+      // A phone starting a Claude session here may then mint `--session-id` and register the node
+      // with it (MirrorSettings.claudeSessionIdFlag). Unprobed / older CLI ⇒ absent ⇒ bare command.
+      ...mirrorClaudeSessionIdFlag(localClaudeCaps?.sessionIdFlag),
       ...(localCodexCaps?.approvalValues
         ? { codexApprovalValues: localCodexCaps.approvalValues }
         : {}), // unprobed ⇒ absent ⇒ the reader uses the baseline vocabulary
@@ -2936,6 +2941,8 @@ app.whenReady().then(async () => {
         claudePermissionMode: s.claudePermissionMode,
         // The phone launches claude on the REMOTE host — its CLI is the gate, never the local one.
         autoSupported: sshProjectManager?.remoteAutoPermFor(projectId) === true,
+        // Same rule for `--session-id`: the HOST's own `claude --help` answered, or nothing rides.
+        ...mirrorClaudeSessionIdFlag(sshProjectManager?.remoteClaudeSessionIdFlagFor(projectId)),
         // `codexApprovalValues` is deliberately ABSENT from an SSH slice: the session runs the HOST's
         // codex, the only remote codex probe asks about `--no-daemon` (not the approval vocabulary),
         // and publishing this machine's vocabulary for another machine's binary is the cross-host
@@ -4942,11 +4949,10 @@ app.whenReady().then(async () => {
   const hostBridge = {
     git: gitService,
     // `accountId` = the managed Claude account the phone launched the session under. It has to be
-    // declared here too, or the wire's honest shape stops at this boundary (see RemoteNodeInput).
-    registerNode: (
-      projectId: string,
-      node: { id: string; title?: string; agentId?: string; accountId?: string }
-    ) =>
+    // declared here too, or the wire's honest shape stops at this boundary — which is why this takes
+    // the registrar's own `RemoteNodeInput` instead of re-listing its fields: a hand-copied shape is
+    // where `agentSessionId` (the id the phone launched the agent with) would have stopped next.
+    registerNode: (projectId: string, node: RemoteNodeInput) =>
       workspaceStore.appendRemoteNode(
         projectId,
         node,

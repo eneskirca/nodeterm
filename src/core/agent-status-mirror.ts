@@ -240,6 +240,22 @@ export interface MirrorSettings {
    */
   codexNoDaemon?: true
   /**
+   * THIS host's `claude` advertises `--session-id` in its own `--help` — present only as `true`.
+   * A reader that starts a Claude session on this host should then launch it as
+   * `claude --session-id <fresh uuid>` and hand that id over with the node it registers
+   * (`agentSessionId` — `RemoteNodeInput` on the relay verb, the same key in the project.json node
+   * it writes over direct SSH). That is what gives a phone-started node the persisted conversation
+   * id every canvas-minted node has; without it the node knows its session only once a hook event
+   * has reached the desktop, and until then has no chat view, no session-name title and nothing
+   * to cold-restore with.
+   *
+   * Absent = unknown = launch the bare command: claude EXITS on an option it does not know. A
+   * per-agent, per-host fact like its neighbours — it answers for *claude* on *this* host. FIRST
+   * launch only: `--session-id` with an id that already exists is a launch error, so a relaunch
+   * of the same node must resume instead.
+   */
+  claudeSessionIdFlag?: true
+  /**
    * The user's custom agents (Settings → Agents), reduced to what a phone needs to chat with one:
    * which builtin harness it inherits (the chat capability follows `baseAgent`) and which binary
    * names its pane runs as (the pane-owner check before a send). Built ONLY by
@@ -256,6 +272,16 @@ export interface MirrorSettings {
    */
   hostPlatform?: string
 }
+
+/**
+ * The `claudeSessionIdFlag` slot of a settings block, from a probe answer. ONE spelling of "only a
+ * seen `true`, otherwise absent" for the three writers of that block (desktop mirror, Server
+ * Edition mirror, the SSH slice) — each passes the probe that answers for the machine its file
+ * describes. Pinned per site in `mirror-session-id-flag.test.ts`.
+ */
+export const mirrorClaudeSessionIdFlag = (
+  supported: boolean | undefined
+): Pick<MirrorSettings, 'claudeSessionIdFlag'> => (supported === true ? { claudeSessionIdFlag: true } : {})
 
 /** One custom agent as the mirror advertises it (see MirrorSettings.customAgents). */
 export interface MirrorCustomAgent {
