@@ -348,12 +348,13 @@ function placeRight(
   }
 }
 
-function addEdge(list: BridgeLink[], source: string, target: string, prefix: string): void {
+/** `reader` makes the link one-way (issue #852): only that endpoint may read the other. */
+function addEdge(list: BridgeLink[], source: string, target: string, prefix: string, reader?: string): void {
   if (source === target) return
   if (list.some((edge) =>
     (edge.source === source && edge.target === target) ||
     (edge.source === target && edge.target === source))) return
-  list.push({ id: edgeId(prefix, source, target), source, target })
+  list.push({ id: edgeId(prefix, source, target), source, target, ...(reader ? { reader } : {}) })
 }
 
 /** One node edit a verb re-applies to a fresh read (`savePatches`). Idempotent. */
@@ -1633,6 +1634,13 @@ export class HeadlessNodeFactory {
         if (command && !mustWait) commands.set(id, command)
         addEdge(ropes, source.node.id, id, 'ctrl')
 
+        if (verb === 'open-terminal') {
+          // A pane link: the opener reads the terminal's screen (get-linked-context terminal), one
+          // way. The desktop draws the same link (planBridges); without it the agent that ran a
+          // command could not see what happened in it.
+          const sourceAgent = effectiveAgentId(source.node, this.deps.agentIdOf)
+          if (sourceAgent && canContextLink(sourceAgent)) addEdge(bridges, source.node.id, id, 'link', source.node.id)
+        }
         if (verb === 'open-agent') {
           const sourceAgent = effectiveAgentId(source.node, this.deps.agentIdOf)
           if (sourceAgent && canContextLink(sourceAgent) && canContextLink(agentId as AgentId)) {

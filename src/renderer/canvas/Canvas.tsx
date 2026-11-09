@@ -9,7 +9,7 @@ import { VisibleMiniMap } from './VisibleMiniMap'
 import { GlassFrostSync } from './GlassFrostSync'
 import { MinimapDock } from './MinimapDock'
 import { keepGlassBlurWhileMoving } from '../lib/glassContrast'
-import { LINK_ENDPOINT_NOT_FOUND } from '@shared/canvas-link'
+import { AGENT_TERMINAL_LINK_REFUSED, LINK_ENDPOINT_NOT_FOUND, agentTerminalLinkVerdict, resolveAgentTerminalLinks } from '@shared/canvas-link'
 import { arrangeArgsRefusal, isTopLevelGroupArg, parseArrangeGap, TOP_ARRANGE_LAYOUTS } from '@shared/arrange-verb'
 import { geometryArgsRefusal, listGeometryRequested, parsePlaceArgs, parseResizeArgs } from '@shared/geometry-verbs'
 import { liveNodeGeometry } from '../lib/nodeGeometry'
@@ -5002,6 +5002,10 @@ export function Canvas() {
   // notice), or null when delivered.
   const announceContextLink = useCallback(
     async (selfId: string, otherId: string): Promise<{ title: string; reason: LinkNoteSkip } | null> => {
+      // A plain terminal (the far end of a pane link) has no agent to tell, and a note typed into
+      // its shell would run as a command: nothing to announce, so nothing to report as skipped.
+      const selfAgent = agentIdOf(selfId)
+      if (!selfAgent || !canContextLink(selfAgent)) return null
       const selfData = nodesRef.current.find((n) => n.id === selfId)?.data
       const selfTitle = (selfData?.title as string) || selfId
       const title = (nodesRef.current.find((n) => n.id === otherId)?.data.title as string) || 'a linked node'
@@ -5029,8 +5033,8 @@ export function Canvas() {
     []
   )
 
-  // Draw a link: context (two agent nodes read each other) or note (sticky text becomes
-  // the terminal's context).
+  // Draw a link: context (two agent nodes read each other), pane (an agent reads a plain
+  // terminal's screen) or note (sticky text becomes the terminal's context).
   const onConnect = useCallback(
     (c: Connection) => {
       if (!c.source || !c.target || c.source === c.target) return
@@ -5050,13 +5054,17 @@ export function Canvas() {
           (e.source === target && e.target === source)
       )
       if (exists) return
+      // A pane link is readable only from its agent end (see classifyLink).
+      const reader = kind === 'pane' ? (se.contextCapable ? source : target) : undefined
+      const id = `bridge-${source}-${target}`
       setLinkEdges((es) =>
-        addEdge({ id: `bridge-${source}-${target}`, source, target }, es)
+        addEdge(reader ? bridgeToEdge({ id, source, target, reader }) : { id, source, target }, es)
       )
       markDirty()
-      if (kind === 'context') {
+      if (kind === 'context' || kind === 'pane') {
         // Discovery: tell each endpoint it is now linked — only where it is idle at an empty
-        // prompt (pushLinkNote); every endpoint skipped is named in one notice.
+        // prompt (pushLinkNote); every endpoint skipped is named in one notice. The plain-terminal
+        // end of a pane link is never told (announceContextLink).
         void reportLinkNotes('context', [announceContextLink(source, target), announceContextLink(target, source)])
         return
       }
@@ -5111,6 +5119,11 @@ export function Canvas() {
       }
       const a = titleOf(link.source)
       const b = titleOf(link.target)
+      // A pane link has one possible direction (its agent reads the terminal), so it offers no
+      // direction choice — only removal.
+      const se = linkEndpointOf(link.source)
+      const te = linkEndpointOf(link.target)
+      const pane = !!se && !!te && classifyLink(se, te) === 'pane'
       const option = (label: string, reader: string | null) => {
         const active = isCurrentLinkDirection(current, reader)
         return {
@@ -5123,10 +5136,19 @@ export function Canvas() {
         x: e.clientX,
         y: e.clientY,
         items: [
-          { type: 'label', label: 'Context link — who reads whom' },
-          option(`${a} ⇄ ${b} (both read)`, null),
-          option(`${a} reads ${b} only`, link.source),
-          option(`${b} reads ${a} only`, link.target),
+          ...(pane
+            ? [
+                {
+                  type: 'label' as const,
+                  label: `Terminal link — ${se!.contextCapable ? a : b} reads ${se!.contextCapable ? b : a}'s screen`
+                }
+              ]
+            : [
+                { type: 'label' as const, label: 'Context link — who reads whom' },
+                option(`${a} ⇄ ${b} (both read)`, null),
+                option(`${a} reads ${b} only`, link.source),
+                option(`${b} reads ${a} only`, link.target)
+              ]),
           { type: 'separator' },
           {
             label: viaRope ? 'Remove context link (keeps the rope)' : 'Remove link',
@@ -5139,7 +5161,7 @@ export function Canvas() {
         ]
       })
     },
-    [setLinkEdges, markDirty, announceContextLink, reportLinkNotes]
+    [setLinkEdges, markDirty, announceContextLink, reportLinkNotes, linkEndpointOf]
   )
 
   // Of these ropes, the ones that are NOT live waits. A waiting rope's removal means "stop waiting
@@ -15046,15 +15068,23 @@ export function Canvas() {
             ropeDeps(ids, after)
             const openResult = openBatch.result(after ?? [])
             const { queuedIds } = openResult
+            // Let the opener READ what runs in the terminals it opened (a one-way pane link): the
+            // fan-in that open-agent already has. Same not-yet-on-canvas lookup as open-agent.
+            const openedTerminal = (id: string): LinkEndpoint | null =>
+              ids.includes(id) ? { kind: 'terminal', contextCapable: false } : ctlLinkEndpointOf(id)
+            const readable = bridgeTo(sourceNodeId, ids, openedTerminal).linked
             reply({
               ok: true,
               message:
                 `opened ${count} terminal(s): ${ids.join(', ')}` +
                 (queuedIds.length ? '\nqueued; awaiting launch delivery' : '') +
                 (after?.length ? `\nwaiting for ${after.join(', ')} before running` : '') +
+                (readable.length
+                  ? `\nlinked so you can read their screens: get-linked-context terminal --node <id>`
+                  : '') +
                 prReplyText +
                 successReplyText,
-              result: { ...openResult, ...prResult, ...successResult }
+              result: { ...openResult, linked: readable, ...prResult, ...successResult }
             })
             return
           }
@@ -15604,23 +15634,81 @@ export function Canvas() {
             // `--one-way` (issue #852): only --from reads the targets. Valueless flag — the shim
             // sends it as `arg.one-way=` (present, empty).
             const oneWay = 'one-way' in args
-            const { linked, skipped } = bridgeTo(from, targets, undefined, { oneWay })
-            if (linked.length === 0) {
+            // A link between an agent and a plain terminal lets the agent read that terminal's
+            // screen, which can show anything a person ran there. Which terminals an AGENT may
+            // link itself to is this machine's setting (@shared/canvas-link AgentTerminalLinks),
+            // asked per target; the terminal's recorded opener is the only proof of "its own".
+            const terminalMode = resolveAgentTerminalLinks(useSettings.getState().settings.agentTerminalLinks)
+            const fromEnd = ctlLinkEndpointOf(from)
+            const allowed: string[] = []
+            const toConfirm: string[] = []
+            const refused: { id: string; why: string }[] = []
+            for (const t of targets) {
+              const te = ctlLinkEndpointOf(t)
+              if (!fromEnd || !te || classifyLink(fromEnd, te) !== 'pane') {
+                allowed.push(t)
+                continue
+              }
+              const terminalId = fromEnd.contextCapable ? t : from
+              const opener = ctlNodes().find((n) => n.id === terminalId)?.data.openedBy
+              const verdict = agentTerminalLinkVerdict(terminalMode, sourceNodeId, opener)
+              if (verdict === 'allow') allowed.push(t)
+              else if (verdict === 'confirm') toConfirm.push(t)
+              else refused.push({ id: t, why: AGENT_TERMINAL_LINK_REFUSED })
+            }
+            const finishLink = (ids: string[], extraSkipped: { id: string; why: string }[]): void => {
+              const plan = ids.length ? bridgeTo(from, ids, undefined, { oneWay }) : { linked: [], skipped: [] }
+              const linked = plan.linked
+              const skipped = [...plan.skipped, ...extraSkipped]
+              if (linked.length === 0) {
+                reply({
+                  ok: false,
+                  error: `link: nothing linked — ${skipped.map((s) => `${s.id}: ${s.why}`).join('; ')}`
+                })
+                return
+              }
+              const note = skipped.length
+                ? ` (skipped ${skipped.map((s) => `${s.id}: ${s.why}`).join('; ')})`
+                : ''
               reply({
-                ok: false,
-                error: `link: nothing linked — ${skipped.map((s) => `${s.id}: ${s.why}`).join('; ')}`
+                ok: true,
+                message: oneWay
+                  ? `linked one-way: ${from} reads ${linked.join(', ')}${note}`
+                  : `linked ${from} ↔ ${linked.join(', ')}${note}`,
+                result: { from, linked, skipped }
               })
+            }
+            if (toConfirm.length === 0) {
+              finishLink(allowed, refused)
               return
             }
-            const note = skipped.length
-              ? ` (skipped ${skipped.map((s) => `${s.id}: ${s.why}`).join('; ')})`
-              : ''
-            reply({
-              ok: true,
-              message: oneWay
-                ? `linked one-way: ${from} reads ${linked.join(', ')}${note}`
-                : `linked ${from} ↔ ${linked.join(', ')}${note}`,
-              result: { from, linked, skipped }
+            // `confirm` mode: ONE dialog for every terminal this call did not earn by opening it.
+            // No waiver is offered — the setting itself is the waiver, and widening it is the person's.
+            if (confirmBusy()) {
+              finishLink(allowed, [
+                ...refused,
+                ...toConfirm.map((id) => ({ id, why: 'a confirmation is already pending — try again' }))
+              ])
+              return
+            }
+            const titleOfNode = (id: string) =>
+              (ctlNodes().find((n) => n.id === id)?.data.title as string | undefined) || id
+            const deny = (why: string) => () =>
+              finishLink(allowed, [...refused, ...toConfirm.map((id) => ({ id, why }))])
+            setConfirm({
+              message:
+                `Agent "${srcTitle}" wants to read the screen of ${toConfirm.length === 1 ? 'a terminal' : `${toConfirm.length} terminals`} it did not open:\n\n` +
+                toConfirm.map((id) => `• ${titleOfNode(fromEnd?.contextCapable ? id : from)} (${fromEnd?.contextCapable ? id : from})`).join('\n') +
+                `\n\nIt will see whatever those terminals show, now and later, until the link is removed.`,
+              confirmLabel: 'Allow',
+              requestedBy: srcTitle,
+              expiresAt: confirmExpiresAt(Date.now()),
+              onExpire: deny('expired before the user answered'),
+              onConfirm: () => {
+                setConfirm(null)
+                finishLink([...allowed, ...toConfirm], refused)
+              },
+              onCancel: deny('denied by user')
             })
             return
           }

@@ -4,6 +4,7 @@ import type { PushWebhookMinted, PushWebhookResult, PushWebhookTokenInfo } from 
 import type { IdentitySeedEntry } from './agent-identity-seed'
 import type { AgentStatusSnapshotEntry } from './agent-status-snapshot'
 import type { WhiteboardFile, WhiteboardSaveResult } from './whiteboard'
+import type { AgentTerminalLinks } from './canvas-link'
 import type { PrWaitHold } from './pr-wait'
 import type { SessionBackend } from './session-backend'
 import type { AgentIntegrationsSettings } from './agent-integrations'
@@ -2356,6 +2357,15 @@ export interface Settings {
    * (@shared/settings-verb forbids it): it is a grant over every project at once.
    */
   agentMessagingDefault: boolean
+  /**
+   * Which plain terminals an agent may link itself to with the canvas `link` verb, to read their
+   * screens (@shared/canvas-link `AgentTerminalLinks`): `own` (default) = only terminals it opened,
+   * `confirm` = any in its project after the person confirms, `any` = no limit. Read through
+   * `resolveAgentTerminalLinks` (hand-editable file; unknown = `own`). MACHINE-LOCAL, and never
+   * settable from the canvas CLI (@shared/settings-verb forbids it): an agent that could widen it
+   * would grant itself every terminal's screen. Links a person draws are never limited by it.
+   */
+  agentTerminalLinks: AgentTerminalLinks
   /** How long a session must be idle + offscreen before "Eco" hibernates it (minutes). */
   agentHibernationIdleMinutes: number
   /** When Eco hibernates a session, also mark it PAUSED (see `AgentNodeStatus.paused`) so it does
@@ -2633,6 +2643,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // survived an app restart (core/agents/pane-ownership.ts), so "on by default" would be false
   // after every restart and every update. Flipping this is a separate, deliberate change.
   agentMessagingDefault: false,
+  agentTerminalLinks: 'own',
   agentHibernationIdleMinutes: 30,
   agentHibernationPersistAcrossRestart: false,
   // Opt-out (default on). Existing users pick this up on hydrate ONLY if their settings.json has
