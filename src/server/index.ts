@@ -82,6 +82,7 @@ import {
   recordAgentEvent,
   ackDone,
   setMirrorSettingsProvider,
+  mirrorClaudeSessionIdFlag,
   setMirrorLiveNodesProvider,
   setMirrorServerProvider,
   onInboxActionable,
@@ -530,6 +531,9 @@ export async function startServer(
     return {
       claudePermissionMode: s.claudePermissionMode,
       autoSupported: localClaudeCaps?.autoPermissionMode === true,
+      // A phone starting a Claude session here may then mint `--session-id` and register the node
+      // with it (MirrorSettings.claudeSessionIdFlag). Unprobed / older CLI ⇒ absent ⇒ bare command.
+      ...mirrorClaudeSessionIdFlag(localClaudeCaps?.sessionIdFlag),
       ...(localCodexCaps?.approvalValues
         ? { codexApprovalValues: localCodexCaps.approvalValues }
         : {}), // unprobed ⇒ absent ⇒ the reader uses the baseline vocabulary

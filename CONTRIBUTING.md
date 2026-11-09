@@ -1037,6 +1037,14 @@ Put the rule in one predicate under `src/shared` and have every mint site ask it
 things that follow from it (a node's color, say) from that same call rather than re-deriving the
 condition per caller.
 
+**A node field the canvas sets must be asked about on the phone leg too.** The same two mint sites
+again: `createAgentNode` gave every Claude node a persisted session id (`data.agentSessionId`,
+launched with `--session-id`), and nothing asked what a phone-registered node should carry — so it
+carried none, and depended on a hook event reaching the desktop for its chat view, its title and
+its cold restore. When you add a field to the node a factory builds, decide in the same change what
+`appendProjectNode` / `RemoteNodeInput` does for it, and whether the phone needs a host fact to
+produce it (`MirrorSettings` is where those travel — see `claudeSessionIdFlag`).
+
 **A feature that creates links owes an ownership rule, and it must be a property of the plan.**
 "Share `~/.claude/skills` with this account" (issue #643) links each system skill into a managed
 account's own `skills/` and removes those links again when switched off — one wrong removal deletes

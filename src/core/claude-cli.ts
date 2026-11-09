@@ -8,6 +8,7 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { supportsAutoPermissionMode, supportsFullscreenTui } from '../shared/agents/config'
+import { claudeHelpHasSessionIdFlag } from '../shared/agents/claude-session-id-flag'
 import { IPC } from '../shared/ipc'
 import { UNKNOWN_CLAUDE_CLI_CAPS, type ClaudeCliCaps } from '../shared/types'
 import { directExecutableInvocation } from './exec-path'
@@ -37,9 +38,9 @@ export function claudeCliCapsFrom(
     version,
     autoPermissionMode: supportsAutoPermissionMode(version),
     fullscreenTui: supportsFullscreenTui(version),
-    // Anchored on a word boundary so `--session-id-file` or prose mentioning the flag inside
-    // another option's description cannot answer yes for it.
-    sessionIdFlag: /(^|\s)--session-id(\s|=|$)/m.test(helpOutput ?? '')
+    // The rule (and its anchoring) lives beside its shell twin, which the REMOTE probe runs on an
+    // SSH host — see shared/agents/claude-session-id-flag.ts.
+    sessionIdFlag: claudeHelpHasSessionIdFlag(helpOutput)
   }
 }
 
