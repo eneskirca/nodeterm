@@ -148,7 +148,12 @@ export function registerCoreHandlers(
   // settings account labels. Dropped from SSH slices by filterMirrorForNodes (no SSH server-side
   // anyway). Wired here (not index.ts) since the usage service is created here.
   setMirrorUsageProvider(() =>
-    buildMirrorUsage(usageService.snapshot(), deps.getSettings().claudeAccounts ?? [], Date.now())
+    buildMirrorUsage(
+      usageService.snapshot(),
+      deps.getSettings().claudeAccounts ?? [],
+      Date.now(),
+      deps.getSettings().systemAccountLabel
+    )
   )
 
   return { gitService }

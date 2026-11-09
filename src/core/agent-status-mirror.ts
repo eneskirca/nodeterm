@@ -357,7 +357,8 @@ export interface MirrorUsageLimit {
 export interface MirrorUsageAccount {
   /** null = the system `~/.claude` account. */
   accountId: string | null
-  /** Account label from settings (managed accounts); null for the system account. */
+  /** Account label from settings: a managed account's own label, or for the system account the
+   *  user's `settings.systemAccountLabel`; null when neither names it. */
   label: string | null
   email: string | null
   agentId: string
@@ -404,10 +405,14 @@ export interface UsageSnapshotEntry {
 export function buildMirrorUsage(
   snapshot: ReadonlyArray<UsageSnapshotEntry>,
   accounts: ReadonlyArray<{ id: string; label?: string | null; email?: string | null }>,
-  now: number
+  now: number,
+  /** `settings.systemAccountLabel` — the system row has no account record, so this is the only
+   *  place its chosen name can come from. Blank ⇒ null (the phone then shows the email). */
+  systemLabel?: string | null
 ): MirrorUsage | undefined {
   if (snapshot.length === 0) return undefined
   const byId = new Map(accounts.map((a) => [a.id, a]))
+  const systemName = systemLabel?.trim() || null
   // System account (accountId null) first, then everything else in given order.
   const ordered = [...snapshot].sort((a, b) => {
     if (a.accountId === b.accountId) return 0
@@ -420,7 +425,7 @@ export function buildMirrorUsage(
     const u = e.usage
     return {
       accountId: e.accountId,
-      label: acct?.label ?? null,
+      label: e.accountId === null ? systemName : (acct?.label ?? null),
       email: u.email ?? acct?.email ?? null,
       agentId: 'claude',
       status: u.status ?? 'unavailable',

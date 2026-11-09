@@ -11399,7 +11399,7 @@ export function Canvas() {
           (a) => !a.pending && (codexHostKey ? a.host === codexHostKey : !a.host)
         )
       const codexSystemLabel = systemAccountDisplay(
-        undefined,
+        useSettings.getState().settings.systemCodexAccountLabel,
         useSystemCodexAccount.getState().email
       )
       const itemForBuiltin = (aid: (typeof BUILTIN_AGENT_IDS)[number]): MenuItem => {

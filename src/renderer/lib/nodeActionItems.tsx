@@ -884,7 +884,10 @@ export function buildAccountSwitchRows(nodeId: string, ctx: NodeActionCtx): Menu
           // login this machine's system email says nothing about.
           const systemCodexLabel = hostKey
             ? (useSystemCodexAccount.getState().remoteEmails[hostKey] ?? `System account (${hostKey})`)
-            : systemAccountDisplay(undefined, useSystemCodexAccount.getState().email)
+            : systemAccountDisplay(
+                useSettings.getState().settings.systemCodexAccountLabel,
+                useSystemCodexAccount.getState().email
+              )
           const row = (id: string | undefined, label: string): MenuItem => {
             const isCurrent = (id || undefined) === currentAccountId
             const sel = codexAccountSelectable(id, onMachine, ctx.connectedProjectIdForHost)

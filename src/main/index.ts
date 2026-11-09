@@ -4905,7 +4905,12 @@ app.whenReady().then(async () => {
     }
   })
   setMirrorUsageProvider(() =>
-    buildMirrorUsage(usageService.snapshot(), settingsStore.get().claudeAccounts ?? [], Date.now())
+    buildMirrorUsage(
+      usageService.snapshot(),
+      settingsStore.get().claudeAccounts ?? [],
+      Date.now(),
+      settingsStore.get().systemAccountLabel
+    )
   )
   initTelemetry(() => settingsStore.get())
   // The free-tier open-project limit (core/project-limit.ts). Its state goes to THIS machine's
