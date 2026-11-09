@@ -624,6 +624,69 @@ export function lineTime(v: unknown): number | undefined {
   return Number.isFinite(t) ? t : undefined
 }
 
+/** The fields `abandonedPromptUuids` reads from a parsed record. */
+interface TreeFields {
+  type?: unknown
+  uuid?: unknown
+  parentUuid?: unknown
+  isSidechain?: unknown
+  isMeta?: unknown
+  message?: { content?: unknown }
+}
+
+/** A typed prompt: a non-blank string, or an array with a text part and no tool_result. */
+function isPromptContent(content: unknown): boolean {
+  if (typeof content === 'string') return content.trim() !== ''
+  if (!Array.isArray(content)) return false
+  let text = false
+  for (const c of content as Array<{ type?: unknown; text?: unknown }>) {
+    if (!c || typeof c !== 'object') continue
+    if (c.type === 'tool_result') return false
+    if (c.type === 'text' && typeof c.text === 'string' && c.text !== '') text = true
+  }
+  return text
+}
+
+/**
+ * The uuids of prompts the model never received. A transcript is a TREE: each record names its
+ * `parentUuid`, and the model is sent the chain from the newest record back to the root. When a
+ * prompt's request is cancelled before anything answers it (Esc on a queued prompt, or Esc right
+ * after sending, which puts the text back in the input), claude leaves the prompt record in the
+ * file and attaches the next prompt to the SAME parent, so the cancelled one becomes a dead end.
+ * Measured over 133 transcripts (5,886 prompts): 6 such records, and in every one the model never
+ * saw the text (5 were re-sent after an edit, one was a raw `/compact` recorded twice).
+ *
+ * A prompt is abandoned when no record in these lines has it as its parent AND a later
+ * user/assistant record (not a sidechain) has the same parent. Both checks see only the lines
+ * given, so on a paged read a sibling in a NEWER window is missed and the prompt is shown, as
+ * before. A prompt the model did answer is safe: claude writes its first child right after it
+ * (measured in the 10 prompts that have both a child and a later sibling), so any window holding
+ * the sibling holds the child too. Records without string `uuid` / `parentUuid` are never hidden.
+ */
+function abandonedPromptUuids(records: readonly TreeFields[]): Set<string> {
+  const hasChild = new Set<string>()
+  // Per parent, the index and uuid of each user/assistant record on the main thread.
+  const byParent = new Map<string, Array<{ i: number; uuid: unknown }>>()
+  records.forEach((o, i) => {
+    if (typeof o.parentUuid !== 'string') return
+    hasChild.add(o.parentUuid)
+    if ((o.type === 'user' || o.type === 'assistant') && o.isSidechain !== true) {
+      const list = byParent.get(o.parentUuid) ?? []
+      list.push({ i, uuid: o.uuid })
+      byParent.set(o.parentUuid, list)
+    }
+  })
+  const out = new Set<string>()
+  records.forEach((o, i) => {
+    if (o.type !== 'user' || o.isSidechain === true || o.isMeta === true) return
+    if (typeof o.uuid !== 'string' || typeof o.parentUuid !== 'string') return
+    if (hasChild.has(o.uuid) || !isPromptContent(o.message?.content)) return
+    const later = (byParent.get(o.parentUuid) ?? []).some((s) => s.i > i && s.uuid !== o.uuid)
+    if (later) out.add(o.uuid)
+  })
+  return out
+}
+
 function parseChatRecords(
   records: Iterable<{ raw: string; offset: number }>,
   paged: boolean,
@@ -657,9 +720,8 @@ function parseChatRecords(
     const withAt = at === undefined ? m : { ...m, at }
     messages.push(paged ? { ...withAt, key: offset } : withAt)
   }
-  for (const { raw, offset } of records) {
-    if (!raw.trim()) continue
-    let o: Parameters<typeof isHiddenMetaRecord>[0] & {
+  type Rec = Parameters<typeof isHiddenMetaRecord>[0] &
+    TreeFields & {
       timestamp?: unknown
       effort?: unknown
       subtype?: unknown
@@ -667,6 +729,11 @@ function parseChatRecords(
       isCompactSummary?: unknown
       message?: { content?: unknown; model?: unknown }
     }
+  // Parsed once, up front: whether a prompt was abandoned depends on records AFTER it.
+  const parsed: Array<{ o: Rec; offset: number }> = []
+  for (const { raw, offset } of records) {
+    if (!raw.trim()) continue
+    let o: Rec
     try {
       o = JSON.parse(raw)
     } catch {
@@ -675,6 +742,13 @@ function parseChatRecords(
     // `null` / a number / a string parse fine and would throw on the reads below, failing the whole
     // page over one line another program wrote. One bad line costs one line (the Swift port agrees).
     if (!o || typeof o !== 'object' || Array.isArray(o)) continue
+    parsed.push({ o, offset })
+  }
+  const abandoned = abandonedPromptUuids(parsed.map((p) => p.o))
+  for (const { o, offset } of parsed) {
+    // A prompt the model never received (see `abandonedPromptUuids`). Skipped before anything else,
+    // so it moves no clock and attaches to nothing.
+    if (typeof o.uuid === 'string' && abandoned.has(o.uuid)) continue
     // Before the meta check: a hidden user line is still a request the model answers.
     if (o.type === 'user') lastUserAt = lineTime(o.timestamp)
     if (isHiddenMetaRecord(o)) continue

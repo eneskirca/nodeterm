@@ -89,6 +89,7 @@ the production paging, not a second implementation of it.
 | `teammate-messages` | Rule **2b** of **System-injected records**: an idle notification with a report, one with no fields, a failed one (`failureReason`), a plain message whose summary is escaped (`&quot;`) and whose body quotes the close tag, a record holding two elements (a report, then a message), an unverified sender (`verified="false"`), the same text typed by a human (by `origin` and by `promptSource` alone — both stay user messages), the frame line with no element and an element with no `teammate_id` (both stay user messages). |
 | `pasted-content` | **Pasted content**: a span between typed lines, backtick runs inside (a five-backtick fence) and the same id twice, an array text part beside an image, a pasted `<task-notification>` (stays the user's paste), a close tag with a different id inside a span (content), an empty paste, a same-id open nested inside a span (the span ends at the FIRST close), text that is not the CLI's grammar (no id, an upper-case or three- or five-digit id, a missing newline after the open or before the close: all left as typed) and an unclosed span (left as typed). |
 | `queued-prompts` | **Queued prompts**: a typed prompt queued mid-turn (between a tool result and the reply), one with no `origin`, an array prompt with an image (its text block only), a paste inside one (fenced, as in a typed prompt), and six attachments that stay hidden: a task notification, a peer message (`isMeta`), a coordinator message, a non-human `origin`, a blank prompt and a non-`queued_command` attachment. |
+| `abandoned-prompts` | **Abandoned prompts**: a queued prompt cancelled with Esc (its parent is the interrupt marker) and a sent-then-edited array prompt are hidden; a raw `/compact` left beside its command record is hidden and the command stays; a prompt the model answered before a re-send, a prompt whose only later sibling is a sidechain record, and the newest unanswered prompt are all kept. |
 
 **`rich`** is a second desktop-only opt-in, beside `thinking`: the ⌘M panel reads with
 `page.rich: true` (`ChatParseOptions.rich`) to get the parts only it draws. The fixtures never set
@@ -322,6 +323,30 @@ attachment record becomes ONE user message, at its own line (`key` = its offset,
 
 The text then goes through `expandPastedContent` like any other user text (see **Pasted content**),
 and the find-bar index emits the same user line. Every other attachment yields nothing.
+
+## Abandoned prompts (the Swift port must replicate this exactly)
+
+A transcript is a tree: each record names its `parentUuid`, and the model is sent the chain from the
+newest record back to the root. When a prompt's request is cancelled before anything answers it
+(Esc on a queued prompt, or Esc right after sending, which puts the text back in the input), Claude
+Code leaves the prompt in the file and attaches the next prompt to the SAME parent. The model never
+saw the cancelled one, so `parseChatRecords` (`abandonedPromptUuids`) skips it, on the paged and
+unpaged paths alike, before every other rule (it pushes nothing and moves no clock).
+
+Over the records of the read (a paged read: the window's complete lines), a record is skipped when
+all of these hold:
+
+1. `type` is `"user"`, `isSidechain` is not `true` and `isMeta` is not `true`;
+2. `uuid` and `parentUuid` are both strings;
+3. its `message.content` is a non-blank string (JS `trim`), or an array that has an element with
+   `type:"text"` and a non-empty string `text` and no element with `type:"tool_result"`;
+4. no record in the read has `parentUuid` equal to its `uuid` (any record type counts);
+5. a LATER record in the read has the same `parentUuid`, `type` `"user"` or `"assistant"`,
+   `isSidechain` not `true`, and a different `uuid`.
+
+Both checks see only the read's records, so on a paged read a sibling in a NEWER window is not
+seen and the prompt is shown, exactly as before this rule. Measured over 133 real transcripts
+(5,886 prompts): 6 records match, and the model received none of them.
 
 ## Renderer rules that follow from these records (desktop; iOS notes)
 
