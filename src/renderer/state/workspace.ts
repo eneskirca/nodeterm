@@ -141,6 +141,8 @@ export interface NodeData {
    * user renames the node by hand — then the user's name is pushed back via `/rename`.
    */
   titleAuto?: boolean
+  /** Opened by an agent of another project (see `CanvasNodeState.openedByOtherProject`). */
+  openedByOtherProject?: true
   color: string
   group: string | null
   tags?: string[]
@@ -2937,6 +2939,8 @@ export function nodeStatesToFlow(states: CanvasNodeState[]): CanvasNode[] {
         // Default true for older agent nodes saved before titleAuto existed, so they start
         // tracking the session name; non-agent nodes ignore it.
         titleAuto: n.titleAuto ?? true,
+        // project.json is hostile input: only a literal true is the flag (it can only withhold).
+        ...(n.openedByOtherProject === true ? { openedByOtherProject: true as const } : {}),
         color: n.color,
         group: n.group,
         tags: n.tags,
@@ -3043,6 +3047,7 @@ export function flowToNodeStates(nodes: CanvasNode[], retainInitialCommand = tru
         },
         title: n.data.title,
         titleAuto: n.data.titleAuto,
+        ...(n.data.openedByOtherProject === true ? { openedByOtherProject: true as const } : {}),
         color: n.data.color,
         group: n.data.group,
         tags: n.data.tags,

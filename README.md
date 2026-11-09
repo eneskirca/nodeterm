@@ -145,6 +145,9 @@ Gemini / GitHub Copilot / opencode / Grok / Cursor / custom) · 📝 **Sticky no
 - **GitHub Issues on Kanban** – opt-in issue cards, exact label-to-column mapping,
   All / GitHub / Sessions filtering, and two-way move, close, and reopen sync. See
   [setup and security details](./docs/github-issues-kanban.md).
+- **Project secrets** — give a project's agents the tokens they need without writing them to
+  disk: declare the variable names, then paste a value or fetch it once with your password
+  manager's CLI; it stays in memory only. See [how to set them up](./docs/project-secrets.md).
 - **AI commit messages & terminal names** — bring-your-own local agent CLI run read-only
   on the staged diff or captured output.
 - **Your sessions, in your pocket** — **nodeterm mobile** (iOS) attaches to the same live

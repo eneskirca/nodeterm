@@ -1252,7 +1252,45 @@ export class WorkspaceStore {
   save(workspace: Workspace, opts: WorkspaceSaveOptions = {}): Promise<void> {
     const run = this.saveChain.then(() => this.saveNow(workspace, opts.localOnly === true))
     this.saveChain = run.catch(() => {})
+    return this.afterSave(run)
+  }
+
+  /** Listeners told after every save settles (successful or not). See `onSaved`. */
+  private savedListeners = new Set<() => void>()
+
+  /**
+   * Called after each save settles, with no arguments: the listener reads what it needs from the
+   * store (`openProjectFolders`). Used by the project-secrets holder to drop the values of a project
+   * that was closed, deleted or re-bound to another folder. A throwing listener is its own problem.
+   */
+  onSaved(listener: () => void): () => void {
+    this.savedListeners.add(listener)
+    return () => this.savedListeners.delete(listener)
+  }
+
+  private afterSave(run: Promise<void>): Promise<void> {
+    const notify = (): void => {
+      for (const l of this.savedListeners) {
+        try {
+          l()
+        } catch {
+          /* a listener's failure is its own */
+        }
+      }
+    }
+    void run.then(notify, notify)
     return run
+  }
+
+  /** The projects OPEN on this machine (not closed), each with its local folder (undefined for a
+   *  cwd-less or SSH project). From the loaded index; empty before the first load. */
+  openProjectFolders(): Map<string, string | undefined> {
+    const out = new Map<string, string | undefined>()
+    for (const e of this.index?.entries ?? []) {
+      if (e.closed) continue
+      out.set(e.id, e.ssh ? undefined : e.cwd)
+    }
+    return out
   }
 
   /**
@@ -1264,7 +1302,7 @@ export class WorkspaceStore {
     const run = this.saveChain.then(async () =>
       this.saveNow(this.pendingAdoptions.size ? await this.withPendingAdoptions(workspace) : workspace, localOnly))
     this.saveChain = run.catch(() => {})
-    return run
+    return this.afterSave(run)
   }
 
   /** `workspace` plus the store's own copy of every pending adoption it does not carry. Runs on
