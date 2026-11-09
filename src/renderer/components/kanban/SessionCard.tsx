@@ -23,6 +23,7 @@ import type { TeamStation } from '../../lib/teamProgress'
 import { cardShowsOverdue, sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
 import { PortsChip } from '../PortsChip'
 import { QueuedLaunchChip } from './QueuedLaunchChip'
+import type { SelectMods } from '../../lib/cardSelection'
 
 const PRIO_COLOR = Object.fromEntries(PRIORITIES.map((p) => [p.id, p.color])) as Record<KanbanPriority, string>
 
@@ -71,12 +72,18 @@ interface SessionCardProps {
    *  project's too, so the default store would show that project's state on this card. Absent =
    *  the default store. A stable reference per board (SessionCard is memoized). */
   statusStore?: AgentStatusSession['store']
+  /** This card is part of the board's multi-selection. */
+  selected?: boolean
+  /** Every click is offered to the board's selection first (⌘/Ctrl-click, Shift-click, or any
+   *  click while cards are selected). True = it was a selection gesture and the card must NOT
+   *  open. One stable function for every card (`useCardSelection`). Absent = no multi-select. */
+  onSelectClick?: (nodeId: string, mods: SelectMods) => boolean
 }
 
 export const SessionCard = memo(function SessionCard({
   session, meta, labels = [], onOpen, onDragStart, onDragEnd, onDropAt, onContext, pulls,
   pullFreshness = 'fresh', onOpenIssue, team, onTravel, columnCategory, liveLinkSource, ports, onOpenPort, onRunQueued,
-  statusStore
+  statusStore, selected = false, onSelectClick
 }: SessionCardProps) {
   // THIS card's agent status, subscribed per card rather than threaded down from the board.
   // KanbanView used to hold `useAgentStatus((s) => s.byId)` and pass the map through the column:
@@ -129,7 +136,7 @@ export const SessionCard = memo(function SessionCard({
     <div
       className={`kanban-card kanban-card--session${dragging ? ' kanban-card--dragging' : ''}${
         dropSide ? ` kanban-card--drop-${dropSide}` : ''
-      }`}
+      }${selected ? ' kanban-card--selected' : ''}`}
       draggable
       // Focusable, and named for the board's keyboard (J/K/arrows walk these, Space opens one —
       // KanbanView's board-key handler finds the current card through this attribute).
@@ -158,7 +165,16 @@ export const SessionCard = memo(function SessionCard({
         setDropSide(null)
         onDropAt(session.id, side)
       }}
-      onClick={() => onOpen(session.id)}
+      // A Shift-click extends the selection; without this it would also sweep a text selection
+      // across every card in between.
+      onMouseDown={(e) => {
+        if (e.shiftKey && onSelectClick) e.preventDefault()
+      }}
+      onClick={(e) => {
+        const mods = { toggle: e.metaKey || e.ctrlKey, range: e.shiftKey }
+        if (onSelectClick?.(session.id, mods)) return
+        onOpen(session.id)
+      }}
       onContextMenu={(e) => {
         e.preventDefault()
         onContext(session.id, e.clientX, e.clientY)

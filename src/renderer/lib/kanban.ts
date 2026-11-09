@@ -190,6 +190,41 @@ export function assignNode(
   return assignments === k.assignments ? k : { ...k, assignments }
 }
 
+/**
+ * Moves SEVERAL session cards in one go (a multi-card drag, the selection bar's "Move to"),
+ * landing them TOGETHER at the anchor and in the order given (callers pass board order).
+ *
+ * Same anchors as `assignNode`, with one addition: an anchor that is itself one of the moving
+ * cards cannot hold a place, so it resolves to the next card below it that stays (else the bottom).
+ * One card is exactly `assignNode`; nothing to move returns the SAME board.
+ */
+export function assignNodes(
+  k: ProjectKanban,
+  nodeIds: readonly string[],
+  columnId: string | null,
+  beforeNodeId: string | null | typeof AT_COLUMN_END
+): ProjectKanban {
+  const ids = [...new Set(nodeIds)]
+  if (ids.length === 0) return k
+  if (ids.length === 1) return assignNode(k, ids[0], columnId, beforeNodeId)
+  const moving = new Set(ids)
+  if (columnId === null) {
+    if (!k.assignments.some((a) => moving.has(a.nodeId))) return k
+    return { ...k, assignments: k.assignments.filter((a) => !moving.has(a.nodeId)) }
+  }
+  if (!k.columns.some((c) => c.id === columnId)) return k
+  const column = assignedTo(k, columnId)
+  let anchor = beforeNodeId
+  if (typeof anchor === 'string' && moving.has(anchor)) {
+    const at = column.indexOf(anchor)
+    anchor = at === -1 ? null : column.slice(at + 1).find((id) => !moving.has(id)) ?? AT_COLUMN_END
+  }
+  // Unanchored = the TOP, where each card lands above the one before it: place them last-first so
+  // the group reads top-down in the order given. Every other anchor stays put while cards arrive.
+  const atTop = anchor === null || (typeof anchor === 'string' && !column.includes(anchor))
+  return (atTop ? [...ids].reverse() : ids).reduce((acc, id) => assignNode(acc, id, columnId, anchor), k)
+}
+
 /** Drops assignments of nodes that no longer exist. Returns the SAME object when nothing
  *  changed, so callers can cheaply skip a no-op persist. */
 export function pruneAssignments(k: ProjectKanban, liveIds: string[]): ProjectKanban {

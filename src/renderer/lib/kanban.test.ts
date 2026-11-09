@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { ProjectKanban } from '@shared/types'
 import {
-  addColumn, assignNode, assignedTo, defaultKanban, deleteColumn, moveColumn,
+  addColumn, assignNode, assignNodes, assignedTo, defaultKanban, deleteColumn, moveColumn,
   cardMeta, columnForNode, nextColumnColor, pruneAssignments, recolorColumn, renameColumn,
   setCardDue, setCardPriority, toggleAssignee, unassigned,
   boardLabels, cardMatchesLabelFilter, createLabel, deleteLabel, labelColor, labelsForCard,
@@ -156,6 +156,51 @@ describe('assignments', () => {
     expect(assignedTo(k, 'b')).toEqual(['n1', 'n2'])
     expect(assignNode(board(), 'n1', 'nope', null)).toEqual(board())
     expect(assignNode(board(), 'n1', 'a', 'n1')).toEqual(board())
+  })
+  // A multi-card move (selection drag, the bar's "Move to") lands the cards TOGETHER, in the order
+  // given, at every anchor — a loop of single moves would reverse them at the top.
+  describe('assignNodes', () => {
+    const wide = (): ProjectKanban => ({
+      columns: [
+        { id: 'a', title: 'To Do', color: '#0a84ff' },
+        { id: 'b', title: 'Doing', color: '#ffd60a' }
+      ],
+      assignments: ['a1', 'a2', 'a3', 'a4'].map((nodeId) => ({ nodeId, columnId: 'a' }))
+        .concat([{ nodeId: 'b1', columnId: 'b' }, { nodeId: 'b2', columnId: 'b' }])
+    })
+    it('unanchored: the group lands at the TOP in the order given', () => {
+      expect(assignedTo(assignNodes(wide(), ['a2', 'a4', 'u1'], 'b', null), 'b')).toEqual(['a2', 'a4', 'u1', 'b1', 'b2'])
+    })
+    it('at the column end: appended in the order given', () => {
+      const k = assignNodes(wide(), ['a1', 'a3'], 'b', AT_COLUMN_END)
+      expect(assignedTo(k, 'b')).toEqual(['b1', 'b2', 'a1', 'a3'])
+      expect(assignedTo(k, 'a')).toEqual(['a2', 'a4'])
+    })
+    it('before a card: the group sits just above it, in order', () => {
+      expect(assignedTo(assignNodes(wide(), ['a1', 'a3'], 'b', 'b2'), 'b')).toEqual(['b1', 'a1', 'a3', 'b2'])
+    })
+    it('reorders within one column', () => {
+      expect(assignedTo(assignNodes(wide(), ['a3', 'a4'], 'a', 'a1'), 'a')).toEqual(['a3', 'a4', 'a1', 'a2'])
+    })
+    it('an anchor that is itself moving resolves to the next card that stays (else the bottom)', () => {
+      expect(assignedTo(assignNodes(wide(), ['a1', 'a2'], 'a', 'a2'), 'a')).toEqual(['a1', 'a2', 'a3', 'a4'])
+      expect(assignedTo(assignNodes(wide(), ['a1', 'a4'], 'a', 'a4'), 'a')).toEqual(['a2', 'a3', 'a1', 'a4'])
+      expect(assignedTo(assignNodes(wide(), ['b1', 'a1'], 'a', 'a1'), 'a')).toEqual(['b1', 'a1', 'a2', 'a3', 'a4'])
+    })
+    it('to Ungrouped removes every assignment of the group, and only those', () => {
+      const k = assignNodes(wide(), ['a1', 'b2', 'u1'], null, null)
+      expect(k.assignments.map((a) => a.nodeId)).toEqual(['a2', 'a3', 'a4', 'b1'])
+    })
+    it('one card is assignNode; nothing to move, or an unknown column, is the SAME board', () => {
+      const k = wide()
+      expect(assignNodes(k, ['a1'], 'b', null)).toEqual(assignNode(k, 'a1', 'b', null))
+      expect(assignNodes(k, [], 'b', null)).toBe(k)
+      expect(assignNodes(k, ['a1', 'a2'], 'nope', null)).toBe(k)
+      expect(assignNodes(k, ['u1', 'u2'], null, null)).toBe(k)
+    })
+    it('a card named twice moves once', () => {
+      expect(assignedTo(assignNodes(wide(), ['a1', 'a1', 'a2'], 'b', AT_COLUMN_END), 'b')).toEqual(['b1', 'b2', 'a1', 'a2'])
+    })
   })
   it('pruneAssignments drops dead nodes, returns the same object when nothing changes', () => {
     const k = pruneAssignments(board(), ['n1', 'n3'])

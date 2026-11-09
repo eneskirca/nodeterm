@@ -14916,6 +14916,78 @@ button.pull-checks__name {
   outline-offset: 1px;
 }
 
+/* ── Board multi-select (⌘/Ctrl-click, Shift-click) ──
+   A selected card wears the accent; the bar that acts on the selection floats bottom-centre, in a
+   body portal above the board (25) and its controls (26), under the menus and dialogs (40+). */
+.kanban-card--selected,
+.kanban-card--selected:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, rgba(var(--tint-rgb), 0.08));
+  box-shadow: 0 0 0 1px var(--accent);
+}
+:root[data-nt-glass='on'] .kanban-card--selected,
+:root[data-nt-glass='on'] .kanban-card--selected:hover {
+  border-color: var(--accent);
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--accent) 20%, transparent),
+      color-mix(in srgb, var(--accent) 20%, transparent)
+    ),
+    var(--glass-lift);
+}
+.kanban-select-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 27;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 32px);
+  padding: 6px 6px 6px 14px;
+  background: rgba(var(--menu-rgb), 0.98);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, calc(0.55 * var(--shadow-k)));
+  color: var(--text-strong);
+  font-size: 12px;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+.kanban-select-bar__count {
+  font-weight: 600;
+  margin-right: 6px;
+}
+.kanban-select-bar__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(var(--tint-rgb), 0.07);
+  border: 1px solid rgba(var(--tint-rgb), 0.12);
+  border-radius: 8px;
+  color: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.kanban-select-bar__btn:hover {
+  background: rgba(var(--tint-rgb), 0.14);
+}
+.kanban-select-bar__btn--danger {
+  color: var(--danger);
+}
+.kanban-select-bar__btn--danger:hover {
+  background: color-mix(in srgb, var(--state-error) 15%, transparent);
+  border-color: color-mix(in srgb, var(--state-error) 40%, transparent);
+}
+.kanban-select-bar__clear {
+  padding: 5px 6px;
+  background: transparent;
+  border-color: transparent;
+  color: rgba(var(--tint-rgb), 0.7);
+}
+
 /* ── Board status chips (header) — transient filters on live agent state ── */
 .kanban-status-chips {
   display: inline-flex;
