@@ -64,6 +64,7 @@ import { BoardLogPanel } from './BoardLogPanel'
 import type { MentionCandidate } from '../../lib/boardMentions'
 import { CardMetaBar } from './CardMetaBar'
 import { CardPullRequests } from './CardPullRequests'
+import { NodePromptBar } from '../../nodes/NodePromptBar'
 import { ModalTerminal } from './ModalTerminal'
 import { BrowserSurface } from '../../nodes/BrowserSurface'
 import { BrowserDrivingIndicator } from '../../nodes/BrowserDrivingChip'
@@ -754,6 +755,7 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
         )}
         <CardMetaBar nodeId={session.id} board={board} onChange={onChangeBoard} />
         <CardPullRequests session={session} board={board} onChangeBoard={onChangeBoard} />
+        {session.kind === 'terminal' && <NodePromptBar nodeId={session.id} />}
         <div className="kanban-modal__body">
           {/* Body is a flex row: the card's own pane (2/3) + the board-log panel (1/3, all kinds). */}
           <div className="kanban-modal__main">

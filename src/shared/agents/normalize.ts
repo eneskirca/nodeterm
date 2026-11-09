@@ -534,7 +534,10 @@ export function normalizeCodex(env: RawHookEnvelope): NormalizedAgentEvent | nul
   // UserPromptSubmit is codex's turn start — flag newTurn so the renderer clears
   // per-turn fan-out once per turn, not on every tool event.
   if (ev === 'UserPromptSubmit') {
-    return { ...base, kind: 'state', state: 'working', newTurn: true }
+    // `prompt` is REQUIRED in codex's own input schema for this event
+    // (codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json), so the typed
+    // text rides as `task` exactly like claude's — the node prompt bar and the mobile mirror read it.
+    return { ...base, kind: 'state', state: 'working', task: p.prompt, newTurn: true }
   }
   // `request_user_input` is Codex's ask-the-user tool, and it is NOT a blocking tool: the
   // turn ENDS (Stop fires) with the question still unanswered, and the answer arrives as a
@@ -575,6 +578,8 @@ interface GeminiPayload {
   hookEventName?: string
   event?: string
   session_id?: string
+  /** BeforeAgent only: the text the person submitted (reference.md:151). */
+  prompt?: string
   /** Notification only (reference.md:272-285). The documented type is `"ToolPermission"`. */
   notification_type?: string
   /** Notification only: the alert's summary — shown on the needs-you badge (reference.md:279). */
@@ -589,7 +594,9 @@ export function normalizeGemini(env: RawHookEnvelope): NormalizedAgentEvent | nu
   // BeforeAgent is gemini's turn start — flag newTurn (mirrors Claude's UserPromptSubmit)
   // so per-turn fan-out clears once per turn rather than on every tool event.
   if (ev === 'BeforeAgent') {
-    return { ...base, kind: 'state', state: 'working', newTurn: true }
+    // `prompt` = "The original text submitted by the user" (reference.md, BeforeAgent input fields):
+    // forwarded as `task` so the node prompt bar and the mobile mirror see gemini turns too.
+    return { ...base, kind: 'state', state: 'working', task: p.prompt, newTurn: true }
   }
   if (ev === 'BeforeTool' || ev === 'AfterTool') {
     return { ...base, kind: 'state', state: 'working' }
