@@ -19,7 +19,7 @@ import { useSettings } from '../../state/settings'
 import { useBoardWallpaperStyle } from '../../state/wallpaper'
 import { AerialWallpaper } from '../AerialWallpaper'
 import {
-  AT_COLUMN_END, addColumn, assignNode, assignedTo, boardLabels, cardAssignees, cardMatchesLabelFilter, cardMeta, columnForNode,
+  AT_COLUMN_END, addColumn, assignNodes, assignedTo, boardLabels, cardAssignees, cardMatchesLabelFilter, cardMeta, columnForNode,
   deleteColumn, labelsForCard, moveColumn,
   nextColumnColor, pruneAssignments, recolorColumn, renameColumn, setColumnCategory, unassigned
 } from '../../lib/kanban'
@@ -37,7 +37,10 @@ import { GitHubPullCard } from './GitHubPullCard'
 import { kanbanSource, sourceVisible } from '../../lib/kanbanSources'
 import type { ModalSpawn } from './ModalTerminal'
 import { ContextMenu, type MenuItem } from '../ContextMenu'
-import { buildCardMenuItems } from './cardMenu'
+import { buildBulkCardMenuItems, buildCardMenuItems, bulkMoveTargets } from './cardMenu'
+import { CardSelectionBar } from './CardSelectionBar'
+import { useCardSelection } from './useCardSelection'
+import { dragGroup, inBoardOrder } from '../../lib/cardSelection'
 import { IconAgent, IconBranch, IconExternal, IconNote, IconTerminal, IconWeb } from '../icons'
 import { issueWorktreeMenuRow, type IssueWorktreeMenuAnswer } from '../../lib/issueWorktree'
 import type { GitHubCloseReason, GitHubIssueCardView } from '@shared/github-issues'
@@ -131,6 +134,10 @@ export interface KanbanViewProps {
   onEditSticky: (nodeId: string, text: string) => void
   /** Permanently delete a node (ends its session) — routed through the canvas confirm. */
   onDeleteNode: (nodeId: string) => void
+  /** Permanently delete SEVERAL nodes at once (the multi-select bar / menu) — one canvas confirm
+   *  for all of them. Optional: a board without it selects and moves cards but offers no bulk
+   *  Delete. */
+  onDeleteNodes?: (nodeIds: string[]) => void
   /** Reports which node's card modal is open (null = none) so the canvas can target it — e.g.
    *  the dictation shortcut dictates into the open card's session, not a canvas selection. */
   onModalNodeChange: (nodeId: string | null) => void
@@ -254,12 +261,15 @@ function useCanvasCovered(): void {
 
 export const KanbanView = memo(function KanbanView({
   board, sessions, onChange, onOpenNode, onCreateNode, onRenameNode, onEditSticky, onDeleteNode,
-  onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued, onAutoMoveFromPulls, issueAgentMenu,
+  onDeleteNodes, onModalNodeChange, onBrowserNav, onSetIcon, nodeActionItems, sessionActionItems, onAiName, onSetColor, onRunQueued, onAutoMoveFromPulls, issueAgentMenu,
   issueWorktreeMenu, teams, onIssueMoved
 }: KanbanViewProps) {
   useCanvasCovered()
   const { api } = useSession()
   const dragRef = useRef<Drag>(null)
+  // The multi-selection as the drop handlers need it (they are declared before the board order
+  // the selection hook is built from): the selected ids and the order to move them in.
+  const selectedRef = useRef<{ ids: readonly string[]; order: readonly string[] }>({ ids: [], order: [] })
   // One card modal at a time; a deleted node closes it via the byId.has render guard.
   const [modalNodeId, setModalNodeId] = useState<string | null>(null)
   // The card the menu's "Open card in chat / markdown view" opened. Paired with the open card so
@@ -655,7 +665,11 @@ export const KanbanView = memo(function KanbanView({
         if (columnId !== null) commit(moveColumn(board, drag.id, columnId))
         // a column dropped on Ungrouped is a no-op — Ungrouped is always first
       } else if (isProviderDrag(drag)) requestGitHubMove(drag.issue, columnId)
-      else commit(assignNode(board, drag.id, columnId, AT_COLUMN_END))
+      else {
+        // Dragging one of several selected cards carries the whole selection (lib/cardSelection).
+        const moving = dragGroup(selectedRef.current.order, selectedRef.current.ids, drag.id)
+        commit(assignNodes(board, moving, columnId, AT_COLUMN_END))
+      }
     },
     [board, commit, requestGitHubMove]
   )
@@ -679,7 +693,10 @@ export const KanbanView = memo(function KanbanView({
         const i = ids.indexOf(targetNodeId)
         beforeId = i >= 0 && i + 1 < ids.length ? ids[i + 1] : AT_COLUMN_END
       }
-      commit(assignNode(board, drag.id, columnId, beforeId))
+      // A selection drag lands the whole group at the drop line (an anchor that is itself moving
+      // resolves to the next card that stays — `assignNodes`).
+      const moving = dragGroup(selectedRef.current.order, selectedRef.current.ids, drag.id)
+      commit(assignNodes(board, moving, columnId, beforeId))
     },
     [board, commit, requestGitHubMove, sessionIds]
   )
@@ -825,6 +842,16 @@ export const KanbanView = memo(function KanbanView({
       ...shownColumns.map((col) => (columnCards.byColumn.get(col.id) ?? NO_CARDS).map((c) => c.id))
     ]
   }, [columnCards, shownColumns, ungroupedShown, source])
+  // Multi-select over the same order the keys walk: ⌘/Ctrl-click, Shift-click, then one bar for
+  // the lot. GitHub cards are not in it — their column is the provider's, and deleting one is not
+  // a board action.
+  const boardOrder = useMemo(() => navColumns.flat(), [navColumns])
+  const selection = useCardSelection(boardOrder)
+  const selectedInOrder = useMemo(() => inBoardOrder(boardOrder, selection.ids), [boardOrder, selection.ids])
+  selectedRef.current = { ids: selection.ids, order: boardOrder }
+  const clearSelection = selection.clear
+  // Another project's board is another set of cards: never carry a selection across the switch.
+  useEffect(() => clearSelection(), [projectId, clearSelection])
   const boardKeyRef = useRef<(action: BoardKeyAction) => boolean>(() => false)
   boardKeyRef.current = (action) => {
     const active = document.activeElement
@@ -960,6 +987,8 @@ export const KanbanView = memo(function KanbanView({
             meta={metaOf(s.id)}
             labels={labelsOf(s.id)}
             onOpen={setModalNodeId}
+            selected={selection.set.has(s.id)}
+            onSelectClick={selection.onSelectClick}
             onOpenIssue={handleOpenIssueRef}
             onContext={handleCardContext}
             onDragStart={handleCardDragStart}
@@ -1050,6 +1079,17 @@ export const KanbanView = memo(function KanbanView({
   const cardMenuItems = (nodeId: string): MenuItem[] => {
     const card = byId.get(nodeId)
     if (!card) return []
+    // A card that is part of a multi-card selection speaks for all of them. A card OUTSIDE the
+    // selection keeps its own menu (and the selection): its rows name that one card.
+    if (selectedInOrder.length > 1 && selection.set.has(nodeId)) {
+      return buildBulkCardMenuItems({
+        ids: selectedInOrder,
+        board,
+        commit,
+        clear: selection.clear,
+        remove: onDeleteNodes
+      })
+    }
     return buildCardMenuItems({
       card,
       board,
@@ -1060,7 +1100,8 @@ export const KanbanView = memo(function KanbanView({
       rename: onRenameNode,
       aiName: onAiName,
       nodeActions: nodeActionItems,
-      remove: onDeleteNode
+      remove: onDeleteNode,
+      select: { selected: selection.set.has(nodeId), toggle: selection.toggle }
     })
   }
 
@@ -1256,6 +1297,14 @@ export const KanbanView = memo(function KanbanView({
           </button>
         </div>
       </div>
+      {selectedInOrder.length > 0 && (
+        <CardSelectionBar
+          count={selectedInOrder.length}
+          moveTargets={bulkMoveTargets(board, selectedInOrder, commit)}
+          onDelete={onDeleteNodes ? () => onDeleteNodes(selectedInOrder) : undefined}
+          onClear={selection.clear}
+        />
+      )}
       {cardMenu && byId.has(cardMenu.nodeId) && (
         <ContextMenu
           x={cardMenu.x}

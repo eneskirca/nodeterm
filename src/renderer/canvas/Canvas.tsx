@@ -12961,6 +12961,32 @@ export function Canvas() {
     [deleteNodes]
   )
 
+  // The board's multi-select Delete: ONE confirm for every selected card, then the same teardown.
+  // Ids are re-resolved against the live nodes at click AND at confirm time — a card deleted from
+  // elsewhere while the dialog was up is simply not there to delete.
+  const deleteNodesFromKanban = useCallback(
+    (nodeIds: string[]) => {
+      const live = (): string[] => {
+        const have = new Set(nodesRef.current.map((n) => n.id))
+        return [...new Set(nodeIds)].filter((id) => have.has(id))
+      }
+      const ids = live()
+      if (ids.length === 0) return
+      if (ids.length === 1) {
+        deleteNodeFromKanban(ids[0])
+        return
+      }
+      setConfirm({
+        message: `Delete ${ids.length} cards? Open terminal sessions will end.`,
+        onConfirm: () => {
+          deleteNodes(live())
+          setConfirm(null)
+        }
+      })
+    },
+    [deleteNodes, deleteNodeFromKanban]
+  )
+
   // Persist a browser card's navigation (url/title) from the modal webview back to the node.
   const browserNavFromKanban = useCallback(
     (nodeId: string, patch: { url?: string; title?: string }) => {
@@ -16951,8 +16977,37 @@ export function Canvas() {
         void writeDisk()
       }
     }
-    const onGlobalDelete = (e: CustomEvent<{ projectId: string; nodeId: string }>) => {
-      const { projectId, nodeId } = e.detail
+    const onGlobalDelete = (e: CustomEvent<{ projectId: string; nodeId?: string; nodeIds?: string[] }>) => {
+      const { projectId } = e.detail
+      // A lane's multi-select Delete names several cards (`nodeIds`); one confirm covers them all.
+      if (Array.isArray(e.detail.nodeIds)) {
+        const asked = [...new Set(e.detail.nodeIds.filter((id): id is string => typeof id === 'string'))]
+        if (projectId === useProjects.getState().activeProjectId) {
+          deleteNodesFromKanban(asked)
+          return
+        }
+        const stored = (): string[] => {
+          const have = new Set(useProjects.getState().getProject(projectId)?.nodes.map((n) => n.id) ?? [])
+          return asked.filter((id) => have.has(id))
+        }
+        const ids = stored()
+        if (ids.length === 0) return
+        const only = ids.length === 1
+          ? useProjects.getState().getProject(projectId)?.nodes.find((n) => n.id === ids[0])?.title || 'this session'
+          : ''
+        setConfirm({
+          message: only
+            ? `Delete ${only}? Its terminal session will end.`
+            : `Delete ${ids.length} cards? Open terminal sessions will end.`,
+          onConfirm: () => {
+            closeStoredNodes(projectId, stored())
+            setConfirm(null)
+          }
+        })
+        return
+      }
+      const nodeId = e.detail.nodeId
+      if (typeof nodeId !== 'string') return
       if (projectId === useProjects.getState().activeProjectId) {
         deleteNodeFromKanban(nodeId)
         return
@@ -16987,7 +17042,7 @@ export function Canvas() {
       window.removeEventListener('nodeterm:global-delete' as never, onGlobalDelete as never)
       window.removeEventListener('nodeterm:global-set-icon' as never, onGlobalSetIcon as never)
     }
-  }, [renameSession, setNodes, markDirty, writeDisk, deleteNodeFromKanban, closeStoredNodes, nodeWritesFor])
+  }, [renameSession, setNodes, markDirty, writeDisk, deleteNodeFromKanban, deleteNodesFromKanban, closeStoredNodes, nodeWritesFor])
 
   // Sidebar "Name with AI": generate a title from the session's captured terminal output
   // (same BYO-agent path as the terminal node's ✦), then apply it via renameSession.
@@ -19811,6 +19866,7 @@ export function Canvas() {
           onRenameNode={renameNodeFromKanban}
           onEditSticky={editStickyText}
           onDeleteNode={deleteNodeFromKanban}
+          onDeleteNodes={deleteNodesFromKanban}
           onModalNodeChange={setKanbanModalNode}
           onBrowserNav={browserNavFromKanban}
           onSetIcon={setActiveCardIcon}

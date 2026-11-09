@@ -9171,7 +9171,21 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   events are stored but no card feed shows them; canvas-born nodes get no card-created; no
   card-deleted type.
   Per-column "+ New session" menus create agents/terminal/sticky nodes assigned to the column
-  (assignment written UN-pruned — the fresh node isn't in the derived list yet). The column
+  (assignment written UN-pruned — the fresh node isn't in the derived list yet).
+  **Multi-select** (2026-11, both boards): ⌘/Ctrl-click toggles a session card, Shift-click extends
+  from the last picked card in BOARD order, and while anything is selected a plain click keeps
+  picking instead of opening the modal (Esc / the bar's ✕ leave; the card menu's **Select** row is
+  the way in without a modifier). The floating `CardSelectionBar` and the right-click menu of a card
+  INSIDE a multi-card selection (`buildBulkCardMenuItems`) act on all of them — **Move to**
+  (`assignNodes`, which lands the group together and in board order at every anchor; a loop of
+  `assignNode` would reverse it at the top) and **Delete** (ONE canvas confirm: `onDeleteNodes`, or
+  `nodeterm:global-delete` with `nodeIds` from an Omni lane) — and dragging a selected card carries
+  the selection. Load-bearing: the selection is pruned against the cards ON SCREEN and callers read
+  the pruned value in the same render (`useCardSelection`), so a bulk delete can never reach a card
+  that a filter, a collapsed lane or a hidden closed column took out of sight; GitHub cards are
+  never selectable (their column is the provider's); on the Omni board a selection lives in ONE
+  lane (`selectionOwner` — two projects share no columns). Rules are pure in
+  `lib/cardSelection.ts`. No keyboard chord yet (no `board.*` registry command selects or deletes). The column
   half-pill itself: (`components/kanban/ColumnPill.tsx`, `columnForNode` in lib/kanban; rendered
   as a SIBLING of the node root — the roots are overflow:hidden — hidden for Ungrouped/dangling,
   click opens the board). Server Edition works as-is (pure renderer + workspace.save). Scope: no
