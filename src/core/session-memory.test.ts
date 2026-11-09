@@ -6,10 +6,15 @@ import {
   parseProcessTable,
   parsePaneList,
   buildReport,
+  collectSessionHostMemory,
   collectSessionMemory,
+  defaultProcessTableReader,
   isNoServerError,
-  type ProcEntry
+  processLabel,
+  type ProcEntry,
+  type SessionMemoryReport
 } from './session-memory'
+import type { SessionHostListing } from './session-host-client'
 
 const P = (pid: number, ppid: number, rssKb: number): ProcEntry => ({ pid, ppid, rssKb })
 
@@ -35,8 +40,38 @@ describe('indexProcesses + rollupTree', () => {
       selfMb: 0,
       childrenMb: 0,
       childCount: 0,
-      totalMb: 0
+      totalMb: 0,
+      largestMb: 0
     })
+  })
+
+  it('names the largest process wherever it sits in the tree, without taking it out of the total', () => {
+    // The row's number is the whole tree, and the shell at its root is a few MB. What a reader
+    // needs next is which process holds it: here a grandchild, not the pane's direct child.
+    const { table, kids } = indexProcesses([
+      { ...P(100, 1, 4 * 1024), name: '-zsh' },
+      { ...P(200, 100, 500 * 1024), name: 'claude' },
+      { ...P(300, 200, 900 * 1024), name: 'dart' }
+    ])
+    const r = rollupTree(table, kids, 100)
+    expect(r.largestName).toBe('dart')
+    expect(r.largestMb).toBe(900)
+    expect(r.totalMb).toBe(1404)
+  })
+
+  it('can name the pane root itself: a pane started directly on the agent has no bigger child', () => {
+    const { table, kids } = indexProcesses([
+      { ...P(100, 1, 300 * 1024), name: 'claude' },
+      { ...P(200, 100, 20 * 1024), name: 'node' }
+    ])
+    expect(rollupTree(table, kids, 100)).toMatchObject({ largestName: 'claude', largestMb: 300 })
+  })
+
+  it('reports the largest size with no name when the reader has none', () => {
+    const { table, kids } = indexProcesses([P(100, 1, 1024), P(200, 100, 2048)])
+    const r = rollupTree(table, kids, 100)
+    expect(r.largestMb).toBe(2)
+    expect(r.largestName).toBeUndefined()
   })
 
   it('does not loop forever on a cyclic ppid chain', () => {
@@ -48,7 +83,53 @@ describe('indexProcesses + rollupTree', () => {
   })
 })
 
+describe('processLabel', () => {
+  it('reads an absolute path by its file name, spaces included', () => {
+    expect(processLabel('/bin/zsh')).toBe('zsh')
+    expect(processLabel('/Applications/Wow Keywords.app/Contents/MacOS/Wow Keywords')).toBe('Wow Keywords')
+  })
+
+  it('leaves a process title alone even when it holds a slash', () => {
+    // macOS `ps` prints a retitled process verbatim. A basename here would print `mcp@latest`.
+    expect(processLabel('npm exec @playwright/mcp@latest')).toBe('npm exec @playwright/mcp@latest')
+  })
+
+  it('drops the leading dash of a login shell', () => {
+    expect(processLabel('-zsh')).toBe('zsh')
+  })
+
+  it('strips control and format characters: a process title is whatever the process set', () => {
+    expect(processLabel('cla\u0007ude\u202e')).toBe('claude')
+  })
+
+  it('caps a long title', () => {
+    const label = processLabel('x'.repeat(200)) as string
+    expect(Array.from(label)).toHaveLength(40)
+    expect(label.endsWith('…')).toBe(true)
+  })
+
+  it('answers nothing when there is nothing left to show', () => {
+    expect(processLabel(undefined)).toBeUndefined()
+    expect(processLabel('')).toBeUndefined()
+    expect(processLabel('\u0007')).toBeUndefined()
+  })
+})
+
 describe('parseProcessTable', () => {
+  it('keeps the name column, spaces included', () => {
+    const out = parseProcessTable(
+      '  PID  PPID    RSS COMM\n  100     1   1024 /Applications/Wow Keywords.app/Contents/MacOS/Wow Keywords\n  200   100   2048 claude\n'
+    )
+    expect(out.map((e) => e.name)).toEqual([
+      '/Applications/Wow Keywords.app/Contents/MacOS/Wow Keywords',
+      'claude'
+    ])
+  })
+
+  it('still reads a three-column table, with no name', () => {
+    expect(parseProcessTable('100 1 1024\n')[0].name).toBeUndefined()
+  })
+
   it('parses ps output and skips the header and malformed lines', () => {
     const out = parseProcessTable(
       '  PID  PPID    RSS COMMAND\n' +
@@ -57,8 +138,8 @@ describe('parseProcessTable', () => {
         '  200   100 358400 claude\n'
     )
     expect(out).toEqual([
-      { pid: 100, ppid: 1, rssKb: 1024 },
-      { pid: 200, ppid: 100, rssKb: 358400 }
+      { pid: 100, ppid: 1, rssKb: 1024, name: 'tmux' },
+      { pid: 200, ppid: 100, rssKb: 358400, name: 'claude' }
     ])
   })
 
@@ -421,6 +502,30 @@ describe('collectSessionMemory on darwin', () => {
   )
 
   it(
+    'asks ps for the process name, and says the rows are physical footprint',
+    asDarwin(async () => {
+      let psArgs: string[] = []
+      const r = await collectSessionMemory({
+        tmuxBin: () => '/usr/bin/tmux',
+        sockets: ['s1'],
+        exec: async (bin, args) => {
+          if (bin.includes('tmux')) return 'nt-a|4242|claude\n'
+          if (bin === 'ps') {
+            psArgs = args
+            return 'PID PPID RSS COMM\n4242 1 100000 -zsh\n'
+          }
+          return 'PID    MEM  \n4242   200000K'
+        },
+        readTable: undefined,
+        readMem: () => null
+      })
+      expect(psArgs).toEqual(['-eo', 'pid,ppid,rss,comm'])
+      expect(r.metric).toBe('footprint')
+      expect(r.rows[0].largestName).toBe('zsh')
+    })
+  )
+
+  it(
     'the "nodeterm itself" group reuses that SAME top read — footprint for a covered pid, nothing for a missed one',
     asDarwin(async () => {
       const calls: string[] = []
@@ -732,5 +837,44 @@ describe('appSelfMemory — "nodeterm itself"', () => {
     expect(threw.app).toEqual({ ok: false, groups: [] })
     // No reader injected (Server Edition) → no field at all: "not available", not "could not measure".
     expect(await collectSessionMemory(base)).not.toHaveProperty('app')
+  })
+})
+
+describe('which memory measure the rows are in', () => {
+  const report = (table: ProcEntry[]): Promise<SessionMemoryReport> =>
+    collectSessionMemory({
+      tmuxBin: () => '/usr/bin/tmux',
+      sockets: ['s1'],
+      exec: async () => 'nt-a|100|claude\n',
+      readTable: () => table,
+      readMem: () => null
+    })
+
+  it('says rss (working set on Windows) when the table carries no footprint', async () => {
+    expect((await report([P(100, 1, 1024)])).metric).toBe(
+      process.platform === 'win32' ? 'working-set' : 'rss'
+    )
+  })
+
+  it('says footprint when it does', async () => {
+    expect((await report([{ ...P(100, 1, 1024), footprint: true }])).metric).toBe('footprint')
+  })
+
+  it('says working set for a Windows session host', async () => {
+    const r = await collectSessionHostMemory({
+      platformName: 'win32',
+      list: async () => ({ running: true, names: ['nt-a'], sessions: [{ name: 'nt-a', pid: 100 }] }) as SessionHostListing,
+      readTable: async () => [{ ...P(100, 1, 1024), name: 'pwsh.exe' }],
+      readMem: () => null
+    })
+    expect(r.metric).toBe('working-set')
+    expect(r.rows[0].largestName).toBe('pwsh.exe')
+  })
+})
+
+describe.skipIf(process.platform !== 'linux')('the Linux /proc reader', () => {
+  it('carries each process name', () => {
+    const me = defaultProcessTableReader()?.find((e) => e.pid === process.pid)
+    expect(me?.name).toBeTruthy()
   })
 })

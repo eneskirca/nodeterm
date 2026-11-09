@@ -15,6 +15,7 @@ import type {
   MemInfo,
   SessionHostOverhead,
   SessionMemoryApi,
+  SessionMemoryMetric,
   SessionMemoryQuery,
   SessionMemoryRow
 } from '@shared/types'
@@ -35,6 +36,11 @@ interface SessionMemoryState {
   /** nodeterm's own processes (SessionMemoryReport.app); absent = not available on this surface. */
   app?: AppSelfMemory
   mem: MemInfo | null
+  /** The measure `rows` are in (SessionMemoryReport.metric). */
+  metric?: SessionMemoryMetric
+  /** When the rows on screen were measured; null when nothing has been. This machine's clock, set
+   *  on arrival, so a host's clock never enters it. */
+  measuredAt: number | null
   loading: boolean
   /** Scope key the current rows belong to; null before the first successful load. */
   loadedScope: string | null
@@ -76,6 +82,7 @@ export const useSessionMemory = create<SessionMemoryState>((set, get) => ({
   rows: [],
   unmeasured: 0,
   mem: null,
+  measuredAt: null,
   loading: false,
   loadedScope: null,
 
@@ -103,6 +110,8 @@ export const useSessionMemory = create<SessionMemoryState>((set, get) => ({
         ok: r.ok,
         rows: r.rows,
         mem: r.mem,
+        metric: r.ok ? r.metric : undefined,
+        measuredAt: r.ok ? Date.now() : null,
         unmeasured: r.unmeasured ?? 0,
         unmeasuredBackend: r.unmeasuredBackend,
         host: r.ok ? r.host : undefined,
@@ -113,7 +122,16 @@ export const useSessionMemory = create<SessionMemoryState>((set, get) => ({
       // A rejected call (dead WS bridge, no session yet) is the same fact as `ok:false` — the sweep
       // could not run. It is emphatically not "there are no sessions".
       if (scopeKey !== activeScope) return
-      set({ ok: false, rows: [], unmeasured: 0, unmeasuredBackend: undefined, host: undefined, app: undefined })
+      set({
+        ok: false,
+        rows: [],
+        metric: undefined,
+        measuredAt: null,
+        unmeasured: 0,
+        unmeasuredBackend: undefined,
+        host: undefined,
+        app: undefined
+      })
     } finally {
       // A response for a scope we have left owns nothing here — `enterScope` already cleared the
       // spinner when it switched.
@@ -163,6 +181,8 @@ function enterScope(scopeKey: string, set: SetState): void {
     host: undefined,
     app: undefined,
     mem: null,
+    metric: undefined,
+    measuredAt: null,
     loading: false,
     loadedScope: null
   })

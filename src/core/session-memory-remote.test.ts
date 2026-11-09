@@ -226,6 +226,10 @@ describe('remoteSessionMemoryCommand under /bin/sh', () => {
     // The pane pid was resolved against the REAL process table: a live shell plus its children.
     // A 0 here would mean the rollup never found the pid, which is the failure worth catching.
     expect(r.rows[0].totalMb).toBeGreaterThan(0)
+    // The name column comes back through the real `ps`, on whatever this host's ps prints.
+    expect(r.rows[0].largestName).toBeTruthy()
+    // An SSH host is read with `ps` whatever it runs, so the panel must not say footprint.
+    expect(r.metric).toBe('rss')
     // Never assert `mem` unconditionally: this repo is maintained from macOS, which has no
     // /proc/meminfo, so a bare `not.toBeNull()` turns `npm test` red there — and contradicts the
     // sibling test below, which asserts that exact absence is fine.

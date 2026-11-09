@@ -6955,11 +6955,30 @@ about which machine they describe. Reading + parsing is `core/session-memory.ts`
   in one file, already in kB; `statm` reports RSS in **pages**, forcing a page-size assumption — a
   hard-coded 4096 under-reports **4×** on a 16 KiB-page arm64 kernel and **16×** on the 64 KiB-page
   enterprise arm64 builds (40 MB printed for a 640 MB session). **Do not optimise this back to
-  `statm`.** Non-Linux falls through to one `ps -eo pid,ppid,rss` call, through the same injectable
+  `statm`.** Non-Linux falls through to one `ps -eo pid,ppid,rss,comm` call, through the same injectable
   seam as tmux.
-- **`childCount` counts ALL descendants**, the agent CLI included: `pane_pid` is the pane's SHELL, so
-  a claude session with two MCP servers reports **3**. The UI therefore says "**child processes**",
-  never "MCP" — a plain `npm run dev` has children too.
+- **A row's number is the WHOLE TREE, and the line under it says how it splits.** `pane_pid` is the
+  pane's SHELL, so `childCount` counts the agent CLI too (claude with two MCP servers: **3**), and
+  `childrenMb` is the total minus a few MB of shell. The panel printed that, so "claude 1.7 GB" sat
+  over "+14 child processes 1.7 GB" and read as two sizes (field report, 2026-11-04). The line is now
+  `largestName largestMb · N other processes <the rest>`: two parts that add up to the row. It names
+  the LARGEST process, never "the agent": a tree carries no marker for which that is, a guess fails
+  on Windows' `cmd → node` shims, and the largest is what a reader wants when a total looks high. Say
+  "processes", never "MCP": a plain `npm run dev` has them too. A name is untrusted text (a process
+  can retitle itself, on an SSH host it may be another user's): `processLabel` cleans it, and cuts
+  only an ABSOLUTE path to its file name, because `npm exec @playwright/mcp@latest` is a title.
+- **The report says which measure it is in** (`SessionMemoryReport.metric`: `footprint` / `rss` /
+  `working-set`), and the panel prints it, because the three disagree enormously for one process.
+  MEASURED on a Mac: one Claude session of 7 processes is 751 MB in the panel, 751 MB in Apple's
+  `footprint -p … ` run over all seven ("Summary Footprint", shared memory counted once; 620 MB of it
+  compressed or swapped), and 148 MB as a `ps` rss sum; one idle MCP `node` is 242 MB of footprint and
+  4 MB of rss. So comparing a row with `ps`, or with `footprint <claude pid>` alone, reads as the
+  panel over-reporting by 2.7× when it is not. An SSH host is always `rss`, a macOS host included
+  (no `top` there), which is why the metric is reported rather than derived from the viewer's platform.
+- **A reading says when it was taken.** The sweep runs on open and on ⟳ only (the cadence rule below),
+  so an open panel ages. `measuredAt` is stamped on arrival by this machine's clock; the foot reads
+  "Measured 3m ago", and "Measuring…" while the old rows wait for a new reading. Its 15 s tick
+  re-renders that line and reads nothing.
 - **The cadence split follows the cost.** A **local** scope polls the pill's number every 30 s
   (`HOST_POLL_MS`, one file read, free). An **SSH** scope is **never polled**: one read on scope
   entry, one when that project's ControlMaster comes up (an SSH project is opened before its master
