@@ -205,9 +205,9 @@
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
     "@excalidraw/excalidraw": "^0.18.1",
-    "@tailwindcss/vite": "^4.3.3",
+    "@tailwindcss/vite": "^4.3.4",
     "@types/css-tree": "^3.2.0",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
@@ -218,7 +218,7 @@
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-webgl": "0.18.0",
     "@xterm/xterm": "^5.5.0",
-    "@xyflow/react": "^12.12.0",
+    "@xyflow/react": "^12.12.1",
     "css-tree": "^3.2.1",
     "electron": "^42.11.18",
     "electron-builder": "^26.18.0",
@@ -230,7 +230,7 @@
     "tailwindcss": "^4.3.1",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   },
   "overrides": {
     "monaco-editor": {
