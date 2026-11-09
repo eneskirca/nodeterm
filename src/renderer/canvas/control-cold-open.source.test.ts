@@ -99,8 +99,12 @@ describe('the cold-open dispatch block (source pins)', () => {
     const body = coldOpenBody()
     expect(body).toMatch(/const armed = withLaunchBrief\(armForColdOpen\(built\), openPrompt\.promptFile\)/)
     expect(body).toMatch(/flowToNodeStates\(\[node\]\)\[0\]/)
-    // `--after` rides that same held launch rather than a second mechanism.
-    expect(body).toMatch(/pendingLaunch: \{ \.\.\.held, after: coldAfterIds \}/)
+    // `--after` rides that same held launch rather than a second mechanism — and so does the
+    // worktree setup gate for a cold `--group` into a frame whose setup script is still pending
+    // (the hold a LIVE open into that frame gets, `setupHoldGroup`).
+    expect(body).toMatch(/pendingLaunch: \{\s*\.\.\.held,\s*after: coldAfterIds,/)
+    expect(body).toContain('const coldSetupHold = setupHoldGroup(coldGroup.groupId)')
+    expect(body).toMatch(/coldSetupHold \? \{ awaitSetupGroup: coldSetupHold \} : \{\}/)
   })
 
   it('refusal-before-write: every refusal precedes the first store write', () => {

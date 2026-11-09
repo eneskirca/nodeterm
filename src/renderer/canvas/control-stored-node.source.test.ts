@@ -40,7 +40,7 @@ function code(body: string): string {
     .join('\n')
 }
 
-const STORED_NODE_CASES = ['close', 'rename', 'color', 'link', 'board', 'assign'] as const
+const STORED_NODE_CASES = ['close', 'rename', 'color', 'link', 'board', 'assign', 'open-worktree'] as const
 
 describe('the stored-node dispatch cases (source pins)', () => {
   it('none of them resolves a node id against the LIVE canvas', () => {
@@ -155,6 +155,19 @@ describe('the stored-node dispatch cases (source pins)', () => {
     expect(src).toContain('const ctlLinkEndpointOf = (id: string): LinkEndpoint | null => {')
     expect(src).toContain('if (!offCanvas) return linkEndpointOf(id)')
     expect(caseBody('link')).toContain('ctlLinkEndpointOf(from)')
+  })
+
+  it('`open-worktree` never reads the epoch-scoped worktree store off screen', () => {
+    // The store's repoRoot/entries describe the ACTIVE project; off canvas they are another
+    // repository's answers. The on-screen branch keeps the warmed store (byte-identical), the
+    // off-screen branch takes one-shot `git.repoRoot`/`worktreeList` reads against the owner,
+    // and the bind lands in the owner's STORED nodes, never through `attachWorktree`.
+    const body = caseBody('open-worktree')
+    expect(body).toContain('offCanvas ? sessionForProject(')
+    expect(body).toContain('await owGit.repoRoot(project.cwd)')
+    expect(body).toContain(';({ repoRoot, entries } = useWorktrees.getState())')
+    expect(body).toContain('st.applyOwnNodeMutation(oc.project.id')
+    expect(body).toContain('worktreeControlRef.current.startWorktreeSetup(setupGroupId, wt.path, oc.project.id)')
   })
 
   it('`ctlNodes` is the live array verbatim on screen', () => {
