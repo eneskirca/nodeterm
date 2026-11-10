@@ -23,7 +23,7 @@ import type {
   SessionMemoryReport
 } from '../shared/types'
 import { TMUX_SOCKET } from './tmux-naming'
-import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import { LEGACY_RMT_TMUX_SOCKET } from './remote-ssh/control-master'
 import type { SessionHostListing } from './session-host-client'
 import { cimRows, powershellArgs, powershellExe } from './win32-powershell'
 
@@ -896,7 +896,7 @@ export async function collectSessionMemory(
   if (table === null && !deps.readTable) table = await psProcessTable(exec, process.platform)
   if (table === null) return { ok: false, rows: [], mem }
 
-  const sockets = deps.sockets ?? [TMUX_SOCKET, RMT_TMUX_SOCKET]
+  const sockets = deps.sockets ?? [TMUX_SOCKET, LEGACY_RMT_TMUX_SOCKET]
   const bySession = new Map<string, PaneRef>()
   let answered = 0
   for (const s of sockets) {

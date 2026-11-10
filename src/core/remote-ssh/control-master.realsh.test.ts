@@ -112,7 +112,7 @@ describe('REAL sh: a payload node id is one literal argument, never command stru
       expect(markers, `a canary EXECUTED for ${name}`).toEqual([])
       expect(extraStdout, `stray stdout for ${name}`).toBe('')
       expect(argv, `payload was not one literal arg for ${name}`).toContain(`NODETERM_NODE_ID=${payload}`)
-      expect(argv.slice(0, 2)).toEqual(['-L', 'nodeterm-rmt'])
+      expect(argv.slice(0, 2)).toEqual(['-L', 'node-terminal'])
       expect(argv.filter((a) => a === 'new-session')).toHaveLength(1)
       expect(argv).toContain('nt-n1')
       expect(argv).toContain('/home/u')
@@ -224,7 +224,7 @@ describe('REAL sh: remote tmux PATH resolution + graceful degrade (issue #449)',
     // PATH deliberately has NO tmux — only the $HOME/.local/bin append can resolve it.
     const out = runRaw(cmd, { PATH: emptyPath(), HOME: home })
     const argv = out.split('\0').slice(0, -1)
-    expect(argv.slice(0, 2)).toEqual(['-L', 'nodeterm-rmt'])
+    expect(argv.slice(0, 2)).toEqual(['-L', 'node-terminal'])
     expect(argv).toContain('new-session')
   })
 

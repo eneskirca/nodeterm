@@ -1556,13 +1556,14 @@ export class SshProjectManager {
    * `remoteListSessionsArgs` reports). Best-effort per id, a missing session is ignored.
    *
    * `everySocket` widens the kill to EVERY tmux socket on the host instead of just the
-   * `nodeterm-rmt` one an SSH project spawns on, and it is **opt-in for one caller**. The
-   * session-memory panel passes rows swept off BOTH of the host's sockets — a host that runs its
-   * own `nodeterm-server` keeps those on `node-terminal` — and such a row used to get a confirm
+   * `node-terminal` one an SSH project spawns on, and it is **opt-in for one caller**. The
+   * session-memory panel passes rows swept off BOTH of the host's sockets — the legacy
+   * `nodeterm-rmt` still holds what a pre-unification build left — and such a row used to get a confirm
    * reading "this stops its tmux session" followed by a kill aimed at the other socket, so nothing
    * died. Project deletion deliberately stays narrow: it knows its own nodes, they are all on the
-   * project's own socket, and speculating at `node-terminal` would aim at sessions belonging to a
-   * nodeterm running ON that host. See `KILL_TMUX_SOCKETS`.
+   * host's `node-terminal` (shared with a nodeterm running ON that host — a shared session is the
+   * same node of the same project, so ending it is right), and speculating at the legacy socket
+   * would aim at what an older build left behind. See `KILL_TMUX_SOCKETS`.
    */
   async killSessions(
     projectId: string,

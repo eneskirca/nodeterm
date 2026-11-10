@@ -186,7 +186,7 @@ serves many SSH projects slowly accumulates **detached** agent sessions nobody w
 to — a field report counted 95 sessions holding 34 GB of idle `claude` processes. Every
 nodeterm-server (headless or serving) runs a **session budget** (`src/core/session-budget.ts`, the
 tmux counterpart of the renderer's WebGL budget): every 10 minutes it sweeps the local
-`node-terminal` **and** SSH-remote `nodeterm-rmt` sockets and reaps the **least-recently-active
+`node-terminal` **and** legacy SSH-remote `nodeterm-rmt` sockets and reaps the **least-recently-active
 detached** `nt-*` sessions when
 
 - host **available memory** drops below a watermark (default 10% of RAM, floor 1 GB) — the
@@ -206,7 +206,7 @@ The reaper's counterpart for a human: `startSessionMemoryService` (`src/core/ses
 is booted here too, beside the reaper in `src/server/index.ts`, and `window.nodeTerminal.sessionMemory`
 has a **real** ws-bridge implementation (not a stub). So the browser gets the bottom-left RAM pill and
 the per-session breakdown, and both describe **the machine the server is served from**: its
-`/proc/meminfo`, its `node-terminal` / `nodeterm-rmt` tmux sockets, its process table. Full write-up:
+`/proc/meminfo`, its `node-terminal` (and legacy `nodeterm-rmt`) tmux sockets, its process table. Full write-up:
 `docs/session-memory.md`.
 
 **An SSH project's scope answers `ok:false` — "could not measure" — and that is deliberate.** The

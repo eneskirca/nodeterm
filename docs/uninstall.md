@@ -71,8 +71,8 @@ Two deliberate exceptions:
 1. Server Edition systemd units are disabled and their unit files removed.
 2. The desktop app is asked to quit (AppleScript on macOS, SIGTERM elsewhere), with a
    10-second grace before a hard kill.
-3. The tmux servers on nodeterm's private sockets (`node-terminal`, and `nodeterm-rmt` if
-   another machine SSH'd in) are killed — **the script lists every live session first and
+3. The tmux servers on nodeterm's private sockets (`node-terminal`, and the legacy `nodeterm-rmt`
+   if an older build on another machine SSH'd in) are killed — **the script lists every live session first and
    warns that processes inside them end.** Your own tmux (default socket) is untouched.
 4. Lingering SSH ControlMasters are closed via `ssh -O exit` on each
    `~/.nodeterm/ssh-cm/*.sock`.
@@ -85,7 +85,7 @@ Two deliberate exceptions:
   *before* deleting it and prints the list with a manual `rm -rf` hint instead of deleting.
 - **Remote SSH hosts.** A connected SSH project installs the same hook scripts/skills under
   the *host's* `~/.nodeterm` and agent dirs, and its sessions live on the host's
-  `nodeterm-rmt` tmux socket. The script prints per-host cleanup instructions; it does not
+  `node-terminal` tmux socket (older builds: `nodeterm-rmt`). The script prints per-host cleanup instructions; it does not
   reach over the network.
 - **The agent CLIs and tmux themselves** — nodeterm never owned them.
 

@@ -267,7 +267,7 @@ export interface PasteDelivery {
    * `list-buffers`, a phone attaching), for as long as the server lives — days, on a host with
    * dozens of sessions. `buffer-limit` does not save it: named buffers are not reaped (measured —
    * 60 named buffers under `buffer-limit 50`, all 60 survived). The payload can be a note push or
-   * a 300 KB scrollback paste. Same story on the remote `nodeterm-rmt` server.
+   * a 300 KB scrollback paste. Same story on an SSH host's server.
    */
   cleanup: string[] | null
 }

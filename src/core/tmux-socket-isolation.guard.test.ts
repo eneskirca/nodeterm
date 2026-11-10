@@ -1,6 +1,6 @@
 // Issue #629 — the invariant: **a test never touches the machine's live nodeterm tmux server.**
 //
-// This repo is developed from inside nodeterm, so `tmux -L node-terminal` and `-L nodeterm-rmt` are
+// This repo is developed from inside nodeterm, so `tmux -L node-terminal` (and the legacy `-L nodeterm-rmt`) are
 // not names in a fixture — on a contributor's machine they are the servers holding every terminal
 // they have open. A test that binds one shares a process with the user's entire canvas, and the
 // failure mode is not a red test: it is every pane printing `[server exited unexpectedly]`.
@@ -25,7 +25,7 @@ import { execFileSync } from 'child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { join, relative } from 'path'
 import { TMUX_SOCKET } from './tmux-naming'
-import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import { LEGACY_RMT_TMUX_SOCKET, RMT_TMUX_SOCKET } from './remote-ssh/control-master'
 import { SANDBOX_ENV, tmuxSocketPath } from './tmux-test-socket'
 
 const REPO_ROOT = join(__dirname, '..', '..')
@@ -98,7 +98,7 @@ describe('the run cannot reach a live nodeterm tmux server', () => {
 const REAL_SOCKET_ALLOWED = new Map<string, string>([
   [
     'src/core/agents/pane-owner.test.ts',
-    'the production bytes hardcode `-L nodeterm-rmt`; re-spelling it would judge different bytes'
+    'the production bytes hardcode the remote socket name; re-spelling it would judge different bytes'
   ],
   [
     'src/main/remote/host-destroy-tmux.test.ts',
@@ -182,6 +182,7 @@ describe('no unreviewed test hands a real socket name to a real tmux', () => {
     // The regex carries the two names as literals so it can read a test that hardcodes them. If a
     // constant is ever renamed, this is what says the scan went blind.
     expect(TMUX_SOCKET).toBe('node-terminal')
-    expect(RMT_TMUX_SOCKET).toBe('nodeterm-rmt')
+    expect(RMT_TMUX_SOCKET).toBe('node-terminal') // unified 2026-11 (unified-socket.test.ts)
+    expect(LEGACY_RMT_TMUX_SOCKET).toBe('nodeterm-rmt')
   })
 })

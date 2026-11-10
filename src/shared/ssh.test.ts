@@ -257,18 +257,18 @@ describe('quoteRemotePath', () => {
 describe('remoteTmuxCommand', () => {
   it('builds attach-or-create on the remote socket with a quoted cwd', () => {
     expect(remoteTmuxCommand({ sessionId: 'nt-x', remoteCwd: '/srv/app' })).toBe(
-      `tmux -L nodeterm-rmt new-session -A -s 'nt-x' -c '/srv/app'`
+      `tmux -L node-terminal new-session -A -s 'nt-x' -c '/srv/app'`
     )
   })
   it('tilde-expands a home-relative cwd (leaves ~/ unquoted)', () => {
     expect(remoteTmuxCommand({ sessionId: 'nt-x', remoteCwd: '~/project' })).toBe(
-      `tmux -L nodeterm-rmt new-session -A -s 'nt-x' -c ~/'project'`
+      `tmux -L node-terminal new-session -A -s 'nt-x' -c ~/'project'`
     )
   })
   it('appends a quoted program + args when given', () => {
     expect(
       remoteTmuxCommand({ sessionId: 'nt-x', remoteCwd: '/a', program: 'ssh', programArgs: ['-A', 'h'] })
-    ).toBe(`tmux -L nodeterm-rmt new-session -A -s 'nt-x' -c '/a' 'ssh' '-A' 'h'`)
+    ).toBe(`tmux -L node-terminal new-session -A -s 'nt-x' -c '/a' 'ssh' '-A' 'h'`)
   })
 })
 

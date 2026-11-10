@@ -7,7 +7,7 @@
 // 1. Nothing is ended before `bootstrap` succeeded. Until the server has adopted and shared the
 //    project, the SSH sessions are the only place the work lives; a failure before that point must
 //    leave every terminal running.
-// 2. Nothing is resumed on the server before its `nodeterm-rmt` session was VERIFIED gone, so there
+// 2. Nothing is resumed on the server before its SSH-spawned session was VERIFIED gone, so there
 //    are never two processes on one conversation (two CLIs appending to one transcript). A kill
 //    that could not be verified resumes nothing and reports the node as still on SSH.
 // 3. After a successful bootstrap the SSH project is never reopened: the server is now the only

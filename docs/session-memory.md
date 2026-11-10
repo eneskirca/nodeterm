@@ -424,9 +424,10 @@ That is safe because it is a **round trip, not a lookup**: the panel's `nodeId` 
 observed it on**. It does not rest on node ids being globally unique (they are only per-launch
 unique).
 
-**The name and the host were never the hard part — the SOCKET was.** Two nodeterm tmux sockets exist
-on one machine at the same time: `node-terminal` for a nodeterm running ON it (desktop or Server
-Edition) and `nodeterm-rmt` for one SSH-ing INTO it. The sweep lists **both**
+**The name and the host were never the hard part — the SOCKET was.** Two nodeterm tmux sockets can
+exist on one machine: `node-terminal` for every nodeterm (running ON it — desktop or Server Edition —
+or, since the 2026-11 unification, SSH-ing INTO it) and the legacy `nodeterm-rmt`, where a
+pre-unification build's SSH projects left their sessions. The sweep lists **both**
 (`session-memory.ts`, `session-memory-remote.ts`) while the kill targeted **one** — so every row that
 came off the other socket got the confirm "this stops its tmux session" and a kill that landed
 nowhere. That is not an exotic host: one running its own `nodeterm-server` *and* being SSH'd into is
@@ -450,9 +451,8 @@ name could be on**: `KILL_TMUX_SOCKETS`, via `remoteTmuxKillEverySocketArgs` (re
   not rare — an ordinary node-`×` on a node that was never mounted in this process takes it every
   time, which is the common case right after an app restart and for every non-active project's node
   — and project deletion is the same shape remotely. Those callers know their own nodes, so they
-  stay narrow: speculating at `nodeterm-rmt` aims at sessions ANOTHER machine's nodeterm SSHed in to
-  spawn here, and speculating at a host's `node-terminal` aims at sessions a nodeterm running ON it
-  owns. Both defaults and both opt-ins are pinned (`pty-single-user.test.ts`,
+  stay narrow: speculating at the legacy `nodeterm-rmt` aims at sessions an older build on ANOTHER
+  machine SSHed in to spawn here, which their own node-× has already failed to reach once. Both defaults and both opt-ins are pinned (`pty-single-user.test.ts`,
   `control-master.test.ts`, `ssh-project.killSessions.test.ts`), including that the wire flag must
   be a literal `true`.
 
@@ -524,13 +524,15 @@ The kill actually reaching the host (the bug most recently fixed, and the one no
     wherever it was, not merely absent from the panel.
  2. Same, for a row owned by a CLOSED ssh project (it resolves to a title, so it takes the
     closeSession path plus the remote kill — both legs must land).
- 2b. THE CROSS-SOCKET CASE, and the reason both sockets are now killed. On a host that also runs its
-    own `nodeterm-server`, open an SSH project pointed at it: the panel lists that server's own
-    sessions (they live on `node-terminal`, not `nodeterm-rmt`). Kill one and confirm with
-    `tmux -L node-terminal ls` on the host. Before the fix this row's confirm was a no-op.
- 2c. The LOCAL mirror of 2b: from another machine, SSH into this one with nodeterm and open a
-    terminal (it lands on this machine's `nodeterm-rmt`). On THIS machine the panel shows it as an
-    orphan; kill it and confirm with `tmux -L nodeterm-rmt ls` locally.
+ 2b. THE CROSS-SOCKET CASE (legacy). On a host that also runs its own `nodeterm-server`, with
+    sessions a pre-2026-11 build left on `nodeterm-rmt`: open an SSH project pointed at it; the
+    panel lists the rows off both sockets. Kill one of each and confirm with `tmux -L node-terminal
+    ls` and `tmux -L nodeterm-rmt ls` on the host. Before the fix the `nodeterm-rmt` row's confirm
+    was a no-op.
+ 2c. THE SHARED-SOCKET CASE (current). From another machine, SSH into this one with nodeterm and
+    open a terminal: it lands on THIS machine's `node-terminal`, and opening the same folder
+    locally here attaches the SAME `nt-<id>` session (the whole point of the unification). The
+    panel shows it as owned, not an orphan; its node-× ends it for both machines.
  3. Kill a node created less than a sweep ago (<1 s): the confirm wording may say "no node" from the
     stale snapshot, and the CANVAS node is currently left behind (§4's known hole) — confirm which
     of the two actually happens on a real machine.

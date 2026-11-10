@@ -250,8 +250,8 @@ installer already did on the host stays, and the project has not been touched ye
 
 ### Which terminals continue
 
-Every terminal of the project is handed over: its session on this desktop's remote tmux socket
-(`nodeterm-rmt`) ends, and the node lives on in the server core's copy of the project.
+Every terminal of the project is handed over: the session this desktop spawned on the host's tmux
+socket (`node-terminal`) ends, and the node lives on in the server core's copy of the project.
 
 - **An agent continues its conversation** when its agent is resumable (`RESUMABLE_AGENTS`) and its
   conversation id is known. The server core restarts it with `--resume` (`claude --resume <id>`,
@@ -312,11 +312,12 @@ again.
    renderer names no folder).
 10. **Record the handover**: `handedOffTo` now names the team (`hostId`) and the project's id on the
     server.
-11. **End the sessions, and check.** One generated command kills each node's session on this
-    desktop's remote socket only (`nodeterm-rmt`, exact target `=nt-<id>`), then asks tmux whether
-    each one is gone. A session counts as gone only when tmux itself says it does not exist: tmux
-    also exits 1 for a version mismatch or a socket it may not open, and the kill failed there too.
-    Never the server core's socket (`node-terminal`): its sessions are the ones being started.
+11. **End the sessions, and check.** One generated command kills each node's session on the host's
+    socket (`node-terminal`, exact target `=nt-<id>` — the project's own node ids, nothing else),
+    then asks tmux whether each one is gone. A session counts as gone only when tmux itself says it
+    does not exist: tmux also exits 1 for a version mismatch or a socket it may not open, and the
+    kill failed there too. Since the 2026-11 socket unification this is the SAME socket the server
+    core resumes on: the kill precedes the resume, so one conversation never has two processes.
 12. **`team resume`** for the resumable agents whose sessions are gone, with the list on stdin.
 13. **Join**, and show the invite code.
 
@@ -1331,7 +1332,7 @@ are unchanged.
   ignores a project id it does not already hold. Hosted desktop tabs are told by
   `relay:hosted:shared-changed` and open it at once.
 - **The installed server's idle reaper now also sees this desktop's other sessions on that host.**
-  Every nodeterm-server sweeps both the `node-terminal` and the `nodeterm-rmt` sockets
+  Every nodeterm-server sweeps both the `node-terminal` and the legacy `nodeterm-rmt` sockets
   (`docs/SERVER.md`, "Session budget"), so once a server is installed there, the detached sessions
   of this desktop's OTHER SSH projects on that host fall under the same rules: never an attached
   one, never one active within the grace window (6 h by default), and only under memory pressure or
@@ -1433,7 +1434,7 @@ on a Mac and a second desktop as a teammate. Record `team status --json` at each
     the dev server under "These terminals are running something that will stop:". The installer's
     output streams, the result shows the invite code, the SSH tab is replaced by the team's tab with
     no SAS prompt, and `team status --json` lists the Mac as an owner. On the host,
-    `tmux -L nodeterm-rmt ls` no longer lists the project's `nt-<id>` sessions.
+    `tmux -L node-terminal ls` lists the project's `nt-<id>` sessions only as the server's resumed ones.
 18. **Share from Windows, onto an installed host.** The same from a Windows desktop, onto a host
     whose per-user nodeterm-server is already running: the confirm has no install line, no
     installer runs, and the result and the tab are as in item 17. Run each desktop against the other
