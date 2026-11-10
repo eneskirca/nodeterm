@@ -28,7 +28,13 @@ import {
   type RpcMessage
 } from '../../shared/rpc'
 import { IPC } from '../../shared/ipc'
-import type { ChatInterruptResult, ChatPromptResult, EmptyPromptResult } from '../../shared/text-delivery'
+import type {
+  ChatDraftPutResult,
+  ChatDraftTakeResult,
+  ChatInterruptResult,
+  ChatPromptResult,
+  EmptyPromptResult
+} from '../../shared/text-delivery'
 import type { ChatScreenRead } from '../../shared/agents/claude-screen'
 import type { GitHubControlApi, GitHubIssuesApi } from '../../shared/github-issues'
 import {
@@ -314,6 +320,15 @@ export function buildRealApi(
       client
         .request(IPC.ptyInterruptChat, persistKey, agentId, sentText)
         .catch(() => ({ sent: false, reason: 'failed' })) as Promise<ChatInterruptResult>,
+    // Real: core registers both. A failed request is `failed`, which changes nothing on either side.
+    putChatDraft: (persistKey, agentId, text) =>
+      client
+        .request(IPC.ptyPutChatDraft, persistKey, agentId, text)
+        .catch(() => ({ put: false, reason: 'failed' })) as Promise<ChatDraftPutResult>,
+    takeChatDraft: (persistKey, agentId) =>
+      client
+        .request(IPC.ptyTakeChatDraft, persistKey, agentId)
+        .catch(() => ({ taken: false, reason: 'failed' })) as Promise<ChatDraftTakeResult>,
     // A failed read is unknown, never evidence that persistence is available.
     tmuxStatus: () =>
       client

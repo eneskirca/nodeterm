@@ -118,6 +118,8 @@ const api: NodeTerminalApi = {
     readChatScreen: (persistKey, agentId) => ipcRenderer.invoke(IPC.ptyReadChatScreen, persistKey, agentId),
     interruptChat: (persistKey, agentId, sentText) =>
       ipcRenderer.invoke(IPC.ptyInterruptChat, persistKey, agentId, sentText),
+    putChatDraft: (persistKey, agentId, text) => ipcRenderer.invoke(IPC.ptyPutChatDraft, persistKey, agentId, text),
+    takeChatDraft: (persistKey, agentId) => ipcRenderer.invoke(IPC.ptyTakeChatDraft, persistKey, agentId),
     tmuxStatus: () => ipcRenderer.invoke(IPC.ptyTmuxStatus),
     paneCommand: (persistKey, opts) => ipcRenderer.invoke(IPC.ptyPaneCommand, persistKey, opts),
     paneCwd: (persistKey) => ipcRenderer.invoke(IPC.ptyPaneCwd, persistKey),

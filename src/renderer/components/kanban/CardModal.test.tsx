@@ -15,7 +15,11 @@ vi.mock('../../session/session', async () => {
   return {
     useSession: () => ({
       api: {
-        pty: { generateName: vi.fn(async () => ({ ok: true, message: 'AI Name' })) },
+        pty: {
+          generateName: vi.fn(async () => ({ ok: true, message: 'AI Name' })),
+          putChatDraft: vi.fn(async () => ({ put: false, reason: 'empty' })),
+          takeChatDraft: vi.fn(async () => ({ taken: false, reason: 'empty' }))
+        },
         shell: { openExternal: vi.fn(async () => {}) }
       }
     }),

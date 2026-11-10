@@ -4354,6 +4354,14 @@ body,
 .term-chat__effort {
   color: var(--muted);
 }
+/* Why a terminal draft stayed in the terminal on the last ⌘M flip (lib/chatDraftCarry.ts): its own
+   row under the text box, wrapping, since the reason is a sentence. */
+.term-chat__carry-note {
+  padding: 0 6px 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+}
 .term-chat__attach-note {
   display: inline-flex;
   align-items: center;
