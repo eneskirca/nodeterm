@@ -235,6 +235,72 @@ describe('initServerCanvasControl', () => {
     expect(sendEnvelope).not.toHaveBeenCalled()
   })
 
+  it('control scope "project": a send to a node the caller did not open passes the ownership gate', async () => {
+    const node = (id: string, agentId: 'claude' | 'codex') => ({
+      id,
+      kind: 'terminal' as const,
+      position: { x: 0, y: 0 },
+      size: { width: 640, height: 440 },
+      title: id,
+      color: '#d97757',
+      group: null,
+      agentId
+    })
+    const workspace: Workspace = {
+      version: 2,
+      activeProjectId: 'p1',
+      projects: [
+        { id: 'p1', name: 'P1', color: '#0a84ff', viewport: { x: 0, y: 0, zoom: 1 }, nodes: [node('source', 'claude'), node('target', 'codex')] },
+        { id: 'p2', name: 'P2', color: '#0a84ff', viewport: { x: 0, y: 0, zoom: 1 }, nodes: [node('elsewhere', 'codex')] }
+      ]
+    }
+    const store = {
+      load: vi.fn(async () => workspace),
+      save: vi.fn(async (next: Workspace) => {
+        Object.assign(workspace, structuredClone(next))
+      }),
+      persistedCanvases: () => workspace.projects.map((p) => ({ id: p.id, nodes: p.nodes })),
+      projectIdsForNode: (id: string) => workspace.projects.filter((p) => p.nodes.some((n) => n.id === id)).map((p) => p.id),
+      heldLaunch: () => undefined,
+      capabilityProjectFor: () => ({})
+    } as unknown as WorkspaceStore
+    const pty = {
+      ...headlessShell(),
+      createHeadless: vi.fn(async () => ({ sessionId: 'unused', fresh: true })),
+      paneCommand: vi.fn(async () => 'bash'),
+      sendText: vi.fn(async () => true),
+      destroySession: vi.fn(async () => undefined),
+      paneOwner: vi.fn(async () => null),
+      sendEnvelope: vi.fn(async () => true),
+      hasLiveSession: () => true,
+      sessionExists: async () => true,
+      paneProbeTimeoutMs: () => 2000
+    } as unknown as PtyManager
+    runtime = await initServerCanvasControl({
+      controlScope: 'project',
+      workspaceStore: store,
+      ptyManager: pty,
+      settings: () => ({ ...DEFAULT_SETTINGS }),
+      boardLog: { append: async () => false },
+      cliCaps: async () => ({ version: null, autoPermissionMode: false, fullscreenTui: false, sessionIdFlag: false }),
+      codexSharedIdentity: async () => true,
+      codexCaps: async () => ({ approvalValues: null, noDaemon: true })
+    })
+    const send = (target: string) =>
+      runtime!.handler({ verb: 'send', nodeId: 'source', args: { node: target, text: 'hi' }, verified: true })
+    // Same project: past the ownership gate. The next gate is the pane-ownership proof, which only a
+    // fresh spawn in this run records — the scope widens WHO may be messaged, not that proof.
+    expect(await send('target')).toMatchObject({
+      ok: false,
+      result: { kind: 'notPermitted', reason: 'unproven-target-owner' }
+    })
+    // Another project stays out of reach.
+    expect(await send('elsewhere')).toMatchObject({
+      ok: false,
+      result: { kind: 'notPermitted', reason: 'cross-project' }
+    })
+  })
+
   it('wires permitted delivery through paste-settle-submit on the first fresh pane message', async () => {
     const workspace: Workspace = {
       version: 2,

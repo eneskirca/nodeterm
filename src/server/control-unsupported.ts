@@ -102,6 +102,8 @@ export interface ServerEditionControlActions {
   reportOutcome(sourceNodeId: string, args: Record<string, string>, verified: boolean): Promise<ServerControlReply>
   /** `issues` / `prs` (core/github/control-read.ts): the board's GitHub lane, read-only, from the
    *  GitHub service's cache. The caller's own project only (this edition keeps no grant ledger). */
+  /** `list` (@shared/control-listing): the caller's canvas, read-only, the desktop's rows. */
+  list(sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply>
   githubRead(verb: 'issues' | 'prs', sourceNodeId: string, args: Record<string, string>): Promise<ServerControlReply>
   deliver(input: {
     verb: 'send' | 'reply' | 'notify'
@@ -128,7 +130,8 @@ const SERVER_V1_VERBS: ReadonlySet<string> = new Set([
   'run',
   'report-outcome',
   'issues',
-  'prs'
+  'prs',
+  'list'
 ])
 
 /** A permanent, verb-specific refusal used only while canvas control itself is enabled. */
@@ -197,6 +200,8 @@ export function createServerEditionControlHandler(actions: ServerEditionControlA
         return actions.run(nodeId, command.args, verified)
       case 'report-outcome':
         return actions.reportOutcome(nodeId, command.args, verified)
+      case 'list':
+        return actions.list(nodeId, command.args)
       case 'issues':
       case 'prs':
         return actions.githubRead(command.verb, nodeId, command.args)
