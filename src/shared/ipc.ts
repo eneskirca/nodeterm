@@ -32,6 +32,9 @@ export const IPC = {
   ptySendToEmptyPrompt: 'pty:send-to-empty-prompt',
   ptyReadChatScreen: 'pty:read-chat-screen',
   ptyInterruptChat: 'pty:interrupt-chat',
+  /** Carry a draft between the ⌘M chat composer and the agent's own input box (PtyManager). */
+  ptyPutChatDraft: 'pty:put-chat-draft',
+  ptyTakeChatDraft: 'pty:take-chat-draft',
   ptyTmuxStatus: 'pty:tmux-status',
   /** The foreground command of a node's tmux pane (`#{pane_current_command}`) — how the in-place
    *  agent restart sees that the CLI has exited and a shell owns the pane again. */

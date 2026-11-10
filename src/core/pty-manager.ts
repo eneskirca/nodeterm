@@ -1,4 +1,6 @@
 import type {
+  ChatDraftPutResult,
+  ChatDraftTakeResult,
   ChatInterruptResult,
   ChatPromptBlocked,
   ChatPromptResult,
@@ -10,6 +12,7 @@ import {
   readClaudeComposer,
   readClaudeDraft,
   readClaudeDraftBox,
+  readClaudeDraftLine,
   readClaudeScreen,
   readClaudeSuggestion,
   type ChatScreenRead
@@ -2326,6 +2329,15 @@ export class PtyManager {
         typeof agentId === 'string' ? agentId : '',
         typeof sentText === 'string' ? sentText : undefined
       )
+    )
+    platform().handle(IPC.ptyPutChatDraft, (persistKey: string, agentId: unknown, text: unknown) =>
+      // `agentId` only picks the capability (a non-string picks none: `unsupported`).
+      typeof text === 'string'
+        ? this.putChatDraft(persistKey, typeof agentId === 'string' ? agentId : '', text)
+        : Promise.resolve({ put: false, reason: 'failed' } as const)
+    )
+    platform().handle(IPC.ptyTakeChatDraft, (persistKey: string, agentId: unknown) =>
+      this.takeChatDraft(persistKey, typeof agentId === 'string' ? agentId : '')
     )
     platform().handle(IPC.ptyTmuxStatus, () => this.tmuxStatus())
     platform().handle(IPC.ptyPaneCommand, (persistKey: string, opts?: { resolveUnmounted?: boolean }) =>
@@ -6704,8 +6716,17 @@ export class PtyManager {
    * be stale by the time the Enter goes: for an agent whose screen we can read, the screen is
    * checked again right before the Enter, and a dialog that opened meanwhile gets no Enter — the
    * text stays in the composer and the caller hears `pasted-not-submitted`.
+   *
+   * `submit: false` (carrying a chat draft over, `putChatDraft`) types and confirms the text arrived,
+   * and sends no Enter: `true` then means "in the composer, unsent".
    */
-  private async sendTyped(persistKey: string, text: string, agentId: AgentId): Promise<TextDeliveryResult | null> {
+  private async sendTyped(
+    persistKey: string,
+    text: string,
+    agentId: AgentId,
+    opts?: { submit?: boolean }
+  ): Promise<TextDeliveryResult | null> {
+    const submitting = opts?.submit !== false
     const target = sessionName(persistKey)
     const live = this.liveSessionForPersistKey(persistKey)
     if (live?.nativeWindowsPane || this.isZellij(persistKey, live)) return null
@@ -6752,11 +6773,11 @@ export class PtyManager {
         type: (stdin) => ok(() => type(stdin)),
         // An empty capture is not evidence of a dialog (the `sendChatPrompt` rule).
         canSubmit: async () => {
-          if (!readsScreenDialogs(agentId)) return true
+          if (!submitting || !readsScreenDialogs(agentId)) return true
           const screen = await this.captureSession(persistKey)
           return screen === '' || screenGate(screen) === null
         },
-        submit: () => ok(submit)
+        submit: submitting ? () => ok(submit) : async () => true
       })
     } catch {
       return 'pasted-not-submitted'
@@ -6957,6 +6978,59 @@ export class PtyManager {
       end = next
     }
     return false
+  }
+
+  /**
+   * ⌘M chat view → terminal: type the chat composer's draft into the agent's own input box, WITHOUT
+   * submitting it, so the user can carry on in the terminal. Only into an EMPTY box (two drafts are
+   * never merged) and only when no dialog owns the keyboard; typed (`sendTyped`, `submit: false`), so
+   * a multi-line draft keeps its lines (M-Enter) and is not recorded as a paste. The caller empties
+   * its own draft only on `put: true`. Runs inside `serializePaneWrite`. An empty capture is NOT
+   * evidence of anything here: nothing is typed into a box we cannot see.
+   */
+  async putChatDraft(persistKey: string, agentId: string, text: string): Promise<ChatDraftPutResult> {
+    if (!readsScreenDialogs(agentId) || !typesChatInput(agentId)) return { put: false, reason: 'unsupported' }
+    if (text.trim() === '') return { put: false, reason: 'empty' }
+    return this.serializePaneWrite(persistKey, async (): Promise<ChatDraftPutResult> => {
+      const styled = await this.captureStyledScreen(persistKey)
+      if (styled === '' || screenGate(styled) !== null) return { put: false, reason: 'unreadable' }
+      const composer = readClaudeComposer(styled)
+      if (composer === 'draft') return { put: false, reason: 'has-draft' }
+      if (composer !== 'empty') return { put: false, reason: 'unreadable' }
+      const typed = await this.sendTyped(persistKey, text, agentId, { submit: false })
+      if (typed === null) return { put: false, reason: 'unsupported' }
+      if (typed === true) return { put: true }
+      return { put: false, reason: typed === false ? 'failed' : 'unconfirmed' }
+    })
+  }
+
+  /**
+   * Terminal → ⌘M chat view: take the draft out of the agent's own input box, for the chat
+   * composer. Only a draft that can be read back EXACTLY (`readClaudeDraftLine`: one row, the
+   * ordinary prompt, no collapsed paste); anything else stays where it is and the caller says why.
+   * Cleared with Ctrl-E then Ctrl-U — MEASURED (2.1.319): Ctrl-U alone deletes only what is left of
+   * the cursor, so a draft whose cursor the user had moved lost only part of it; Ctrl-E first clears
+   * the whole row. Never Ctrl-C (see `interruptChat`). The text is handed over only once the box
+   * reads empty, so it is never in both places. Runs inside `serializePaneWrite`.
+   */
+  async takeChatDraft(persistKey: string, agentId: string): Promise<ChatDraftTakeResult> {
+    if (!readsScreenDialogs(agentId)) return { taken: false, reason: 'unsupported' }
+    return this.serializePaneWrite(persistKey, async (): Promise<ChatDraftTakeResult> => {
+      const readLine = async () => readClaudeDraftLine(await this.captureStyledScreen(persistKey))
+      const draft = await readLine()
+      if (draft === null) return { taken: false, reason: 'unreadable' }
+      if (draft.kind === 'empty') return { taken: false, reason: 'empty' }
+      if (draft.kind === 'refused') return { taken: false, reason: draft.reason }
+      const cleared = await this.sendPaneKeys(persistKey, '\x05\x15')
+      if (!cleared.ok) return { taken: false, reason: cleared.reason === 'unsupported-backend' ? 'unsupported' : 'failed' }
+      const deadline = Date.now() + INTERRUPT_RESTORE_WAIT_MS
+      for (;;) {
+        const now = await readLine()
+        if (now?.kind === 'empty') return { taken: true, text: draft.text }
+        if (Date.now() >= deadline) return { taken: false, reason: 'not-cleared' }
+        await new Promise((r) => setTimeout(r, INTERRUPT_RESTORE_POLL_MS))
+      }
+    })
   }
 
   /** The visible screen WITH its SGR, for `readClaudeComposer`: an ssh-project node's capture already

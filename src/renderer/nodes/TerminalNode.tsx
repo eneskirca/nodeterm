@@ -242,6 +242,7 @@ import {
   useMdModeFocus
 } from '../terminal/useMdModeFocus'
 import { canvasOwnsMarkdownChord } from '../lib/markdownChord'
+import { carryDraftToChat, carryDraftToTerminal } from '../lib/chatDraftCarry'
 import { IconBroadcast, IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
 import { MdViewHintButton } from '../components/MdViewHintButton'
@@ -6106,14 +6107,40 @@ export function TerminalNode({
     }
   }, [id, gates.titleSync, canReadTitleNode, status?.sessionId, data.titleAuto, updateNodeData])
 
+  // The user's own ⌘M flip (the chord, the header toggle) carries a half-typed draft across
+  // (lib/chatDraftCarry.ts): into the agent's input box before leaving the chat view, out of it
+  // after opening it. A flip the composer makes itself (`onShowTerminal`) carries nothing. While a
+  // draft is being typed into the terminal, further presses are ignored: a second carry would type
+  // it again.
+  const chatAvailableRef = useRef(chatAvailable)
+  chatAvailableRef.current = chatAvailable
+  const carryingRef = useRef(false)
+  const toggleMdView = useCallback(() => {
+    if (carryingRef.current) return
+    if (!mdModeRef.current) {
+      updateNodeData(id, () => ({ mdMode: true }))
+      if (chatAvailableRef.current) void carryDraftToChat(session.api.pty, id, agentId)
+      return
+    }
+    if (!chatAvailableRef.current) {
+      updateNodeData(id, () => ({ mdMode: false }))
+      return
+    }
+    carryingRef.current = true
+    void carryDraftToTerminal(session.api.pty, id, agentId).finally(() => {
+      carryingRef.current = false
+      updateNodeData(id, () => ({ mdMode: false }))
+    })
+  }, [id, agentId, session.api.pty, updateNodeData])
+
   // Cmd/Ctrl+M toggles markdown view of this terminal's output — only when hovered, and never while
   // a board is up (the card modal owns the chord there; see `canvasOwnsMarkdownChord`).
   useEffect(() => {
     return window.nodeTerminal.onMarkdownToggle(() => {
       if (!canvasOwnsMarkdownChord(hoveredRef.current, isGlobalKanbanOpen() || isKanbanOpen(useProjects.getState().activeProjectId ?? ''))) return
-      updateNodeData(id, (n) => ({ mdMode: !n.data.mdMode }))
+      toggleMdView()
     })
-  }, [id, updateNodeData])
+  }, [toggleMdView])
 
   // Best-effort: highlight matches that are in the live xterm buffer (on-screen scrollback).
   useEffect(() => {
@@ -6758,8 +6785,8 @@ export function TerminalNode({
               <MdViewHintButton
                 hint={mdHint}
                 tooltip={commandTooltip(mdMode ? 'Back to the terminal' : `Open ${mdHint.label.toLowerCase()}`, 'node.toggleMarkdown')}
-                // The same flip as the chord handler and the context-menu item.
-                onToggle={() => updateNodeData(id, (n) => ({ mdMode: !n.data.mdMode }))}
+                // The same flip as the chord handler, draft carry included.
+                onToggle={toggleMdView}
               />
             )
           }
