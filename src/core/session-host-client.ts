@@ -12,6 +12,10 @@ import { randomUUID } from 'crypto'
 // socket 'close' events dispatch first, even inside fake-timer tests.
 import { setImmediate as realSetImmediate } from 'timers'
 import { sessionHostPaths } from '../session-host/paths'
+import {
+  PROBE_FIRST_REQUEST_TIMEOUT_MS,
+  WINDOWS_ONESHOT_PROBE_TIMEOUT_MS
+} from '../session-host/windows-probe-budget'
 import { WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS } from '../session-host/windows-process-tree'
 import {
   EMPTY_LOCK_STALE_MS,
@@ -71,14 +75,25 @@ export const SESSION_HOST_REQUEST_TIMEOUT_MS = 10_000
 /** A `shutdown` ends every session (each kill confirmed by the host within its own 20 s bound),
  *  so it gets a longer deadline than an ordinary request. */
 export const SHUTDOWN_REQUEST_TIMEOUT_MS = 45_000
+/** `paneCommand` and `messageOwnerV1` can spend `PROBE_FIRST_REQUEST_TIMEOUT_MS` on a cold probe
+ *  worker plus `WINDOWS_ONESHOT_PROBE_TIMEOUT_MS` on the one-shot fallback. Keep the client
+ *  request deadline above that sum so a slow Windows probe never retires the shared socket. */
+export const PROBE_REQUEST_TIMEOUT_MS =
+  PROBE_FIRST_REQUEST_TIMEOUT_MS + WINDOWS_ONESHOT_PROBE_TIMEOUT_MS + 5_000
+/** `messageEnvelopeV1` re-proves the pane owner both before and inside the settled send gate. */
+export const MESSAGE_ENVELOPE_REQUEST_TIMEOUT_MS =
+  2 * (PROBE_FIRST_REQUEST_TIMEOUT_MS + WINDOWS_ONESHOT_PROBE_TIMEOUT_MS) + 6_000
 /** `terminateOwnerV1` runs the host's owner probe (`readWindowsConsoleOwner`, a PowerShell
- *  execFile bounded at 4 s) and then `taskkill /T /F` plus the root-absence poll (bounded at
- *  `WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS`, 8 s). The ordinary 10 s deadline is shorter than
- *  that sum, and its expiry is not a plain `false`: the agent may already be dead (the caller then
- *  skips the recycle and strands a bare shell) AND the deadline retires the whole socket, dropping
- *  every other session's stream on this connection. So the kill gets the full budget plus slack. */
+ *  probe bounded by worker + one-shot fallback) and then `taskkill /T /F` plus the root-absence
+ *  poll (bounded at `WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS`, 8 s). The ordinary 10 s
+ *  deadline is shorter than that sum, and its expiry is not a plain `false`: the agent may already
+ *  be dead (the caller then skips the recycle and strands a bare shell) AND the deadline retires
+ *  the whole socket, dropping every other session's stream on this connection. */
 export const TERMINATE_OWNER_REQUEST_TIMEOUT_MS =
-  4_000 + WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS + 6_000
+  PROBE_FIRST_REQUEST_TIMEOUT_MS +
+  WINDOWS_ONESHOT_PROBE_TIMEOUT_MS +
+  WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS +
+  6_000
 
 export type HostUpdateInspection =
   | { running: false }
@@ -1556,7 +1571,8 @@ export class SessionHostClient {
         }
         state.preAckEntries.add(entry)
         let response: AttachResult | undefined
-        const attempts = replacementToken ? 2 : 1
+        const canRetryColdCreate = !useWarmOnly && (Boolean(replacementToken) || !expectedGeneration)
+        const attempts = canRetryColdCreate ? 2 : 1
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
             response = useWarmOnly
@@ -1599,7 +1615,7 @@ export class SessionHostClient {
                 })
             break
           } catch (error) {
-            if (!replacementToken || attempt + 1 >= attempts || !isTransportUncertainty(error)) {
+            if (!canRetryColdCreate || attempt + 1 >= attempts || !isTransportUncertainty(error)) {
               throw error
             }
           }
@@ -1849,7 +1865,12 @@ export class SessionHostClient {
 
   async paneCommand(name: string): Promise<string | null> {
     try {
-      const result = await this.request<PaneCommandResult>({ cmd: 'paneCommand', name })
+      const result = await this.request<PaneCommandResult>(
+        { cmd: 'paneCommand', name },
+        undefined,
+        undefined,
+        PROBE_REQUEST_TIMEOUT_MS
+      )
       return result.command
     } catch {
       return null
@@ -1858,7 +1879,12 @@ export class SessionHostClient {
 
   async messageOwner(name: string): Promise<PaneOwner | null> {
     try {
-      return await this.request<PaneOwner | null>({ cmd: 'messageOwnerV1', name })
+      return await this.request<PaneOwner | null>(
+        { cmd: 'messageOwnerV1', name },
+        undefined,
+        undefined,
+        PROBE_REQUEST_TIMEOUT_MS
+      )
     } catch { return null } // Older live hosts refuse; never replace them or use name-only input.
   }
 
@@ -1870,7 +1896,14 @@ export class SessionHostClient {
 
   async messageEnvelope(name: string, envelope: string, expected: PaneOwner): Promise<boolean> {
     try {
-      return await this.request<boolean>({ cmd: 'messageEnvelopeV1', name, envelope, expected }) === true
+      return (
+        (await this.request<boolean>(
+          { cmd: 'messageEnvelopeV1', name, envelope, expected },
+          undefined,
+          undefined,
+          MESSAGE_ENVELOPE_REQUEST_TIMEOUT_MS
+        )) === true
+      )
     } catch { return false }
   }
 

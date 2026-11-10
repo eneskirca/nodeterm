@@ -215,6 +215,7 @@ export class HostSession {
   private processExitCode: number | null = null
   private readonly processExit: Promise<number>
   private resolveProcessExit!: (exitCode: number) => void
+  private coldReplayPending: boolean
   constructor(
     name: string,
     spawn: SessionHostSpawnOptions,
@@ -234,6 +235,7 @@ export class HostSession {
     this.launchDialect = spawn.launchDialect
     this.shellExecutableName = (spawn.shell.replace(/\\/g, '/').split('/').pop() ?? '').toLowerCase()
     this.createdByReplacementToken = createdByReplacementToken
+    this.coldReplayPending = !createdByReplacementToken
     this.replacementFingerprint = replacementAttachFingerprint(spawn, scrollback)
     this.processExit = new Promise<number>((resolve) => {
       this.resolveProcessExit = resolve
@@ -368,6 +370,7 @@ export class HostSession {
    *  claims — with none left it keeps the size it has. Never spawns: callers reach this only for an
    *  existing generation. Any explicit pause the connection held is returned. */
   prepareWatchAttachment(socket: Socket): Promise<PreparedHostAttachment> {
+    this.coldReplayPending = false
     // Never paused: a viewer holds no flow ticket on the shared pty (see `pauseFor`).
     return this.stageAttachment(socket, null, false)
   }
@@ -426,6 +429,7 @@ export class HostSession {
     cols?: number,
     rows?: number
   ): Promise<PreparedHostAttachment> {
+    this.coldReplayPending = false
     if ((cols === undefined) !== (rows === undefined)) {
       throw new Error('existing attachment geometry requires both cols and rows')
     }
@@ -493,6 +497,17 @@ export class HostSession {
 
   matchesReplacementReplay(spawn: SessionHostSpawnOptions, scrollback: number): boolean {
     return this.replacementFingerprint === replacementAttachFingerprint(spawn, scrollback)
+  }
+
+  expireColdAttachReplay(): void {
+    this.coldReplayPending = false
+  }
+
+  claimColdAttachReplay(spawn: SessionHostSpawnOptions, scrollback: number): boolean {
+    if (!this.coldReplayPending) return false
+    this.coldReplayPending = false
+    if (this.subscribers.size > 0) return false
+    return this.matchesReplacementReplay(spawn, scrollback)
   }
 
   dispose(): void {

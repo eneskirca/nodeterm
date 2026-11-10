@@ -229,6 +229,34 @@ describe('bundled session-host request boundaries', () => {
         ok: true,
         result: { exists: true }
       })
+      socket.write(
+        encodeFrame({
+          id: 8,
+          cmd: 'attach',
+          name: 'ordered',
+          spawn: spawnOptions,
+          scrollback: 100
+        })
+      )
+      await expect(connected.response(8)).resolves.toMatchObject({
+        id: 8,
+        ok: true,
+        result: { fresh: true }
+      })
+      socket.write(
+        encodeFrame({
+          id: 9,
+          cmd: 'attach',
+          name: 'ordered',
+          spawn: spawnOptions,
+          scrollback: 100
+        })
+      )
+      await expect(connected.response(9)).resolves.toMatchObject({
+        id: 9,
+        ok: true,
+        result: { fresh: false }
+      })
       expect(existsSync(paths.statePath)).toBe(true)
     } finally {
       socket?.destroy()

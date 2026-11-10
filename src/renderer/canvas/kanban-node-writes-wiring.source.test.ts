@@ -59,6 +59,16 @@ describe('kanban / Omni node writes (Canvas wiring)', () => {
     expect(body).toContain('pushSessionRename(sessionForProject(projectId).api.pty,')
     expect(body).not.toContain('pushSessionRename(api.pty,')
   })
+
+  it('gates globalKanbanLive on renderedProjectId matching activeProjectId across switches', () => {
+    expect(src).toContain('activeProjectId && renderedProjectId === activeProjectId')
+  })
+
+  it('waits for flowLanding before creating a cross-project Omni Kanban node', () => {
+    expect(src).toContain('pendingKanbanCreateRef.current = { projectId, choice, columnId }')
+    expect(src).toContain('kanbanCreateRef.current(pendingKanbanCreate.choice, pendingKanbanCreate.columnId)')
+    expect(src).not.toContain('setTimeout(() => createNodeInColumn(choice, columnId), 50)')
+  })
 })
 
 describe('Omni board rename (GlobalKanbanView)', () => {
