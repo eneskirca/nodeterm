@@ -181,6 +181,10 @@ ensure_node
 # The repo's postinstall runs electron-rebuild (targets ELECTRON's ABI). The server runs under
 # plain Node, so we --ignore-scripts and rebuild node-pty against Node's own ABI afterwards. Same
 # trap the Dockerfile documents — see docs/SERVER.md.
+# --ignore-scripts also skips smart-whisper's addon build (its package has `gypfile: true`), and
+# nothing else in this script rebuilt it: local dictation came up dead on every install with
+# "the smart-whisper module is not installed — run npm install", which cannot help here because
+# the next npm install skips it again. Both native deps are rebuilt below.
 info "Installing dependencies (npm ci --ignore-scripts)…"
 npm ci --ignore-scripts
 
@@ -188,8 +192,8 @@ info "Building renderer + server bundle…"
 npm run build
 npm run server:build
 
-info "Rebuilding node-pty against Node's ABI…"
-npm rebuild node-pty
+info "Rebuilding the native deps (node-pty + smart-whisper) against Node's ABI…"
+npm rebuild node-pty smart-whisper
 
 [ -f "$APP_DIR/out/server/main.cjs" ] || fail "Build did not produce out/server/main.cjs — check the output above."
 
