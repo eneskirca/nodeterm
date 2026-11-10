@@ -83,7 +83,7 @@ the production paging, not a second implementation of it.
 | `model-effort-utf16` | The 100-character cap counts **UTF-16 code units** (Swift `utf16.count`), not bytes or scalars. A model of 50 × U+1F9EA (100 units) is kept, and an effort of 101 units is absent. |
 | `thinking` | Thinking blocks (`thinking`, `redacted_thinking`). The reader **drops** them by default: a thinking-only record yields no message, and a mixed record keeps only its text. The port must match this. (The desktop ⌘M panel opts in with `page.thinking: true` and then gets a `{kind:"thinking", text, ms?}` part for each block whose `thinking` text is non-blank: `text` is capped at 16384 UTF-16 units, and `ms` is this record's timestamp minus that of the newest `user` record before it (a prompt, a `tool_result` or a hidden meta line), present only when both stamps exist and the gap is ≥ 0 — see the `ChatPart` doc in `src/shared/types.ts`. The phone's `chat.page` never sets it, so these fixtures are unchanged.) |
 | `local-commands` | Slash-command records (see **Local commands** below). An `isMeta` caveat is skipped; `/model` plus its ANSI-coloured `<local-command-stdout>` become ONE assistant tool part `{name:"/model", arg:"", result}`; `/effort` with padded args (trimmed) answered on `<local-command-stderr>`; `/compact` with an arg longer than the 200-unit cap; `/exit` with an empty stdout (no `result`); a skill invocation (`<command-message>` before `<command-name>`) whose `isMeta` array body is skipped; a stdout with no command right before it (its own `command output` tool, capped to three lines); and a user message that only mentions `<command-name>` in prose (stays a user message). |
-| `bash-mode` | `!` bash-mode records: `<bash-input>` becomes a tool part named `!` with the command as `arg`; the ONE following record carrying `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>` sets its `result` (non-empty parts joined by `\n`, then the `summarizeResult` cap), including an empty stdout with a stderr. |
+| `bash-mode` | `!` bash-mode records: `<bash-input>` becomes a tool part named `!` with the command as `arg`; the ONE following record carrying `<bash-stdout>…</bash-stdout><bash-stderr>…</bash-stderr>` sets its `result` (non-empty parts joined by `\n`, lines kept, the `BASH_OUTPUT_MAX` cap), including an empty stdout with a stderr, and a command that printed nothing (`result: ""`). |
 | `meta-turns` | `isMeta` rule 1: a peer hand-back (`promptSource` + `origin.kind:"peer"` + `turnOrigin`), a scheduled wakeup (`turnOrigin:"scheduled"` + `scheduledTaskId`), an auto-continuation (`origin.kind:"auto-continuation"`), a `promptSource`-only, an `origin`-only and a `turnOrigin`-only record (the last two with no `promptSource`, so each field is pinned on its own) are all KEPT; the caveat and a skill body (none of the three fields) are skipped. Three of the kept records then render as system chips (see **System-injected records**): BOTH `origin.kind:"peer"` records — the hand-back and the `origin`-only one — as `Agent message`, and the auto-continuation as `System`; the others stay user messages. |
 | `system-records` | Every rule of **System-injected records**: a full agent completion (nested `<usage>`, a result over three lines), a status + summary completion, a monitor `<event>`, a summary alone (the `notified` result), a repeated `<task-id>` with a summary over the 200-unit cap, a whole element with no `origin`, the same whole element sent by a human (`origin.kind:"human"`, and `promptSource:"typed"` with no `origin`; both stay user messages), two malformed notifications (unknown tags only; plain prose), a message that only MENTIONS the element (stays a user message), a subagent `<agent-message>` hand-back with its frame lines, a `<cross-session-message>` (its `from-name` is the arg), a report over the 16384-unit cap, a peer record with no element, an auto-continuation and a multi-line coordinator prompt. |
 | `teammate-messages` | Rule **2b** of **System-injected records**: an idle notification with a report, one with no fields, a failed one (`failureReason`), a plain message whose summary is escaped (`&quot;`) and whose body quotes the close tag, a record holding two elements (a report, then a message), an unverified sender (`verified="false"`), the same text typed by a human (by `origin` and by `promptSource` alone — both stay user messages), the frame line with no element and an element with no `teammate_id` (both stay user messages). |
@@ -169,13 +169,18 @@ on the paged and unpaged paths alike:
    {`bash-stdout`, `bash-stderr`} (bash family) → **output**. Its text is each tag's content, in
    record order, with ANSI escapes removed (`\x1b[` CSI `[0-?]*[ -/]*[@-~]`, then OSC
    `\x1b][^\x07\x1b]*(\x07|\x1b\\)`, then two-byte `\x1b[@-_]`), trimmed, empty parts dropped,
-   joined by `\n`, then capped like a tool result (first three lines joined by a space, first 500
-   UTF-16 units). An empty text produces nothing.
-5. A non-empty output sets `result` on the command's tool part when the **last pushed message** is
-   a command of the **same family** that has no result yet. Otherwise it is pushed as its own
-   assistant message `{kind:"tool", name:"command output", arg:"", result}`. Any pushed message
-   ends the wait, and so does an attached output (a second output does not overwrite). A record
-   that pushes nothing does NOT end it: a skipped `isMeta` record, an empty output, a metadata-only
+   joined by `\n`. The **bash** family's text then keeps its lines, capped at its first 16384 UTF-16
+   units (`BASH_OUTPUT_MAX`: the chat view shows the first line under the command and the rest when
+   opened); the **slash** family's is capped like a tool result (first three lines joined by a
+   space, first 500 UTF-16 units). An empty slash text produces nothing.
+5. An output sets `result` on the command's tool part when the **last pushed message** is a command
+   of the **same family** that has no result yet — for the bash family even when it is empty (`""`:
+   the command ran and printed nothing); for the slash family only when it is non-empty. Otherwise
+   a non-empty output is pushed as its own assistant message
+   `{kind:"tool", name:"command output", arg:"", result}`, and an empty one pushes nothing. Any
+   pushed message ends the wait, and so does an attached output (a second output does not
+   overwrite). A record that pushes nothing does NOT end it: a skipped `isMeta` record, an empty
+   slash output, an empty bash output with no command waiting, a metadata-only
    record, a thinking-only assistant record or a tool_result-only user record.
 6. "Trimmed" everywhere in these rules means JS `String.prototype.trim`, which strips JS `\s`:
    ASCII whitespace plus U+00A0, U+FEFF, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F and

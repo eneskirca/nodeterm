@@ -1,5 +1,6 @@
 import fs from 'fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { BASH_OUTPUT_MAX } from '../shared/chat-command'
 import {
   parseTranscriptLines,
   pickSessionName,
@@ -1068,9 +1069,33 @@ describe('parseChatMessages — local-command records', () => {
       ).split('\n')
     )
     expect(msgs).toEqual([
-      { role: 'assistant', parts: [{ kind: 'tool', name: '!', arg: 'ls -la', result: 'a.txt b.txt warn' }] },
+      { role: 'assistant', parts: [{ kind: 'tool', name: '!', arg: 'ls -la', result: 'a.txt\nb.txt\nwarn' }] },
       { role: 'assistant', parts: [{ kind: 'tool', name: '!', arg: 'false', result: 'failed' }] }
     ])
+  })
+
+  it('bash mode keeps the output lines, up to BASH_OUTPUT_MAX', () => {
+    const long = Array.from({ length: 4000 }, (_, i) => `line ${i}`).join('\n')
+
+    const msgs = parseChatMessages(
+      (userStr('<bash-input>seq</bash-input>') + userStr(`<bash-stdout>${long}</bash-stdout><bash-stderr></bash-stderr>`)).split('\n')
+    )
+
+    const result = (msgs[0].parts[0] as { result?: string }).result ?? ''
+    expect(result.length).toBe(BASH_OUTPUT_MAX)
+    expect(result.startsWith('line 0\nline 1\nline 2\n')).toBe(true)
+  })
+
+  it('bash mode records a command that printed nothing, and drops empty output with no command', () => {
+    const msgs = parseChatMessages(
+      (
+        userStr('<bash-input>true</bash-input>') +
+        userStr('<bash-stdout></bash-stdout><bash-stderr></bash-stderr>') +
+        userStr('<bash-stdout></bash-stdout><bash-stderr></bash-stderr>')
+      ).split('\n')
+    )
+
+    expect(msgs).toEqual([{ role: 'assistant', parts: [{ kind: 'tool', name: '!', arg: 'true', result: '' }] }])
   })
 
   it('bash output never attaches to a slash command (and vice versa)', () => {
