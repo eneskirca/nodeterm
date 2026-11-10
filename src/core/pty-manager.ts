@@ -141,7 +141,7 @@ import {
   pasteBufferName,
   runPasteDelivery
 } from './tmux-naming'
-import { localTypedArgs, localTypedEnv, typeThenSubmitWhenSettled } from './typed-input'
+import { endsWithBackslash, localTypedArgs, localTypedEnv, typedLines, typeThenSubmitWhenSettled } from './typed-input'
 import { encodeSendKeysHex } from './tmux-control'
 import {
   ZELLIJ_NESTING_ENV,
@@ -6700,6 +6700,8 @@ export class PtyManager {
     const live = this.liveSessionForPersistKey(persistKey)
     if (live?.nativeWindowsPane || this.isZellij(persistKey, live)) return null
     const sshRemote = live?.sshRemote
+    // A message ending in `\`: Enter right after it would be read as a line break (typed-input.ts).
+    const leftFirst = endsWithBackslash(typedLines(text))
     let type: (stdin: string) => Promise<unknown>
     let submit: () => Promise<unknown>
     if (sshRemote) {
@@ -6707,14 +6709,15 @@ export class PtyManager {
       if (!ssh) return false
       type = (stdin) =>
         runWithStdin(ssh, remoteTypedArgs(sshRemote.conn, sshRemote.controlPath, target, pasteBufferName()), stdin)
-      submit = () => runAsync(ssh, remoteTmuxEnterArgs(sshRemote.conn, sshRemote.controlPath, target))
+      submit = () =>
+        runAsync(ssh, remoteTmuxEnterArgs(sshRemote.conn, sshRemote.controlPath, target, { cursorLeftFirst: leftFirst }))
     } else if (live?.sessionHost || !this.tmuxPath) {
       return null
     } else {
       const tmuxPath = this.tmuxPath
       type = (stdin) =>
         runTypedScript(localTypedArgs(TMUX_SOCKET, target, pasteBufferName()), stdin, localTypedEnv(tmuxPath))
-      submit = () => runAsync(tmuxPath, localTmuxEnterArgs(TMUX_SOCKET, target))
+      submit = () => runAsync(tmuxPath, localTmuxEnterArgs(TMUX_SOCKET, target, { cursorLeftFirst: leftFirst }))
     }
     const ok = async (run: () => Promise<unknown>): Promise<boolean> => {
       try {

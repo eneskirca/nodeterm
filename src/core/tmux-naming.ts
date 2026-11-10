@@ -89,9 +89,11 @@ export function exactSessionTarget(session: string): string {
  * nothing: the rule is "every splice is checked at the splice", and the two builders that had no
  * buffer of their own were the two that quietly opted out of it.
  */
-export function localTmuxEnterArgs(socket: string, target: string): string[] {
+export function localTmuxEnterArgs(socket: string, target: string, opts?: { cursorLeftFirst?: boolean }): string[] {
   assertPasteTarget(target)
-  return ['-L', socket, 'send-keys', '-t', exactPaneTarget(target), 'Enter']
+  // `cursorLeftFirst`: a typed message ending in `\` (core/typed-input.ts `endsWithBackslash`).
+  const keys = opts?.cursorLeftFirst === true ? ['Left', 'Enter'] : ['Enter']
+  return ['-L', socket, 'send-keys', '-t', exactPaneTarget(target), ...keys]
 }
 
 /**

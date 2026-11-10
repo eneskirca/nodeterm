@@ -17,6 +17,9 @@ import { makeTmuxTmpdir } from './tmux-test-socket'
 const ESC = '\x1b'
 /** M-Enter as the pane receives it: the "new line, don't submit" key. */
 const NEWLINE_KEY = `${ESC}\r`
+/** The arrow keys as a pane not in application-cursor mode receives them. */
+const LEFT = `${ESC}[D`
+const RIGHT = `${ESC}[C`
 /** A private socket — never `TMUX_SOCKET`/`nodeterm-rmt`, which carry live user sessions. */
 const SOCKET = `nt-typed-test-${process.pid}`
 const CONN = { host: 'h.example.com', user: 'deploy', port: 2222, identityFile: '/k/id' }
@@ -120,6 +123,17 @@ describe.skipIf(TMUX === null || process.platform === 'win32')('typed delivery t
 
         expect(drain(session, out)).toBe(
           `This is a test${NEWLINE_KEY}of a multiline message${NEWLINE_KEY}${NEWLINE_KEY}- said nobody ever`
+        )
+      })
+
+      it('types a line\'s trailing backslashes after the line break, so the composer cannot eat them', () => {
+        const session = `nt-ty-bslash-${leg}`
+        const out = recorderPane(session)
+
+        type(leg, session, 'cd . \\\npopd \\\\\nlast \\')
+
+        expect(drain(session, out)).toBe(
+          `cd . ${NEWLINE_KEY}${LEFT}\\${RIGHT}popd ${NEWLINE_KEY}${LEFT}\\\\${RIGHT}last \\`
         )
       })
 

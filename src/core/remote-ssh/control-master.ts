@@ -426,13 +426,16 @@ export function remoteTypedArgs(
 export function remoteTmuxEnterArgs(
   conn: SshConnection,
   controlPath: string,
-  sessionId: string
+  sessionId: string,
+  opts?: { cursorLeftFirst?: boolean }
 ): string[] {
   assertPasteTarget(sessionId)
+  // `cursorLeftFirst`: a typed message ending in `\` (core/typed-input.ts `endsWithBackslash`).
+  const keys = opts?.cursorLeftFirst === true ? 'Left Enter' : 'Enter'
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} Enter`)
+    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} ${keys}`)
   )
 }
 

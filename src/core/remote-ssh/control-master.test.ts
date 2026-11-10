@@ -253,6 +253,12 @@ describe('remoteTmuxEnterArgs', () => {
       `${TP}tmux -L ${RMT_TMUX_SOCKET} send-keys -t '=nt-x:' Enter`
     ])
   })
+
+  it('steps the cursor left first for a typed message ending in a backslash', () => {
+    const args = remoteTmuxEnterArgs(conn, '/s.sock', 'nt-x', { cursorLeftFirst: true })
+
+    expect(args[args.length - 1]).toBe(`${TP}tmux -L ${RMT_TMUX_SOCKET} send-keys -t '=nt-x:' Left Enter`)
+  })
 })
 
 describe('remoteCapturePaneArgs', () => {
