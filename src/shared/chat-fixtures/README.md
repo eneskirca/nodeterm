@@ -89,7 +89,7 @@ the production paging, not a second implementation of it.
 | `teammate-messages` | Rule **2b** of **System-injected records**: an idle notification with a report, one with no fields, a failed one (`failureReason`), a plain message whose summary is escaped (`&quot;`) and whose body quotes the close tag, a record holding two elements (a report, then a message), an unverified sender (`verified="false"`), the same text typed by a human (by `origin` and by `promptSource` alone — both stay user messages), the frame line with no element and an element with no `teammate_id` (both stay user messages). |
 | `pasted-content` | **Pasted content**: a span between typed lines, backtick runs inside (a five-backtick fence) and the same id twice, an array text part beside an image, a pasted `<task-notification>` (stays the user's paste), a close tag with a different id inside a span (content), an empty paste, a same-id open nested inside a span (the span ends at the FIRST close), text that is not the CLI's grammar (no id, an upper-case or three- or five-digit id, a missing newline after the open or before the close: all left as typed) and an unclosed span (left as typed). |
 | `queued-prompts` | **Queued prompts**: a typed prompt queued mid-turn (between a tool result and the reply), one with no `origin`, an array prompt with an image (its text block only), a paste inside one (fenced, as in a typed prompt), and six attachments that stay hidden: a task notification, a peer message (`isMeta`), a coordinator message, a non-human `origin`, a blank prompt and a non-`queued_command` attachment. |
-| `abandoned-prompts` | **Abandoned prompts**: a queued prompt cancelled with Esc (its parent is the interrupt marker) and a sent-then-edited array prompt are hidden; a raw `/compact` left beside its command record is hidden and the command stays; a prompt the model answered before a re-send, a prompt whose only later sibling is a sidechain record, and the newest unanswered prompt are all kept. |
+| `abandoned-prompts` | **Abandoned prompts**: a queued prompt cancelled with Esc (its parent is the interrupt marker) and a sent-then-edited array prompt are hidden; a raw `/compact` left beside its command record is hidden and the command stays; a prompt the model answered before a re-send, a prompt whose only later sibling is a sidechain record, a prompt typed during a pending tool call (its later sibling is the tool-result record), and the newest unanswered prompt are all kept. |
 
 **`rich`** is a second desktop-only opt-in, beside `thinking`: the ⌘M panel reads with
 `page.rich: true` (`ChatParseOptions.rich`) to get the parts only it draws. The fixtures never set
@@ -342,11 +342,19 @@ all of these hold:
    `type:"text"` and a non-empty string `text` and no element with `type:"tool_result"`;
 4. no record in the read has `parentUuid` equal to its `uuid` (any record type counts);
 5. a LATER record in the read has the same `parentUuid`, `type` `"user"` or `"assistant"`,
-   `isSidechain` not `true`, and a different `uuid`.
+   `isSidechain` not `true`, a different `uuid`, and a `message.content` that is NOT an array
+   holding an element with `type:"tool_result"`.
+
+The last clause of rule 5 is measured: a prompt typed while a tool call is pending interrupts the
+call, and Claude Code attaches the prompt and the call's tool-result record to the same parent (the
+interrupt marker and the answer hang off the result). That prompt has no child and a later sibling,
+yet the request that follows carries its text.
 
 Both checks see only the read's records, so on a paged read a sibling in a NEWER window is not
 seen and the prompt is shown, exactly as before this rule. Measured over 133 real transcripts
-(5,886 prompts): 6 records match, and the model received none of them.
+(5,886 prompts): 6 records match, and the model received none of them. A second set (306
+transcripts, 2,899 prompts) gave 9 matches before the tool-result clause, one of them the answered
+prompt above, and 8 after it.
 
 ## Renderer rules that follow from these records (desktop; iOS notes)
 

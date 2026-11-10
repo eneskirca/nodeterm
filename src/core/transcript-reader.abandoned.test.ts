@@ -60,6 +60,30 @@ describe('abandoned prompts', () => {
     expect(texts(ms)).toEqual(['Explain the cache.', 'The cache keeps', 'Explain the cache briefly.'])
   })
 
+  // Measured shape: a prompt typed while a tool call is pending interrupts the call. The prompt
+  // and the call's result share a parent, the answer hangs off the result's interrupt marker, and
+  // the model receives the prompt in that same request.
+  it('keeps a prompt typed during a pending tool call (its later sibling is the tool result)', () => {
+    const recs: Rec[] = [
+      prompt('u1', null, 'Run the lint.'),
+      {
+        type: 'assistant',
+        uuid: 'a1',
+        parentUuid: 'u1',
+        isSidechain: false,
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm run lint' } }] }
+      },
+      prompt('u2', 'a1', 'Stop, run the tests instead.'),
+      prompt('r1', 'a1', [{ type: 'tool_result', tool_use_id: 't1', content: 'rejected', is_error: true }]),
+      prompt('m1', 'r1', [{ type: 'text', text: '[Request interrupted by user for tool use]' }]),
+      reply('a2', 'm1', 'Running the tests.')
+    ]
+
+    const ms = parseChatMessages(recs.map((r) => JSON.stringify(r)))
+
+    expect(texts(ms)).toContain('Stop, run the tests instead.')
+  })
+
   it('never hides a record without string uuid fields', () => {
     const recs = queuedThenEsc.map((r) => ({ ...r, uuid: undefined }))
 

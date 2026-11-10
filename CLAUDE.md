@@ -4503,8 +4503,9 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   long prompt shows only its end. So "holds the last send" accepts that end, each burst is two
   Ctrl-Us per row on screen (`readClaudeDraftBox`) plus spares, and bursts repeat while what is left
   ends earlier in the sent text (`endsEarlierIn`). Claude still writes such a prompt to the
-  transcript as a branch it drops from its context, so the chat view keeps showing it (the reader
-  does not follow `parentUuid`; known gap). The panel also makes the terminal's interrupt guess
+  transcript as a branch it drops from its context; the reader hides it once the re-sent prompt
+  is in the same read (`abandonedPromptUuids`: a childless prompt with a later non-tool-result
+  sibling under the same `parentUuid`). The panel also makes the terminal's interrupt guess
   (`inferInterruptAfterSettle`), since an early Esc writes no transcript marker.
   **An interrupt is drawn as Claude draws it, not as a user bubble.** Claude saves its marker
   (`CLAUDE_INTERRUPT_MARKERS`, now in `shared/agents/claude-interrupt.ts`, shared with the context

@@ -632,8 +632,15 @@ function abandonedPrompts(): string {
     // A later SIDECHAIN record with the same parent does not make a prompt abandoned.
     /* 18 */ under(17, user('Check the lint.')),
     /* 19 */ { ...under(17, user('subagent prompt')), isSidechain: true },
+    // Typed while a tool call is pending: the prompt and the call's (rejected) result share a
+    // parent and the answer hangs off the result. The model received the prompt, so it stays.
+    /* 20 */ under(18, assistant([toolUse('toolu_b1', 'Bash', { command: 'npm run lint' })])),
+    /* 21 */ under(20, user('Stop, run the tests instead.')),
+    /* 22 */ under(20, toolResult('toolu_b1', 'rejected')),
+    /* 23 */ under(22, user([text('[Request interrupted by user for tool use]')])),
+    /* 24 */ under(23, assistant([text('Running the tests.')])),
     // The newest prompt has no answer yet and no sibling: shown.
-    /* 20 */ under(18, user('One more thing.'))
+    /* 25 */ under(24, user('One more thing.'))
   ])
 }
 

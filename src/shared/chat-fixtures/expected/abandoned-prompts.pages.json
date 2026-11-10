@@ -165,6 +165,53 @@
           "key": 7220
         },
         {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "tool",
+              "name": "Bash",
+              "arg": "npm run lint",
+              "id": "toolu_b1",
+              "result": "rejected"
+            }
+          ],
+          "at": 1790362820000,
+          "key": 7535
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Stop, run the tests instead."
+            }
+          ],
+          "at": 1790362821000,
+          "key": 8029
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "[Request interrupted by user for tool use]"
+            }
+          ],
+          "at": 1790362823000,
+          "key": 8744
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "kind": "text",
+              "text": "Running the tests."
+            }
+          ],
+          "at": 1790362824000,
+          "key": 9112
+        },
+        {
           "role": "user",
           "parts": [
             {
@@ -172,8 +219,8 @@
               "text": "One more thing."
             }
           ],
-          "at": 1790362820000,
-          "key": 7535
+          "at": 1790362825000,
+          "key": 9565
         }
       ],
       "olderCursor": null,

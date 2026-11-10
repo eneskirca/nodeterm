@@ -647,6 +647,10 @@ function isPromptContent(content: unknown): boolean {
   return text
 }
 
+function hasToolResult(content: unknown): boolean {
+  return Array.isArray(content) && content.some((c) => !!c && typeof c === 'object' && (c as { type?: unknown }).type === 'tool_result')
+}
+
 /**
  * The uuids of prompts the model never received. A transcript is a TREE: each record names its
  * `parentUuid`, and the model is sent the chain from the newest record back to the root. When a
@@ -657,7 +661,10 @@ function isPromptContent(content: unknown): boolean {
  * saw the text (5 were re-sent after an edit, one was a raw `/compact` recorded twice).
  *
  * A prompt is abandoned when no record in these lines has it as its parent AND a later
- * user/assistant record (not a sidechain) has the same parent. Both checks see only the lines
+ * user/assistant record (not a sidechain, not a tool result) has the same parent. The tool-result
+ * exclusion is measured (1 of 9 matches over 306 transcripts, 2,899 prompts): a prompt typed
+ * during a pending tool call is a childless sibling of that call's result, and the request that
+ * follows carries the prompt text. Both checks see only the lines
  * given, so on a paged read a sibling in a NEWER window is missed and the prompt is shown, as
  * before. A prompt the model did answer is safe: claude writes its first child right after it
  * (measured in the 10 prompts that have both a child and a later sibling), so any window holding
@@ -670,7 +677,10 @@ function abandonedPromptUuids(records: readonly TreeFields[]): Set<string> {
   records.forEach((o, i) => {
     if (typeof o.parentUuid !== 'string') return
     hasChild.add(o.parentUuid)
-    if ((o.type === 'user' || o.type === 'assistant') && o.isSidechain !== true) {
+    // A tool-result record is never the re-send that marks its sibling abandoned: a prompt typed
+    // while a tool call is pending shares that call's parent with the result (the interrupt marker
+    // and the answer hang off the RESULT), and the model receives both in one request.
+    if ((o.type === 'user' || o.type === 'assistant') && o.isSidechain !== true && !hasToolResult(o.message?.content)) {
       const list = byParent.get(o.parentUuid) ?? []
       list.push({ i, uuid: o.uuid })
       byParent.set(o.parentUuid, list)
