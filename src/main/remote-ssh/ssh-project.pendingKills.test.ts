@@ -66,7 +66,7 @@ describe('SshProjectManager: settling owed remote kills on connect', () => {
 
     await settle(mgr)
 
-    expect(runs.map((r) => r.at(-1))).toEqual([`${TP}tmux -L nodeterm-rmt kill-session -t '=nt-abc'`])
+    expect(runs.map((r) => r.at(-1))).toEqual([`${TP}tmux -L node-terminal kill-session -t '=nt-abc'`])
     expect(await pendingRemoteKillsFor(HOST)).toEqual([])
   })
 

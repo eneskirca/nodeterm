@@ -35,7 +35,7 @@ import os from 'os'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { TMUX_SOCKET } from './tmux-naming'
-import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import { LEGACY_RMT_TMUX_SOCKET } from './remote-ssh/control-master'
 import { readMemInfo, type MemInfo } from './session-memory'
 
 const runAsync = promisify(execFile)
@@ -437,9 +437,10 @@ export interface SessionHostReaperBackend {
 export interface SessionReaperOpts {
   /** Lazy tmux binary resolver (PtyManager resolves after init; null = tmux unavailable → no-op). */
   tmuxBin: () => string | null
-  /** tmux sockets to sweep. Default: the local socket + the SSH-remote socket — a host that serves
-   *  SSH projects accumulates sessions on `nodeterm-rmt`, and its own nodeterm-server (this
-   *  process) is the natural owner of reaping them; the desktops that spawned them may be gone. */
+  /** tmux sockets to sweep. Default: the one socket every nodeterm uses on this host (local AND
+   *  SSH projects since the 2026-11 unification) + the legacy SSH-remote socket, where a host that
+   *  served SSH projects to older builds still holds sessions nobody will re-attach; its own
+   *  nodeterm-server (this process) is the natural owner of reaping them. */
   sockets?: string[]
   /**
    * The tmux sessions THIS process holds a control-mode client on, per socket — a per-session
@@ -463,7 +464,7 @@ export interface SessionReaperOpts {
    * it is attached to, so nothing here ever owes a subtraction of two.
    *
    * Per SOCKET, not per name: `nt-<node>` is only unique within a socket, and a genuinely attached
-   * session of the same name on `nodeterm-rmt` must keep its exemption.
+   * session of the same name on the legacy `nodeterm-rmt` must keep its exemption.
    */
   shadowed?: (socket: string) => Iterable<string>
   /**
@@ -511,7 +512,7 @@ export const SESSION_SWEEP_INTERVAL_MS = 10 * 60_000
  * FRESH listing at kill time (a session that got attached between plan and kill is spared).
  */
 export function createSessionReaper(opts: SessionReaperOpts): SessionReaper {
-  const sockets = opts.sockets ?? [TMUX_SOCKET, RMT_TMUX_SOCKET]
+  const sockets = opts.sockets ?? [TMUX_SOCKET, LEGACY_RMT_TMUX_SOCKET]
   const exec =
     opts.exec ??
     (async (bin: string, args: string[]): Promise<string> => {

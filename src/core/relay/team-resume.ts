@@ -1,6 +1,6 @@
 // `team resume`: restart the agents a desktop handed over, on THIS core's tmux socket, with their
 // conversations resumed (`claude --resume <id>`, …). Called by "Share with team" only after the
-// desktop VERIFIED each node's old `nodeterm-rmt` session is gone — two processes on one
+// desktop VERIFIED each node's old SSH-spawned session is gone — two processes on one
 // conversation would interleave its transcript — and re-checked here per node with the EXACT tmux
 // target (a bare `has-session` prefix-matches, so `nt-x-1` would answer for `nt-x-12`).
 // Idempotent: a session that already exists is `already-running`, and so is a node another request

@@ -392,7 +392,10 @@ export function remoteTmuxCommand(opts: {
   /** When set, sources this remote conf via `-f` (spliced before `new-session`). */
   confPath?: string
 }): string {
-  const socket = opts.socket ?? 'nodeterm-rmt'
+  // Default = the host's own nodeterm socket (`TMUX_SOCKET` in core/tmux-naming, pinned equal by
+  // core/remote-ssh/unified-socket.test.ts — shared/ must not import core/). An SSH project and a
+  // nodeterm running ON the host attach the same `nt-<id>` sessions only because this is one name.
+  const socket = opts.socket ?? 'node-terminal'
   const parts = [
     'tmux',
     '-L',

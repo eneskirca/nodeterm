@@ -20,7 +20,7 @@ import {
   parseForegroundArgv,
   parsePaneOwner
 } from './pane-owner'
-import { remotePaneOwnerCombinedArgs } from '../remote-ssh/control-master'
+import { RMT_TMUX_SOCKET, remotePaneOwnerCombinedArgs } from '../remote-ssh/control-master'
 
 describe('PANE_OWNER_FMT', () => {
   it('asks for pid, tty, current command and the pane id in one round-trip', () => {
@@ -211,7 +211,7 @@ describe('paneOwnerFrom', () => {
  *
  * The tmux server is entirely private: its own socket, in its own `TMUX_TMPDIR`, removed with the
  * directory in afterAll. Nothing here can see — let alone touch — the app's `node-terminal` socket
- * or an SSH project's `nodeterm-rmt` one, and nothing is left behind in the shared `/tmp/tmux-<uid>`
+ * (the same one an SSH project uses on its host), and nothing is left behind in the shared `/tmp/tmux-<uid>`
  * of a host that may be running other people's sessions.
  */
 const tmuxBin = (() => {
@@ -337,7 +337,7 @@ describe('parseCombinedPaneOwner', () => {
 /**
  * THE REAL SCRIPT (Global Constraint 9) — `remotePaneOwnerCombinedArgs`'s remote command is
  * generated shell no compiler checks, so it runs here for REAL: under `/bin/sh`, against a real
- * tmux server on the `nodeterm-rmt` socket name — inside this suite's own private `TMUX_TMPDIR`,
+ * tmux server on the production remote socket NAME (`RMT_TMUX_SOCKET`) — inside this suite's own private `TMUX_TMPDIR`,
  * so the byte-identical script resolves a test server and can never see an SSH project's real
  * remote socket. The bytes that ship are the bytes judged.
  */
@@ -346,7 +346,7 @@ describe.skipIf(!tmuxBin)('the combined remote script, under a real /bin/sh + re
   const scriptFor = (session: string): string =>
     remotePaneOwnerCombinedArgs(conn, '/s.sock', session).at(-1) as string
   const rmt = (...args: string[]) =>
-    execFileSync(tmuxBin as string, ['-L', 'nodeterm-rmt', ...args], {
+    execFileSync(tmuxBin as string, ['-L', RMT_TMUX_SOCKET, ...args], {
       encoding: 'utf8',
       timeout: 10_000,
       env: { ...process.env, TMUX_TMPDIR }

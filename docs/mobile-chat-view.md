@@ -151,8 +151,8 @@ N/A (it serves no phone relay; its bridge subscription is inert).
   `session_id` to the node, `tool_name` → plan/question; hook-script revision read from the installed
   script's marker; revision < 5 → no answer controls.
 - **Send**: the desktop tmux paste plan — `load-buffer -b nt -` (text on **stdin**), copy-mode cancel
-  guard, `paste-buffer -d -p -r`, `send-keys Enter` — on the `node-terminal`/`nodeterm-rmt` socket the
-  session lives on. ESC bytes stripped.
+  guard, `paste-buffer -d -p -r`, `send-keys Enter` — on the `node-terminal` socket the session
+  lives on (one socket per host since 2026-11). ESC bytes stripped.
 - **Answer**: Swift port of `buildPermissionDecision` (validates against the pending request file),
   written atomically (`umask 077`, tmp + mv) from stdin; `pendingId` regex-validated before any path.
 

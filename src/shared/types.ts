@@ -1368,8 +1368,8 @@ export interface PtyApi {
    *  `everySocket` (optional, trailing) widens a kill for a session we hold NOTHING for to every
    *  local tmux socket the name could be on. Opt-in for one caller — the session-memory panel's
    *  speculative kill of a row it swept off either socket. An ordinary node-× must not set it: it
-   *  takes the same unheld branch after an app restart, and `nodeterm-rmt` holds sessions another
-   *  machine's nodeterm SSHed in to spawn. */
+   *  takes the same unheld branch after an app restart, and the legacy `nodeterm-rmt` holds sessions
+   *  a pre-unification build on another machine SSHed in to spawn. */
   destroy(persistKey: string, opts?: { everySocket?: boolean }): void
   /** Ends a node's persistent session so the SAME node id respawns in a new cwd ("move into
    *  worktree"). Same tmux kill as `destroy`, opposite intent: the node stays on the canvas, so
@@ -2811,10 +2811,10 @@ export interface SshProjectApi {
    * mounted, and must be awaited BEFORE disconnect (which kills the master). `nodeIds` are
    * raw node ids; main maps them to `nt-<id>` session names.
    *
-   * `everySocket` widens the kill to every tmux socket on the host rather than the `nodeterm-rmt`
-   * one an SSH project spawns on. Opt-in for ONE caller — the session-memory panel, whose rows are
-   * swept off both sockets. Project deletion stays narrow: `node-terminal` on that host belongs to
-   * a nodeterm running ON it, not to us.
+   * `everySocket` widens the kill to every tmux socket on the host rather than the `node-terminal`
+   * one an SSH project spawns on (shared with a nodeterm running ON the host). Opt-in for ONE
+   * caller — the session-memory panel, whose rows are swept off both sockets. Project deletion
+   * stays narrow: the legacy `nodeterm-rmt` holds only what an older build left behind.
    */
   killSessions(
     projectId: string,

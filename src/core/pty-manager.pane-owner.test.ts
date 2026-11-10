@@ -253,9 +253,9 @@ describe('PtyManager.paneOwner', () => {
     expect(calls[0].file).toBe('/usr/bin/ssh')
     expect(calls[0].args.includes('ControlPath=/tmp/cm-abc')).toBe(true)
     const script = calls[0].args.at(-1) as string
-    // The REMOTE socket, never the local one — a local `nt-<id>` would be another machine's session.
+    // The HOST's socket, reached over ssh (the one exec above is the ssh client — no local tmux ran,
+    // so a local `nt-<id>`, which would be another machine's session, was never asked).
     expect(script).toContain(`tmux -L ${RMT_TMUX_SOCKET} display-message`)
-    expect(script).not.toContain(`-L ${TMUX_SOCKET} `)
     // Both halves of the read live in the one script: the fenced identity, then the ps rows.
     expect(script).toContain("printf '%s\\n'")
     expect(script).toContain('ps -ww -o pid= -o pgid= -o stat= -o args= -t "$tty"')

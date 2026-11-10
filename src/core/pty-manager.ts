@@ -1383,7 +1383,7 @@ export class PtyManager {
    *  - `size`: the effective grid the painter last enforced. With only a control client attached
    *    the pane follows `refresh-client -C <cols>x<rows>`, so this is what a shadow re-asserts.
    *  - `remote`: this node's tmux ran on a REMOTE host (an SSH project) — over that project's
-   *    ControlMaster, on the `nodeterm-rmt` socket THERE. Our local socket holds no session for it;
+   *    ControlMaster, on the `node-terminal` socket THERE. Our local socket holds no session for it;
    *    at best nothing, at worst the local orphan a create issued with the master down once left
    *    under the same name. Never shadow it locally.
    *
@@ -1609,7 +1609,7 @@ export class PtyManager {
     if (this.zellijKeys.has(persistKey)) return null
     const known = this.released.get(persistKey)
     // A remote (SSH-project) node's tmux server is on the FAR host, reached over that project's
-    // ControlMaster on the `nodeterm-rmt` socket. A local `-C attach -t nt-<id>` here would find
+    // ControlMaster, on the HOST's `node-terminal` socket. A local `-C attach -t nt-<id>` here would find
     // nothing — or, if a create once ran with the master down, the LOCAL orphan wearing this node's
     // name, which is a different machine's idea of the node and must never be typed into. Routing
     // control mode over ssh is a separate job; refusing is the honest answer until it exists.
@@ -1681,8 +1681,9 @@ export class PtyManager {
    * the session under it, and the shadow dies with it.
    *
    * Socket-scoped because `nt-<node>` is only unique within a socket: shadows are attached on the
-   * LOCAL socket only, and a genuinely attached session of the same name on `nodeterm-rmt` (an SSH
-   * host's own sessions) keeps its exemption.
+   * LOCAL socket only, and a genuinely attached session of the same name on the legacy
+   * `nodeterm-rmt` socket (what a pre-unification build's SSH projects left on this host) keeps its
+   * exemption.
    */
   shadowedTmuxSessions(socket: string): string[] {
     if (socket !== TMUX_SOCKET) return []
@@ -8105,8 +8106,8 @@ export class PtyManager {
         // Which socket(s) to aim at. Holding the session ourselves means we KNOW: it is the local one,
         // one kill, unchanged. Holding nothing means the name is all we have — and then the fan-out
         // is the CALLER's to ask for, because on this machine a `nt-<id>` we hold nothing for can
-        // also be living on the `nodeterm-rmt` socket, where ANOTHER machine's nodeterm puts the
-        // sessions it SSHes in to spawn. Only the session-memory panel's speculative kill sets
+        // also be living on the legacy `nodeterm-rmt` socket, where a pre-unification build on ANOTHER
+        // machine put the sessions it SSHed in to spawn. Only the session-memory panel's speculative kill sets
         // `everySocket`: it sweeps both sockets and offers to end what it found, so a kill that only
         // tried `node-terminal` showed a confirm saying "this stops its tmux session" and did
         // nothing. An ordinary node-× on a node never mounted in this process takes the same unheld
