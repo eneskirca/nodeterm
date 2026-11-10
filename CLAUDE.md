@@ -4635,6 +4635,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   terminal equivalent. Surfaces: Desktop + Server Edition identical (dictation and uploads already
   bridge — `files.saveUpload`, `speech.*`); SSH nodes upload to the host; kanban card modal shares
   ChatPanel and wires both props; relay tabs keep the panel's existing refusal; mobile N/A.
+  **Its height** (`lib/chatComposerHeight.ts`): the textarea grows with the draft until the whole
+  composer fills half the INNER space (top of `.term-chat__thread` to the bottom of the composer,
+  never the whole panel), or keeps the height the user dragged the grip on its top edge to
+  (localStorage, one value for every composer; double-click / Enter on the grip = auto again). The
+  `/` and `@` menu takes at most 240px, half the inner space and the room above the composer
+  (`completeMenuMax` → `--chat-complete-max`), so a tall box cannot push it under the panel header.
+  Heights are layout pixels: a drag divides by the canvas zoom.
   Fix-round rules (same day): the composer is its OWN component (`nodes/ChatComposer.tsx`) so the
   thread and the composer restyle independently. A label click is an explicit "go to the
   terminal", so the flip FOCUSES the xterm whatever its entry state was

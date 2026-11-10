@@ -11,6 +11,7 @@ import {
   type Dispatch,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type SetStateAction
 } from 'react'
 import { useAgentStatus } from '../state/agentStatus'
@@ -27,6 +28,13 @@ import { Spinner } from '../components/Spinner'
 import { builtinSlashCommands, sanitizeChatCatalog, type ChatCatalogEntry } from '@shared/chat-catalog'
 import { prepareQuickOpenFiles, type QuickOpenIndexedFile } from '../lib/quickOpenSearch'
 import { commandSegments, mentionsSlashToken } from '../lib/chatComposerHighlight'
+import {
+  KEYBOARD_STEP_PX,
+  completeMenuMax,
+  composerHeight,
+  readComposerHeight,
+  writeComposerHeight
+} from '../lib/chatComposerHeight'
 import {
   CATALOG_REUSE_MS,
   applyCompletion,
@@ -230,6 +238,128 @@ export function ChatComposer({
     hl.scrollTop = ta.scrollTop
   }, [])
   useLayoutEffect(syncHighlightScroll, [segments, syncHighlightScroll])
+
+  // The textarea's height (lib/chatComposerHeight.ts): it grows with the draft, or keeps the height
+  // the user dragged the grip to. Set by hand, never through a style prop: the auto-grow has to
+  // measure the draft at the textarea's natural height first.
+  const composeRef = useRef<HTMLDivElement>(null)
+  const [setHeight, setSetHeight] = useState<number | null>(readComposerHeight)
+  /** The `/` and `@` menu's max-height follows the room above the composer (a custom property on
+   *  the composer root, read by `.term-chat__complete`), so it never runs under the panel header. */
+  const sizeCompleteMenu = useCallback((inner: number, composer: number) => {
+    const max = completeMenuMax({ inner, composer })
+    const el = composeRef.current
+    if (el === null) return
+    if (max === null) el.style.removeProperty('--chat-complete-max')
+    else el.style.setProperty('--chat-complete-max', `${max}px`)
+  }, [])
+  /** The bounds to size against, measured with the textarea at its natural (two-row) height. Null
+   *  while it has no box (a collapsed node): there is nothing to measure. */
+  const measureInput = useCallback(() => {
+    const ta = inputRef.current
+    if (ta === null) return null
+    const top = ta.scrollTop
+    ta.style.height = 'auto'
+    const min = ta.offsetHeight
+    if (min === 0) {
+      ta.style.height = ''
+      return null
+    }
+    // Inner space: from the top of the thread to the bottom of the composer (both children of the
+    // panel). The thread flexes, so this does not change with the textarea's height.
+    const compose = composeRef.current
+    const thread = ta.closest('.term-chat')?.querySelector<HTMLElement>(':scope > .term-chat__thread')
+    const inner =
+      compose === null || thread === null || thread === undefined
+        ? 0
+        : compose.offsetTop + compose.offsetHeight - thread.offsetTop
+    const chrome = (compose?.offsetHeight ?? min) - min
+    return { ta, top, min, content: ta.scrollHeight, inner, chrome }
+  }, [])
+  const fitInput = useCallback(() => {
+    const m = measureInput()
+    if (m === null) return
+    const height = composerHeight({ ...m, set: setHeight })
+    m.ta.style.height = `${height}px`
+    sizeCompleteMenu(m.inner, height + m.chrome)
+    // Collapsing to the natural height for the measurement moved the scroll; put it back.
+    m.ta.scrollTop = m.top
+    syncHighlightScroll()
+  }, [measureInput, setHeight, sizeCompleteMenu, syncHighlightScroll])
+  useLayoutEffect(fitInput, [value, fitInput])
+  // A resized panel (node resize, a collapsed node expanded) changes the bounds.
+  useEffect(() => {
+    const panel = inputRef.current?.closest('.term-chat')
+    if (panel === null || panel === undefined || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => fitInput())
+    ro.observe(panel)
+    return () => ro.disconnect()
+  }, [fitInput])
+  /** Sets the height to `target` (clamped as it will be drawn) and, when `save`, remembers it. */
+  const resizeInput = (target: number | null, save: boolean) => {
+    if (target === null) {
+      setSetHeight(null)
+      if (save) writeComposerHeight(null)
+      return
+    }
+    const m = measureInput()
+    const next = m === null ? Math.round(target) : composerHeight({ ...m, set: target })
+    if (m !== null) {
+      m.ta.style.height = `${next}px`
+      sizeCompleteMenu(m.inner, next + m.chrome)
+    }
+    setSetHeight(next)
+    if (save) writeComposerHeight(next)
+  }
+  const dragRef = useRef<{ pointerId: number; startY: number; startHeight: number; scale: number } | null>(null)
+  const onGripPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const ta = inputRef.current
+    if (e.button !== 0 || ta === null) return
+    // The canvas zoom scales the node: a screen pixel of pointer travel is not a layout pixel.
+    const scale = ta.offsetHeight > 0 ? ta.getBoundingClientRect().height / ta.offsetHeight : 1
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      startHeight: ta.offsetHeight,
+      scale: scale > 0 ? scale : 1
+    }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+  const onGripPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (d === null || d.pointerId !== e.pointerId) return
+    // The grip is on the TOP edge: dragging up makes the box taller.
+    resizeInput(d.startHeight + (d.startY - e.clientY) / d.scale, false)
+  }
+  const onGripPointerEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (d === null || d.pointerId !== e.pointerId) return
+    dragRef.current = null
+    resizeInput(d.startHeight + (d.startY - e.clientY) / d.scale, true)
+  }
+  // A cancelled drag (the system took the pointer) keeps the height it reached: a cancel event's
+  // coordinates are not a position the user chose.
+  const onGripPointerCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current
+    if (d === null || d.pointerId !== e.pointerId) return
+    dragRef.current = null
+    const ta = inputRef.current
+    if (ta !== null && ta.offsetHeight > 0) resizeInput(ta.offsetHeight, true)
+  }
+  const onGripKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const ta = inputRef.current
+    if (ta === null) return
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      e.stopPropagation()
+      const step = e.key === 'ArrowUp' ? KEYBOARD_STEP_PX : -KEYBOARD_STEP_PX
+      resizeInput(ta.offsetHeight + step, true)
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      e.stopPropagation()
+      resizeInput(null, true)
+    }
+  }
   // A composer that cannot flip to the terminal (no `onShowTerminal`) does not offer a built-in that
   // opens a dialog there: the dialog would be invisible and the next Enter would answer it.
   const offered = onShowTerminal ? catalog : catalog.filter((e) => !e.interactive)
@@ -477,7 +607,7 @@ export function ChatComposer({
   const labelDisabled = disabled || agentBusy || pickerBusy || sendUnconfirmed
 
   return (
-    <div className="term-chat__compose">
+    <div ref={composeRef} className="term-chat__compose">
       {menuOpen && (
         <div
           ref={menuRef}
@@ -529,6 +659,26 @@ export function ChatComposer({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        <div
+          className="term-chat__composer-grip"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize the message box"
+          title={
+            setHeight === null
+              ? 'Drag to resize the message box'
+              : 'Drag to resize the message box. Double-click to let it grow with your text again.'
+          }
+          tabIndex={0}
+          // Keep the caret in the textarea, and start no text selection.
+          onMouseDown={(e) => e.preventDefault()}
+          onPointerDown={onGripPointerDown}
+          onPointerMove={onGripPointerMove}
+          onPointerUp={onGripPointerEnd}
+          onPointerCancel={onGripPointerCancel}
+          onDoubleClick={() => resizeInput(null, true)}
+          onKeyDown={onGripKeyDown}
+        />
         <div className="term-chat__composer-field">
           {segments !== null && (
             <div ref={highlightRef} className="term-chat__composer-highlight" aria-hidden="true">
