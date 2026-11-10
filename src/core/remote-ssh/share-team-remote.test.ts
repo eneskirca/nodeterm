@@ -40,7 +40,7 @@ beforeAll(() => {
   // A fake tmux: sessions are files in $STATE; a "*.stuck" one survives kill-session. Like real
   // tmux, a target WITHOUT the leading `=` that matches no session exactly falls back to a prefix
   // match, and a miss prints tmux's own message (measured on tmux 3.4) with exit 1. Any socket but
-  // this desktop's `nodeterm-rmt` is recorded and refused, so a kill aimed at another socket fails.
+  // the host's `node-terminal` is recorded and refused, so a kill aimed at another socket fails.
   // FAKE_TMUX_MODE makes every call fail with one of tmux's connect or version errors.
   write(
     path.join(bin, 'tmux'),
@@ -50,12 +50,12 @@ beforeAll(() => {
       `W=${JSON.stringify(wrongSocketLog)}`,
       'cmd=""; target=""; sock=""',
       'while [ $# -gt 0 ]; do case "$1" in -L) shift; sock="$1";; -t) shift; target="$1";; kill-session|has-session|list-panes) cmd="$1";; esac; shift; done',
-      'if [ "$sock" != nodeterm-rmt ]; then echo "$sock $cmd $target" >> "$W"; echo "fake tmux: unexpected socket" >&2; exit 99; fi',
+      'if [ "$sock" != node-terminal ]; then echo "$sock $cmd $target" >> "$W"; echo "fake tmux: unexpected socket" >&2; exit 99; fi',
       'case "$FAKE_TMUX_MODE" in',
       "  mismatch) echo 'protocol version mismatch (client 8, server 7)' >&2; exit 1;;",
-      "  denied) echo 'error connecting to /tmp/tmux-1000/nodeterm-rmt (Permission denied)' >&2; exit 1;;",
-      "  nofile) echo 'error connecting to /tmp/tmux-1000/nodeterm-rmt (No such file or directory)' >&2; exit 1;;",
-      "  refused) echo 'error connecting to /tmp/tmux-1000/nodeterm-rmt (Connection refused)' >&2; exit 1;;",
+      "  denied) echo 'error connecting to /tmp/tmux-1000/node-terminal (Permission denied)' >&2; exit 1;;",
+      "  nofile) echo 'error connecting to /tmp/tmux-1000/node-terminal (No such file or directory)' >&2; exit 1;;",
+      "  refused) echo 'error connecting to /tmp/tmux-1000/node-terminal (Connection refused)' >&2; exit 1;;",
       'esac',
       'name="${target#=}"',
       'exact=0; [ "$name" != "$target" ] && exact=1',
@@ -65,7 +65,7 @@ beforeAll(() => {
       '  for f in "$S/$name"*; do [ -e "$f" ] || continue; b=$(basename "$f"); name="${b%.stuck}"; return 0; done',
       '  return 1',
       '}',
-      "missing() { if [ -n \"$(ls \"$S\")\" ]; then echo \"can't find session: $name\" >&2; else echo 'no server running on /tmp/tmux-1000/nodeterm-rmt' >&2; fi; exit 1; }",
+      "missing() { if [ -n \"$(ls \"$S\")\" ]; then echo \"can't find session: $name\" >&2; else echo 'no server running on /tmp/tmux-1000/node-terminal' >&2; fi; exit 1; }",
       'case "$cmd" in',
       '  list-panes) for f in "$S"/*; do [ -e "$f" ] || continue; b=$(basename "$f"); b="${b%.stuck}"; echo "$b|$(cat "$f")"; done; exit 0;;',
       '  kill-session) resolve || missing; [ -e "$S/$name.stuck" ] && exit 0; rm -f "$S/$name"; exit 0;;',
@@ -344,7 +344,7 @@ describe.skipIf(process.platform === 'win32')('share-team remote shell (real /bi
     const cmd = teamCliCommand({ node: path.join(bin, 'node'), main: '/x/main.cjs', dataDir: '/d' }, ['info', '--no-newline'])
     expect(parseTeamCliOutput(await sh(cmd))).toEqual({ rc: 0, body: { a: 1 } })
   })
-  it('kills exactly the named sessions on nodeterm-rmt and verifies each; a dotted id maps through sessionName', async () => {
+  it('kills exactly the named sessions on node-terminal and verifies each; a dotted id maps through sessionName', async () => {
     for (const s of ['nt-term-1', 'nt-term-a_1', 'nt-term-12', 'nt-term-stuck.stuck']) fs.writeFileSync(path.join(state, s), 'x')
     const ids = ['term-1', 'term-a.1', 'term-stuck', 'term-never']
     const r = parseKillVerify(await sh(killVerifyCommand(ids)), ids)

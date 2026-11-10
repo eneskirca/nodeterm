@@ -50,7 +50,7 @@ describe('key encodings', () => {
   it('the remote send-keys line names only the closed set', () => {
     const conn = { host: 'box.test', user: 'u' }
     const args = remoteSendKeyArgs(conn, '/tmp/cm', 'nt-n1', ['-l', '1'])
-    expect(args[args.length - 1]).toContain("tmux -L nodeterm-rmt send-keys -t '=nt-n1:' -l 1")
+    expect(args[args.length - 1]).toContain("tmux -L node-terminal send-keys -t '=nt-n1:' -l 1")
     expect(() => remoteSendKeyArgs(conn, '/tmp/cm', 'nt-n1', ['-l', '1;id'])).toThrow()
     expect(() => remoteSendKeyArgs(conn, '/tmp/cm', 'nt n1', ['Enter'])).toThrow()
   })

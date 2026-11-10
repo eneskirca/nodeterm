@@ -155,7 +155,7 @@ export function localPasteArgs(socket: string, session: string, buffer: string):
   ]
 }
 
-/** ssh args running `tmux -L nodeterm-rmt source-file -` on the host; the command text rides stdin. */
+/** ssh args running `tmux -L node-terminal source-file -` on the host; the command text rides stdin. */
 export function remoteKeysArgs(conn: SshConnection, controlPath: string): string[] {
   return childArgs(conn, controlPath, tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} source-file -`))
 }
@@ -198,7 +198,7 @@ export function controlInputPlan(socket: string, session: string, chunk: Control
   return { args: localPasteArgs(socket, session, buffer), body, cleanup: localTmuxDeleteBufferArgs(socket, buffer) }
 }
 
-/** `controlInputPlan` on the host, over the ControlMaster (the `nodeterm-rmt` socket there). */
+/** `controlInputPlan` on the host, over the ControlMaster (the host's `node-terminal` socket). */
 export function remoteControlInputPlan(
   conn: SshConnection,
   controlPath: string,

@@ -8,7 +8,8 @@
 // parse must never be invented or overwritten), a duplicate id (a retry must not churn rev), or
 // an unsafe id (it becomes a tmux session name).
 
-import { agentConfig } from '../shared/agents/config'
+import { agentConfig, mintsSessionId } from '../shared/agents/config'
+import { SAFE_SESSION_ID } from '../shared/session-id'
 import { boundAccountId } from '../shared/agents/account-binding'
 import { isSafeAccountId } from './claude-accounts-core'
 
@@ -26,6 +27,22 @@ export interface RemoteNodeInput {
    * root, and a cold restore resumed the conversation under the wrong identity.
    */
   accountId?: string
+  /**
+   * The provider session id the phone LAUNCHED the agent with (`claude --session-id <uuid>`), i.e.
+   * the phone's twin of the id the canvas mints in `createAgentNode` and persists as
+   * `data.agentSessionId`. Not host-derivable either: the host never saw the launch line.
+   *
+   * Without it a phone-started node had ONE route to its conversation — a hook event reaching this
+   * desktop — where a canvas-minted node has two. Whenever that event had not arrived (the desktop
+   * was asleep or closed while the phone ran the turns, a dead hook tunnel, a host with no
+   * endpoint file) the node had no session id at all: ⌘M fell back to the markdown-of-output view
+   * instead of the chat view, the title never adopted the session's name, and a cold restore
+   * relaunched a BLANK conversation while the transcript sat intact on disk.
+   *
+   * Only a phone that knows the host's CLI accepts the flag sends it (`MirrorSettings
+   * .claudeSessionIdFlag`), so an absent field is the normal case, not an error.
+   */
+  agentSessionId?: string
 }
 
 /** The desktop id shape (`term-<base36 ms>-<token>`). Anything else is refused — the id is
@@ -144,6 +161,21 @@ export function appendProjectNode(
   }
   if (agentId !== undefined) node.agentId = agentId
   if (bound) node.accountId = bound
+  // Stamped only for an agent that really launches with a caller-chosen id (SESSION_ID_CAPABLE):
+  // on any other node the cold restore would `resume` an id that CLI never created. And only a
+  // value safe to interpolate — it ends up on a `claude --resume <id>` line typed into a pane, the
+  // same re-validate-at-the-boundary rule every other reader of this field applies. A bad id is
+  // DROPPED rather than refusing the append (unlike `accountId` above): the node without it is
+  // exactly the hook-only node every phone registered before this field existed, whereas a
+  // refusal would orphan a session that is already running.
+  if (
+    agentId !== undefined &&
+    mintsSessionId(agentId) &&
+    typeof input.agentSessionId === 'string' &&
+    SAFE_SESSION_ID.test(input.agentSessionId)
+  ) {
+    node.agentSessionId = input.agentSessionId
+  }
   // Desktop remote nodes carry the connection spec PER NODE — a sibling terminal in the same
   // project has the right values; copy verbatim. No genuine donor → a plain local node.
   //

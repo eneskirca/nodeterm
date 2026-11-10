@@ -26,6 +26,14 @@ import { ENVELOPE_SETTLE_POLLS, ENVELOPE_SETTLE_POLL_MS, type SettleOptions } fr
  *    same burst as the text is read by Claude Code as a line break, and the message sits unsent.
  *  - Tabs become spaces: a Tab keystroke is a shortcut to Claude Code's composer and the character
  *    vanishes (measured).
+ *  - A backslash is never the last character typed before a line break or the submitting Enter.
+ *    MEASURED on Claude Code 2.1.319: the composer treats `\` + Enter as "new line" and eats the
+ *    backslash, and does the same for `\` + M-Enter, so `cd . \` / `popd` arrived as `cd .` /
+ *    `popd` (a `!` command's continuation lines ran as separate commands), and a message ending in
+ *    `\` was not sent at all. So a line's trailing backslashes are typed AFTER the line break, with
+ *    the cursor stepped back onto the line (Left, the backslashes, Right), and a message whose last
+ *    line ends in `\` is submitted with Left then Enter. Both measured to keep every backslash; a
+ *    backslash anywhere else in a line is untouched by the composer.
  *
  * tmux backends only (local, SSH, Server Edition). The Windows backends keep the paste path: how
  * Claude Code on Windows reads M-Enter has not been measured.
@@ -67,13 +75,21 @@ export function typedInputScript(tmux: string, socket: string, target: string, b
   return [
     // Leave copy mode first, like the paste path: keys typed into copy mode drive IT, not the app.
     `${t} if-shell -F -t ${q} '#{pane_in_mode}' 'send-keys -t ${pane} -X cancel' || exit 1`,
+    // Two stdin lines per line of text (`typedStdin`): the backslashes carried over from the line
+    // before, typed after the line break with the cursor stepped back onto that line, then the text.
+    'paste() {',
+    `  printf '%s' "$1" | ${t} load-buffer -b ${buffer} - || exit 1`,
+    `  ${t} paste-buffer -d -r -b ${buffer} -t ${q} || { ${t} delete-buffer -b ${buffer} 2>/dev/null; exit 1; }`,
+    '}',
     'first=1',
-    'while IFS= read -r line; do',
+    'while IFS= read -r carry && IFS= read -r line; do',
     `  if [ "$first" = 1 ]; then first=0; else ${t} send-keys -t ${q} M-Enter || exit 1; fi`,
-    '  if [ -n "$line" ]; then',
-    `    printf '%s' "$line" | ${t} load-buffer -b ${buffer} - || exit 1`,
-    `    ${t} paste-buffer -d -r -b ${buffer} -t ${q} || { ${t} delete-buffer -b ${buffer} 2>/dev/null; exit 1; }`,
+    '  if [ -n "$carry" ]; then',
+    `    ${t} send-keys -t ${q} Left || exit 1`,
+    '    paste "$carry"',
+    `    ${t} send-keys -t ${q} Right || exit 1`,
     '  fi',
+    '  if [ -n "$line" ]; then paste "$line"; fi',
     'done'
   ].join('\n')
 }
@@ -96,9 +112,42 @@ export function localTypedEnv(tmuxPath: string, base: NodeJS.ProcessEnv = proces
   return { ...base, [TYPED_TMUX_ENV]: tmuxPath }
 }
 
-/** What stdin the script reads: one line per line, each LF-terminated so the last is read too. */
+/** The backslashes ending a line (`\\+$`), or ''. */
+export function trailingBackslashes(line: string): string {
+  let i = line.length
+  while (i > 0 && line[i - 1] === '\\') i--
+  return line.slice(i)
+}
+
+/**
+ * What the script types for each line: `carry`, the backslashes moved off the end of the line BEFORE
+ * this one (typed after the line break, the cursor stepped back onto that line), then `text`. Every
+ * line but the last gives up its trailing backslashes this way; the last keeps them (its Enter is
+ * sent with the cursor stepped back instead, `endsWithBackslash`).
+ */
+export function typedRecords(lines: readonly string[]): Array<{ carry: string; text: string }> {
+  let carry = ''
+  return lines.map((line, i) => {
+    const last = i === lines.length - 1
+    const tail = last ? '' : trailingBackslashes(line)
+    const record = { carry, text: line.slice(0, line.length - tail.length) }
+    carry = tail
+    return record
+  })
+}
+
+/** Whether the last line ends in a backslash: its submitting Enter then goes with the cursor stepped
+ *  back one place, or the composer would take the Enter as a line break and eat the backslash. */
+export function endsWithBackslash(lines: readonly string[]): boolean {
+  return lines.length > 0 && trailingBackslashes(lines[lines.length - 1]) !== ''
+}
+
+/** What stdin the script reads: two LF-terminated lines per line of text, its `carry` (only ever
+ *  backslashes, or empty) and its `text` (`typedRecords`). */
 export function typedStdin(lines: readonly string[]): string {
-  return `${lines.join('\n')}\n`
+  return typedRecords(lines)
+    .map((r) => `${r.carry}\n${r.text}\n`)
+    .join('')
 }
 
 export interface TypedSurface {

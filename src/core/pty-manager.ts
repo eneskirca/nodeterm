@@ -9,6 +9,7 @@ import {
   claudeScreenBlocksInput,
   readClaudeComposer,
   readClaudeDraft,
+  readClaudeDraftBox,
   readClaudeScreen,
   readClaudeSuggestion,
   type ChatScreenRead
@@ -141,7 +142,7 @@ import {
   pasteBufferName,
   runPasteDelivery
 } from './tmux-naming'
-import { localTypedArgs, localTypedEnv, typeThenSubmitWhenSettled } from './typed-input'
+import { endsWithBackslash, localTypedArgs, localTypedEnv, typedLines, typeThenSubmitWhenSettled } from './typed-input'
 import { encodeSendKeysHex } from './tmux-control'
 import {
   ZELLIJ_NESTING_ENV,
@@ -1193,6 +1194,15 @@ function screenGate(screen: string): ChatPromptBlocked | null {
  *  the box to read empty after the Ctrl-Us that clear it. */
 export const INTERRUPT_RESTORE_WAIT_MS = 1500
 export const INTERRUPT_RESTORE_POLL_MS = 150
+/** Bursts of Ctrl-U `takeBackInterruptedPrompt` sends at most; each must end the draft earlier. */
+export const INTERRUPT_CLEAR_MAX_ROUNDS = 20
+
+/** Where `text` ends in `whole` when it ends before `limit`, the latest such place; null if nowhere. */
+export function endsEarlierIn(whole: string, text: string, limit: number): number | null {
+  if (text.length >= limit) return null
+  const start = whole.lastIndexOf(text, limit - text.length - 1)
+  return start < 0 ? null : start + text.length
+}
 
 /** Gap between a paste and its separate Enter for SEPARATE_SUBMIT_AGENTS (the rename path's
  *  measured shape: paste, then Enter as its own tmux invocation). */
@@ -1383,7 +1393,7 @@ export class PtyManager {
    *  - `size`: the effective grid the painter last enforced. With only a control client attached
    *    the pane follows `refresh-client -C <cols>x<rows>`, so this is what a shadow re-asserts.
    *  - `remote`: this node's tmux ran on a REMOTE host (an SSH project) — over that project's
-   *    ControlMaster, on the `nodeterm-rmt` socket THERE. Our local socket holds no session for it;
+   *    ControlMaster, on the `node-terminal` socket THERE. Our local socket holds no session for it;
    *    at best nothing, at worst the local orphan a create issued with the master down once left
    *    under the same name. Never shadow it locally.
    *
@@ -1609,7 +1619,7 @@ export class PtyManager {
     if (this.zellijKeys.has(persistKey)) return null
     const known = this.released.get(persistKey)
     // A remote (SSH-project) node's tmux server is on the FAR host, reached over that project's
-    // ControlMaster on the `nodeterm-rmt` socket. A local `-C attach -t nt-<id>` here would find
+    // ControlMaster, on the HOST's `node-terminal` socket. A local `-C attach -t nt-<id>` here would find
     // nothing — or, if a create once ran with the master down, the LOCAL orphan wearing this node's
     // name, which is a different machine's idea of the node and must never be typed into. Routing
     // control mode over ssh is a separate job; refusing is the honest answer until it exists.
@@ -1681,8 +1691,9 @@ export class PtyManager {
    * the session under it, and the shadow dies with it.
    *
    * Socket-scoped because `nt-<node>` is only unique within a socket: shadows are attached on the
-   * LOCAL socket only, and a genuinely attached session of the same name on `nodeterm-rmt` (an SSH
-   * host's own sessions) keeps its exemption.
+   * LOCAL socket only, and a genuinely attached session of the same name on the legacy
+   * `nodeterm-rmt` socket (what a pre-unification build's SSH projects left on this host) keeps its
+   * exemption.
    */
   shadowedTmuxSessions(socket: string): string[] {
     if (socket !== TMUX_SOCKET) return []
@@ -6699,6 +6710,8 @@ export class PtyManager {
     const live = this.liveSessionForPersistKey(persistKey)
     if (live?.nativeWindowsPane || this.isZellij(persistKey, live)) return null
     const sshRemote = live?.sshRemote
+    // A message ending in `\`: Enter right after it would be read as a line break (typed-input.ts).
+    const leftFirst = endsWithBackslash(typedLines(text))
     let type: (stdin: string) => Promise<unknown>
     let submit: () => Promise<unknown>
     if (sshRemote) {
@@ -6706,14 +6719,15 @@ export class PtyManager {
       if (!ssh) return false
       type = (stdin) =>
         runWithStdin(ssh, remoteTypedArgs(sshRemote.conn, sshRemote.controlPath, target, pasteBufferName()), stdin)
-      submit = () => runAsync(ssh, remoteTmuxEnterArgs(sshRemote.conn, sshRemote.controlPath, target))
+      submit = () =>
+        runAsync(ssh, remoteTmuxEnterArgs(sshRemote.conn, sshRemote.controlPath, target, { cursorLeftFirst: leftFirst }))
     } else if (live?.sessionHost || !this.tmuxPath) {
       return null
     } else {
       const tmuxPath = this.tmuxPath
       type = (stdin) =>
         runTypedScript(localTypedArgs(TMUX_SOCKET, target, pasteBufferName()), stdin, localTypedEnv(tmuxPath))
-      submit = () => runAsync(tmuxPath, localTmuxEnterArgs(TMUX_SOCKET, target))
+      submit = () => runAsync(tmuxPath, localTmuxEnterArgs(TMUX_SOCKET, target, { cursorLeftFirst: leftFirst }))
     }
     const ok = async (run: () => Promise<unknown>): Promise<boolean> => {
       try {
@@ -6884,11 +6898,11 @@ export class PtyManager {
    * MEASURED on Claude Code 2.1.318: an Esc before the reply's first token puts the prompt back into
    * Claude's own input box, where the chat view cannot see it, and the next chat send would be typed
    * after it. So when `sentText` (the chat view's last send) is given and the box comes to hold
-   * exactly that text, it is cleared and handed back as `restored`. Any other text in the box is the
-   * user's and is left alone. Cleared with Ctrl-U, never Ctrl-C: Ctrl-C clears it too but then
-   * shows "Press Ctrl-C again to exit" for a few seconds, and a Ctrl-C the user presses in that window
-   * would quit Claude. Runs inside `serializePaneWrite`, so a chat send cannot land between the Esc
-   * and the read.
+   * that text (or, for a prompt taller than the box, its end), it is cleared and handed back as
+   * `restored`. Any other text in the box is the user's and is left alone. Cleared with Ctrl-U, never
+   * Ctrl-C: Ctrl-C clears it too but then shows "Press Ctrl-C again to exit" for a few seconds, and a
+   * Ctrl-C the user presses in that window would quit Claude. Runs inside `serializePaneWrite`, so a
+   * chat send cannot land between the Esc and the read.
    */
   async interruptChat(persistKey: string, agentId: string, sentText?: string): Promise<ChatInterruptResult> {
     if (!interruptsFromChat(agentId) || !readsScreenDialogs(agentId)) return { sent: false, reason: 'unsupported' }
@@ -6906,27 +6920,43 @@ export class PtyManager {
   }
 
   /** After an interrupt: wait briefly for Claude to put `want` (whitespace removed) back in its input
-   *  box, then clear it. true only when the box held exactly that text and reads empty afterwards. */
+   *  box, then clear it. true only when the box held that text and reads empty afterwards. */
   private async takeBackInterruptedPrompt(persistKey: string, sentText: string, want: string): Promise<boolean> {
-    const readDraft = async (): Promise<string | null> => readClaudeDraft(await this.captureStyledScreen(persistKey))
-    const until = async (done: (draft: string | null) => boolean, ms: number): Promise<string | null> => {
+    type Box = { draft: string; rows: number } | null
+    const readBox = async (): Promise<Box> => readClaudeDraftBox(await this.captureStyledScreen(persistKey))
+    const until = async (done: (box: Box) => boolean, ms: number): Promise<Box> => {
       const deadline = Date.now() + ms
       for (;;) {
-        const draft = await readDraft()
-        if (done(draft) || Date.now() >= deadline) return draft
+        const box = await readBox()
+        if (done(box) || Date.now() >= deadline) return box
         await new Promise((r) => setTimeout(r, INTERRUPT_RESTORE_POLL_MS))
       }
     }
     // Stop at the first non-empty draft: ours, or text the user typed into the terminal (left alone).
-    const draft = await until((d) => d !== null && d !== '', INTERRUPT_RESTORE_WAIT_MS)
-    if (draft !== want) return false
-    // One Ctrl-U clears a line; at the start of a line it joins it to the one above. MEASURED (2.1.318):
-    // repeated Ctrl-Us empty a multi-line box, and a Ctrl-U on an empty box does nothing, so one per
-    // line plus spares is safe in a single write.
+    let box = await until((b) => b !== null && b.draft !== '', INTERRUPT_RESTORE_WAIT_MS)
+    // A prompt taller than the box shows only its end (`readClaudeDraftBox`), so the end of what was
+    // sent counts as ours. Text that happens to be that end loses nothing: the whole prompt goes back.
+    if (box === null || box.draft === '' || !want.endsWith(box.draft)) return false
+    // MEASURED (2.1.319): one Ctrl-U clears the visual ROW the caret is on, so a long line wrapped onto
+    // several rows needs one per row, and at the start of a line one more joins it to the line above.
+    // Two per row on screen (never fewer than two per line sent) plus spares clears what the box shows;
+    // a Ctrl-U on an empty box does nothing. A box scrolled past its height stays full height and shows
+    // earlier rows, so this repeats while what is left still ends, caret and all, earlier in what was
+    // sent than it did before the round.
     const lines = sentText.split('\n').length
-    const cleared = await this.sendPaneKeys(persistKey, '\x15'.repeat(2 * lines + 2))
-    if (!cleared.ok) return false
-    return (await until((d) => d === '', INTERRUPT_RESTORE_WAIT_MS)) === ''
+    let end = want.length
+    for (let round = 0; round < INTERRUPT_CLEAR_MAX_ROUNDS; round++) {
+      const before: string = box.draft
+      const cleared = await this.sendPaneKeys(persistKey, '\x15'.repeat(2 * Math.max(box.rows, lines) + 2))
+      if (!cleared.ok) return false
+      box = await until((b) => b === null || b.draft !== before, INTERRUPT_RESTORE_WAIT_MS)
+      if (box === null || box.draft === before) return false
+      if (box.draft === '') return true
+      const next = endsEarlierIn(want, box.draft, end)
+      if (next === null) return false
+      end = next
+    }
+    return false
   }
 
   /** The visible screen WITH its SGR, for `readClaudeComposer`: an ssh-project node's capture already
@@ -8105,8 +8135,8 @@ export class PtyManager {
         // Which socket(s) to aim at. Holding the session ourselves means we KNOW: it is the local one,
         // one kill, unchanged. Holding nothing means the name is all we have — and then the fan-out
         // is the CALLER's to ask for, because on this machine a `nt-<id>` we hold nothing for can
-        // also be living on the `nodeterm-rmt` socket, where ANOTHER machine's nodeterm puts the
-        // sessions it SSHes in to spawn. Only the session-memory panel's speculative kill sets
+        // also be living on the legacy `nodeterm-rmt` socket, where a pre-unification build on ANOTHER
+        // machine put the sessions it SSHed in to spawn. Only the session-memory panel's speculative kill sets
         // `everySocket`: it sweeps both sockets and offers to end what it found, so a kill that only
         // tried `node-terminal` showed a confirm saying "this stops its tmux session" and did
         // nothing. An ordinary node-× on a node never mounted in this process takes the same unheld

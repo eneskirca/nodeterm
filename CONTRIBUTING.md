@@ -968,10 +968,10 @@ empty line because `#` starts a comment.
 **Share with team's remote commands are generated shell, and so is their test.** The probe, the
 installer wrapper, the `team` invocations and the kill-verify are built in
 `src/core/remote-ssh/share-team-remote.ts` and run under a real `/bin/sh` against a fake host in its
-test; a change to one of them lands with a run there. The handover kill stays on the `nodeterm-rmt`
-socket only, with exact `=nt-<id>` targets: the every-socket kill used elsewhere would also stop the
-server core's `node-terminal` sessions, which are the ones the handover is starting. See CLAUDE.md
-"Share with team".
+test; a change to one of them lands with a run there. The handover kill targets exact `=nt-<id>`
+names on the host's `node-terminal` socket only — never the every-socket fan-out used elsewhere —
+and it runs BEFORE the server core resumes on that same socket, so one conversation never has two
+processes. See CLAUDE.md "Share with team".
 
 **Remote context polling must bound bytes before SSH transports them.** Bootstrap from the
 file's measured end, keep offsets in raw bytes, and distinguish an idle read from failure so
@@ -1036,6 +1036,14 @@ wire sent.
 Put the rule in one predicate under `src/shared` and have every mint site ask it, and derive the
 things that follow from it (a node's color, say) from that same call rather than re-deriving the
 condition per caller.
+
+**A node field the canvas sets must be asked about on the phone leg too.** The same two mint sites
+again: `createAgentNode` gave every Claude node a persisted session id (`data.agentSessionId`,
+launched with `--session-id`), and nothing asked what a phone-registered node should carry — so it
+carried none, and depended on a hook event reaching the desktop for its chat view, its title and
+its cold restore. When you add a field to the node a factory builds, decide in the same change what
+`appendProjectNode` / `RemoteNodeInput` does for it, and whether the phone needs a host fact to
+produce it (`MirrorSettings` is where those travel — see `claudeSessionIdFlag`).
 
 **A feature that creates links owes an ownership rule, and it must be a property of the plan.**
 "Share `~/.claude/skills` with this account" (issue #643) links each system skill into a managed
@@ -1596,8 +1604,14 @@ tokens missing that were all present. Normalize at the read
 (`readFileSync(f, 'utf8').replace(/\r\n/g, '\n')`); `src/shared/line-endings.guard.test.ts` fails on
 a read that slices a `\n`-bearing literal without it.
 
+**An SSH project spawns on the host's `node-terminal` socket — the same one a nodeterm running on
+that host uses.** That is what lets the same folder, opened locally on the server and over SSH from a
+laptop, attach the same `nt-<id>` sessions. `nodeterm-rmt` is a legacy name the sweeps and kills still
+list; never spawn on it, and never give the SSH path a socket of its own again
+(`src/core/remote-ssh/unified-socket.test.ts` pins the equality; CLAUDE.md "One tmux socket per host").
+
 **A test never touches a live tmux server.** You will most likely run `npm test` from inside a
-nodeterm terminal, where `-L node-terminal` and `-L nodeterm-rmt` are the servers holding every
+nodeterm terminal, where `-L node-terminal` (and a legacy `-L nodeterm-rmt`) are the servers holding every
 node you have open — one stray `kill-server` there ends your whole canvas, not your test. Every run
 therefore gets a private `TMUX_TMPDIR` (`test/setup/tmux-sandbox.ts`), which re-points every socket
 name at once. Write real-tmux suites the normal way — pick your own socket name, and use

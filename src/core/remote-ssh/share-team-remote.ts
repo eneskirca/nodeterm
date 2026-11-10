@@ -10,9 +10,10 @@
 // - fence markers are printed QUOTED, because an unquoted `#` starts a comment;
 // - paths are quoted;
 // - session names come only from `sessionName`, for safe node ids only;
-// - kills target `=nt-<id>` exactly, on `nodeterm-rmt` ONLY. That is this desktop's socket. The
-//   server core's `node-terminal` sessions are the ones being resumed, so the every-socket kill
-//   used elsewhere would stop exactly the sessions the handover exists to start;
+// - kills target `=nt-<id>` exactly — the project's OWN node ids — on the host's `node-terminal`
+//   only, never the every-socket fan-out used elsewhere. Since the 2026-11 socket unification this
+//   is the same socket the server core resumes on: the kill runs BEFORE the resume, which is what
+//   keeps one process per conversation;
 // - the probe never RUNS an installed server it has not first recognised as new enough: a build
 //   from before the `team` CLI ignores `team` and boots a whole second server.
 import { posixQuote, quoteRemotePath, remoteTmuxPathPrologue } from '../../shared/ssh'

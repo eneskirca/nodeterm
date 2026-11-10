@@ -82,6 +82,7 @@ import {
   recordAgentEvent,
   ackDone,
   setMirrorSettingsProvider,
+  mirrorClaudeSessionIdFlag,
   setMirrorLiveNodesProvider,
   setMirrorServerProvider,
   onInboxActionable,
@@ -530,6 +531,9 @@ export async function startServer(
     return {
       claudePermissionMode: s.claudePermissionMode,
       autoSupported: localClaudeCaps?.autoPermissionMode === true,
+      // A phone starting a Claude session here may then mint `--session-id` and register the node
+      // with it (MirrorSettings.claudeSessionIdFlag). Unprobed / older CLI ⇒ absent ⇒ bare command.
+      ...mirrorClaudeSessionIdFlag(localClaudeCaps?.sessionIdFlag),
       ...(localCodexCaps?.approvalValues
         ? { codexApprovalValues: localCodexCaps.approvalValues }
         : {}), // unprobed ⇒ absent ⇒ the reader uses the baseline vocabulary
@@ -875,8 +879,10 @@ export async function startServer(
 
   // Session budget (docs/SERVER.md): reap long-idle DETACHED nt- tmux sessions under memory
   // pressure (10%-of-RAM watermark) or past a count cap, on BOTH the local socket and the
-  // SSH-remote socket (`nodeterm-rmt`) — a host serving SSH projects accumulates sessions there,
-  // and this standing process is the natural owner of reaping them (field report: 95 sessions /
+  // legacy SSH-remote socket (`nodeterm-rmt`, where pre-unification builds' SSH projects left
+  // sessions — today an SSH project spawns on `node-terminal` too) — a host that served SSH
+  // projects accumulates sessions there, and this standing process is the natural owner of reaping
+  // them (field report: 95 sessions /
   // 34 GB idle claude). Attached sessions are never touched; a reaped node cold-restores on next
   // open. Kill switch + tuning via NODETERM_SESSION_* env (core/session-budget.ts).
   // `shadowed` subtracts our own control-mode shadows from tmux's attached flag: a shadow is a real

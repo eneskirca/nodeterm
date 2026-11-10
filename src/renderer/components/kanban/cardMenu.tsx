@@ -2,7 +2,7 @@
  * The kanban card right-click menu, for BOTH boards (per-project and the Omni lanes) — one list,
  * so the two views of a card cannot offer different things.
  *
- * Board-only rows come first (open, move, rename); then the node's own rows from the shared node
+ * Board-only rows come first (open, move, select, rename); then the node's own rows from the shared node
  * builder (`nodeActions`: lib/nodeActionItems, narrowed to `BOARD_NODE_ACTION_IDS` by Canvas);
  * then Delete, which goes through the board's own confirm.
  *
@@ -13,9 +13,9 @@
  */
 import type { ProjectKanban } from '@shared/types'
 import type { MenuItem } from '../ContextMenu'
-import { IconEditor, IconExternal, IconMarkdown, IconSparkle, IconSwitch, IconTrash } from '../icons'
+import { IconCheck, IconClose, IconEditor, IconExternal, IconMarkdown, IconSparkle, IconSwitch, IconTrash } from '../icons'
 import { promptDialog } from '../promptDialog'
-import { assignNode, columnForNode } from '../../lib/kanban'
+import { assignNode, assignNodes, columnForNode } from '../../lib/kanban'
 import { isHidden } from '../../lib/ui-visibility'
 import { tidySeparators } from '../../lib/tidySeparators'
 import type { KanbanSession } from './KanbanView'
@@ -37,6 +37,8 @@ export interface CardMenuArgs {
   nodeActions?: (nodeId: string) => MenuItem[]
   /** The board's Delete — routed through the canvas confirm. */
   remove: (nodeId: string) => void
+  /** Multi-select: whether this card is selected, and the toggle. Absent = no Select row. */
+  select?: { selected: boolean; toggle: (nodeId: string) => void }
 }
 
 export function buildCardMenuItems(a: CardMenuArgs): MenuItem[] {
@@ -66,6 +68,17 @@ export function buildCardMenuItems(a: CardMenuArgs): MenuItem[] {
     ...(moveTargets.length
       ? ([{ type: 'submenu', label: 'Move to', icon: <IconSwitch />, children: moveTargets }] as MenuItem[])
       : []),
+    // The way into multi-select for someone who does not know the ⌘/Ctrl-click gesture.
+    ...(a.select
+      ? [
+          {
+            label: a.select.selected ? 'Deselect' : 'Select',
+            icon: <IconCheck />,
+            hint: 'Select several cards to move or delete them together (⌘/Ctrl-click, Shift-click for a range)',
+            onClick: () => a.select!.toggle(card.id)
+          }
+        ]
+      : []),
     { type: 'separator' },
     // Not on a sticky: a note's label IS its first line (the card modal does not rename it either).
     ...(card.kind !== 'sticky'
@@ -88,5 +101,62 @@ export function buildCardMenuItems(a: CardMenuArgs): MenuItem[] {
     ...(a.nodeActions?.(card.id) ?? []),
     { type: 'separator' },
     { label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => a.remove(card.id) }
+  ])
+}
+
+/** "card" / "cards" — the one place the bulk wording counts. */
+export const cardCount = (n: number): string => `${n} ${n === 1 ? 'card' : 'cards'}`
+
+/**
+ * Where a SELECTION can be moved: Ungrouped and every column, minus a destination that already
+ * holds every selected card (moving there would change nothing). `ids` are in board order, which
+ * is the order they keep in the destination (lib/kanban `assignNodes`; unanchored = the top).
+ */
+export function bulkMoveTargets(
+  board: ProjectKanban,
+  ids: readonly string[],
+  commit: (next: ProjectKanban) => void
+): MenuItem[] {
+  const homes = new Set(ids.map((id) => columnForNode(board, id)?.id ?? null))
+  const allIn = (columnId: string | null): boolean => homes.size === 1 && homes.has(columnId)
+  return [
+    ...(allIn(null) ? [] : [{ label: 'Ungrouped', onClick: () => commit(assignNodes(board, ids, null, null)) }]),
+    ...board.columns
+      .filter((c) => !allIn(c.id))
+      .map((c) => ({ label: c.title, onClick: () => commit(assignNodes(board, ids, c.id, null)) }))
+  ]
+}
+
+export interface BulkCardMenuArgs {
+  /** The selected cards, in board order. */
+  ids: readonly string[]
+  board: ProjectKanban
+  commit: (next: ProjectKanban) => void
+  clear: () => void
+  /** Delete every selected card — ONE confirm for all of them. Absent = no Delete row. */
+  remove?: (nodeIds: string[]) => void
+}
+
+/** The right-click menu of a card that is part of a multi-card selection: it acts on ALL of them,
+ *  so it offers only what makes sense for several cards at once. */
+export function buildBulkCardMenuItems(a: BulkCardMenuArgs): MenuItem[] {
+  const targets = bulkMoveTargets(a.board, a.ids, a.commit)
+  return tidySeparators([
+    { type: 'label', label: `${cardCount(a.ids.length)} selected` },
+    ...(targets.length
+      ? ([{ type: 'submenu', label: 'Move to', icon: <IconSwitch />, children: targets }] as MenuItem[])
+      : []),
+    { label: 'Clear selection', icon: <IconClose />, onClick: a.clear },
+    { type: 'separator' },
+    ...(a.remove
+      ? [
+          {
+            label: `Delete ${cardCount(a.ids.length)}`,
+            icon: <IconTrash />,
+            danger: true,
+            onClick: () => a.remove!([...a.ids])
+          }
+        ]
+      : [])
   ])
 }

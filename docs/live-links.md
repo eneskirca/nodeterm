@@ -595,8 +595,8 @@ by every user through `ps`):
 - **Why keys never ride a paste buffer**: tmux 3.7 passes paste buffer content through vis(3) (issue
   #453), so an arrow key arrives as the text `^[[A` and Ctrl-C as `^C`.
 - **The target is exact**, `=nt-<id>:`, as for keyframes: `nt-x-1` is a prefix of `nt-x-12`.
-- **SSH**: the same plans run on the host over the project's ControlMaster (the `nodeterm-rmt`
-  socket), stdin piped through ssh, every piece the remote shell reads single-quoted.
+- **SSH**: the same plans run on the host over the project's ControlMaster (the host's
+  `node-terminal` socket), stdin piped through ssh, every piece the remote shell reads single-quoted.
 - `PtyManager.controlInput` chains each session's chunks (a chunk starts only after the previous one
   settled), re-reads the Session inside each step, answers whether it was delivered, never rejects, and
   gives each chunk what is left of its 20 s deadline. A chunk with nothing left when its turn comes is

@@ -159,6 +159,37 @@ describe('projects.registerNode', () => {
     })
   })
 
+  it('forwards the session id the phone launched the agent with (agentSessionId)', async () => {
+    // The direct-SSH leg writes it into project.json itself; without it on the wire a session
+    // started off-LAN would be the one kind of phone node with no persisted conversation id.
+    const f = makeFakes()
+    mk(f).onRpc({
+      id: '1',
+      method: 'projects.registerNode',
+      params: {
+        projectId: 'p1',
+        node: { id: 'term-abc-1', agentId: 'claude', agentSessionId: '6f1d2c3b-4a59-4e68-9f70-8192a3b4c5d6' }
+      }
+    })
+    await flush()
+    expect(f.registerNode).toHaveBeenCalledWith('p1', {
+      id: 'term-abc-1',
+      agentId: 'claude',
+      agentSessionId: '6f1d2c3b-4a59-4e68-9f70-8192a3b4c5d6'
+    })
+  })
+
+  it('drops a non-string agentSessionId instead of passing it on', async () => {
+    const f = makeFakes()
+    mk(f).onRpc({
+      id: '1',
+      method: 'projects.registerNode',
+      params: { projectId: 'p1', node: { id: 'term-abc-1', agentSessionId: 42 } }
+    })
+    await flush()
+    expect(f.registerNode).toHaveBeenCalledWith('p1', { id: 'term-abc-1' })
+  })
+
   it('drops a non-string accountId instead of passing it on', async () => {
     const f = makeFakes()
     mk(f).onRpc({

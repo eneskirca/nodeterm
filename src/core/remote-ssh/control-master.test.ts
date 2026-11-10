@@ -253,6 +253,12 @@ describe('remoteTmuxEnterArgs', () => {
       `${TP}tmux -L ${RMT_TMUX_SOCKET} send-keys -t '=nt-x:' Enter`
     ])
   })
+
+  it('steps the cursor left first for a typed message ending in a backslash', () => {
+    const args = remoteTmuxEnterArgs(conn, '/s.sock', 'nt-x', { cursorLeftFirst: true })
+
+    expect(args[args.length - 1]).toBe(`${TP}tmux -L ${RMT_TMUX_SOCKET} send-keys -t '=nt-x:' Left Enter`)
+  })
 })
 
 describe('remoteCapturePaneArgs', () => {
@@ -355,7 +361,7 @@ describe('remoteListSessionsArgs', () => {
   it('asks the remote nodeterm tmux socket for session names only', () => {
     const args = remoteListSessionsArgs(conn, '/cm/p1')
     const cmd = args[args.length - 1]
-    expect(cmd).toContain('tmux -L nodeterm-rmt list-sessions')
+    expect(cmd).toContain('tmux -L node-terminal list-sessions')
     expect(cmd).toContain('#{session_name}')
   })
 
@@ -604,10 +610,11 @@ describe('probeSaysAbsent (has-session probe discrimination)', () => {
 })
 
 describe('killing a session by name (both sockets, exact target)', () => {
-  // Two nodeterm tmux sockets live on every host at once: `node-terminal` for a nodeterm running ON
-  // the machine, `nodeterm-rmt` for one SSH-ing INTO it. The session-memory sweep lists BOTH, so a
-  // kill routed to one of them promised something it could not do for every row off the other — a
-  // host running its own nodeterm-server is exactly that shape.
+  // Two nodeterm tmux sockets can live on a host: `node-terminal` for every nodeterm (running ON
+  // the machine or SSH-ing INTO it — one socket since the 2026-11 unification), `nodeterm-rmt` for
+  // sessions a pre-unification build's SSH projects left behind. The session-memory sweep lists
+  // BOTH, so a kill routed to one of them promised something it could not do for every row off
+  // the other.
   it('covers both sockets a nodeterm session can live on', () => {
     expect([...KILL_TMUX_SOCKETS].sort()).toEqual(['node-terminal', 'nodeterm-rmt'])
   })
@@ -637,12 +644,12 @@ describe('killing a session by name (both sockets, exact target)', () => {
     expect([...localKillSockets(null, true)].sort()).toEqual(['node-terminal', 'nodeterm-rmt'])
   })
 
-  it('keeps the remote default on the ssh socket, and overrides it explicitly', () => {
+  it('keeps the remote default on the host socket, and overrides it explicitly', () => {
     expect(remoteTmuxKillArgs(conn, '/s.sock', 'nt-x').at(-1)).toBe(
       `${TP}tmux -L ${RMT_TMUX_SOCKET} kill-session -t '=nt-x'`
     )
-    expect(remoteTmuxKillArgs(conn, '/s.sock', 'nt-x', 'node-terminal').at(-1)).toBe(
-      `${TP}tmux -L node-terminal kill-session -t '=nt-x'`
+    expect(remoteTmuxKillArgs(conn, '/s.sock', 'nt-x', 'nodeterm-rmt').at(-1)).toBe(
+      `${TP}tmux -L nodeterm-rmt kill-session -t '=nt-x'`
     )
   })
 
@@ -651,7 +658,7 @@ describe('killing a session by name (both sockets, exact target)', () => {
     expect(runs).toHaveLength(2)
     expect(runs.map((r) => r.at(-1)).sort()).toEqual([
       `${TP}tmux -L node-terminal kill-session -t '=nt-x'`,
-      `${TP}tmux -L ${RMT_TMUX_SOCKET} kill-session -t '=nt-x'`
+      `${TP}tmux -L nodeterm-rmt kill-session -t '=nt-x'`
     ])
     // Each is a complete child-ssh argv, not a bare command.
     for (const r of runs) expect(r.slice(0, childPrefix.length)).toEqual(childPrefix)

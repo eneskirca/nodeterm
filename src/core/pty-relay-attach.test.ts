@@ -13,6 +13,7 @@
  * observable and nothing real is started.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
 import { existsSync } from 'fs'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
@@ -124,7 +125,7 @@ describe('relay attach routes by this machine’s records, never to a local shel
     const line = args.join(' ')
     expect(line).toContain('/var/tmp/nt-test-cm-p1')
     expect(line).toContain(sessionName(SSH_NODE))
-    expect(line).toContain('nodeterm-rmt') // the REMOTE socket
+    expect(line).toContain(`-L ${RMT_TMUX_SOCKET} `) // the HOST's socket, over ssh
   }, 20_000)
 
   it('a local node is created with the env the desktop gives it, via the one env builder', async () => {

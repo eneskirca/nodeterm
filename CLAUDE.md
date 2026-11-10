@@ -881,6 +881,26 @@ writes (xterm.js emits each reply as its own data event, so a mixed write is a p
 the gate for the session's life (a pane app's DCS-passthrough query shows up as the same `ESC[c` and
 gets exactly one answer).
 
+**One tmux socket per host, whichever side opens the project (2026-11).** An SSH project's sessions
+live on the host's `node-terminal` socket — the SAME socket a nodeterm running ON that host uses
+(`RMT_TMUX_SOCKET === TMUX_SOCKET`, pinned by `core/remote-ssh/unified-socket.test.ts`). Both sides
+read the same `.nodeterm/project.json` and name every session `nt-<nodeId>`, so the socket was the
+only thing keeping them apart: with its own `nodeterm-rmt` socket (2026-06 → 2026-11) a canvas opened
+locally on the server and the same folder opened over SSH from a laptop were two tmux servers holding
+same-named sessions that never saw each other, and every switch of machines cold-restored into a
+fresh shell (field report; issue #1319 was the mobile half of it). The original "never collide with
+the user's own tmux" rationale is satisfied by `node-terminal` already — the user's own tmux is on
+`default`. `nodeterm-rmt` survives only as `LEGACY_RMT_TMUX_SOCKET`: the session-memory sweep, the
+dev-ports sweep, the reaper and the by-name kill still list it so sessions an older build left there
+stay visible as orphans and reapable/killable; nothing is spawned or re-attached there (a node whose
+session is still on the legacy socket cold-restores onto `node-terminal`, exactly as after a host
+reboot, and the old one shows up in the session-memory panel as an orphan). Do not give the SSH path
+a socket of its own again. **Known limit, deliberately out of scope here:** hook events reach ONE
+nodeterm — the endpoint baked into the session's env at creation, or the failover winner when that
+one is dead (`agents/hooks/managed-script.ts`) — so a session two machines share shows its RUNNING /
+NEEDS YOU badge on whichever side the hook reaches; the terminal and the work are shared, the badge
+is not yet.
+
 **A tmux client is not necessarily a watcher.** `SessionInfo.clients` is a COUNT
 (`#{session_attached}`), never a boolean, because one session can hold several: the app's painter,
 the user's own `tmux -L node-terminal attach`, a second nodeterm on the same socket, and our own
@@ -3548,7 +3568,19 @@ its agent status" under Hosted team relay.
   `settings` block (`claudePermissionMode`/`autoSupported`/`claudeAccounts`) so the phone can
   launch agents with the desktop's permission mode + managed accounts, and SSH slices get their
   **per-host** settings (remote CLI caps + host-matched accounts) injected via
-  `remote-status-push`'s `settingsFor` dep. `settings.customAgents` (`[{id, label, baseAgent?,
+  `remote-status-push`'s `settingsFor` dep. **`settings.claudeSessionIdFlag`** (present only as
+  `true`) is how a phone-started node gets the persisted conversation id every canvas-minted node
+  has: the phone launches `claude --session-id <uuid>` only when the HOST's own `claude --help`
+  advertised the flag (an unknown option makes claude exit), then hands that id over with the node
+  it registers — `RemoteNodeInput.agentSessionId` on `projects.registerNode`, the same key in the
+  node it writes over direct SSH — and `appendProjectNode` persists it as `data.agentSessionId`.
+  Before this a phone node had ONE route to its session (a hook event reaching this desktop), so
+  whenever none had arrived its ⌘M fell back to the markdown view, its title never adopted the
+  session name and a cold restore relaunched blank. Three writers publish the block and each must
+  answer with the probe for the machine its file describes — local claude caps in both shells, the
+  host's own probe (`core/remote-ssh/claude-session-id-probe.ts`) for an SSH slice; all three go
+  through `mirrorClaudeSessionIdFlag` and are pinned in `mirror-session-id-flag.test.ts`.
+  `settings.customAgents` (`[{id, label, baseAgent?,
   binaries}]`) lets the phone chat with a custom agent: built ONLY by `core/mirror-custom-agents.ts`
   (one definition for all three providers — local file, which relay `projects.list` also serves,
   SSH slices, Server Edition), `binaries` = `binariesFor` from the pane-owner predicate, published
@@ -4444,7 +4476,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   the dialog check `sendChatPrompt` makes is seconds old by then, and an Enter into a dialog that
   opened meanwhile would ANSWER it — the text stays in the composer and the caller hears
   `pasted-not-submitted`. The panel ignores a second Enter while a send is in flight (the draft is
-  cleared only once it lands). **"The text arrived" is read from the COMPOSER, never counted
+  cleared only once it lands). **A backslash is never typed right before a line break or the Enter**
+  (MEASURED, 2.1.319): the composer reads `\` + Enter and `\` + M-Enter alike as "new line" and eats
+  the backslash, so a `!` command's continuation lines ran as separate commands and a message ending
+  in `\` was never sent. A line's trailing backslashes are typed after its line break (Left, the
+  run, Right; `typedRecords`), and a message ending in one is submitted with Left then Enter
+  (`cursorLeftFirst`). **"The text arrived" is read from the COMPOSER, never counted
   across the screen** (`TypedSurface.draftOf` → `readClaudeDraft`, on a styled capture so the dim
   placeholder is not draft text): the draft must end with the message's tail and differ from the
   draft before typing. Typing also clears the placeholder and shortens the status line ("· ← for
@@ -4459,9 +4496,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   dialog), and the composer is EMPTY (with a draft, Esc means "never mind"). Core reads the screen
   first and refuses on a dialog, then sends a lone Esc through `sendPaneKeys`. An Esc before the
   reply's first token makes Claude put the prompt back into its own input box (measured 0.05-0.11 s);
-  core takes it back out ONLY when the box holds exactly the chat view's last send, and hands it to
-  the composer. It clears the box with Ctrl-U, never Ctrl-C: Ctrl-C clears it too but then arms
-  "Press Ctrl-C again to exit" for a few seconds. Claude still writes such a prompt to the
+  core takes it back out ONLY when the box holds the chat view's last send, and hands it to the
+  composer. It clears the box with Ctrl-U, never Ctrl-C: Ctrl-C clears it too but then arms
+  "Press Ctrl-C again to exit" for a few seconds. MEASURED on 2.1.319: one Ctrl-U clears one WRAPPED
+  ROW, not a whole line, and the box stops growing at about half the pane's height and scrolls, so a
+  long prompt shows only its end. So "holds the last send" accepts that end, each burst is two
+  Ctrl-Us per row on screen (`readClaudeDraftBox`) plus spares, and bursts repeat while what is left
+  ends earlier in the sent text (`endsEarlierIn`). Claude still writes such a prompt to the
   transcript as a branch it drops from its context, so the chat view keeps showing it (the reader
   does not follow `parentUuid`; known gap). The panel also makes the terminal's interrupt guess
   (`inferInterruptAfterSettle`), since an early Esc writes no transcript marker.
@@ -4594,6 +4635,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   terminal equivalent. Surfaces: Desktop + Server Edition identical (dictation and uploads already
   bridge — `files.saveUpload`, `speech.*`); SSH nodes upload to the host; kanban card modal shares
   ChatPanel and wires both props; relay tabs keep the panel's existing refusal; mobile N/A.
+  **Its height** (`lib/chatComposerHeight.ts`): the textarea grows with the draft until the whole
+  composer fills half the INNER space (top of `.term-chat__thread` to the bottom of the composer,
+  never the whole panel), or keeps the height the user dragged the grip on its top edge to
+  (localStorage, one value for every composer; double-click / Enter on the grip = auto again). The
+  `/` and `@` menu takes at most 240px, half the inner space and the room above the composer
+  (`completeMenuMax` → `--chat-complete-max`), so a tall box cannot push it under the panel header.
+  Heights are layout pixels: a drag divides by the canvas zoom.
   Fix-round rules (same day): the composer is its OWN component (`nodes/ChatComposer.tsx`) so the
   thread and the composer restyle independently. A label click is an explicit "go to the
   terminal", so the flip FOCUSES the xterm whatever its entry state was
@@ -7005,12 +7053,11 @@ about which machine they describe. Reading + parsing is `core/session-memory.ts`
   `restartEligibility` at once; it asks on the same narrow `st?.sessionId` the node menu uses, so a
   row cannot promise what the closure would refuse.
 - **The name and the host were never the hard part — the SOCKET was.** Two nodeterm tmux sockets
-  live on one machine at once (`node-terminal` for a nodeterm running ON it, `nodeterm-rmt` for one
-  SSH-ing INTO it) and the sweep lists **both**, while the kill targeted one — so every row off the
-  other socket got "this stops its tmux session" and a kill that landed nowhere. Not exotic: a host
-  running its own `nodeterm-server` while being SSH'd into is exactly that, and the local mirror
-  (this machine's panel listing the `nodeterm-rmt` sessions another machine's nodeterm spawned here,
-  all orphans locally) is the same shape. A kill that knows only a NAME therefore goes to **every
+  can live on one machine (`node-terminal` for every nodeterm — running ON it or, since the 2026-11
+  unification, SSH-ing INTO it — and the legacy `nodeterm-rmt`, where a pre-unification build's SSH
+  projects left sessions) and the sweep lists **both**, while the kill targeted one — so every row
+  off the other socket got "this stops its tmux session" and a kill that landed nowhere. Not exotic
+  at the time: a host running its own `nodeterm-server` while being SSH'd into was exactly that. A kill that knows only a NAME therefore goes to **every
   socket that name could be on** (`KILL_TMUX_SOCKETS` → `remoteTmuxKillEverySocketArgs` /
   `localKillSockets`), which is safe because tmux's "can't find session" was already the ignored
   case, because the target is **exact** (`-t =nt-<id>`: without `=` tmux falls back to fnmatch then
@@ -9171,7 +9218,21 @@ the Settings section and ShortcutsPanel start disagreeing about what a chord mea
   events are stored but no card feed shows them; canvas-born nodes get no card-created; no
   card-deleted type.
   Per-column "+ New session" menus create agents/terminal/sticky nodes assigned to the column
-  (assignment written UN-pruned — the fresh node isn't in the derived list yet). The column
+  (assignment written UN-pruned — the fresh node isn't in the derived list yet).
+  **Multi-select** (2026-11, both boards): ⌘/Ctrl-click toggles a session card, Shift-click extends
+  from the last picked card in BOARD order, and while anything is selected a plain click keeps
+  picking instead of opening the modal (Esc / the bar's ✕ leave; the card menu's **Select** row is
+  the way in without a modifier). The floating `CardSelectionBar` and the right-click menu of a card
+  INSIDE a multi-card selection (`buildBulkCardMenuItems`) act on all of them — **Move to**
+  (`assignNodes`, which lands the group together and in board order at every anchor; a loop of
+  `assignNode` would reverse it at the top) and **Delete** (ONE canvas confirm: `onDeleteNodes`, or
+  `nodeterm:global-delete` with `nodeIds` from an Omni lane) — and dragging a selected card carries
+  the selection. Load-bearing: the selection is pruned against the cards ON SCREEN and callers read
+  the pruned value in the same render (`useCardSelection`), so a bulk delete can never reach a card
+  that a filter, a collapsed lane or a hidden closed column took out of sight; GitHub cards are
+  never selectable (their column is the provider's); on the Omni board a selection lives in ONE
+  lane (`selectionOwner` — two projects share no columns). Rules are pure in
+  `lib/cardSelection.ts`. No keyboard chord yet (no `board.*` registry command selects or deletes). The column
   half-pill itself: (`components/kanban/ColumnPill.tsx`, `columnForNode` in lib/kanban; rendered
   as a SIBLING of the node root — the roots are overflow:hidden — hidden for Ungrouped/dangling,
   click opens the board). Server Edition works as-is (pure renderer + workspace.save). Scope: no
@@ -10443,8 +10504,10 @@ invariants:
   `os.homedir()`), so a hand-run `team bootstrap --adopt ~` is refused too.
 
 - **Handover ordering: nothing ends before `bootstrap` succeeded; nothing is resumed before its old
-  session is VERIFIED gone.** The kill runs on `nodeterm-rmt` ONLY (`RMT_TMUX_SOCKET`), with the
-  exact target `-t '=nt-<id>'` built only through `sessionName`, then a `has-session` per node.
+  session is VERIFIED gone.** The kill runs on the host's `node-terminal` ONLY (`RMT_TMUX_SOCKET`,
+  which is the same socket the server core resumes on since the 2026-11 unification — the kill
+  precedes the resume, which is what keeps one process per conversation), with the exact target
+  `-t '=nt-<id>'` built only through `sessionName`, then a `has-session` per node.
   `gone` needs tmux's OWN absence message: exit 1 is also a client/server protocol mismatch or a
   socket it may not open, where the kill failed too, and reading those as gone starts a second agent
   on one conversation (two CLIs appending to one transcript). `alive`/`unknown` nodes are reported
@@ -11185,7 +11248,7 @@ What a restart MEANS, per fact — decided beside each fact, stated in its heade
 
 ## The test suite never touches a live tmux server
 
-This repo is developed from inside nodeterm, so `tmux -L node-terminal` and `-L nodeterm-rmt` are
+This repo is developed from inside nodeterm, so `tmux -L node-terminal` (and a legacy `-L nodeterm-rmt`) are
 not fixture names on a contributor's machine — they are the servers holding every terminal they have
 open. A test that binds one shares a process with the user's whole canvas, and the failure mode is
 not a red test: it is every pane printing `[server exited unexpectedly]` (issue #629).
@@ -11202,7 +11265,7 @@ inside a nodeterm terminal inherits a live client's, and production strips both 
 
 Two suites deliberately name a real socket, and both are allowlisted with their reason in
 `src/core/tmux-socket-isolation.guard.test.ts`: `agents/pane-owner.test.ts` (the production bytes
-hardcode `-L nodeterm-rmt`; re-spelling it would judge different bytes) and
+hardcode the remote socket name; re-spelling it would judge different bytes) and
 `main/remote/host-destroy-tmux.test.ts` (`PtyManager` binds `TMUX_SOCKET` itself). The latter was
 the one file that reached the live server by construction — measured, not inferred — and it now
 refuses to start unless the sandbox is in effect.

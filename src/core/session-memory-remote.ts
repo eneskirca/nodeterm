@@ -18,7 +18,7 @@ import {
 } from './session-memory'
 import { TMUX_SOCKET } from './tmux-naming'
 import { REMOTE_TMUX_PATH_DIRS } from '../shared/ssh'
-import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import { LEGACY_RMT_TMUX_SOCKET } from './remote-ssh/control-master'
 
 const MEM = '##MEM'
 const PANES = '##PANES'
@@ -30,7 +30,7 @@ const SOCKRC = '##SOCKRC'
 
 /** The sockets the remote sweep lists, in the order it lists them (the local leg's default order —
  *  `bySession` is first-wins, so the order decides which socket a duplicate name is attributed to). */
-const SWEEP_SOCKETS: readonly string[] = [TMUX_SOCKET, RMT_TMUX_SOCKET]
+const SWEEP_SOCKETS: readonly string[] = [TMUX_SOCKET, LEGACY_RMT_TMUX_SOCKET]
 
 /**
  * The generated command. Notes that are load-bearing:

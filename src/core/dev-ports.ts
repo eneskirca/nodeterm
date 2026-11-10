@@ -26,7 +26,7 @@ import { shellSingleQuote } from '../shared/shell-quote'
 import { indexProcesses, type PaneRef } from './session-memory'
 import { fencedListPanesCommand, parseFencedPanes } from './session-memory-remote'
 import { TMUX_SOCKET } from './tmux-naming'
-import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import { LEGACY_RMT_TMUX_SOCKET } from './remote-ssh/control-master'
 import type { SessionHostListing } from './session-host-client'
 import { cimRows, powershellArgs, powershellExe } from './win32-powershell'
 
@@ -38,10 +38,10 @@ const LISTEN = '##LISTEN'
 const FD = '##FD'
 const END = '##END'
 
-/** The sockets nodeterm's sessions live on — a local project's (`node-terminal`) and an SSH
- *  project's on its host (`nodeterm-rmt`). Both are listed on either machine, like session memory,
- *  because a host can run a nodeterm of its own. */
-export const DEV_PORT_SOCKETS: readonly string[] = [TMUX_SOCKET, RMT_TMUX_SOCKET]
+/** The sockets nodeterm's sessions live on — `node-terminal` for local AND SSH projects (one
+ *  socket per host since the 2026-11 unification) plus the legacy SSH-remote socket an older build
+ *  may have left sessions on. Both are listed on either machine, like session memory. */
+export const DEV_PORT_SOCKETS: readonly string[] = [TMUX_SOCKET, LEGACY_RMT_TMUX_SOCKET]
 
 export interface DevPortsProbeOptions {
   /** tmux sockets to list. Tests pass a private one; production uses DEV_PORT_SOCKETS. */

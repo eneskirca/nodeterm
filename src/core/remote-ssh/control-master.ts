@@ -26,8 +26,31 @@ import { VISIBLE_CAPTURE_FORMAT, capturePaneTarget } from '../watch-link/capture
 import { WATCHER_CLIENT_FLAGS, WINDOW_SIZE_FORMAT } from '../watch-link/watcher-client'
 // Dependency-free (no node-pty): safe to import from these pure builders.
 
-/** Dedicated remote tmux socket so an SSH project never collides with the user's own tmux. */
-export const RMT_TMUX_SOCKET = 'nodeterm-rmt'
+/**
+ * The tmux socket an SSH project's sessions live on, ON THE HOST — and it is the SAME socket a
+ * nodeterm running on that host uses (`TMUX_SOCKET`), deliberately.
+ *
+ * Both sides read the same `.nodeterm/project.json` and name every session `nt-<nodeId>`, so the
+ * socket was the only thing keeping them apart: with a socket of its own (`nodeterm-rmt`, until
+ * 2026-11) a canvas opened locally on the server and the same folder opened over SSH from a laptop
+ * were two tmux servers holding same-named sessions that never saw each other, and every switch of
+ * machines cold-restored into a fresh shell (field report; the mobile half was issue #1319). The
+ * original "never collide with the user's own tmux" rationale is satisfied by `node-terminal`
+ * already — the user's own tmux is on `default`.
+ *
+ * Kept as its own export because the remote builders read as "the remote socket" and the two could
+ * legitimately diverge again (a host-side setting, say); `unified-socket.test.ts` pins the equality.
+ */
+export const RMT_TMUX_SOCKET: string = TMUX_SOCKET
+
+/**
+ * The socket the SSH path used BEFORE the unification. Nothing is spawned here any more; the sweeps
+ * (session memory, dev ports), the reaper and the by-name kill still list it so sessions an older
+ * build left there stay visible as orphans and reapable/killable instead of leaking. A session
+ * still living here is NOT re-attached — the node cold-restores onto `TMUX_SOCKET` exactly as after
+ * a host reboot, and the old one shows up in the session-memory panel as an orphan.
+ */
+export const LEGACY_RMT_TMUX_SOCKET = 'nodeterm-rmt'
 
 /**
  * Every remote command that invokes `tmux` goes through this: the PATH-append prologue
@@ -403,13 +426,16 @@ export function remoteTypedArgs(
 export function remoteTmuxEnterArgs(
   conn: SshConnection,
   controlPath: string,
-  sessionId: string
+  sessionId: string,
+  opts?: { cursorLeftFirst?: boolean }
 ): string[] {
   assertPasteTarget(sessionId)
+  // `cursorLeftFirst`: a typed message ending in `\` (core/typed-input.ts `endsWithBackslash`).
+  const keys = opts?.cursorLeftFirst === true ? 'Left Enter' : 'Enter'
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} Enter`)
+    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} ${keys}`)
   )
 }
 
@@ -464,19 +490,18 @@ export function probeSaysAbsent(err: unknown): boolean {
  * Every tmux socket a nodeterm session can be living on, on ONE machine — used when we are asked to
  * end a session by NAME and do not know which socket holds it.
  *
- * Both exist on the same host all the time: `node-terminal` is what a nodeterm running ON that
- * machine uses (desktop or Server Edition), `nodeterm-rmt` is what a nodeterm SSH-ing INTO it uses.
- * The session-memory sweep lists both (`session-memory.ts`, `session-memory-remote.ts`) — so a kill
- * that only ever targeted one of them promised something it could not do for every row that came
- * off the other. That is not exotic: a host that runs its own `nodeterm-server` and is also SSH'd
- * into is exactly this shape.
+ * Both can exist on the same host: `node-terminal` is what every nodeterm uses now (running ON the
+ * machine or SSH-ing INTO it), `nodeterm-rmt` is where a pre-unification build put an SSH project's
+ * sessions (`LEGACY_RMT_TMUX_SOCKET`). The session-memory sweep lists both (`session-memory.ts`,
+ * `session-memory-remote.ts`) — so a kill that only ever targeted one of them promised something it
+ * could not do for every row that came off the other.
  *
  * Deliberately NOT the same constant the sweep and the reaper use, even though it holds the same two
  * names: for THEM the order is load-bearing (the sweep's `bySession` is first-wins, so the order
  * decides which socket a duplicate name is attributed to), and for a kill it means nothing. Sharing
  * one array would silently couple a de-duplication preference to a kill list.
  */
-export const KILL_TMUX_SOCKETS: readonly string[] = [TMUX_SOCKET, RMT_TMUX_SOCKET]
+export const KILL_TMUX_SOCKETS: readonly string[] = [TMUX_SOCKET, LEGACY_RMT_TMUX_SOCKET]
 
 /**
  * Which local sockets a destroy must attempt.
@@ -487,8 +512,8 @@ export const KILL_TMUX_SOCKETS: readonly string[] = [TMUX_SOCKET, RMT_TMUX_SOCKE
  * With no live session the name is all we have, and then it depends on who is asking:
  *  - `everySocket: false` (the default, and every ordinary caller) → the local socket only. An
  *    ordinary node-× on a node that was never mounted in THIS process — the common case after an
- *    app restart — has no business speculating at `nodeterm-rmt`, which carries the sessions
- *    ANOTHER machine's nodeterm SSHed in to spawn here.
+ *    app restart — has no business speculating at the legacy `nodeterm-rmt`, which carries the
+ *    sessions a pre-unification build on ANOTHER machine SSHed in to spawn here.
  *  - `everySocket: true` → every socket the name could be on. Only the session-memory panel's
  *    speculative kill asks for this, and it is the one caller that has earned it: the panel sweeps
  *    BOTH sockets, so an orphan row genuinely can be on either, and a kill aimed at one of them
