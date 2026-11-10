@@ -121,6 +121,7 @@ import { registerTranscriptIpc } from '../core/transcript-ipc'
 import { registerChatCatalogIpc } from '../core/chat-catalog'
 import { registerRecentConversationsIpc } from '../core/recent-conversations'
 import { registerContextEnsureIpc } from '../core/context-ensure'
+import { claudeAccountEnv, generateGroupName, generateTerminalName } from '../core/commit-message'
 import { IPC } from '@shared/ipc'
 import { WhisperModelStore } from '../core/speech/whisper-models'
 import { SpeechService } from '../core/speech/speech-service'
@@ -184,6 +185,22 @@ function serverUserLabel(): string {
   } catch {
     const uid = typeof process.getuid === 'function' ? process.getuid() : null
     return uid === null ? 'the server user' : `uid ${uid}`
+  }
+}
+
+/**
+ * This checkout's own version, for `app:get-version` when no installer wrote an install-meta.json
+ * (the deployment here updates by re-running its installer, not by the official script). The
+ * bundled server lives at `out/server/main.cjs`, so the manifest is two levels up. Tolerant: an
+ * unreadable manifest is `'unknown'`, never a thrown boot.
+ */
+function packageVersion(): string {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8')
+    const version = (JSON.parse(raw) as { version?: unknown }).version
+    return typeof version === 'string' && version ? version : 'unknown'
+  } catch {
+    return 'unknown'
   }
 }
 
@@ -359,13 +376,45 @@ export async function startServer(
 
   // Desktop's src/main/index.ts registers a few pty handlers outside PtyManager. Of those,
   // ptyCapture delegates purely to core (ptyManager.captureSession), so it belongs here.
-  // The others (ptyGenerateName / ptyGenerateGroupName → commit-message.ts; ptyReadSessionName
-  // → transcript-reader.ts) depend on src/main-resident modules and are stubbed by the bridge
-  // in Task 8. readScrollback + sendText + paneCommand are already registered inside
-  // PtyManager.registerIpc().
+  // ptyGenerateName / ptyGenerateGroupName do too: the Task 8 note that they needed
+  // src/main-resident modules was wrong — `generateTerminalName` / `generateGroupName` live in
+  // core/commit-message.ts, the same file the server already bundles, and the desktop imports them
+  // from there as well. They were the only reason the browser's ✦ answered "AI naming is not
+  // available in the server edition yet", so registering them is what makes it available.
+  // ptyReadSessionName → transcript-reader.ts is still desktop-only.
+  // readScrollback + sendText + paneCommand are already registered inside PtyManager.registerIpc().
   platform.handle(IPC.ptyCapture, (persistKey: string, full?: boolean) =>
     ptyManager.captureSession(persistKey, full)
   )
+
+  // The naming agent runs under the node's managed Claude account when it has one, exactly as the
+  // desktop does: `CLAUDE_CONFIG_DIR` at the account's dir with the auth vars that would shadow
+  // its OAuth login stripped. Without an account (or with a dir that no longer exists) it runs as
+  // the system `~/.claude` login — the same fallback the node's own spawn takes.
+  const namingEnv = (accountId?: string): NodeJS.ProcessEnv | undefined => {
+    if (!accountId) return undefined
+    const acct = settingsStore.get().claudeAccounts.find((a) => a.id === accountId)
+    if (!acct || acct.pending || acct.host) return undefined
+    const dir = claudeConfigDirFor(accountId)
+    return fs.existsSync(dir) ? claudeAccountEnv(process.env, dir) : undefined
+  }
+
+  // "Name with AI": the terminal node's ✦, the sidebar row and both boards all funnel here. The
+  // captured output is the prompt, so a cwd that does not exist on THIS machine cannot fail it —
+  // and this shell has no SSH projects, so `data.cwd` is always a local path.
+  platform.handle(IPC.ptyGenerateName, async (persistKey: string, cwd: string, accountId?: string) =>
+    generateTerminalName(
+      await ptyManager.captureSession(persistKey),
+      cwd,
+      settingsStore.get(),
+      namingEnv(accountId)
+    )
+  )
+
+  platform.handle(IPC.ptyGenerateGroupName, async (memberKeys: string[], cwd: string) => {
+    const contents = await Promise.all(memberKeys.map((k) => ptyManager.captureSession(k)))
+    return generateGroupName(contents, cwd, settingsStore.get())
+  })
   // The late cold-start check (PtyCreateResult.freshUnverified). Pure core, and this shell runs on
   // the machine whose tmux it reads, so the answer is as good as the desktop's local one.
   platform.handle(IPC.ptySessionAge, (persistKey: string) => ptyManager.sessionAgeSeconds(persistKey))
@@ -554,6 +603,17 @@ export async function startServer(
   // missing/corrupt file simply yields no block.
   const installMeta = readInstallMeta(config.dataDir)
   setMirrorServerProvider(() => installMeta)
+  // Settings → Updates and the canvas's version pill read `app:get-version`. The desktop answers it
+  // with Electron's `app.getVersion()`; a browser tab had no counterpart at all (the bridge stubbed
+  // it), so the panel showed "…" forever and "Check for updates" looked broken rather than
+  // answering. Report what this install actually IS: the installer's install-meta.json when the
+  // official installer wrote one, else this checkout's package.json version. `updates.check` stays
+  // the stub on purpose — there is nothing this process may install by itself; updating is the
+  // operator's `git pull` + rebuild (scripts/install-server.sh, or the deployment's own installer).
+  platform.handle(IPC.appGetVersion, () => {
+    const version = installMeta?.version ?? packageVersion()
+    return installMeta?.commit ? `${version} (${installMeta.commit.slice(0, 8)})` : version
+  })
   // Set after the initial workspace load when the opt-in flag is on. The status listener is wired
   // now so the runtime, once present, consumes the exact same normalized stream as the UI/mirror.
   let canvasControl: ServerCanvasControl | null = null
