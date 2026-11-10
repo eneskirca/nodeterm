@@ -245,6 +245,16 @@ export function readClaudeComposer(styledScreen: string): ClaudeComposer {
  * the draft read before typing, so that only costs a match when the placeholder ends the same way.
  */
 export function readClaudeDraft(styledScreen: string): string | null {
+  return readClaudeDraftBox(styledScreen)?.draft ?? null
+}
+
+/**
+ * `readClaudeDraft` plus how many screen rows the input box shows. MEASURED on Claude Code 2.1.319:
+ * a long line wraps onto several rows, and the box stops growing at about half the pane's height
+ * (7 rows at 24, 15 at 40, 25 at 60) and scrolls, showing the end of the draft with the caret there.
+ * So `draft` can be only the tail of what the box holds, and `rows` only what is on screen.
+ */
+export function readClaudeDraftBox(styledScreen: string): { draft: string; rows: number } | null {
   const styled = styledScreen.split(/\r?\n/)
   const lines = styled.map((l) => l.replace(ANSI, '').trimEnd())
   if (lines.every((l) => l === '')) return null
@@ -256,7 +266,7 @@ export function readClaudeDraft(styledScreen: string): string | null {
     const from = i === box[0] + 1 && lines[i].startsWith('❯') ? 1 : 0
     draft += undimmedText(styled[i], from)
   }
-  return draft.replace(/\s/g, '')
+  return { draft: draft.replace(/\s/g, ''), rows: box[1] - box[0] - 1 }
 }
 
 /**

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { readClaudeComposer, readClaudeDraft } from './claude-screen'
+import { readClaudeComposer, readClaudeDraft, readClaudeDraftBox } from './claude-screen'
 import capture from './__fixtures__/claude/composer-capture.json'
+import scrolled from './__fixtures__/claude/scrolled-draft-capture.json'
 
 // Real captures (Claude Code 2.1.301, `capture-pane -p -e`) — see the fixture's `_note`. Issue #1144.
 const S = capture.screens as Record<string, string>
@@ -85,5 +86,19 @@ describe('readClaudeDraft', () => {
     const dialog = S.empty.replace(/\n[^\n]*manual mode on[^\n]*/, '\n Enter to confirm · Esc to cancel')
     expect(readClaudeDraft(dialog)).toBeNull()
     expect(readClaudeDraft('')).toBeNull()
+  })
+})
+
+describe('readClaudeDraftBox', () => {
+  it('counts the rows a one-line draft occupies on screen', () => {
+    expect(readClaudeDraftBox(S.draft)).toEqual({ draft: 'hebikgetest', rows: 1 })
+  })
+
+  it('reads only the end of a draft taller than the box, and the rows the box shows (2.1.319)', () => {
+    const tail = Array.from({ length: 159 }, (_, i) => `w${i + 142}`).join('')
+
+    const box = readClaudeDraftBox(scrolled.screen)
+
+    expect(box).toEqual({ draft: tail, rows: 15 })
   })
 })

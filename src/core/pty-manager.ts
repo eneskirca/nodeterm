@@ -9,6 +9,7 @@ import {
   claudeScreenBlocksInput,
   readClaudeComposer,
   readClaudeDraft,
+  readClaudeDraftBox,
   readClaudeScreen,
   readClaudeSuggestion,
   type ChatScreenRead
@@ -1193,6 +1194,15 @@ function screenGate(screen: string): ChatPromptBlocked | null {
  *  the box to read empty after the Ctrl-Us that clear it. */
 export const INTERRUPT_RESTORE_WAIT_MS = 1500
 export const INTERRUPT_RESTORE_POLL_MS = 150
+/** Bursts of Ctrl-U `takeBackInterruptedPrompt` sends at most; each must end the draft earlier. */
+export const INTERRUPT_CLEAR_MAX_ROUNDS = 20
+
+/** Where `text` ends in `whole` when it ends before `limit`, the latest such place; null if nowhere. */
+export function endsEarlierIn(whole: string, text: string, limit: number): number | null {
+  if (text.length >= limit) return null
+  const start = whole.lastIndexOf(text, limit - text.length - 1)
+  return start < 0 ? null : start + text.length
+}
 
 /** Gap between a paste and its separate Enter for SEPARATE_SUBMIT_AGENTS (the rename path's
  *  measured shape: paste, then Enter as its own tmux invocation). */
@@ -6888,11 +6898,11 @@ export class PtyManager {
    * MEASURED on Claude Code 2.1.318: an Esc before the reply's first token puts the prompt back into
    * Claude's own input box, where the chat view cannot see it, and the next chat send would be typed
    * after it. So when `sentText` (the chat view's last send) is given and the box comes to hold
-   * exactly that text, it is cleared and handed back as `restored`. Any other text in the box is the
-   * user's and is left alone. Cleared with Ctrl-U, never Ctrl-C: Ctrl-C clears it too but then
-   * shows "Press Ctrl-C again to exit" for a few seconds, and a Ctrl-C the user presses in that window
-   * would quit Claude. Runs inside `serializePaneWrite`, so a chat send cannot land between the Esc
-   * and the read.
+   * that text (or, for a prompt taller than the box, its end), it is cleared and handed back as
+   * `restored`. Any other text in the box is the user's and is left alone. Cleared with Ctrl-U, never
+   * Ctrl-C: Ctrl-C clears it too but then shows "Press Ctrl-C again to exit" for a few seconds, and a
+   * Ctrl-C the user presses in that window would quit Claude. Runs inside `serializePaneWrite`, so a
+   * chat send cannot land between the Esc and the read.
    */
   async interruptChat(persistKey: string, agentId: string, sentText?: string): Promise<ChatInterruptResult> {
     if (!interruptsFromChat(agentId) || !readsScreenDialogs(agentId)) return { sent: false, reason: 'unsupported' }
@@ -6910,27 +6920,43 @@ export class PtyManager {
   }
 
   /** After an interrupt: wait briefly for Claude to put `want` (whitespace removed) back in its input
-   *  box, then clear it. true only when the box held exactly that text and reads empty afterwards. */
+   *  box, then clear it. true only when the box held that text and reads empty afterwards. */
   private async takeBackInterruptedPrompt(persistKey: string, sentText: string, want: string): Promise<boolean> {
-    const readDraft = async (): Promise<string | null> => readClaudeDraft(await this.captureStyledScreen(persistKey))
-    const until = async (done: (draft: string | null) => boolean, ms: number): Promise<string | null> => {
+    type Box = { draft: string; rows: number } | null
+    const readBox = async (): Promise<Box> => readClaudeDraftBox(await this.captureStyledScreen(persistKey))
+    const until = async (done: (box: Box) => boolean, ms: number): Promise<Box> => {
       const deadline = Date.now() + ms
       for (;;) {
-        const draft = await readDraft()
-        if (done(draft) || Date.now() >= deadline) return draft
+        const box = await readBox()
+        if (done(box) || Date.now() >= deadline) return box
         await new Promise((r) => setTimeout(r, INTERRUPT_RESTORE_POLL_MS))
       }
     }
     // Stop at the first non-empty draft: ours, or text the user typed into the terminal (left alone).
-    const draft = await until((d) => d !== null && d !== '', INTERRUPT_RESTORE_WAIT_MS)
-    if (draft !== want) return false
-    // One Ctrl-U clears a line; at the start of a line it joins it to the one above. MEASURED (2.1.318):
-    // repeated Ctrl-Us empty a multi-line box, and a Ctrl-U on an empty box does nothing, so one per
-    // line plus spares is safe in a single write.
+    let box = await until((b) => b !== null && b.draft !== '', INTERRUPT_RESTORE_WAIT_MS)
+    // A prompt taller than the box shows only its end (`readClaudeDraftBox`), so the end of what was
+    // sent counts as ours. Text that happens to be that end loses nothing: the whole prompt goes back.
+    if (box === null || box.draft === '' || !want.endsWith(box.draft)) return false
+    // MEASURED (2.1.319): one Ctrl-U clears the visual ROW the caret is on, so a long line wrapped onto
+    // several rows needs one per row, and at the start of a line one more joins it to the line above.
+    // Two per row on screen (never fewer than two per line sent) plus spares clears what the box shows;
+    // a Ctrl-U on an empty box does nothing. A box scrolled past its height stays full height and shows
+    // earlier rows, so this repeats while what is left still ends, caret and all, earlier in what was
+    // sent than it did before the round.
     const lines = sentText.split('\n').length
-    const cleared = await this.sendPaneKeys(persistKey, '\x15'.repeat(2 * lines + 2))
-    if (!cleared.ok) return false
-    return (await until((d) => d === '', INTERRUPT_RESTORE_WAIT_MS)) === ''
+    let end = want.length
+    for (let round = 0; round < INTERRUPT_CLEAR_MAX_ROUNDS; round++) {
+      const before: string = box.draft
+      const cleared = await this.sendPaneKeys(persistKey, '\x15'.repeat(2 * Math.max(box.rows, lines) + 2))
+      if (!cleared.ok) return false
+      box = await until((b) => b === null || b.draft !== before, INTERRUPT_RESTORE_WAIT_MS)
+      if (box === null || box.draft === before) return false
+      if (box.draft === '') return true
+      const next = endsEarlierIn(want, box.draft, end)
+      if (next === null) return false
+      end = next
+    }
+    return false
   }
 
   /** The visible screen WITH its SGR, for `readClaudeComposer`: an ssh-project node's capture already
