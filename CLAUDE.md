@@ -4643,6 +4643,13 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `/` and `@` menu takes at most 240px, half the inner space and the room above the composer
   (`completeMenuMax` → `--chat-complete-max`), so a tall box cannot push it under the panel header.
   Heights are layout pixels: a drag divides by the canvas zoom.
+  **The draft is not component state** (`state/chatDraft.ts`): ChatPanel unmounts on every project
+  switch, and a `useState` draft was lost with it. It is keyed by node id (the canvas node and the
+  card modal share one draft) and persisted to localStorage (`nodeterm.chatDrafts`, machine-local),
+  so it survives a reload and a restart as the TUI's own input box does in tmux. Writes are
+  debounced, flushed on pagehide, and merge only this window's changes into the stored map (two
+  Server Edition tabs); bounded by age (30 days), count (50) and size (32,000 chars stays in memory
+  only). Pruned by age, not node existence: a closed project still holds its nodes.
   Fix-round rules (same day): the composer is its OWN component (`nodes/ChatComposer.tsx`) so the
   thread and the composer restyle independently. A label click is an explicit "go to the
   terminal", so the flip FOCUSES the xterm whatever its entry state was
