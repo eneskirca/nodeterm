@@ -247,11 +247,6 @@ export class RpcClient {
   }
 }
 
-const AI_NAMING_UNAVAILABLE = {
-  ok: false as const,
-  message: 'AI naming is not available in the server edition yet'
-}
-
 /** Build the real `pty` / `workspace` / `projectSettings` / `settings` namespaces (plus the
  *  top-level `userDataDir`) over an RpcClient, mirroring the preload's
  *  invoke(→request)/send(→cast) split exactly. */
@@ -281,9 +276,19 @@ export function buildRealApi(
     destroy: (persistKey, opts) =>
       client.cast(IPC.ptyDestroy, persistKey, opts?.everySocket === true),
     recycle: (persistKey) => client.cast(IPC.ptyRecycle, persistKey),
-    // No server handler — degrade gracefully (never reject the boot path).
-    generateName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
-    generateGroupName: () => Promise.resolve(AI_NAMING_UNAVAILABLE),
+    // REAL, not a stub: the server registers both handlers over core/commit-message.ts — the same
+    // BYO-agent path the desktop's ✦ uses (settings.commitAgent → `claude -p` on the captured
+    // output). They used to answer "AI naming is not available in the server edition yet", which
+    // stopped being true the moment that handler was registered. A failure rejects/answers with the
+    // agent's own error and the caller toasts it (Canvas.aiNameSession), never silently.
+    generateName: (persistKey, cwd, accountId) =>
+      client.request(IPC.ptyGenerateName, persistKey, cwd, accountId) as ReturnType<
+        PtyApi['generateName']
+      >,
+    generateGroupName: (memberKeys, cwd) =>
+      client.request(IPC.ptyGenerateGroupName, memberKeys, cwd) as ReturnType<
+        PtyApi['generateGroupName']
+      >,
     capture: (persistKey, full) =>
       client.request(IPC.ptyCapture, persistKey, full).catch(() => '') as Promise<string>,
     // Documented degrade, not a stub with a hole in it: SSH PROJECTS are desktop-only (the whole
@@ -1480,6 +1485,14 @@ export async function installWsBridge(): Promise<boolean> {
   const api: NodeTerminalApi = {
     ...stubApi,
     ...buildRealApi(client),
+    // `updates` stays stubbed except its version: a browser tab cannot install anything, but it can
+    // be told what it is running. The server answers `app:get-version` from install-meta.json or the
+    // checkout's package.json; without this the Settings panel sat on "…" forever.
+    updates: {
+      ...stubApi.updates,
+      getVersion: () =>
+        client.request(IPC.appGetVersion).catch(() => 'unknown') as Promise<string>
+    },
     ...buildFilesApi(client),
     ...buildAgentApi(client),
     ...buildStationNoticeApi(client),
