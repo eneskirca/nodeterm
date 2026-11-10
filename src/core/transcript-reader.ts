@@ -12,7 +12,7 @@ import { capText, toolBody } from './chat-tool-body'
 import { isRecord } from '../shared/is-record'
 import { CLAUDE_TOOL_INTERRUPT_MARKER, claudeInterruptMarkerOf } from '../shared/agents/claude-interrupt'
 import { ASK_USER_QUESTION_TOOL, readQuestions } from '../shared/agents/permission-answer'
-import { BASH_COMMAND_TOOL, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../shared/chat-command'
+import { BASH_COMMAND_TOOL, BASH_OUTPUT_MAX, CHAT_TOOL_ARG_MAX, COMMAND_OUTPUT_TOOL } from '../shared/chat-command'
 import {
   AGENT_MESSAGE_TOOL,
   BACKGROUND_TASK_TOOL,
@@ -117,6 +117,13 @@ function outputText(tags: Map<string, string>): string {
     .map((v) => stripAnsi(v).trim())
     .filter(Boolean)
     .join('\n')
+}
+
+/** A command's output as its tool part's `result`. A `!` command's keeps its lines, capped at
+ *  BASH_OUTPUT_MAX (the chat view shows the first line under the command, all of it when opened); a
+ *  slash command's is summarized like a tool result. */
+function commandOutputResult(family: 'slash' | 'bash', text: string): string {
+  return family === 'bash' ? text.slice(0, BASH_OUTPUT_MAX) : summarizeResult(text)
 }
 
 /** A command's arg: trimmed, then capped like `toolArg` (the composer's `sentCommand` agrees). */
@@ -885,12 +892,13 @@ function parseChatRecords(
         push({ role: 'assistant', parts: [part] }, offset)
         awaitingOutput = { family: cmd.family, part }
       } else if (cmd?.kind === 'output') {
-        const s = summarizeResult(cmd.text)
-        if (!s) continue
-        if (awaitingOutput && awaitingOutput.family === cmd.family) {
+        const s = commandOutputResult(cmd.family, cmd.text)
+        // A `!` command that printed nothing still gets its (empty) result, so the chat view can say
+        // so instead of looking unfinished. Any other empty output is skipped, as before.
+        if (awaitingOutput && awaitingOutput.family === cmd.family && (s !== '' || cmd.family === 'bash')) {
           awaitingOutput.part.result = s
           awaitingOutput = null
-        } else {
+        } else if (s !== '') {
           push({ role: 'assistant', parts: [{ kind: 'tool', name: COMMAND_OUTPUT_TOOL, arg: '', result: s }] }, offset)
         }
       } else {

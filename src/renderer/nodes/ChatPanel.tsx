@@ -50,7 +50,8 @@ import {
   turnEndReloadCarries,
   windowFocusHint
 } from '../lib/chatLive'
-import { sentCommand } from '@shared/chat-command'
+import { BASH_COMMAND_TOOL, sentCommand } from '@shared/chat-command'
+import { ChatShellCommand } from './ChatShellCommand'
 import { isInteractiveBuiltin } from '@shared/chat-catalog'
 import { capabilityAgentId, chatReadsLocalOnly, readsScreenDialogs } from '@shared/agents/config'
 import { ChatLoadingStatus } from './ChatPanelFallback'
@@ -1160,6 +1161,9 @@ export function ChatPanel({
         <span className="term-chat__interrupt-hook" aria-hidden="true">⎿</span>
         {CLAUDE_INTERRUPT_LINE}
       </div>
+    ) : p.kind === 'tool' && p.name === BASH_COMMAND_TOOL ? (
+      // A `!` command the user ran: the TUI's `! cmd` with its output's first line under a `⎿`.
+      <ChatShellCommand key={key} arg={p.arg} result={p.result} />
     ) : p.body && !staleTodo(p, i, latestTodo) ? (
       // A plan / question / the latest todo list is the content itself, not plumbing: shown
       // expanded, in full, flowing with the thread (no inner scroll box). The answer stays under it.
