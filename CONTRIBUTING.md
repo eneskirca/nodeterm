@@ -2,8 +2,9 @@
 
 Thanks for looking. This file is the short door: enough to get running, plus the house rules that
 actually get a pull request sent back. The long version — every subsystem and the reasoning behind
-its invariants — lives in `CLAUDE.md` at the repo root, which is also loaded automatically if you
-work with an AI coding agent.
+its invariants — lives in `docs/reference/`, indexed by `CLAUDE.md` at the repo root (which is
+also loaded automatically if you work with an AI coding agent). A pointer below to "CLAUDE.md §
+<section>" means that section's summary there and its linked reference doc.
 
 nodeterm is licensed **BUSL-1.1** (converts to MIT after four years — see `LICENSE`). Contributions
 are accepted under that license. Its Additional Use Grant does not cover production use of a build
