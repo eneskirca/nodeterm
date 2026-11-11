@@ -141,6 +141,7 @@ import {
   BOARD_MODAL_ACTION_IDS,
   BOARD_NODE_ACTION_IDS,
   buildNodeActionItems,
+  selectionSwitchNodes,
   offCanvasNodeActionCtx,
   OFF_CANVAS_REFUSAL,
   restartAgentIdOf,
@@ -995,8 +996,10 @@ import {
   bulkSwitchCandidates,
   claudeSwitchHostKey,
   planClaudeAccountSwitch,
+  planSelectionSwitch,
   startBulkSwitch,
   summarizeBulkSwitch,
+  summarizeSelectionSwitch,
   switchOutcomeNotice,
   type ClaudeSwitchOutcome
 } from './claude-account-switch'
@@ -9245,6 +9248,69 @@ export function Canvas() {
     [runClaudeAccountSwitch]
   )
 
+  /**
+   * A multi-selection's account move: ONE target for the whole selection. The matching Claude nodes
+   * move (the same quit → copy → recycle as the single switch, all at once, sharing the usage
+   * popover's one-bulk-move-at-a-time latch); everything else is left alone and counted in the one
+   * summary. One confirm, because each move quits a running CLI. A dialog already up is never
+   * replaced.
+   */
+  const switchClaudeAccountNodes = useCallback(
+    async (ids: string[], to: string | undefined, toLabel: string): Promise<void> => {
+      if (bulkSwitchRunning.current) {
+        setNotice({ kind: 'error', text: 'An account move is already running — wait for it to finish.' })
+        return
+      }
+      const accounts = useSettings.getState().settings.claudeAccounts
+      const plan = planSelectionSwitch(
+        selectionSwitchNodes(ids, nodesRef.current, session.source),
+        to,
+        accounts
+      )
+      if (plan.move.length === 0) {
+        setNotice(summarizeSelectionSwitch([], plan.busy.length, plan.skipped, toLabel))
+        return
+      }
+      const left = ids.length - plan.move.length
+      const ok = await new Promise<boolean>((resolve) => {
+        if (confirmBusy()) {
+          setNotice({ kind: 'error', text: 'Another confirmation is open — answer it, then switch again.' })
+          resolve(false)
+          return
+        }
+        setConfirm({
+          message:
+            `Move ${plan.move.length} Claude ${plan.move.length === 1 ? 'session' : 'sessions'} to ${toLabel}? ` +
+            'Each CLI quits and resumes the same conversation on that account.' +
+            (left ? ` ${left} other ${left === 1 ? 'node' : 'nodes'} in the selection will be left as they are.` : ''),
+          confirmLabel: 'Move',
+          onConfirm: () => {
+            setConfirm(null)
+            resolve(true)
+          },
+          onCancel: () => resolve(false)
+        })
+      })
+      if (!ok || bulkSwitchRunning.current) return
+      bulkSwitchRunning.current = true
+      try {
+        setNotice({
+          kind: 'info',
+          text: `Moving ${plan.move.length} ${plan.move.length === 1 ? 'session' : 'sessions'} to ${toLabel}…`
+        })
+        // All at once, not one after another — see `startBulkSwitch`. Each switch re-checks its own
+        // node when it starts, so a session that turned busy since the confirm is refused, not forced.
+        const outcomes = (await startBulkSwitch(plan.move, (id) => runClaudeAccountSwitch(id, to))).map(
+          (o): ClaudeSwitchOutcome => o ?? { kind: 'not-restarted', outcome: 'exit-timeout' }
+        )
+        setNotice(summarizeSelectionSwitch(outcomes, plan.busy.length, plan.skipped, toLabel))
+      } finally {
+        bulkSwitchRunning.current = false
+      }
+    },
+    [runClaudeAccountSwitch, confirmBusy, setConfirm, session.source]
+  )
+
   /** How many Claude sessions on this canvas run on `accountId` on the popover's machine — the
    *  number the usage popover's "Move N sessions" button shows. Read live (the popover re-renders
    *  when it opens), from the same candidate rule the move walks. */
@@ -11194,6 +11260,7 @@ export function Canvas() {
       pauseNodes: (ids) => void pauseNodes(ids, `${ids.length} sessions`),
       resumeAgentNode,
       switchClaudeAccountNode,
+      switchClaudeAccountNodes: (ids, to, label) => switchClaudeAccountNodes(ids, to, label),
       switchCodexAccountNode,
       connectedProjectIdForHost,
       deleteNodes: (ids) => deleteNodes(ids)
@@ -11221,6 +11288,7 @@ export function Canvas() {
       pauseNodes,
       resumeAgentNode,
       switchClaudeAccountNode,
+      switchClaudeAccountNodes,
       switchCodexAccountNode,
       connectedProjectIdForHost,
       deleteNodes,

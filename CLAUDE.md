@@ -6336,6 +6336,18 @@ bridges enter live state only via `appendBridgeEdges`) and the server
     prefix/diverged rule, via `head -c | cmp`), and `SshProjectManager.remoteClaudeSessionCopy`
     refuses an account pinned to another host. An SSH ctx with no remote leg (Server Edition) is
     refused, never answered from the local disk. Relay tabs: shown disabled.
+    **A multi-selection switches too, to ONE target picked once** (`planSelectionSwitch`,
+    `selectionSwitchNodes`, Canvas `switchClaudeAccountNodes`): two or more Claude nodes selected
+    show "Switch N Claude sessions ▸" in the same menu slot. Every selected node lands in exactly one
+    bucket — moves, busy, or left alone (another agent, an account that is not on its machine,
+    already on it, relay/unidentifiable, no conversation id yet) — and ONE summary accounts for the
+    lot. Validity is `planClaudeAccountSwitch`'s per node (never a second copy), the move is the
+    existing all-at-once `startBulkSwitch`, it shares the usage popover's one-bulk-move latch, and it
+    asks ONE confirm (each move quits a running CLI). The accounts offered are those of every machine
+    a selected Claude node runs on; the system account fits everywhere. **Codex is deliberately not
+    in it** (its switch has its own plan and eligibility gates — a follow-up); the kanban board and
+    the sessions sidebar have no multi-select, so they are unchanged. Desktop + Server Edition
+    identical (pure renderer); Mobile N/A (no canvas).
     **Two more surfaces, one choreography** (`runClaudeAccountSwitch` returns a
     `ClaudeSwitchOutcome` instead of announcing it): the **kanban card** right-click menu gets the
     node's rows from the SAME builder the canvas node menu uses (`accountSwitchRows` → KanbanView's

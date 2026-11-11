@@ -38,7 +38,13 @@ import {
 import { modelsForAgent, type GatewayModel } from '@shared/agents/model-gateway'
 import { sshHostKey, type SshServer } from '@shared/ssh'
 import { isRemoteSessionNode } from '@shared/worktree'
-import { claudeSwitchHostKey, claudeSwitchTargets } from '../canvas/claude-account-switch'
+import {
+  claudeSwitchHostKey,
+  claudeSwitchTargets,
+  selectionSwitchTargets,
+  type SelectionSwitchNode
+} from '../canvas/claude-account-switch'
+import { effectiveAccountId } from './accountChip'
 import { codexAccountSelectable } from '../canvas/codex-account-switch'
 import type { SessionSource } from '../session/session'
 import { useAgentStatus } from '../state/agentStatus'
@@ -224,6 +230,13 @@ export interface NodeActionCtx {
   resumeAgentNode: (nodeId: string) => unknown
   switchClaudeAccountNode: (
     nodeId: string,
+    targetAccountId: string | undefined,
+    targetLabel: string
+  ) => Promise<unknown>
+  /** Move a multi-selection onto ONE account (Canvas `switchClaudeAccountNodes`): the matching
+   *  Claude nodes move, everything else is left alone and counted. */
+  switchClaudeAccountNodes: (
+    ids: string[],
     targetAccountId: string | undefined,
     targetLabel: string
   ) => Promise<unknown>
@@ -505,12 +518,90 @@ export function buildNodeActionSections(
     },
     { id: 'restart', items: session.restart },
     { id: 'switch-model', items: session.switchModel },
-    { id: 'switch-account', items: session.switchAccount },
+    { id: 'switch-account', items: ids.length > 1 ? bulkSwitchAccountRows(ids, ctx) : session.switchAccount },
     { id: 'pause', items: ids.length > 1 ? bulkPauseRows(ids, ctx, hidden) : session.pause },
     SEPARATOR,
     {
       id: 'delete',
       items: [{ label: 'Delete', icon: <IconTrash />, danger: true, onClick: () => ctx.deleteNodes(ids) }]
+    }
+  ]
+}
+
+/**
+ * The selected nodes as the selection move reads them. ONE mapping for the menu (which accounts to
+ * offer) and Canvas's handler (what to move), so the two cannot disagree about a node. Terminal
+ * nodes only; the live agent state is read now, not captured.
+ */
+export function selectionSwitchNodes(
+  ids: readonly string[],
+  nodes: readonly Node[],
+  sessionSource: SessionSource
+): SelectionSwitchNode[] {
+  const accounts = useSettings.getState().settings.claudeAccounts
+  const byId = useAgentStatus.getState().byId
+  const out: SelectionSwitchNode[] = []
+  for (const id of ids) {
+    const n = nodes.find((x) => x.id === id)
+    if (!n || n.type !== 'terminal') continue
+    const st = byId[id]
+    const accountId = (n.data.accountId as string | undefined) || undefined
+    const hostKey = claudeSwitchHostKey(n)
+    out.push({
+      id,
+      agentId: restartAgentIdOf(n),
+      accountId,
+      readAccountId: effectiveAccountId(accountId, st?.account, accounts),
+      hostKey,
+      remote: sessionSource === 'relay' || (isRemoteSessionNode(n.data) && !hostKey),
+      sessionId: restartSessionId(st?.sessionId, n.data.agentSessionId),
+      busy: st?.state === 'working' || st?.state === 'blocked'
+    })
+  }
+  return out
+}
+
+/**
+ * A multi-selection's "Switch Claude account ▸": the target is picked ONCE and applies to the
+ * selected Claude nodes it fits — Codex and other agents, nodes on another machine than the
+ * account, nodes already on it, busy ones and ones without a conversation yet are left alone and
+ * counted in the one summary. Fewer than two Claude nodes selected ⇒ no row (one is the node's
+ * own submenu, with its eligibility hints). Codex is deliberately not part of this: its switch has
+ * its own plan and eligibility gates.
+ */
+function bulkSwitchAccountRows(ids: string[], ctx: NodeActionCtx): MenuItem[] {
+  const nodes = selectionSwitchNodes(ids, ctx.nodes, ctx.sessionSource)
+  const claude = nodes.filter((n) => n.agentId === 'claude')
+  if (claude.length < 2) return []
+  if (ctx.sessionSource === 'relay')
+    return [
+      {
+        label: 'Switch Claude account',
+        icon: <IconSwitch />,
+        disabled: true,
+        hint: 'Not available for relay sessions.',
+        onClick: () => {}
+      }
+    ]
+  const settingsNow = useSettings.getState().settings
+  const targets = selectionSwitchTargets(claude, settingsNow.claudeAccounts)
+  // No account beyond the system one to move to: nothing to offer (the single-node row says the same).
+  if (targets.length === 0) return []
+  const row = (id: string | undefined, label: string): MenuItem => ({
+    label,
+    icon: <AgentIcon agentId="claude" />,
+    hint: `Quits each matching Claude session, moves its conversation to ${label} and resumes it there. Others in the selection are left alone.`,
+    onClick: () => void ctx.switchClaudeAccountNodes(ids, id, label)
+  })
+  return [
+    {
+      type: 'submenu',
+      label: `Switch ${claude.length} Claude sessions`,
+      icon: <IconSwitch />,
+      children: [
+        row(undefined, 'System account'),
+        ...targets.map((a) => row(a.id, a.label || a.email || 'Account'))
+      ]
     }
   ]
 }
@@ -989,6 +1080,7 @@ export function offCanvasNodeActionCtx(o: OffCanvasCtxInput): NodeActionCtx {
     pauseNodes: refuse,
     resumeAgentNode: refuse,
     switchClaudeAccountNode: refuseLater,
+    switchClaudeAccountNodes: refuseLater,
     switchCodexAccountNode: refuseLater,
     connectedProjectIdForHost: o.connectedProjectIdForHost,
     deleteNodes: refuse

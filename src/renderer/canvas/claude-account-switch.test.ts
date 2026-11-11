@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import type { ClaudeAccount } from '@shared/types'
-import { claudeSwitchTargets, planClaudeAccountSwitch, startBulkSwitch } from './claude-account-switch'
+import {
+  claudeSwitchTargets,
+  planClaudeAccountSwitch,
+  planSelectionSwitch,
+  selectionSwitchTargets,
+  startBulkSwitch,
+  summarizeSelectionSwitch
+} from './claude-account-switch'
 
 const acct = (id: string, extra: Partial<ClaudeAccount> = {}): ClaudeAccount => ({
   id,
@@ -153,5 +160,70 @@ describe('startBulkSwitch', () => {
       id === 'a' ? Promise.reject(new Error('boom')) : Promise.resolve('ok')
     )
     expect(out).toEqual([undefined, 'ok'])
+  })
+})
+
+describe('selection move', () => {
+  const sel = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    agentId: 'claude',
+    accountId: 'a',
+    remote: false,
+    sessionId: `sid-${id}`,
+    busy: false,
+    ...extra
+  })
+  const hosted = [...accounts, acct('rem2', { host: 'u@h' })]
+
+  it('moves the matching Claude nodes and counts every other node by reason', () => {
+    const plan = planSelectionSwitch(
+      [
+        sel('ok'),
+        sel('busy', { busy: true }),
+        sel('codex', { agentId: 'codex' }),
+        sel('there', { accountId: 'b' }),
+        sel('nosid', { sessionId: undefined }),
+        sel('ssh', { hostKey: 'u@h', accountId: 'rem' }),
+        sel('relay', { remote: true })
+      ],
+      'b',
+      hosted
+    )
+    expect(plan.move).toEqual(['ok'])
+    expect(plan.busy).toEqual(['busy'])
+    expect(plan.skipped).toEqual({
+      otherAgent: 1,
+      alreadyThere: 1,
+      noSession: 1,
+      otherMachine: 1,
+      unswitchable: 1
+    })
+  })
+
+  it('the system account is valid on every machine', () => {
+    const plan = planSelectionSwitch(
+      [sel('l'), sel('r', { hostKey: 'u@h', accountId: 'rem' })],
+      undefined,
+      hosted
+    )
+    expect(plan.move).toEqual(['l', 'r'])
+  })
+
+  it('offers the accounts of every machine the selected Claude nodes run on', () => {
+    const nodes = [sel('l'), sel('r', { hostKey: 'u@h' }), sel('x', { agentId: 'codex', hostKey: 'z@z' })]
+    expect(selectionSwitchTargets(nodes, hosted).map((x) => x.id)).toEqual(['a', 'b', 'rem', 'rem2'])
+    expect(selectionSwitchTargets([sel('l')], hosted).map((x) => x.id)).toEqual(['a', 'b'])
+    expect(selectionSwitchTargets([sel('x', { agentId: 'codex' })], hosted)).toEqual([])
+  })
+
+  it('summarizes without calling a deliberate skip an error', () => {
+    const skipped = { otherAgent: 2, alreadyThere: 0, noSession: 0, otherMachine: 1, unswitchable: 0 }
+    expect(summarizeSelectionSwitch([{ kind: 'switched' }, { kind: 'switched' }], 0, skipped, 'Work')).toEqual({
+      kind: 'info',
+      text: 'Moved 2 sessions to Work · 3 left alone (other agent or machine).'
+    })
+    expect(
+      summarizeSelectionSwitch([{ kind: 'switched' }], 1, { ...skipped, otherAgent: 0, otherMachine: 0 }, 'Work')
+    ).toMatchObject({ kind: 'error' })
   })
 })
