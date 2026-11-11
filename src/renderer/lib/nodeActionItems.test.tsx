@@ -49,6 +49,7 @@ function fakeCtx(nodes: CanvasNode[], over: Partial<NodeActionCtx> = {}): NodeAc
     pauseNodes: noop,
     resumeAgentNode: noop,
     switchClaudeAccountNode: async () => {},
+    switchClaudeAccountNodes: async () => {},
     switchCodexAccountNode: async () => {},
     connectedProjectIdForHost: () => undefined,
     deleteNodes: vi.fn(),
@@ -474,5 +475,69 @@ describe('board allowlist carries the session sections', () => {
     const mod = await import('./nodeActionItems')
     expect(mod.BOARD_MODAL_ACTION_IDS).toEqual(['restart', 'switch-model', 'switch-account', 'pause'])
     for (const id of mod.BOARD_MODAL_ACTION_IDS) expect(BOARD_NODE_ACTION_IDS).toContain(id)
+  })
+})
+
+describe('switch account from a multi-selection', () => {
+  const accts = [
+    { id: 'work', label: 'Work', createdAt: 0 },
+    { id: 'rem', label: 'Remote', host: 'me@box', createdAt: 0 }
+  ]
+  const setup = (): void => {
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, claudeAccounts: accts as never } })
+    useAgentStatus.setState({
+      byId: { c1: { state: 'done', sessionId: 's1' }, c2: { state: 'done', sessionId: 's2' } }
+    } as never)
+  }
+  const sub = (items: MenuItem[], label: string): MenuItem | undefined =>
+    items.find((it) => it.type === 'submenu' && it.label === label)
+
+  it('two Claude nodes → one submenu whose pick hands the whole selection over once', () => {
+    setup()
+    const switchClaudeAccountNodes = vi.fn()
+    const nodes = ['c1', 'c2'].map((id) => term(id, { agentId: 'claude' }))
+    const items = buildNodeActionItems(['c1', 'c2'], undefined, fakeCtx(nodes, { switchClaudeAccountNodes }))
+    const menu = sub(items, 'Switch 2 Claude sessions') as { children: MenuItem[] }
+    expect(menu).toBeDefined()
+    // Local nodes: the system row and the local account, never the host-pinned one.
+    expect(menu.children.map((c) => (c as { label: string }).label)).toEqual(['System account', 'Work'])
+    ;(menu.children[1] as { onClick: () => void }).onClick()
+    expect(switchClaudeAccountNodes).toHaveBeenCalledWith(['c1', 'c2'], 'work', 'Work')
+  })
+
+  it('a Codex node in the selection does not count toward the Claude nodes', () => {
+    setup()
+    const nodes = [term('c1', { agentId: 'claude' }), term('x1', { agentId: 'codex' })]
+    // Only one Claude node: that is the single-node case, not a bulk row.
+    expect(sub(buildNodeActionItems(['c1', 'x1'], undefined, fakeCtx(nodes)), 'Switch 1 Claude sessions')).toBeUndefined()
+    const three = [...nodes, term('c2', { agentId: 'claude' })]
+    expect(
+      sub(buildNodeActionItems(['c1', 'x1', 'c2'], undefined, fakeCtx(three)), 'Switch 2 Claude sessions')
+    ).toBeDefined()
+  })
+
+  it('offers the host accounts too when a selected Claude node runs on that host', () => {
+    setup()
+    const nodes = [
+      term('c1', { agentId: 'claude' }),
+      term('c2', { agentId: 'claude', ssh: { host: 'box', user: 'me' } })
+    ]
+    const menu = sub(buildNodeActionItems(['c1', 'c2'], undefined, fakeCtx(nodes)), 'Switch 2 Claude sessions') as {
+      children: MenuItem[]
+    }
+    expect(menu.children.map((c) => (c as { label: string }).label)).toEqual(['System account (each machine)', 'Work', 'Remote'])
+  })
+
+  it('a relay tab shows it disabled with the reason', () => {
+    setup()
+    const nodes = ['c1', 'c2'].map((id) => term(id, { agentId: 'claude' }))
+    const items = buildNodeActionItems(['c1', 'c2'], undefined, fakeCtx(nodes, { sessionSource: 'relay' }))
+    expect(disabledOf(items, 'Switch Claude account')).toBe(true)
+  })
+
+  it('no accounts beyond the system one → no row', () => {
+    useSettings.setState({ settings: { ...DEFAULT_SETTINGS, claudeAccounts: [] } })
+    const nodes = ['c1', 'c2'].map((id) => term(id, { agentId: 'claude' }))
+    expect(top(buildNodeActionItems(['c1', 'c2'], undefined, fakeCtx(nodes))).join('|')).not.toContain('Switch')
   })
 })
