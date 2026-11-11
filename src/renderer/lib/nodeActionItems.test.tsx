@@ -525,7 +525,7 @@ describe('switch account from a multi-selection', () => {
     const menu = sub(buildNodeActionItems(['c1', 'c2'], undefined, fakeCtx(nodes)), 'Switch 2 Claude sessions') as {
       children: MenuItem[]
     }
-    expect(menu.children.map((c) => (c as { label: string }).label)).toEqual(['System account', 'Work', 'Remote'])
+    expect(menu.children.map((c) => (c as { label: string }).label)).toEqual(['System account (each machine)', 'Work', 'Remote'])
   })
 
   it('a relay tab shows it disabled with the reason', () => {

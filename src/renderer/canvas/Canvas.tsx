@@ -8727,18 +8727,18 @@ export function Canvas() {
   )
 
   /** A promise over Canvas's one ConfirmDialog. A dialog already up (an agent's destructive
-   *  verb, a removal) is never replaced: the bulk pause answers "not now" instead. */
-  const confirmBulkPause = useCallback(
-    (message: string): Promise<boolean> =>
+   *  verb, a removal) is never replaced: the caller gets "not now" and the notice says so. */
+  const confirmBulk = useCallback(
+    (message: string, confirmLabel: string, busyText: string): Promise<boolean> =>
       new Promise((resolve) => {
         if (confirmBusy()) {
-          setNotice({ kind: 'error', text: 'Another confirmation is open — answer it, then pause again.' })
+          setNotice({ kind: 'error', text: busyText })
           resolve(false)
           return
         }
         setConfirm({
           message,
-          confirmLabel: 'Pause',
+          confirmLabel,
           onConfirm: () => {
             setConfirm(null)
             resolve(true)
@@ -8747,6 +8747,11 @@ export function Canvas() {
         })
       }),
     [confirmBusy, setConfirm]
+  )
+  const confirmBulkPause = useCallback(
+    (message: string): Promise<boolean> =>
+      confirmBulk(message, 'Pause', 'Another confirmation is open — answer it, then pause again.'),
+    [confirmBulk]
   )
 
   const pauseNodes = useCallback(
@@ -9205,7 +9210,10 @@ export function Canvas() {
   const [accountMove, setAccountMove] = useState<AccountMoveProgress | null>(null)
   const moveAccountSessions = useCallback(
     async (from: string | undefined, to: string | undefined, toLabel: string) => {
-      if (bulkSwitchRunning.current) return
+      if (bulkSwitchRunning.current) {
+        setNotice({ kind: 'error', text: 'An account move is already in progress — wait for it to finish.' })
+        return
+      }
       bulkSwitchRunning.current = true
       try {
         const byId = useAgentStatus.getState().byId
@@ -9257,43 +9265,50 @@ export function Canvas() {
    */
   const switchClaudeAccountNodes = useCallback(
     async (ids: string[], to: string | undefined, toLabel: string): Promise<void> => {
+      // The latch is taken BEFORE the confirm and held across it: otherwise a popover move could
+      // start while the dialog is open and the confirmed action would then be dropped.
       if (bulkSwitchRunning.current) {
-        setNotice({ kind: 'error', text: 'An account move is already running — wait for it to finish.' })
+        setNotice({ kind: 'error', text: 'An account move is already in progress — wait for it to finish.' })
         return
       }
-      const accounts = useSettings.getState().settings.claudeAccounts
-      const plan = planSelectionSwitch(
-        selectionSwitchNodes(ids, nodesRef.current, session.source),
-        to,
-        accounts
-      )
-      if (plan.move.length === 0) {
-        setNotice(summarizeSelectionSwitch([], plan.busy.length, plan.skipped, toLabel))
-        return
-      }
-      const left = ids.length - plan.move.length
-      const ok = await new Promise<boolean>((resolve) => {
-        if (confirmBusy()) {
-          setNotice({ kind: 'error', text: 'Another confirmation is open — answer it, then switch again.' })
-          resolve(false)
-          return
-        }
-        setConfirm({
-          message:
-            `Move ${plan.move.length} Claude ${plan.move.length === 1 ? 'session' : 'sessions'} to ${toLabel}? ` +
-            'Each CLI quits and resumes the same conversation on that account.' +
-            (left ? ` ${left} other ${left === 1 ? 'node' : 'nodes'} in the selection will be left as they are.` : ''),
-          confirmLabel: 'Move',
-          onConfirm: () => {
-            setConfirm(null)
-            resolve(true)
-          },
-          onCancel: () => resolve(false)
-        })
-      })
-      if (!ok || bulkSwitchRunning.current) return
       bulkSwitchRunning.current = true
       try {
+        const accounts = useSettings.getState().settings.claudeAccounts
+        // The plan is built from the canvas the user is looking at; a node that is not a session
+        // (sticky, editor, frame) is counted as left alone, so every selected node is accounted for.
+        const planNow = (): ReturnType<typeof planSelectionSwitch> => {
+          const nodes = selectionSwitchNodes(ids, nodesRef.current, session.source)
+          return planSelectionSwitch(nodes, to, accounts, ids.length - nodes.length)
+        }
+        const projectAtPlan = useProjects.getState().activeProjectId
+        const first = planNow()
+        if (first.move.length === 0) {
+          setNotice(summarizeSelectionSwitch([], first.busy.length, first.skipped, toLabel))
+          return
+        }
+        const wontMove = ids.length - first.move.length
+        const ok = await confirmBulk(
+          `Move ${first.move.length} Claude ${first.move.length === 1 ? 'session' : 'sessions'} to ${toLabel}? ` +
+            'Each CLI quits and resumes the same conversation on that account.' +
+            (wontMove
+              ? ` ${wontMove} other ${wontMove === 1 ? 'node' : 'nodes'} in the selection will not move.`
+              : ''),
+          'Move',
+          'Another confirmation is open — answer it, then switch again.'
+        )
+        if (!ok) return
+        // The dialog can stay open while the user does something else. A project switch unmounts the
+        // nodes this plan names (each switch reads its node off the live canvas when it starts), so
+        // refuse rather than report every session as skipped; otherwise re-plan on fresh state.
+        if (useProjects.getState().activeProjectId !== projectAtPlan) {
+          setNotice({ kind: 'error', text: 'The project changed while confirming — nothing was moved. Select the sessions again.' })
+          return
+        }
+        const plan = planNow()
+        if (plan.move.length === 0) {
+          setNotice(summarizeSelectionSwitch([], plan.busy.length, plan.skipped, toLabel))
+          return
+        }
         setNotice({
           kind: 'info',
           text: `Moving ${plan.move.length} ${plan.move.length === 1 ? 'session' : 'sessions'} to ${toLabel}…`
@@ -9308,7 +9323,7 @@ export function Canvas() {
         bulkSwitchRunning.current = false
       }
     },
-    [runClaudeAccountSwitch, confirmBusy, setConfirm, session.source]
+    [runClaudeAccountSwitch, confirmBulk, session.source]
   )
 
   /** How many Claude sessions on this canvas run on `accountId` on the popover's machine — the

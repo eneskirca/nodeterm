@@ -75,7 +75,7 @@ const GOLDEN_STRINGS = [
   'Switch Claude account',
   'Switch Codex account',
   'Switch model',
-  'System account',
+  'System account (each machine)',
   'This account is no longer available.',
   'This account lives on a host that is not connected.',
   'This node already runs on this account.',
@@ -95,7 +95,8 @@ const GOLDEN_TEMPLATES = [
   'Restarts the terminal session and resumes this conversation with ${model.id}.',
   'Switch ${claude.length} Claude sessions',
   'Switch model (${currentModel})',
-  'System account (${hostKey})'
+  'System account (${hostKey})',
+  'System account (${onlyHost})'
 ]
 
 const GOLDEN_HIDE_IDS = [

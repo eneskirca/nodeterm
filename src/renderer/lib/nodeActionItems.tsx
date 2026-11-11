@@ -587,6 +587,16 @@ function bulkSwitchAccountRows(ids: string[], ctx: NodeActionCtx): MenuItem[] {
   const targets = selectionSwitchTargets(claude, settingsNow.claudeAccounts)
   // No account beyond the system one to move to: nothing to offer (the single-node row says the same).
   if (targets.length === 0) return []
+  // The system row names what it means: on one machine, that machine's own system account (the
+  // single-node row's wording); across several, each node's own machine's.
+  const hostKeys = new Set(claude.map((n) => n.hostKey || undefined))
+  const onlyHost = hostKeys.size === 1 ? [...hostKeys][0] : null
+  const systemLabel =
+    onlyHost === null
+      ? 'System account (each machine)'
+      : onlyHost
+        ? `System account (${onlyHost})`
+        : systemAccountDisplay(settingsNow.systemAccountLabel, useSystemAccount.getState().email)
   const row = (id: string | undefined, label: string): MenuItem => ({
     label,
     icon: <AgentIcon agentId="claude" />,
@@ -599,7 +609,7 @@ function bulkSwitchAccountRows(ids: string[], ctx: NodeActionCtx): MenuItem[] {
       label: `Switch ${claude.length} Claude sessions`,
       icon: <IconSwitch />,
       children: [
-        row(undefined, 'System account'),
+        row(undefined, systemLabel),
         ...targets.map((a) => row(a.id, a.label || a.email || 'Account'))
       ]
     }

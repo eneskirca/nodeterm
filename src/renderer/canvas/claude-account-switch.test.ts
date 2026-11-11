@@ -226,4 +226,19 @@ describe('selection move', () => {
       summarizeSelectionSwitch([{ kind: 'switched' }], 1, { ...skipped, otherAgent: 0, otherMachine: 0 }, 'Work')
     ).toMatchObject({ kind: 'error' })
   })
+
+  it('counts selected nodes that are not sessions, so every selected node is accounted for', () => {
+    const plan = planSelectionSwitch([sel('ok')], 'b', hosted, 2)
+    expect(plan.move).toEqual(['ok'])
+    expect(plan.skipped.otherAgent).toBe(2)
+  })
+
+  it('a node that came back same-account is left alone, not lost from the count', () => {
+    const none = { otherAgent: 0, alreadyThere: 0, noSession: 0, otherMachine: 0, unswitchable: 0 }
+    expect(summarizeSelectionSwitch([{ kind: 'switched' }, { kind: 'same-account' }], 0, none, 'Work')).toEqual({
+      kind: 'info',
+      text: 'Moved 1 session to Work · 1 left alone (other agent or machine).'
+    })
+  })
 })
+

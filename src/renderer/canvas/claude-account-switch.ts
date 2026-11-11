@@ -230,7 +230,8 @@ export type SelectionSwitchNode = ClaudeSwitchNode & {
 }
 
 export interface SelectionSwitchSkips {
-  /** Not the builtin Claude agent (Codex and the rest are not moved by this action). */
+  /** Not a Claude agent session: Codex and the other agents, and any selected node that is no
+   *  session at all (a sticky, an editor, a frame). */
   otherAgent: number
   /** Already on the target account. */
   alreadyThere: number
@@ -256,12 +257,14 @@ export interface SelectionSwitchPlan {
 export function planSelectionSwitch(
   nodes: readonly SelectionSwitchNode[],
   targetAccountId: string | undefined,
-  accounts: readonly ClaudeAccount[]
+  accounts: readonly ClaudeAccount[],
+  /** Selected nodes that are not sessions and so never reached `nodes` — counted as `otherAgent`. */
+  notSessions = 0
 ): SelectionSwitchPlan {
   const plan: SelectionSwitchPlan = {
     move: [],
     busy: [],
-    skipped: { otherAgent: 0, alreadyThere: 0, otherMachine: 0, unswitchable: 0, noSession: 0 }
+    skipped: { otherAgent: notSessions, alreadyThere: 0, otherMachine: 0, unswitchable: 0, noSession: 0 }
   }
   for (const n of nodes) {
     const d = planClaudeAccountSwitch(n, targetAccountId, accounts)
@@ -307,7 +310,14 @@ export function summarizeSelectionSwitch(
     busySkipped +
     skipped.noSession +
     outcomes.filter((o) => o.kind === 'not-restarted' || o.kind === 'refused').length
-  const leftAlone = skipped.otherAgent + skipped.alreadyThere + skipped.otherMachine + skipped.unswitchable
+  // A node rebound to the target between the plan and its run comes back `same-account`: it is
+  // already where it was asked to go, so it is left alone, not lost from the count.
+  const leftAlone =
+    skipped.otherAgent +
+    skipped.alreadyThere +
+    skipped.otherMachine +
+    skipped.unswitchable +
+    outcomes.filter((o) => o.kind === 'same-account').length
   const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
   const parts = [`Moved ${plural(moved, 'session', 'sessions')} to ${targetLabel}`]
   if (stayed) parts.push(`${stayed} resumed on their old account (the conversation could not be copied)`)
