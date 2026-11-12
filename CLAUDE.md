@@ -4449,7 +4449,10 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `renderer/lib/chatSendGate.ts`), with ONE exception: `working` for an agent in
   `INPUT_QUEUE_CAPABLE` (claude — measured: a prompt submitted mid-turn waits in Claude Code's own
   queue and reaches the model at the next tool boundary), where Enter QUEUES (`chatSendMode`) and
-  the bubble reads "Queued" until the transcript has it. Only a plain prompt queues (`canQueue`):
+  the bubble reads "Queued" until the transcript has it. The bubble is kept per node in
+  `state/chatQueued.ts` (in memory), so a panel remounted mid-turn (a project switch, the card
+  modal) draws it again; once the agent is not working the queue was delivered or pulled back
+  (Esc) and the entry is forgotten. Only a plain prompt queues (`canQueue`):
   a slash command or `!` line mid-turn is unmeasured and waits. While the agent works the textarea
   stays editable for every agent (`composerStandsDown`) — only sending is gated. Never in
   `waiting`/`blocked`:

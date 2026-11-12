@@ -16,6 +16,8 @@ import {
   type ScreenBlock
 } from '../lib/chatSendGate'
 import type { ChatMessage, ChatPart } from '@shared/types'
+import { forgetQueuedSend, queuedSendsFor, rememberQueuedSend } from '../state/chatQueued'
+import { uuid } from '../lib/uuid'
 import { chatPaneRefusal, chatPaneRefusalToast } from '../lib/chatPaneGate'
 import { chatAgentLabel, isNearBottom, shouldFollowOnLoad, toolCardTitle, unseenAfter } from '../lib/chatPanel'
 import { useSettings } from '../state/settings'
@@ -26,6 +28,7 @@ import {
   applyOlder,
   applyTail,
   tailConfirmsSends,
+  unconfirmedQueuedSends,
   emptyThread,
   shouldFetchOlder,
   type ChatThread
@@ -254,6 +257,24 @@ export function ChatPanel({
   // when the read was issued.
   const threadRef = useRef(thread)
   threadRef.current = thread
+  // The optimistic bubbles sent into the CLI's queue mid-turn, drawn as "Queued" until the transcript
+  // has them, each with its id in `state/chatQueued.ts`. Object identity is enough: `applyTail`
+  // carries an unconfirmed send as the same object.
+  const queuedRef = useRef(new WeakMap<ChatMessage, string>())
+  // The identity whose remembered queued sends this mount has already drawn again (see `load`).
+  const queuedRestoredForRef = useRef<string | null>(null)
+  // The queued ids the thread showed at its last change: one that leaves the thread was confirmed
+  // by the transcript (or its session ended) and is forgotten.
+  const shownQueuedRef = useRef(new Set<string>())
+  useEffect(() => {
+    const now = new Set<string>()
+    for (const m of thread.messages) {
+      const id = queuedRef.current.get(m)
+      if (id !== undefined) now.add(id)
+    }
+    for (const id of shownQueuedRef.current) if (!now.has(id)) forgetQueuedSend(nodeId, id)
+    shownQueuedRef.current = now
+  }, [thread, nodeId])
   const [loadState, setLoadState] = useState<LoadState>('loading')
   // Mirror for `attemptLive`, which runs from timers and settles, outside any render.
   const loadStateRef = useRef(loadState)
@@ -515,7 +536,30 @@ export function ChatPanel({
         // command it is the ONLY signal (no hook fires). A command that starts a real turn is
         // still covered — its `working` state keeps the row (and the send refusal) on its own.
         if (tailConfirmsSends(threadRef.current, identity, res)) setOptimistic(false)
-        setThread((t) => applyTail(t, identity, res, { carryUnconfirmed: carry }))
+        // A remounted panel (a project switch, the card modal) draws its queued sends again: the
+        // transcript does not hold a prompt the CLI has not delivered yet. Once per identity, and
+        // only mid-turn: a CLI queue exists only while a turn runs, so once the agent is not working
+        // the queue was delivered, or pulled back into the input box (Esc), and is forgotten.
+        const restored: ChatMessage[] = []
+        if (queuedRestoredForRef.current !== identity) {
+          queuedRestoredForRef.current = identity
+          const remembered = queuedSendsFor(nodeId, identity)
+          const working = useAgentStatus.getState().byId[nodeId]?.state === 'working'
+          const waiting = working ? unconfirmedQueuedSends(res, remembered) : []
+          for (const r of remembered) if (!waiting.includes(r)) forgetQueuedSend(nodeId, r.id)
+          for (const r of waiting) {
+            const m: ChatMessage = { role: 'user', parts: [{ kind: 'text', text: r.text }] }
+            queuedRef.current.set(m, r.id)
+            restored.push(m)
+          }
+        }
+        setThread((t) => {
+          const next = applyTail(t, identity, res, { carryUnconfirmed: carry })
+          if (restored.length === 0) return next
+          const shown = new Set(next.messages.map((m) => queuedRef.current.get(m)))
+          const missing = restored.filter((m) => !shown.has(queuedRef.current.get(m)))
+          return missing.length === 0 ? next : { ...next, messages: [...next.messages, ...missing] }
+        })
         setLoadState('ok')
         setHeldRead({ identity, pendingId: heldAtStart })
         settleHeldReload(heldAtStart)
@@ -977,10 +1021,6 @@ export function ChatPanel({
     markFollowing(true)
   }
 
-  // The optimistic bubbles sent into the CLI's queue mid-turn, drawn as "Queued" until the transcript
-  // has them. Object identity is enough: `applyTail` carries an unconfirmed send as the same object.
-  const queuedRef = useRef(new WeakSet<ChatMessage>())
-
   const sendOnce = useCallback(async () => {
     const text = input.trim()
     if (!text) return
@@ -1028,7 +1068,15 @@ export function ChatPanel({
     justSentRef.current = true
     lastSentRef.current = text
     const sent: ChatMessage = { role: 'user', parts: [{ kind: 'text', text }] }
-    if (mode === 'queue') queuedRef.current.add(sent)
+    if (mode === 'queue') {
+      let afterKey: number | null = null
+      for (const m of threadRef.current.messages) {
+        if (m.key !== undefined && (afterKey === null || m.key > afterKey)) afterKey = m.key
+      }
+      const id = uuid()
+      queuedRef.current.set(sent, id)
+      rememberQueuedSend(nodeId, { id, identity, text, afterKey })
+    }
     setThread((t) => ({ ...t, messages: [...t.messages, sent] }))
     setOptimistic(true)
     setInput('')
@@ -1055,7 +1103,7 @@ export function ChatPanel({
       }
       commandReadTimerRef.current = setTimeout(fire, CHAT_LIVE_RELOAD_MIN_MS)
     }
-  }, [api, input, nodeId, agentId, onShowTerminal, pollScreen])
+  }, [api, input, nodeId, agentId, identity, onShowTerminal, pollScreen])
   // A send in flight. A typed send (core/typed-input.ts, claude) takes a moment — core waits for the
   // pane to show the text before it presses Enter — and the draft is only cleared once it lands, so
   // a second Enter in that window would send the same prompt twice. Ignore it instead.
