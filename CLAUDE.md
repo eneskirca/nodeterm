@@ -3145,8 +3145,25 @@ its agent status" under Hosted team relay.
 - **opencode in the ⌘M chat view** (2026-09-28, opencode 1.18.25 measured) — opencode has NO
   transcript file (SQLite since 1.18; that database also holds its account tokens and is never
   opened), so `readChatTranscript` routes `capabilityAgentId(agentId) === 'opencode'` to
-  `core/opencode-chat.ts`, which runs `opencode export <sessionId>` (argv only, no flag an older
-  yargs-strict CLI might refuse) and parses the one JSON document into claude's `ChatMessage` shape:
+  `core/opencode-chat.ts`, which runs the session export (`core/opencode-export.ts`, shared with
+  Context Link) and parses the one JSON document into claude's `ChatMessage` shape. **The export
+  has two spellings and NO single one works on both lines** (issue #1438, measured on
+  @opencode/cli 2.2.7 and opencode-ai 1.18.33): 1.x is `opencode export <id>` (argv only — a
+  yargs-strict CLI exits on an unknown flag); 2.x refuses that with usage text + `Unexpected
+  positional argument` and wants `opencode session export --standalone <id>`, which 1.x does not
+  know. 1.x's is tried first, 2.x's ONLY on that measured refusal (a timeout or a locked database
+  must not buy a second ~1.5 s spawn), and the spelling that answered is remembered per binary.
+  **`--standalone` is not optional**: without it 2.x talks to its shared background service and
+  STARTS it when it is not running — a daemon that outlives the read (the same trap as #1136) —
+  and fails outright when the service port is taken. The SSH leg of Context Link has no second
+  round trip, so it is one generated `sh -c` line (`remoteOpencodeExportCommand`) that holds the
+  first spelling's stdout back until it succeeds; it is run under a real `/bin/sh` in
+  `opencode-export.test.ts`. **The document's messages also changed shape in 2.x** — flat records
+  discriminated by `type` (`user {text}`, `assistant {content[]}`, `shell`, `compaction`, harness
+  and bookkeeping types) instead of `{info:{role}, parts[]}` — and BOTH readers
+  (`parseOpencodeExport`, `linesFromOpencodeExport`) carry a branch per shape; only the
+  user / assistant-text / completed-tool path was seen in a real 2.x export, the rest is composed
+  from the schema in the shipped binary. The mapping below is 1.x's; 2.x's is in the fixtures README:
   user/assistant text, tool chips (arg by an opencode key order, result = 3 lines / 500 units,
   `Error: …` on a failed call), `[name] message` for an errored turn, compaction/subtask chips,
   `at` from `time.created`, `model`/`effort` from the newest assistant's `modelID`/`variant`.

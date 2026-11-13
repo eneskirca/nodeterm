@@ -4,9 +4,9 @@ The reference outputs for the chat view's **opencode** reader (`src/core/opencod
 implementation is the reference. `nodeterm-ios` keeps a byte-identical copy of this directory, and
 its Swift port must reproduce every `expected/*.json` from the same `inputs/*.json`.
 
-Every input is **synthetic**: an `opencode export` document built by
-`src/core/opencode-chat.fixtures.test.ts` from the schema measured on opencode 1.18.25. None is a
-slice of a real session. Do not add one.
+Every input is **synthetic**: an export document built by
+`src/core/opencode-chat.fixtures.test.ts` from the schema measured on opencode 1.18.25 and, for the
+`v2-*` fixtures, on @opencode/cli 2.2.7. None is a slice of a real session. Do not add one.
 
 ## Regenerate
 
@@ -33,6 +33,14 @@ strict and exits 1 on an option an older build does not know). Measured on 1.18.
 - a page honours the request's `maxBytes`, grows ×4 up to 5 MB when it holds no whole message (as
   claude's reader does), and a newest message above 5 MB is served truncated with a note, never as
   an empty page. The phone should expect that note in the text, not a separate field.
+
+**opencode 2.x** (measured on @opencode/cli 2.2.7, issue #1438) renamed the command and reshaped
+the document. `export <id>` exits 1 with usage text and `Unexpected positional argument` on stdout;
+the reader then runs `["session", "export", "--standalone", id]` and remembers that spelling for the
+binary. 1.x does not know `session export`, so no single spelling serves both. `--standalone` keeps
+the read from starting (or depending on) opencode's shared background service. An unknown id is
+the same clean miss: exit 1, empty stdout, `Session not found: <id>` on stderr. Cost: ~1.5 s,
+~160 MB. The database path and the change gate are unchanged.
 
 The reader never runs an export without a session id (a bare `opencode export` opens a picker over
 the newest sessions), never for an id outside `^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$`, and never for a
@@ -79,8 +87,9 @@ An unpaged (legacy) read is `{ messages, found }` only, and a failure is `{ mess
 `info` whose `id` equals the requested session id. Otherwise `messages` is built from
 `doc.messages` (a missing or non-array `messages` is `[]`), one entry at a time, in order:
 
-1. **Skipped and counted** (`skipped += 1`, nothing rendered): an entry that is not an object or has
-   no object `info`; an `info.sessionID` that is present and not the requested id; a `role` other
+1. **Skipped and counted** (`skipped += 1`, nothing rendered): an entry that is not an object, or
+   has neither an object `info` nor a string `type` (one WITH a string `type` is a 2.x entry — see
+   "opencode 2.x entries" below, which replaces rules 1–5 for it); an `info.sessionID` that is present and not the requested id; a `role` other
    than `user` / `assistant`; `parts` that is not an array.
 2. `at` = `info.time.created` when it is a finite number (epoch ms), else the key is absent. Every
    message pushed for the entry carries the same `at`.
@@ -106,6 +115,42 @@ An unpaged (legacy) read is `{ messages, found }` only, and a failure is `{ mess
    message) answers both — `info.modelID` and `info.variant`, each kept only when a string of 1 to
    100 UTF-16 code units. A field that entry does not state is absent; nothing is carried from an
    older entry.
+
+### opencode 2.x entries
+
+An entry that is an object with **no object `info`** and a **string `type`** is a 2.x entry (an
+entry with neither is skipped and counted, rule 1). `at` = `time.created` as in rule 2. By `type`:
+
+- `user`: a non-string `text` is skipped and counted; an empty one yields nothing; otherwise a user
+  message with one text part. `files` / `agents` / `skills` are not read.
+- `assistant`: it answers `model` / `effort` (rule 6) whether or not it yields a message — `model`
+  is `model.id`, `effort` is `model.variant` **unless it is the string `"default"`** (what 2.x
+  writes when no variant was chosen), each under the same 1–100 unit rule. A non-array `content`
+  is skipped and counted. Each content block, in order: not an object or no string `type` →
+  counted; `text` → a text part (non-string counted, empty dropped); `tool` → a 2.x tool part
+  (below; a non-object `state` is counted); `reasoning` → dropped silently; anything else →
+  counted. Then, when `error` is present: a non-object is counted; otherwise a text part
+  `[<type>] <message>` (`type` when a non-empty string else `Error`; `message` trimmed; `[<type>]`
+  when empty). One assistant message when there is at least one part.
+- `shell` (the user's own `!command`): a non-string `command` is counted; otherwise an assistant
+  message of one chip `{kind:"tool", name:"shell", arg}` with `arg` = `command` cut to 200 units and
+  `result` = the summary of `output.output` when that is a non-empty string.
+- `compaction`: an assistant message of a chip `{kind:"tool", name:"compaction", arg: reason ===
+  "auto" ? "auto" : ""}`, followed by a text part of `summary` only when `status` is `"completed"`
+  and `summary` is a non-empty string.
+- `synthetic`, `system`, `skill`, `agent-switched`, `model-switched`, `location-switched`, `idle`:
+  dropped silently (NOT counted).
+- any other type: skipped and counted.
+
+**2.x tool part.** `name` = the block's `name` when a non-empty string, else `"tool"`. `arg` = the
+tool-arg rule over `state.input` with no title fallback (a `streaming` state's `input` is a raw
+string and yields `""`). `result`, only when set: `status: "completed"` with an array `content` →
+the summary of its `{type:"text", text}` blocks' texts joined by `\n` (other blocks ignored), key
+absent when empty; `status: "error"` with an object `error` whose `message` is a string → the
+summary of `"Error: " + message`; anything else → no `result` key.
+
+Only the user / assistant-text / completed-tool path was observed in a real 2.2.7 export. Every
+other 2.x rule is composed from the `Session.Message.*` schema in the shipped binary.
 
 **Tool part.** `name` = `tool` when a non-empty string, else `"tool"`. `arg` = the first STRING among
 `state.input`'s `command`, `filePath`, `file_path`, `pattern`, `path`, `url`, `query`,
@@ -134,3 +179,6 @@ Claude's AskUserQuestion, but answer cards are Claude-only.
 | `model-no-carry` | The newest assistant entry answers both fields; a user entry's `model` is never read. |
 | `model-utf16` | 101 UTF-16 units (50 × U+1F9EA + 1) is over the cap; 100 is kept. |
 | `foreign-session` | An export of another session: `parse` is `null` and the page is unreadable and empty. |
+| `v2-turns` | The 2.x turn: top-level user `text`, a tool-only assistant entry, two text blocks, reasoning and `idle` dropped uncounted, `variant: "default"` is no effort while `"high"` is. |
+| `v2-tools` | Every 2.x tool state: a raw-string `streaming` input, running, completed text blocks joined then summarized, a `file`-only result (no `result` key), the 200-unit arg cap, `Error: ` from `error.message`, a missing name, a stateless tool counted. |
+| `v2-entries` | Harness and bookkeeping entries dropped uncounted, shell and compaction chips (a running compaction's partial summary is not shown), `[type] message` after partial text, eight counted shapes, and a content-less newest assistant entry still answering `model`. |
