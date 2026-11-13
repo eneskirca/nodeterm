@@ -198,7 +198,11 @@ describe('handleContextLinkRequest — remote (SSH) reads', () => {
       'node-A': [{ id: 'node-R', title: 'Remote', agentId: 'opencode', sessionId: 'ses_6f2a9c1d' }]
     })
     await handleContextLinkRequest({ verb: 'transcript', nodeId: 'node-A', args: {} })
-    expect(sent).toEqual([`opencode export 'ses_6f2a9c1d'`])
+    // One command line that works on opencode 1.x and 2.x (issue #1438); the id reaches it ONLY as
+    // the single-quoted positional after the script, never interpolated into the script itself.
+    expect(sent).toHaveLength(1)
+    expect(sent[0].endsWith(` sh 'ses_6f2a9c1d'`)).toBe(true)
+    expect(sent[0].split('ses_6f2a9c1d')).toHaveLength(2)
   })
 
   // The id is refused before the remote branch too: quoting keeps shell syntax out, but only the

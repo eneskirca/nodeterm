@@ -1,0 +1,183 @@
+{
+  "sessionId": "ses_0a1b2c3d4ffeSynthetic000001",
+  "parse": {
+    "messages": [
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "shell",
+            "arg": "git status",
+            "result": "On branch main nothing to commit"
+          }
+        ],
+        "at": 1780000008000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "shell",
+            "arg": "sleep 9"
+          }
+        ],
+        "at": 1780000009000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "compaction",
+            "arg": "auto"
+          },
+          {
+            "kind": "text",
+            "text": "Summary of the work so far."
+          }
+        ],
+        "at": 1780000010000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "compaction",
+            "arg": ""
+          }
+        ],
+        "at": 1780000011000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "partial"
+          },
+          {
+            "kind": "text",
+            "text": "[provider.error] rate limited"
+          }
+        ],
+        "at": 1780000012000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "[aborted]"
+          }
+        ],
+        "at": 1780000013000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "kept"
+          }
+        ],
+        "at": 1780000014000
+      }
+    ],
+    "skipped": 8,
+    "model": "last-model"
+  },
+  "page": {
+    "messages": [
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "shell",
+            "arg": "git status",
+            "result": "On branch main nothing to commit"
+          }
+        ],
+        "at": 1780000008000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "shell",
+            "arg": "sleep 9"
+          }
+        ],
+        "at": 1780000009000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "compaction",
+            "arg": "auto"
+          },
+          {
+            "kind": "text",
+            "text": "Summary of the work so far."
+          }
+        ],
+        "at": 1780000010000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "compaction",
+            "arg": ""
+          }
+        ],
+        "at": 1780000011000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "partial"
+          },
+          {
+            "kind": "text",
+            "text": "[provider.error] rate limited"
+          }
+        ],
+        "at": 1780000012000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "[aborted]"
+          }
+        ],
+        "at": 1780000013000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "kept"
+          }
+        ],
+        "at": 1780000014000
+      }
+    ],
+    "found": true,
+    "olderCursor": null,
+    "unmatchedResults": [],
+    "model": "last-model"
+  }
+}

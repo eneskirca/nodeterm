@@ -125,6 +125,133 @@ function errorText(e: unknown): string | null {
  *  non-text user content the same way. */
 const DROPPED_PARTS = new Set(['reasoning', 'step-start', 'step-finish', 'snapshot', 'patch', 'retry', 'file', 'agent'])
 
+// ── opencode 2.x messages ───────────────────────────────────────────────────────────────────────
+//
+// MEASURED on @opencode/cli 2.2.7 (2026-11-13, issue #1438): one real export (a prompt, a `read`
+// tool call, the answer) plus the Effect structs `Session.Message.*` in the shipped binary. The
+// document is still `{info: Session, messages}` with `info.id` the session — but a message has NO
+// `info` / `parts`. It is a flat record discriminated by `type`, all carrying `{id, time:{created}}`:
+//
+//   user        {text, files?, agents?, skills?}
+//   assistant   {agent, model:{id, providerID, variant}, content: Content[], finish?, error?, retry?}
+//   content     text {text} · reasoning {text} · tool {id, name, executed?, state}
+//   tool state  streaming {input: STRING} · running {input, metadata} · completed {input, content:
+//               (text {text} | file {uri, mime, name?})[]} · error {input, error, content?}
+//   shell       {command, status, exit?, output?: {output, truncated, …}} — the user's own `!cmd`
+//   compaction  {status: running|completed|failed, reason: auto|manual, summary}
+//   synthetic · system · skill      harness text the human did not type
+//   agent-switched · model-switched · location-switched · idle      bookkeeping
+//   error       {type, message, status?, …} (`Session.StructuredError`) wherever one appears
+//
+// Only the user / assistant-text / completed-tool path was seen in a real export; every other
+// mapping is composed from the schema. A wrong guess costs a missing chip, never wrong text.
+
+/** Entries dropped ON PURPOSE (not counted): text the human did not write, and bookkeeping. */
+const V2_DROPPED_ENTRIES = new Set([
+  'synthetic',
+  'system',
+  'skill',
+  'agent-switched',
+  'model-switched',
+  'location-switched',
+  'idle'
+])
+
+/** A 2.x structured error as the `[name] message` sentence 1.x errors end with. */
+function v2ErrorText(e: unknown): string | null {
+  if (!isRecord(e)) return null
+  const name = typeof e.type === 'string' && e.type ? e.type : 'Error'
+  const message = typeof e.message === 'string' ? e.message.trim() : ''
+  return message ? `[${name}] ${message}` : `[${name}]`
+}
+
+/** A 2.x tool content block's chip. `null` = not a mappable tool block. */
+function v2ToolPart(p: Record<string, unknown>): ToolPart | null {
+  const state = p.state
+  if (!isRecord(state)) return null
+  const part: ToolPart = {
+    kind: 'tool',
+    name: typeof p.name === 'string' && p.name ? p.name : 'tool',
+    // `streaming` carries the raw argument STRING, which `opencodeToolArg` reads as nothing.
+    arg: opencodeToolArg(state.input)
+  }
+  if (state.status === 'completed' && Array.isArray(state.content)) {
+    const text = state.content
+      .filter((c): c is Record<string, unknown> => isRecord(c) && c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text as string)
+      .join('\n')
+    const s = summarize(text)
+    if (s) part.result = s
+  } else if (state.status === 'error' && isRecord(state.error) && typeof state.error.message === 'string') {
+    part.result = summarize(`Error: ${state.error.message}`)
+  }
+  return part
+}
+
+/** One 2.x entry (`type` is a string). `meta` is set for every assistant entry, message or not. */
+function v2Entry(entry: Record<string, unknown>): {
+  messages: ChatMessage[]
+  skipped: number
+  meta?: { model: unknown; effort: unknown }
+} {
+  const created = isRecord(entry.time) ? entry.time.created : undefined
+  const at = typeof created === 'number' && Number.isFinite(created) ? created : undefined
+  const stamp = (m: ChatMessage): ChatMessage => (at === undefined ? m : { ...m, at })
+  const one = (m: ChatMessage | null, skipped = 0) => ({ messages: m ? [stamp(m)] : [], skipped })
+
+  switch (entry.type) {
+    case 'user':
+      if (typeof entry.text !== 'string') return one(null, 1)
+      return one(entry.text ? { role: 'user', parts: [{ kind: 'text', text: entry.text }] } : null)
+    case 'assistant': {
+      // `variant: "default"` is what 2.x writes when no variant was chosen — not an effort.
+      const model = isRecord(entry.model) ? entry.model : {}
+      const meta = { model: model.id, effort: model.variant === 'default' ? undefined : model.variant }
+      if (!Array.isArray(entry.content)) return { messages: [], skipped: 1, meta }
+      let skipped = 0
+      const parts: ChatPart[] = []
+      for (const p of entry.content) {
+        if (!isRecord(p) || typeof p.type !== 'string') {
+          skipped++
+        } else if (p.type === 'text') {
+          if (typeof p.text !== 'string') skipped++
+          else if (p.text) parts.push({ kind: 'text', text: p.text })
+        } else if (p.type === 'tool') {
+          const t = v2ToolPart(p)
+          if (t) parts.push(t)
+          else skipped++
+        } else if (p.type !== 'reasoning') {
+          skipped++
+        }
+      }
+      if (entry.error !== undefined) {
+        const t = v2ErrorText(entry.error)
+        if (t === null) skipped++
+        else parts.push({ kind: 'text', text: t })
+      }
+      return { ...one(parts.length ? { role: 'assistant', parts } : null, skipped), meta }
+    }
+    case 'shell': {
+      if (typeof entry.command !== 'string') return one(null, 1)
+      const chip: ToolPart = { kind: 'tool', name: 'shell', arg: entry.command.slice(0, CHAT_TOOL_ARG_MAX) }
+      const output = isRecord(entry.output) ? entry.output.output : undefined
+      const s = typeof output === 'string' ? summarize(output) : ''
+      if (s) chip.result = s
+      return one({ role: 'assistant', parts: [chip] })
+    }
+    case 'compaction': {
+      const parts: ChatPart[] = [{ kind: 'tool', name: 'compaction', arg: entry.reason === 'auto' ? 'auto' : '' }]
+      // The summary is the conversation from here on, exactly as 1.x's `summary: true` message is.
+      if (entry.status === 'completed' && typeof entry.summary === 'string' && entry.summary) {
+        parts.push({ kind: 'text', text: entry.summary })
+      }
+      return one({ role: 'assistant', parts })
+    }
+    default:
+      return one(null, V2_DROPPED_ENTRIES.has(entry.type as string) ? 0 : 1)
+  }
+}
+
 /**
  * One `opencode export` document → ordered bubbles. `null` when the text is not an export of
  * `sessionId` — not JSON, not an object, or `info.id` names another session. That check is what
@@ -141,11 +268,23 @@ export function parseOpencodeExport(raw: string, sessionId: string): OpencodeCha
 
   const messages: ChatMessage[] = []
   let skipped = 0
-  let lastAssistant: Record<string, unknown> | undefined
+  let lastMeta: { model: unknown; effort: unknown } | undefined
   const entries = Array.isArray(doc.messages) ? doc.messages : []
   for (const entry of entries) {
-    if (!isRecord(entry) || !isRecord(entry.info)) {
+    if (!isRecord(entry)) {
       skipped++
+      continue
+    }
+    if (!isRecord(entry.info)) {
+      // No per-message `info`: an opencode 2.x entry, which states its kind in `type` instead.
+      if (typeof entry.type !== 'string') {
+        skipped++
+        continue
+      }
+      const v2 = v2Entry(entry)
+      skipped += v2.skipped
+      messages.push(...v2.messages)
+      if (v2.meta) lastMeta = v2.meta
       continue
     }
     const info = entry.info
@@ -201,7 +340,7 @@ export function parseOpencodeExport(raw: string, sessionId: string): OpencodeCha
     }
 
     if (role === 'assistant') {
-      lastAssistant = info
+      lastMeta = { model: info.modelID, effort: info.variant }
       if (info.error !== undefined) {
         const t = errorText(info.error)
         if (t === null) skipped++
@@ -217,8 +356,8 @@ export function parseOpencodeExport(raw: string, sessionId: string): OpencodeCha
 
   const out: OpencodeChatParse = { messages, skipped }
   // ONE message answers both fields; an absent field is absent, never carried from an older one.
-  const model = metaString(lastAssistant?.modelID)
-  const effort = metaString(lastAssistant?.variant)
+  const model = metaString(lastMeta?.model)
+  const effort = metaString(lastMeta?.effort)
   if (model !== undefined) out.model = model
   if (effort !== undefined) out.effort = effort
   return out

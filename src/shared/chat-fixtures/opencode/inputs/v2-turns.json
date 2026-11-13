@@ -1,0 +1,183 @@
+{
+  "info": {
+    "id": "ses_0a1b2c3d4ffeSynthetic000001",
+    "projectID": "prj_fixture",
+    "model": {
+      "id": "demo-model",
+      "providerID": "opencode",
+      "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1780000000000,
+      "updated": 1780000000000,
+      "busy": 1780000000000,
+      "idle": 1780000000000
+    },
+    "title": "Fixture session",
+    "location": {
+      "directory": "/srv/demo"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_1",
+      "time": {
+        "created": 1780000001000
+      },
+      "text": "Read `note.txt` — özet lütfen 🧪",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_2",
+      "time": {
+        "created": 1780000002000
+      },
+      "agent": "build",
+      "model": {
+        "id": "demo-model",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "tool",
+          "id": "call_fixture63",
+          "name": "read",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "note.txt"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Read file note.txt, lines 1-1\n1: hello fixture"
+              }
+            ],
+            "metadata": {
+              "truncated": false
+            }
+          },
+          "time": {
+            "created": 1780000000000,
+            "ran": 1780000000001,
+            "completed": 1780000000002
+          }
+        }
+      ],
+      "finish": "tool-calls",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 12,
+        "output": 8,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "id": "msg_3",
+      "time": {
+        "created": 1780000003000
+      },
+      "agent": "build",
+      "model": {
+        "id": "demo-model",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "reasoning",
+          "text": "thinking it over"
+        },
+        {
+          "type": "text",
+          "text": "It holds **one** line."
+        },
+        {
+          "type": "text",
+          "text": "Second block."
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 12,
+        "output": 8,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "id": "msg_4",
+      "time": {
+        "created": 1780000004000
+      },
+      "outcome": "succeeded",
+      "type": "idle"
+    },
+    {
+      "id": "msg_5",
+      "time": {
+        "created": 1780000005000
+      },
+      "text": "and with a variant?",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_6",
+      "time": {
+        "created": 1780000006000
+      },
+      "agent": "build",
+      "model": {
+        "id": "demo-model-2",
+        "providerID": "opencode",
+        "variant": "high"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Yes."
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 12,
+        "output": 8,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "type": "assistant"
+    }
+  ]
+}
