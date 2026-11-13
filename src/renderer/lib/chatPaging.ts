@@ -191,7 +191,14 @@ function unconfirmedSends(t: ChatThread, res: ChatTranscriptResult): ChatMessage
   // last read by someone ELSE — the same command (or, on the exact-text path, the same text) typed
   // in the TERMINAL — is indistinguishable from the composer's own send and confirms it early. The
   // transcript records no sender to tell them apart.
-  const fresh = res.messages.filter((m) => m.key === undefined || m.key > newest)
+  return unmatchedSends(trailing, res.messages.filter((m) => m.key === undefined || m.key > newest))
+}
+
+/**
+ * The sends a set of transcript messages does NOT confirm, ONE-FOR-ONE, by the rules
+ * `unconfirmedSends` describes. `fresh` is already narrowed to what may confirm them.
+ */
+function unmatchedSends(trailing: ChatMessage[], fresh: ChatMessage[]): ChatMessage[] {
   const available = fresh.filter((m) => m.role === 'user').map(userText)
   // A slash command / `!` line is recorded as a command, which the reader renders as an assistant
   // tool part — never as the typed text — so a send of one is confirmed by that part instead.
@@ -214,6 +221,30 @@ function unconfirmedSends(t: ChatThread, res: ChatTranscriptResult): ChatMessage
     commands.splice(j, 1)
     return false
   })
+}
+
+/** A send queued into the CLI mid-turn, kept outside the panel (`state/chatQueued.ts`). */
+export interface QueuedSendRecord {
+  id: string
+  text: string
+  /** The newest byte-offset key the thread had when it was sent; `null` = nothing was keyed. */
+  afterKey: number | null
+}
+
+/**
+ * Which remembered queued sends a remounted panel's first read does NOT yet carry, so it can draw
+ * them again as "Queued". Only messages NEWER than the oldest send's `afterKey` may confirm one —
+ * the rule `unconfirmedSends` uses, with the key the thread had when the send was made, since the
+ * remounted thread has never seen that key.
+ */
+export function unconfirmedQueuedSends(res: ChatTranscriptResult, sends: QueuedSendRecord[]): QueuedSendRecord[] {
+  if (sends.length === 0) return []
+  let cutoff = Infinity
+  for (const s of sends) cutoff = Math.min(cutoff, s.afterKey ?? -Infinity)
+  const fresh = res.messages.filter((m) => m.key === undefined || m.key > cutoff)
+  const asMessages = sends.map((s): ChatMessage => ({ role: 'user', parts: [{ kind: 'text', text: s.text }] }))
+  const left = new Set(unmatchedSends(asMessages, fresh))
+  return sends.filter((_, i) => left.has(asMessages[i]))
 }
 
 /**

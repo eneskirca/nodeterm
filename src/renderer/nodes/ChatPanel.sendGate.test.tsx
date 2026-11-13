@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAgentStatus } from '../state/agentStatus'
+import { clearQueuedSendsForTest } from '../state/chatQueued'
 
 /**
  * The composer must never type into a TUI dialog: `sendText` pastes and presses Enter, and Enter
@@ -62,6 +63,7 @@ const enter = (ta: HTMLTextAreaElement): void => {
 
 beforeEach(() => {
   sendChatPrompt.mockClear()
+  clearQueuedSendsForTest()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)

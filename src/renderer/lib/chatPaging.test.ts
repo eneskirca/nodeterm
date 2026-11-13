@@ -5,6 +5,7 @@ import {
   applyOlder,
   applyTail,
   tailConfirmsSends,
+  unconfirmedQueuedSends,
   attachCarried,
   emptyThread,
   shouldFetchOlder,
@@ -322,5 +323,45 @@ describe('held results whose tool is already loaded are dropped', () => {
     let t = applyTail(emptyThread('A'), 'A', page([say(200, 'x')], 180, [{ id: 't1', result: 'r' }]))
     t = applyOlder(t, page([tool(100, 't1', 'own')], 90))
     expect(t.pending.has('t1')).toBe(false)
+  })
+})
+
+describe('unconfirmedQueuedSends', () => {
+  const rec = (id: string, text: string, afterKey: number | null) => ({ id, text, afterKey })
+
+  it('keeps a send the transcript does not hold yet', () => {
+    const sends = [rec('a', 'next', 200)]
+
+    const left = unconfirmedQueuedSends(page([say(100, 'start', 'user'), say(200, 'ok')], null), sends)
+
+    expect(left).toEqual(sends)
+  })
+
+  it('drops a send confirmed by a user message newer than its afterKey', () => {
+    const left = unconfirmedQueuedSends(page([say(200, 'ok'), say(300, 'next', 'user')], null), [rec('a', 'next', 200)])
+
+    expect(left).toEqual([])
+  })
+
+  it('an identical message at or before afterKey does not confirm it', () => {
+    const sends = [rec('a', 'yes', 200)]
+
+    const left = unconfirmedQueuedSends(page([say(100, 'yes', 'user'), say(200, 'ok')], null), sends)
+
+    expect(left).toEqual(sends)
+  })
+
+  it('confirms one-for-one, oldest send first', () => {
+    const sends = [rec('a', 'yes', 200), rec('b', 'yes', 200)]
+
+    const left = unconfirmedQueuedSends(page([say(300, 'yes', 'user')], null), sends)
+
+    expect(left.map((s) => s.id)).toEqual(['b'])
+  })
+
+  it('with nothing keyed when sent, any user message may confirm it', () => {
+    const left = unconfirmedQueuedSends(page([say(10, 'next', 'user')], null), [rec('a', 'next', null)])
+
+    expect(left).toEqual([])
   })
 })
