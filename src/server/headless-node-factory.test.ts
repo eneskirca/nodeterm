@@ -1699,6 +1699,35 @@ describe('HeadlessNodeFactory', () => {
     expect(pty.sends).toEqual([{ nodeId: id, text: "claude 'brief'" }])
   })
 
+  // Issue #1423: the node carries ONE `accountId` for either builtin, so a Claude opener's account
+  // id used to be copied onto a Codex node, which the Codex scope gate refuses at spawn.
+  describe('open-agent inherits the opener’s account only into the same provider', () => {
+    const openedBy = async (accountId: string, agent: string): Promise<CanvasNodeState> => {
+      const ws = await store.load({ sideline: false })
+      ws.projects[0].nodes = ws.projects[0].nodes.map((n) =>
+        n.id === 'term-source' ? { ...n, accountId } : n
+      )
+      await store.save(ws)
+      const reply = await factory.openAgent('term-source', { agent, prompt: 'brief' }, true)
+      expect(reply.ok).toBe(true)
+      const id = (reply.result as { id: string }).id
+      return (await store.load({ sideline: false })).projects[0].nodes.find((n) => n.id === id)!
+    }
+
+    it('does not hand a Claude account id to a Codex node', async () => {
+      expect((await openedBy('claude-acct', 'codex')).accountId).toBeUndefined()
+    })
+
+    it('still hands a Claude account to a Claude node', async () => {
+      expect((await openedBy('claude-acct', 'claude')).accountId).toBe('claude-acct')
+    })
+
+    it('hands a Codex account to a Codex node', async () => {
+      settingsOverride = { codexAccounts: [{ id: 'cx1', label: 'cx1' }] }
+      expect((await openedBy('cx1', 'codex')).accountId).toBe('cx1')
+    })
+  })
+
   it('refuses --run-now with --after on open-terminal before anything is created, saved or sent (#925)', async () => {
     states['term-upstream'] = 'working'
     const save = vi.spyOn(store, 'save')

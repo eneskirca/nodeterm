@@ -21,7 +21,7 @@ import {
 import { assembleLaunchCommand, assembleResumeCommand } from '@shared/agents/launch'
 import { heldLaunchIntentFor } from '@shared/agents/launch-intent'
 import { agentAccountColor } from '@shared/agents/account-color'
-import { boundAccountId } from '@shared/agents/account-binding'
+import { ownedAccountId } from '@shared/agents/account-binding'
 import { agentEnvSnapshot } from '../lib/agentEnv'
 import { uuid } from '@renderer/lib/uuid'
 import { COLLAPSED_HEIGHT, expandRectToGrid, NODE_MIN_SIZES, snapNodeToGrid, type Rect } from '../lib/nodeSizing'
@@ -833,11 +833,16 @@ export function createAgentNode(
   resumeSessionId?: string
 ): CanvasNode {
   const { label, color: agentColor } = resolveAgent(agentId)
+  const settings = useSettings.getState().settings
   // ONE binding decision, shared with the phone-registration path (core/project-node-append) so
   // "which agents bind a managed account" has a single definition instead of a ternary the canvas
   // enforces and the registrar does not. It feeds both `data.accountId` below and the color here,
-  // which is what keeps the two from drifting apart.
-  const bound = boundAccountId(accountId, agentId)
+  // which is what keeps the two from drifting apart. `ownedAccountId` adds the provider check on
+  // top: a Claude account id inherited from the opener or the project default must never bind a
+  // Codex node — the Codex scope gate refuses it at spawn and the node sits QUEUED (issue #1423).
+  const bound = ownedAccountId(accountId, agentId, (id) =>
+    (settings.codexAccounts ?? []).some((a) => a.id === id)
+  )
   // A managed account's default node color (Settings → Accounts) replaces the agent's brand color,
   // so a second login of either builtin is recognizable on the canvas at a glance.
   // `agentAccountColor` asks the list that OWNS this agent's accounts — the two are keyed
@@ -845,7 +850,6 @@ export function createAgentNode(
   // `?? []` on both lists, matching the phone path in `src/main`: `mergeSettings` merges without
   // checking, so a hand-edited `"claudeAccounts": null` survives load and would throw on `.find`
   // one level ABOVE the `typeof color` guard — i.e. the very failure that guard exists to prevent.
-  const settings = useSettings.getState().settings
   const color =
     agentAccountColor(agentId, bound, {
       claude: settings.claudeAccounts ?? [],
