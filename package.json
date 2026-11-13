@@ -89,7 +89,12 @@
         }
       ],
       "category": "Development",
-      "icon": "build/icon.png",
+      "icon": "build/icons",
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "node-terminal"
+        }
+      },
       "maintainer": "enes <eneskirca@gmail.com>"
     },
     "mac": {
