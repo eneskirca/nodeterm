@@ -68,7 +68,11 @@ export const AGENT_BINARIES: Record<string, readonly string[]> = {
   gemini: ['gemini'],
   opencode: ['opencode'],
   grok: ['grok'],
-  antigravity: ['agy'],
+  // `agy-bin` (issue #1373): on Linux `agy` is commonly a shell wrapper that ends in
+  // `exec …/agy-bin "$@"`, so after the exec the foreground group holds `agy-bin` and no `agy` at
+  // all. Reported from the field, not measured here — the name is Antigravity's own and collides
+  // with nothing a plain terminal runs, so admitting it widens the predicate by that one binary.
+  antigravity: ['agy', 'agy-bin'],
   cursor: ['cursor-agent']
 }
 
