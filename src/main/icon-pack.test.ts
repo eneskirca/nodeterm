@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import sharp from 'sharp'
-import { ICNS_FRAMES, packIcns } from '../../scripts/icon-pack.mjs'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import { ICNS_FRAMES, LINUX_ICON_SIZES, packIcns } from '../../scripts/icon-pack.mjs'
 
 // Issue #369: the shipped icon.icns (derived by electron-builder from build/icon.png) carried
 // WRONG-SIZED payloads — ic13 (nominally 128pt@2x = 256px) held the 512px PNG and ic14 (256pt@2x
@@ -83,5 +85,39 @@ describe('packIcns', () => {
     const frames = await framesFor(ICNS_FRAMES)
     frames.delete('icp5')
     expect(() => packIcns(frames)).toThrow(/icp5/)
+  })
+})
+
+// Issue #1421: the Linux deb/rpm showed a generic taskbar icon and did not associate its window
+// with its launcher. Two independent causes, both in package.json's `build.linux`, both invisible
+// until someone installs the package on a real desktop.
+describe('Linux packaging (issue #1421)', () => {
+  const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8'))
+  const linux = pkg.build.linux
+
+  // The `apps` sizes hicolor-icon-theme 0.18 declares in index.theme. A PNG installed under any
+  // other size directory is not found by a GTK/KDE theme lookup.
+  const HICOLOR_APP_SIZES = [16, 22, 24, 32, 36, 48, 64, 72, 96, 128, 192, 256, 512]
+
+  it('ships only icon sizes the hicolor theme declares', () => {
+    expect(LINUX_ICON_SIZES.length).toBeGreaterThan(0)
+    for (const size of LINUX_ICON_SIZES) expect(HICOLOR_APP_SIZES).toContain(size)
+    // Small enough for a taskbar, large enough for a launcher grid / AppImage thumbnail.
+    expect(LINUX_ICON_SIZES).toContain(48)
+    expect(Math.max(...LINUX_ICON_SIZES)).toBeGreaterThanOrEqual(256)
+  })
+
+  it('points linux.icon at the generated SET, not at the single 1024px PNG', () => {
+    // A lone PNG is installed as-is under hicolor/<its size>/apps/ — 1024x1024 for build/icon.png.
+    expect(linux.icon).toBe('build/icons')
+    const script = readFileSync(join(__dirname, '../../scripts/make-icon.mjs'), 'utf8')
+    expect(script).toContain('`build/icons/${size}x${size}.png`')
+  })
+
+  it("pins StartupWMClass to the window's real class (the package name, not productName)", () => {
+    // Electron sets WM_CLASS from package.json `name`; electron-builder defaults StartupWMClass
+    // to productName. They differ here (`node-terminal` vs `nodeterm`), so it is stated.
+    expect(pkg.name).not.toBe(pkg.build.productName)
+    expect(linux.desktop.entry.StartupWMClass).toBe(pkg.name)
   })
 })

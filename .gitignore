@@ -8,6 +8,7 @@ dist/
 *.tsbuildinfo
 
 build/icon.png
+build/icons/
 build/icon.ico
 build/icon.icns
 
