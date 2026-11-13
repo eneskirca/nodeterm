@@ -707,3 +707,32 @@ describe('shellKillLineSequence', () => {
     expect(shellKillLineSequence(undefined, undefined, 'linux')).toBe(KILL_LINE)
   })
 })
+
+describe('HostSession cold attach replay', () => {
+  it('claims a single cold-attach replay only after the original socket detached and before warm activity', async () => {
+    const proc = fakeProc()
+    const term = inertTerm()
+    const session = new HostSession('cold-replay', SPAWN, 100, { proc: proc.value, term })
+    const s1 = {} as Socket
+    const a1 = await session.prepareAttachment(s1, 80, 24, false)
+    expect(a1.commit()).toBe(true)
+
+    await session.detach(s1)
+    expect(session.claimColdAttachReplay(SPAWN, 100)).toBe(true)
+    expect(session.claimColdAttachReplay(SPAWN, 100)).toBe(false)
+  })
+
+  it('refuses cold-attach replay while a subscriber is still attached or after expireColdAttachReplay', async () => {
+    const proc = fakeProc()
+    const term = inertTerm()
+    const live = new HostSession('cold-replay-live', SPAWN, 100, { proc: proc.value, term })
+    const s1 = {} as Socket
+    const a1 = await live.prepareAttachment(s1, 80, 24, false)
+    expect(a1.commit()).toBe(true)
+    expect(live.claimColdAttachReplay(SPAWN, 100)).toBe(false)
+
+    const used = new HostSession('cold-replay-used', SPAWN, 100, { proc: proc.value, term })
+    used.expireColdAttachReplay()
+    expect(used.claimColdAttachReplay(SPAWN, 100)).toBe(false)
+  })
+})

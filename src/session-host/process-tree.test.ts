@@ -8,6 +8,7 @@ import {
   type ProcRow
 } from './process-tree'
 import { powershellArgs } from '../core/win32-powershell'
+import { WINDOWS_ONESHOT_PROBE_TIMEOUT_MS } from './windows-probe-budget'
 
 const row = (pid: number, ppid: number, name: string): ProcRow => ({ pid, ppid, name })
 
@@ -115,15 +116,21 @@ describe('readWin32', () => {
   })
 
   it('the one-shot read runs the ABSOLUTE System32 PowerShell, once', async () => {
-    const calls: Array<{ file: string; args: string[] }> = []
+    const calls: Array<{ file: string; args: string[]; timeout: number }> = []
     const rows = await readWin32OneShot(
-      (file, args, _opts, cb) => {
-        calls.push({ file, args })
+      (file, args, opts, cb) => {
+        calls.push({ file, args, timeout: opts.timeout })
         cb(null, JSON.stringify(table[0]))
       },
       { SystemRoot: 'D:\\Windows' }
     )
-    expect(calls).toEqual([{ file: 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', args: powershellArgs(WIN32_PANE_TABLE_SCRIPT) }])
+    expect(calls).toEqual([
+      {
+        file: 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        args: powershellArgs(WIN32_PANE_TABLE_SCRIPT),
+        timeout: WINDOWS_ONESHOT_PROBE_TIMEOUT_MS
+      }
+    ])
     expect(rows).toEqual([row(10, 1, 'pwsh.exe')])
   })
 

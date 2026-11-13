@@ -543,6 +543,8 @@ async function main(): Promise<void> {
             )
           }
         }
+        const coldReplay =
+          Boolean(req.replacementToken) || existing.claimColdAttachReplay(req.spawn, scrollback)
         // Restore this connection's flow + geometry before taking the screen. A reconnect carrying
         // `paused` must never receive bytes in the gap before its explicit ticket is reasserted.
         // Live delivery still starts only AFTER the barrier+snapshot, so a pending chunk cannot be
@@ -567,14 +569,14 @@ async function main(): Promise<void> {
             return RETRY_SESSION_GENERATION
           }
           if (!attachment.commit()) throw new Error('attach cancelled before activation')
-          const initialLaunch = req.replacementToken
+          const initialLaunch = coldReplay
             ? await existing.executeInitialLaunch(req.spawn, () => launchProcessReady(existing))
             : undefined
           log(`attach (warm) name=${req.name} subscribers=${existing.subscribers.size}`)
           return {
-            // A replay of the same consumed replacement token replays the original cold result;
-            // this is not an ordinary warm attach even though the generation now exists.
-            fresh: Boolean(req.replacementToken),
+            // A replay of the same consumed replacement token or an orphaned cold attach whose
+            // initial reply was lost on transport drop replays the original cold result.
+            fresh: coldReplay,
             screen: screen || undefined,
             generation: existing.generation,
             launchDialect: existing.launchDialect,
@@ -968,6 +970,7 @@ async function main(): Promise<void> {
         if (!s.subscribers.has(socket)) return { ok: false, error: 'not attached to session' }
         // A watch attachment (live link / relay viewer) is read-only end to end.
         if (s.isWatching(socket)) return { ok: false, error: 'watch attachment is read-only' }
+        s.expireColdAttachReplay()
         s.proc.write(req.data)
         return { ok: true }
       }
@@ -998,6 +1001,7 @@ async function main(): Promise<void> {
       case 'sendKeysV2': {
         const s = sessions.get(req.name)
         if (!s || s.exited) return { ok: false, error: 'no such session' }
+        s.expireColdAttachReplay()
         const ok = await sendTextWhenSettled(s, req.text, req.enter, {
           current: () => !s.exited && sessions.get(req.name) === s,
           bracketed: () => s.bracketedPasteRequested(),
@@ -1033,6 +1037,7 @@ async function main(): Promise<void> {
         const s = sessions.get(req.name)
         if (!s || s.exited) return { ok: false, error: 'no such session' }
         if (typeof req.data !== 'string' || !req.data) return { ok: false, error: 'nothing to write' }
+        s.expireColdAttachReplay()
         s.proc.write(req.data)
         return { ok: true }
       }
@@ -1073,6 +1078,7 @@ async function main(): Promise<void> {
         if (req.generation !== s.generation) {
           return { ok: false, error: `session '${req.name}' was replaced by another generation` }
         }
+        s.expireColdAttachReplay()
         const result = await s.executeLaunch(
           req.launchId,
           req.command,

@@ -1813,6 +1813,14 @@ export function Canvas() {
   // out of context (e.g. on the next load of that project, hours on).
   const pendingLinkRef = useRef<{ projectId: string; open: LinkOpen; at: number } | null>(null)
   const linkCreateRef = useRef<(open: LinkOpen) => void>(() => {})
+  const pendingKanbanCreateRef = useRef<{
+    projectId: string
+    choice: KanbanCreateChoice
+    columnId: string | null
+  } | null>(null)
+  const kanbanCreateRef = useRef<(choice: KanbanCreateChoice, columnId: string | null) => void>(
+    () => {}
+  )
   // One-shot: the next active-project load keeps the CURRENT camera instead of applying the
   // project's saved viewport. Set by reloadActiveProject (in-place external-change reload).
   const preserveViewportRef = useRef(false)
@@ -3542,6 +3550,11 @@ export function Canvas() {
         if (pendingLink && pendingLink.projectId === project.id) {
           pendingLinkRef.current = null
           if (Date.now() - pendingLink.at < PENDING_LINK_MAX_MS) linkCreateRef.current(pendingLink.open)
+        }
+        const pendingKanbanCreate = pendingKanbanCreateRef.current
+        if (pendingKanbanCreate && pendingKanbanCreate.projectId === project.id) {
+          pendingKanbanCreateRef.current = null
+          kanbanCreateRef.current(pendingKanbanCreate.choice, pendingKanbanCreate.columnId)
         }
         // Consume a cross-project focus request (notification click on a background node).
         const pending = pendingFocusRef.current
@@ -12089,8 +12102,11 @@ export function Canvas() {
     useTeamStations.getState().set(teamStations)
   }, [teamStations])
   const globalKanbanLive = useMemo(
-    () => activeProjectId ? { projectId: activeProjectId, sessions: kanbanSessions, teams: teamStations } : null,
-    [activeProjectId, kanbanSessions, teamStations]
+    () =>
+      activeProjectId && renderedProjectId === activeProjectId
+        ? { projectId: activeProjectId, sessions: kanbanSessions, teams: teamStations }
+        : null,
+    [activeProjectId, renderedProjectId, kanbanSessions, teamStations]
   )
 
   // Create a node from the board's per-column "+ New" menu: it lands on the canvas (view
@@ -12140,6 +12156,9 @@ export function Canvas() {
                 targetProjectId
               )
       setNodes((ns) => [...ns, node])
+      if (!nodesRef.current.some((n) => n.id === node.id)) {
+        nodesRef.current = [...nodesRef.current, node]
+      }
       const board = project?.kanban ?? defaultKanban(targetProjectId)
       if (columnId) {
         // The node goes on the wire BEFORE the card that names it (spec §2 batch order).
@@ -12172,6 +12191,7 @@ export function Canvas() {
     },
     [emptyNodePos, setNodes, markDirty, castNewNodeNow]
   )
+  kanbanCreateRef.current = createNodeInColumn
 
   // ---- GitHub issue → agent session ("Start with agent ▸") ----
   /**
@@ -12932,18 +12952,23 @@ export function Canvas() {
   useEffect(() => {
     const handler = (e: CustomEvent<{ projectId: string; choice: KanbanCreateChoice; columnId: string | null }>) => {
       const { projectId, choice, columnId } = e.detail
+      if (
+        projectId === useProjects.getState().activeProjectId &&
+        canCreateOnCanvas(nodesProjectIdRef.current, projectId) &&
+        flowLanding.holds(projectId) &&
+        !loadingRef.current
+      ) {
+        createNodeInColumn(choice, columnId)
+        return
+      }
+      pendingKanbanCreateRef.current = { projectId, choice, columnId }
       if (projectId !== useProjects.getState().activeProjectId) {
         switchProject(projectId)
-        // Project switch is a synchronous store update but React Flow remount is async.
-        // Next tick is enough for the new canvas to be mounted; the previous 120 ms was a guess.
-        setTimeout(() => createNodeInColumn(choice, columnId), 50)
-      } else {
-        createNodeInColumn(choice, columnId)
       }
     }
     window.addEventListener('nodeterm:create-node' as never, handler as never)
     return () => window.removeEventListener('nodeterm:create-node' as never, handler as never)
-  }, [createNodeInColumn, switchProject])
+  }, [createNodeInColumn, switchProject, flowLanding])
 
 // Delete a session from the board — same confirm + teardown as the canvas Delete key.
   const deleteNodeFromKanban = useCallback(
