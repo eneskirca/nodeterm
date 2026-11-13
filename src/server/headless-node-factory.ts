@@ -36,6 +36,7 @@ import {
   type BuiltinAgentId
 } from '../shared/agents/config'
 import { assembleLaunchCommand } from '../shared/agents/launch'
+import { ownedAccountId } from '../shared/agents/account-binding'
 import type { AgentState, NormalizedAgentEvent } from '../shared/agents/normalize'
 import { oneLine } from '../shared/one-line'
 import { rootPositionWith } from '../shared/root-position'
@@ -1608,6 +1609,15 @@ export class HeadlessNodeFactory {
               ...(successHold ? { afterSuccess: successHold } : {})
             }
           : undefined
+        // The opener's account, when the new agent's PROVIDER owns it. The node carries one
+        // `accountId` for either builtin, so a Claude opener used to hand its Claude account id to
+        // a Codex node, which the Codex scope gate then refused at spawn (issue #1423).
+        const inheritedAccountId =
+          verb === 'open-agent'
+            ? ownedAccountId(source.node.accountId, agentId, (accountId) =>
+                (settings.codexAccounts ?? []).some((a) => a.id === accountId)
+              )
+            : undefined
         const node: CanvasNodeState = {
           id,
           kind: 'terminal',
@@ -1623,10 +1633,7 @@ export class HeadlessNodeFactory {
           ...(args.model && verb === 'open-agent' ? { agentModel: args.model } : {}),
           ...(issueRef && verb === 'open-agent' ? { issueRef } : {}),
           ...(mintedSessionId ? { agentSessionId: mintedSessionId } : {}),
-          ...(source.node.accountId && verb === 'open-agent' &&
-          (agentId === 'claude' || agentId === 'codex')
-            ? { accountId: source.node.accountId }
-            : {}),
+          ...(inheritedAccountId ? { accountId: inheritedAccountId } : {}),
           ...(pendingLaunch ? { pendingLaunch } : {})
         }
         created.push(node)

@@ -24,6 +24,7 @@ import {
   selectedRootIds,
   ungroupNodes
 } from './workspace'
+import { useSettings } from './settings'
 import type { CanvasNode } from './workspace'
 import type { Project } from '@shared/types'
 
@@ -840,9 +841,21 @@ describe('accountId on Claude node factories', () => {
     const node = createAgentNode('claude', 0, undefined, undefined, undefined, undefined, 'a1')
     expect(node.data.accountId).toBe('a1')
   })
-  it('stamps accountId onto a Codex agent node (S6 per-node account picker)', () => {
+  it('stamps a CODEX accountId onto a Codex agent node (S6 per-node account picker)', () => {
+    // The id must be one the Codex list owns: the two account lists share an id alphabet, and a
+    // Claude account id on a Codex node is refused at spawn (issue #1423).
+    const before = useSettings.getState().settings
+    useSettings.setState({ settings: { ...before, codexAccounts: [{ id: 'a1', label: 'a1' }] } })
+    try {
+      const node = createAgentNode('codex', 0, undefined, undefined, undefined, undefined, 'a1')
+      expect(node.data.accountId).toBe('a1')
+    } finally {
+      useSettings.setState({ settings: before })
+    }
+  })
+  it('does not stamp an id the Codex list does not own onto a Codex agent node (#1423)', () => {
     const node = createAgentNode('codex', 0, undefined, undefined, undefined, undefined, 'a1')
-    expect(node.data.accountId).toBe('a1')
+    expect(node.data.accountId).toBeUndefined()
   })
   it('does not stamp accountId onto a non-account agent node', () => {
     // Accounts bind to the Claude/Codex builtins only — another agent never carries one.
