@@ -32,9 +32,10 @@ export interface HostChatSendDeps {
   sendText(nodeId: string, text: string): Promise<TextDeliveryResult>
   now(): number
   /**
-   * The KERNEL gate (`chatPaneRefusal`, chatPaneGate.ts): for an agent that announces no session end
-   * (codex), is the agent really in the pane? Required, not optional — a shell that forgot it would
-   * type the phone's text into whatever shell a quit codex left behind, and that must not compile.
+   * The KERNEL gate (`chatPaneRefusal`, chatPaneGate.ts): is the agent really in the pane? Asked for
+   * EVERY agent — codex announces no session end, and even a claude pane was observed back at its
+   * shell with the gate still open (2026-11-13). Required, not optional — a shell that forgot it would type the phone's
+   * text into whatever shell a quit agent left behind, and that must not compile.
    */
   paneRefusal(nodeId: string, agentId: string): Promise<ChatPaneRefusal>
 }
