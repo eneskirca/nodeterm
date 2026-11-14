@@ -22,7 +22,7 @@ const { sendChatPrompt, session } = vi.hoisted(() => {
   const session = {
     api: {
       chat: { readTranscript: async () => ({ messages: [], found: true }) },
-      pty: { sendChatPrompt }
+      pty: { sendChatPrompt, paneOwner: async () => ({ panePid: 1, tty: '/dev/ttys001', command: 'claude', argv: ['claude'], pids: [2] }) }
     }
   }
   return { sendChatPrompt, session }

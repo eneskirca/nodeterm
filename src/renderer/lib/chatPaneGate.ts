@@ -1,16 +1,18 @@
 // The chat send's KERNEL gate — the second half of "may the ⌘M composer / the phone type into this
 // pane?", after `chatSendRefusal` (chatSendGate.ts).
 //
-// `chatSendRefusal` reads the agent-status store, and for most agents that is enough: a CLI that
-// quits announces it (SessionEnd → `sessionEnded`), so a shell-owned pane is refused. Codex and
-// opencode announce NO session end (see SESSION_END_CAPABLE in shared/agents/config.ts): after a
-// deliberate `/quit` their last hook state is still `done`, and the store reads "at its prompt". A
-// chat message sent then is pasted into the SHELL with an Enter — it runs as a command. So for those
-// agents the pane's foreground process group is asked (`isAgentPane`, the same positive, three-
-// valued predicate the wake and delivery gates use) right before the send.
-//
-// Agents that DO report a session end are not probed: their path is byte-identical to before.
-import { capabilityAgentId, reportsSessionEnd } from '@shared/agents/config'
+// `chatSendRefusal` reads the agent-status store. A CLI that quits cleanly may announce it
+// (SessionEnd → `sessionEnded`), but the store cannot be the proof:
+//  - Codex and opencode announce NO session end (see SESSION_END_CAPABLE in shared/agents/config.ts):
+//    after a deliberate `/quit` their last hook state is still `done`, and the store reads "at its
+//    prompt".
+//  - Agents that DO announce one only do so on a clean exit. Observed 2026-11-13: a Claude pane
+//    was back at its shell (likely after its project was closed on the desktop; the store's exact
+//    state then was not captured), yet a phone chat message passed the gate and was pasted into the
+//    SHELL with an Enter — it ran as a command.
+// So for EVERY agent the pane's foreground process group is asked (`isAgentPane`, the same
+// positive, three-valued predicate the wake and delivery gates use) right before the send. The hook
+// is a hint; the kernel is the proof. An unreadable pane refuses (`unverified`), never sends.
 import { binariesFor, isAgentPane, type PaneOwner } from '@shared/agents/pane-owner-predicate'
 import type { ChatSendReason } from '@shared/mobile-chat'
 
@@ -27,7 +29,6 @@ export async function chatPaneRefusal(
     customAgents?: readonly { id: string; launchCmd: string; baseAgent?: string }[]
   }
 ): Promise<ChatPaneRefusal> {
-  if (reportsSessionEnd(capabilityAgentId(agentId))) return null
   let owner: PaneOwner | null
   try {
     owner = await deps.paneOwner(nodeId)

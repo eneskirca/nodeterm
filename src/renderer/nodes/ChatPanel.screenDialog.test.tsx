@@ -38,7 +38,7 @@ const { screen, capture, sendChatPrompt, session } = vi.hoisted(() => {
     source: 'local',
     api: {
       chat: { readTranscript: async () => ({ messages: [], found: true, olderCursor: null, unmatchedResults: [] }) },
-      pty: { readChatScreen: capture, sendChatPrompt, sendText: vi.fn() }
+      pty: { readChatScreen: capture, sendChatPrompt, sendText: vi.fn(), paneOwner: async () => ({ panePid: 1, tty: '/dev/ttys001', command: 'claude', argv: ['claude'], pids: [2] }) }
     }
   }
   return { screen, capture, sendChatPrompt, session }
