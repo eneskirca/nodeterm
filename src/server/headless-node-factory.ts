@@ -1512,6 +1512,12 @@ export class HeadlessNodeFactory {
           error: 'open-agent: Server Edition v1 supports --agent claude|codex|gemini'
         }
       }
+      if (verb === 'open-agent' && agentId && settings.disabledAgents.includes(agentId)) {
+        return {
+          ok: false,
+          error: `open-agent: agent "${agentId}" is disabled in Settings`
+        }
+      }
       // The Server shell owns the same shared Codex app-server spine as desktop. Ask its boot-time
       // capability probe at the launch boundary: true routes through `nodeterm-codex`; every
       // unavailable/failed case stays on the safe bare command supplied by the shared assembler.
