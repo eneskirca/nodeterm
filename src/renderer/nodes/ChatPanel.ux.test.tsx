@@ -28,7 +28,7 @@ const { sendChatPrompt, readTranscript, pending, session } = vi.hoisted(() => {
     (sessionId: string | undefined) =>
       new Promise<ChatTranscriptResult>((resolve, reject) => pending.push({ sessionId, resolve, reject }))
   )
-  const session = { api: { chat: { readTranscript }, pty: { sendChatPrompt } } }
+  const session = { api: { chat: { readTranscript }, pty: { sendChatPrompt, paneOwner: async () => ({ panePid: 1, tty: '/dev/ttys001', command: 'claude', argv: ['claude'], pids: [2] }) } } }
   return { sendChatPrompt, readTranscript, pending, session }
 })
 vi.mock('../session/session', () => ({ useSession: () => session }))

@@ -25,7 +25,12 @@ const { transcript, session } = vi.hoisted(() => {
           olderCursor: null
         })
       },
-      pty: { sendChatPrompt: vi.fn(async () => true as const) }
+      // The send gate probes the pane's foreground process for every agent, so the fake pane is
+      // a live claude; without it the gate refuses the send as `unverified`.
+      pty: {
+        sendChatPrompt: vi.fn(async () => true as const),
+        paneOwner: async () => ({ panePid: 1, tty: '/dev/ttys001', command: 'claude', argv: ['claude'], pids: [2] })
+      }
     }
   }
   return { transcript, session }

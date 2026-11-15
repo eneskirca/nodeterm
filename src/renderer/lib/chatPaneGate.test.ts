@@ -1,6 +1,6 @@
-// The chat send's second gate: for an agent whose hooks never announce a session end (codex,
-// opencode), the kernel must prove the agent owns the pane before text + Enter is typed — or a
-// message sent after the user `/quit` codex runs as a SHELL command.
+// The chat send's second gate: for EVERY agent, the kernel must prove the agent owns the pane before
+// text + Enter is typed — or a message sent after the agent is gone (codex `/quit`, which no hook
+// announces, or a claude that died without its SessionEnd) runs as a SHELL command.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chatPaneRefusal, chatPaneRefusalReason, chatPaneRefusalToast } from './chatPaneGate'
 import { setCustomAgentBaseResolver } from '@shared/agents/config'
@@ -18,6 +18,16 @@ const CODEX_PANE: PaneOwner = {
   pids: [201550, 201574]
 }
 const SHELL_PANE: PaneOwner = { panePid: 100, tty: '/dev/pts/31', command: 'bash', argv: ['-bash'], pids: [100] }
+// Claude's two shapes: the native binary, and `node …/claude` (tmux then reports `command: 'node'`,
+// as measured in pane-owner-predicate.ts).
+const CLAUDE_PANE: PaneOwner = { panePid: 100, tty: '/dev/pts/31', command: 'claude', argv: ['claude'], pids: [201600] }
+const CLAUDE_NODE_PANE: PaneOwner = {
+  panePid: 100,
+  tty: '/dev/pts/31',
+  command: 'node',
+  argv: ['node /usr/local/bin/claude --resume x'],
+  pids: [201601]
+}
 
 describe('chatPaneRefusal', () => {
   it('lets a send through when codex owns the pane', async () => {
@@ -33,10 +43,23 @@ describe('chatPaneRefusal', () => {
     expect(await chatPaneRefusal('codex', 'n1', { paneOwner: async () => { throw new Error('ssh') } })).toBe('unverified')
   })
 
-  it('an agent whose hooks DO report a session end is not probed at all (unchanged path)', async () => {
+  // Claude announces SessionEnd, but only when it exits cleanly. Observed 2026-11-13: a Claude pane
+  // was back at its shell (likely after its project was closed; the store's state then was not
+  // captured) and a phone chat message was typed into zsh as a command. So agents whose hooks
+  // report a session end are probed too; the hook is a hint, the kernel is the proof.
+  it('probes agents that report session ends too: the shell a silent exit left behind refuses', async () => {
     const paneOwner = vi.fn(async () => SHELL_PANE)
-    for (const id of ['claude', 'grok']) expect(await chatPaneRefusal(id, 'n1', { paneOwner })).toBeNull()
-    expect(paneOwner).not.toHaveBeenCalled()
+    for (const id of ['claude', 'grok']) expect(await chatPaneRefusal(id, 'n1', { paneOwner })).toBe('exited')
+    expect(paneOwner).toHaveBeenCalledTimes(2)
+  })
+
+  it('lets a send through when claude owns the pane, native or under node', async () => {
+    expect(await chatPaneRefusal('claude', 'n1', { paneOwner: async () => CLAUDE_PANE })).toBeNull()
+    expect(await chatPaneRefusal('claude', 'n1', { paneOwner: async () => CLAUDE_NODE_PANE })).toBeNull()
+  })
+
+  it('refuses a claude pane it cannot read (unknown is never upgraded to agent)', async () => {
+    expect(await chatPaneRefusal('claude', 'n1', { paneOwner: async () => null })).toBe('unverified')
   })
 
   it('a custom agent on the codex harness is probed for the binary its launch command runs', async () => {

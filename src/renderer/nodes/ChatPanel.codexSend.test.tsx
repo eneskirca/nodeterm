@@ -92,9 +92,19 @@ describe('ChatPanel — codex send asks the kernel', () => {
     expect(toasts).toEqual(['Codex is no longer running in this terminal — the message was not sent.'])
   })
 
-  it('claude is not probed (its hooks announce a quit)', async () => {
+  // Claude's hooks announce a clean quit, but a Claude pane was observed back at its shell while a
+  // phone chat message still passed the gate (2026-11-13; likely after its project was closed).
+  // So claude is probed like every agent: a claude pane sends, a shell left behind refuses.
+  it('claude is probed too: its pane sends', async () => {
+    paneOwner.mockResolvedValue({ panePid: 1, tty: '/dev/ttys001', command: 'claude', argv: ['claude'], pids: [2] })
     await send(await mount('claude'), 'hello')
-    expect(paneOwner).not.toHaveBeenCalled()
+    expect(paneOwner).toHaveBeenCalled()
     expect(sendChatPrompt).toHaveBeenCalled()
+  })
+
+  it('claude is probed too: a shell left behind refuses the send', async () => {
+    paneOwner.mockResolvedValue({ panePid: 1, tty: '/dev/ttys001', command: 'zsh', argv: ['-zsh'], pids: [1] })
+    await send(await mount('claude'), 'hello')
+    expect(sendChatPrompt).not.toHaveBeenCalled()
   })
 })

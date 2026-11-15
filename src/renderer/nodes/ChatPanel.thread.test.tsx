@@ -24,7 +24,7 @@ const { session, reads } = vi.hoisted(() => {
           return { messages: reads.messages, found: true, olderCursor: null, unmatchedResults: [] }
         }
       },
-      pty: { sendText: vi.fn(async () => true as const), sendChatPrompt: vi.fn(async () => true as const) }
+      pty: { sendText: vi.fn(async () => true as const), sendChatPrompt: vi.fn(async () => true as const), paneOwner: async () => ({ panePid: 1, tty: '/dev/ttys001', command: 'claude', argv: ['claude'], pids: [2] }) }
     }
   }
   return { session, reads }

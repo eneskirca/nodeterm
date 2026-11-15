@@ -33,7 +33,7 @@ const { pending, session, sendChatPrompt } = vi.hoisted(() => {
     page?: ChatTranscriptPageRequest
   ) => new Promise<ChatTranscriptResult>((resolve, reject) => pending.push({ page, resolve, reject }))
   const sendChatPrompt = vi.fn(async (_id: string, _t: string, _agent: string) => true as const)
-  const session = { api: { chat: { readTranscript }, pty: { sendChatPrompt } } }
+  const session = { api: { chat: { readTranscript }, pty: { sendChatPrompt, paneOwner: async () => ({ panePid: 1, tty: '/dev/ttys001', command: 'claude', argv: ['claude'], pids: [2] }) } } }
   return { pending, session, sendChatPrompt }
 })
 vi.mock('../session/session', () => ({ useSession: () => session }))
