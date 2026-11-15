@@ -366,7 +366,8 @@ describe('mergeLocalLegs', () => {
       selfMb: t,
       childrenMb: 0,
       childCount: 0,
-      totalMb: t
+      totalMb: t,
+      largestMb: t
     })),
     mem: null,
     ...extra

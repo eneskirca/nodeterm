@@ -253,11 +253,18 @@ describe('collectSessionHostMemory: the host\'s own cost', () => {
 
   it('an idle host (no sessions) is still measured', async () => {
     const r = await collectSessionHostMemory({
+      platformName: 'win32',
       list: async () => listing({ names: [], sessions: [] }),
       readTable: async () => table.filter((e) => e.pid === 900 || e.pid === 901),
       readMem: () => MEM
     })
-    expect(r).toEqual({ ok: true, rows: [], mem: MEM, host: { pid: 900, selfMb: 60, consoleMb: 8, consoleCount: 1, totalMb: 68 } })
+    expect(r).toEqual({
+      ok: true,
+      rows: [],
+      mem: MEM,
+      metric: 'working-set',
+      host: { pid: 900, selfMb: 60, consoleMb: 8, consoleCount: 1, totalMb: 68 }
+    })
   })
 
   it('with no session to describe, an unreadable table is still the "no sessions" answer', async () => {

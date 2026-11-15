@@ -179,3 +179,39 @@ describe('"nodeterm itself" group', () => {
     expect(useSessionMemory.getState().app).toBeUndefined()
   })
 })
+
+describe('what a full sweep records about itself', () => {
+  it('stamps when it landed and which measure it is in', async () => {
+    vi.setSystemTime(5_000_000)
+    read.mockResolvedValue({ ok: true, rows: [], mem: null, metric: 'footprint' })
+    await useSessionMemory.getState().refreshFull('', 'p1')
+    expect(useSessionMemory.getState().measuredAt).toBe(5_000_000)
+    expect(useSessionMemory.getState().metric).toBe('footprint')
+  })
+
+  it('keeps no stamp from a sweep that could not run', async () => {
+    read.mockResolvedValue({ ok: true, rows: [], mem: null, metric: 'rss' })
+    await useSessionMemory.getState().refreshFull('', 'p1')
+    read.mockResolvedValue({ ok: false, rows: [], mem: null })
+    await useSessionMemory.getState().refreshFull('', 'p1')
+    expect(useSessionMemory.getState().measuredAt).toBeNull()
+    expect(useSessionMemory.getState().metric).toBeUndefined()
+  })
+
+  it('keeps no stamp from a rejected call', async () => {
+    read.mockResolvedValue({ ok: true, rows: [], mem: null, metric: 'rss' })
+    await useSessionMemory.getState().refreshFull('', 'p1')
+    read.mockRejectedValue(new Error('bridge down'))
+    await useSessionMemory.getState().refreshFull('', 'p1')
+    expect(useSessionMemory.getState().measuredAt).toBeNull()
+  })
+
+  it("drops another machine's stamp when the scope changes", async () => {
+    read.mockResolvedValue({ ok: true, rows: [], mem: null, metric: 'footprint' })
+    await useSessionMemory.getState().refreshFull('', 'p1')
+    useSessionMemory.getState().startHostPoll('user@host', 'p2')
+    await flush()
+    expect(useSessionMemory.getState().measuredAt).toBeNull()
+    expect(useSessionMemory.getState().metric).toBeUndefined()
+  })
+})

@@ -10,6 +10,7 @@ const row = (nodeId: string, mb: number): SessionMemoryRow => ({
   childrenMb: 0,
   childCount: 0,
   totalMb: mb,
+  largestMb: mb,
   command: 'claude'
 })
 

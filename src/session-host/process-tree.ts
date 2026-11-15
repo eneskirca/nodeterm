@@ -9,10 +9,10 @@ import { getWindowsProbeWorker, type WindowsProbeWorker } from './windows-probe-
  * WALKS THE DESCENDANTS of the pty's own child pid and reports the deepest live one.
  *
  * This is a deliberately small, standalone reader rather than a reuse of
- * `src/core/session-memory.ts`'s process-table reader: that module queries `pid,ppid,rss` (for
- * memory accounting) and has no Windows branch at all yet, so there is nothing here to actually
- * reuse without querying a THIRD column (`comm`/`Name`) it does not fetch — this is the "cannot,
- * so wrote a second (much smaller) one" case CLAUDE.md's guidance for this task allows for.
+ * `src/core/session-memory.ts`'s process-table reader: that module reads a whole table for memory
+ * accounting (rss, plus `top` on macOS), which costs more than this one question needs — this is
+ * the "cannot, so wrote a second (much smaller) one" case CLAUDE.md's guidance for this task allows
+ * for.
  *
  * The in-place agent restart feature (CLAUDE.md, "Restart agent (resume)") only cares about ONE
  * distinction — "is a SHELL back in charge of this pane, or is something else still running" — so

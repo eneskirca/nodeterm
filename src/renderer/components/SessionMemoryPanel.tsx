@@ -25,7 +25,8 @@ import {
 } from '../lib/sessionMemoryRows'
 import { usageScopeKey } from '../lib/usageScope'
 import type { SessionPauseOffer } from '../lib/sessionPause'
-import { unmeasuredNote } from '../lib/sessionMemoryNote'
+import { metricNote, unmeasuredNote } from '../lib/sessionMemoryNote'
+import { formatTimeAgo } from '../lib/usageFormat'
 
 export interface SessionMemoryPanelProps {
   /** Travel to the node behind a row. Canvas passes `travelToNode`, so a CLOSED project's tab is
@@ -49,6 +50,9 @@ export interface SessionMemoryPanelProps {
   onPauseSession: (nodeId: string) => Promise<void>
   onClose: () => void
 }
+
+/** The "Measured … ago" line reads in minutes, so this only has to keep up with those. */
+const AGE_TICK_MS = 15_000
 
 /** Every number in this feature is MB; `formatBytes` speaks bytes. One formatter, so the panel's
  *  units read like the rest of the app. */
@@ -90,6 +94,8 @@ export function SessionMemoryPanel({
   const appSelf = useSessionMemory((s) => s.app)
   const loading = useSessionMemory((s) => s.loading)
   const loadedScope = useSessionMemory((s) => s.loadedScope)
+  const metric = useSessionMemory((s) => s.metric)
+  const measuredAt = useSessionMemory((s) => s.measuredAt)
   const refreshFull = useSessionMemory((s) => s.refreshFull)
 
   // EVERY project, closed ones included: `closeProject` keeps the project and its nodes on disk
@@ -134,6 +140,14 @@ export function SessionMemoryPanel({
     void refreshFull(scopeKey, activeProjectId)
   }, [relay, scopeKey, activeProjectId, refreshFull])
   useEffect(() => sweep(), [sweep])
+
+  // Re-renders the "Measured … ago" line, nothing else: no reading happens here. The panel is
+  // unmounted while closed, so this only runs while someone is looking at it.
+  const [, setAgeTick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setAgeTick((n) => n + 1), AGE_TICK_MS)
+    return () => clearInterval(t)
+  }, [])
 
   // Have we got an answer for THIS machine yet? A `loadedScope` from the machine we just left says
   // nothing about this one, so it is compared, not merely checked for existence.
@@ -188,7 +202,13 @@ export function SessionMemoryPanel({
                 )
               )}
               <span className="sessmem-row__cmd">{v.row.command}</span>
-              <span className="sessmem-row__mb">{formatMb(v.row.totalMb)}</span>
+              {/* Beside the command name this reads as that process's size, and it is not. */}
+              <span
+                className="sessmem-row__mb"
+                title="The whole session: the shell, the agent and every process it started"
+              >
+                {formatMb(v.row.totalMb)}
+              </span>
             </button>
             {/* The NON-destructive reclaim, deliberately to the LEFT of the `×`: on the host this
                 was measured against, exiting the CLI returns 98.3% of a session's memory while the
@@ -232,11 +252,14 @@ export function SessionMemoryPanel({
               <IconClose />
             </button>
             {v.row.childCount > 0 && (
-              // "child processes", NOT "MCP servers": `pane_pid` is the pane's SHELL, so the count
-              // is the agent CLI itself plus everything it spawned. A claude session with two MCP
-              // servers reads as 3, and a plain `npm run dev` has children too.
+              // How the row's total splits, and the two parts add up to it. Not `childrenMb`: that
+              // is the total minus a few MB of shell, so it printed the same number twice and read
+              // as a second size. "processes", NOT "MCP servers": a plain `npm run dev` has them too.
               <div className="sessmem-row__kids">
-                └ +{v.row.childCount} child processes <span>{formatMb(v.row.childrenMb)}</span>
+                └ {v.row.largestName ?? 'Largest process'} <span>{formatMb(v.row.largestMb)}</span>
+                {' · '}
+                {v.row.childCount} other {v.row.childCount === 1 ? 'process' : 'processes'}{' '}
+                <span>{formatMb(Math.max(0, v.row.totalMb - v.row.largestMb))}</span>
               </div>
             )}
           </li>
@@ -290,7 +313,7 @@ export function SessionMemoryPanel({
           and quoting one here would age into a lie (docs/session-memory.md §1 has them). */}
       <div className="sessmem-panel__attrib">
         Memory held by each session's own processes — the agent CLI and what it spawned, not
-        nodeterm itself.
+        nodeterm itself. {measured && metricNote(metric)}
       </div>
 
       {/* nodeterm's OWN processes, below the attribution line on purpose: they
@@ -331,18 +354,27 @@ export function SessionMemoryPanel({
         <span className="sessmem-panel__count">
           {measured ? `${views.length} session${views.length === 1 ? '' : 's'}` : ''}
         </span>
-        {/* A relay tab has nothing to retry — the answer is a stub, not a failure. */}
-        {!relay && (
-          <button
-            className={`sessmem-panel__refresh${loading ? ' spin' : ''}`}
-            title="Re-measure"
-            aria-label="Re-measure"
-            disabled={loading}
-            onClick={sweep}
-          >
-            <IconReload />
-          </button>
-        )}
+        <span className="sessmem-panel__foot-end">
+          {/* The sweep runs on open and on ⟳ only, so an open panel ages. `loading` wins: the old
+              rows stay on screen until the new reading lands. */}
+          {measured && (loading || measuredAt !== null) && (
+            <span className="sessmem-panel__when">
+              {loading ? 'Measuring…' : `Measured ${formatTimeAgo(measuredAt as number)}`}
+            </span>
+          )}
+          {/* A relay tab has nothing to retry — the answer is a stub, not a failure. */}
+          {!relay && (
+            <button
+              className={`sessmem-panel__refresh${loading ? ' spin' : ''}`}
+              title="Re-measure"
+              aria-label="Re-measure"
+              disabled={loading}
+              onClick={sweep}
+            >
+              <IconReload />
+            </button>
+          )}
+        </span>
       </div>
     </div>
   )

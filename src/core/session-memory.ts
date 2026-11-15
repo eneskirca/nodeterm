@@ -19,6 +19,7 @@ import type {
   MemDisplay,
   MemInfo,
   SessionHostOverhead,
+  SessionMemoryMetric,
   SessionMemoryRow,
   SessionMemoryReport
 } from '../shared/types'
@@ -37,7 +38,8 @@ export interface ProcEntry {
   pid: number
   ppid: number
   rssKb: number
-  /** Image name, when the reader has one (the Windows CIM table). Only `hostOverhead` reads it. */
+  /** Raw process name, when the reader has one. `hostOverhead` matches Windows image names on it;
+   *  `rollupTree` shows it, through `processLabel`. */
   name?: string
   /** darwin: `rssKb` is `top`'s phys_footprint, not `ps` rss. Only `appSelfMemory` reads it — a
    *  pid `top` missed keeps its rss, which is fine for a session row but is exactly the blind number
@@ -80,9 +82,20 @@ export function rollupTree(
   table: ReadonlyMap<number, ProcEntry>,
   kids: ReadonlyMap<number, number[]>,
   root: number
-): { selfMb: number; childrenMb: number; childCount: number; totalMb: number } {
+): {
+  selfMb: number
+  childrenMb: number
+  childCount: number
+  totalMb: number
+  largestMb: number
+  largestName?: string
+} {
   const self = table.get(root)
-  if (!self) return { selfMb: 0, childrenMb: 0, childCount: 0, totalMb: 0 }
+  if (!self) return { selfMb: 0, childrenMb: 0, childCount: 0, totalMb: 0, largestMb: 0 }
+  // The largest process, not "the agent": a pane's tree has no marker for which process that is, and
+  // a guess fails on `cmd → node` shims on Windows. The largest one is true of any tree, and it names
+  // what a reader is looking for when a total looks high, which is not always the agent.
+  let largest = self
   let childrenKb = 0
   let childCount = 0
   const seen = new Set<number>([root])
@@ -95,14 +108,50 @@ export function rollupTree(
     if (!e) continue
     childrenKb += e.rssKb
     childCount++
+    if (e.rssKb > largest.rssKb) largest = e
     for (const k of kids.get(pid) ?? []) stack.push(k)
   }
   const selfMb = kbToMb(self.rssKb)
   const childrenMb = kbToMb(childrenKb)
-  return { selfMb, childrenMb, childCount, totalMb: selfMb + childrenMb }
+  const largestName = processLabel(largest.name)
+  return {
+    selfMb,
+    childrenMb,
+    childCount,
+    totalMb: selfMb + childrenMb,
+    largestMb: kbToMb(largest.rssKb),
+    ...(largestName ? { largestName } : {})
+  }
 }
 
-/** Parse `ps -eo pid,ppid,rss` output. Tolerant: header and malformed lines are skipped. */
+const PROCESS_LABEL_MAX = 40
+
+/**
+ * A process name as the panel prints it. It is untrusted text (a process can retitle itself, and on
+ * an SSH host it may be another user's), so control and format characters go and the length is
+ * capped. Only an ABSOLUTE path is cut to its file name: macOS `ps` prints a retitled process
+ * verbatim, and `npm exec @playwright/mcp@latest` is a title with a slash in it, not a path.
+ */
+export function processLabel(raw: string | undefined): string | undefined {
+  if (!raw) return undefined
+  const clean = raw.replace(/[\p{Cc}\p{Cf}]/gu, '').trim()
+  const base = clean.startsWith('/') ? clean.slice(clean.lastIndexOf('/') + 1) : clean
+  // A login shell is `-zsh`.
+  const points = Array.from(base.replace(/^-/, ''))
+  if (points.length === 0) return undefined
+  return points.length > PROCESS_LABEL_MAX
+    ? `${points.slice(0, PROCESS_LABEL_MAX - 1).join('')}…`
+    : points.join('')
+}
+
+/** The measure a table's numbers are in. `top` having covered any pid is what makes it footprint. */
+function tableMetric(table: readonly ProcEntry[], platformName: NodeJS.Platform): SessionMemoryMetric {
+  if (table.some((e) => e.footprint)) return 'footprint'
+  return platformName === 'win32' ? 'working-set' : 'rss'
+}
+
+/** Parse `ps -eo pid,ppid,rss,comm` output. Tolerant: header and malformed lines are skipped, and
+ *  the name column is optional. A name may hold spaces, so it is everything after the third field. */
 export function parseProcessTable(stdout: string): ProcEntry[] {
   const out: ProcEntry[] = []
   for (const line of stdout.split('\n')) {
@@ -112,7 +161,8 @@ export function parseProcessTable(stdout: string): ProcEntry[] {
     const ppid = Number(parts[1])
     const rssKb = Number(parts[2])
     if (!Number.isFinite(pid) || !Number.isFinite(ppid) || !Number.isFinite(rssKb)) continue
-    out.push({ pid, ppid, rssKb })
+    const name = parts.slice(3).join(' ')
+    out.push({ pid, ppid, rssKb, ...(name ? { name } : {}) })
   }
   return out
 }
@@ -522,7 +572,8 @@ export function defaultProcessTableReader(): ProcEntry[] | null {
           const rssKb = Number(/^VmRSS:\s+(\d+)/m.exec(status)?.[1])
           // Kernel threads have no VmRSS and are dropped here — they are never pane descendants.
           if (!Number.isFinite(ppid) || !Number.isFinite(rssKb)) continue
-          out.push({ pid: Number(name), ppid, rssKb })
+          const comm = /^Name:\s+(.+)$/m.exec(status)?.[1]
+          out.push({ pid: Number(name), ppid, rssKb, ...(comm ? { name: comm } : {}) })
         } catch {
           // The process exited between readdir and read — skip it, never fail the sweep.
         }
@@ -572,7 +623,7 @@ async function psProcessTable(
   platformName: NodeJS.Platform
 ): Promise<ProcEntry[] | null> {
   try {
-    const rows = parseProcessTable(await exec('ps', ['-eo', 'pid,ppid,rss']))
+    const rows = parseProcessTable(await exec('ps', ['-eo', 'pid,ppid,rss,comm']))
     if (platformName !== 'darwin') return rows
     const fp = parseTopFootprint(await exec('top', ['-l', '1', '-stats', 'pid,mem']))
     // A pid `top` did not list keeps its `rss`. The two snapshots are a moment apart, so a miss is
@@ -852,7 +903,10 @@ export async function collectSessionHostMemory(deps: SessionHostMemoryDeps): Pro
     if (panes.length === 0) return withApp(withUnmeasured({ ok: true, rows: [], mem }), null)
     return { ok: false, rows: [], mem }
   }
-  const report = withApp(withUnmeasured(buildReport(panes, table, mem)), table)
+  const report = withApp(
+    withUnmeasured({ ...buildReport(panes, table, mem), metric: tableMetric(table, platformName) }),
+    table
+  )
   // A session the host named but did not describe has a shell among the host's children that no
   // row excludes, so its memory would be booked as host overhead. Report nothing rather than that.
   // The same holds for a session outside the `nt-` namespace (the host accepts any name, and the
@@ -915,7 +969,10 @@ export async function collectSessionMemory(
   // Nobody answered: broken tmux, an unreadable socket dir, a timeout against a hung server. We did
   // not look, so we cannot claim there is nothing — that would print "no sessions" over 20 live ones.
   if (answered === 0) return { ok: false, rows: [], mem }
-  const report = buildReport([...bySession.values()], table, mem)
+  const report = {
+    ...buildReport([...bySession.values()], table, mem),
+    metric: tableMetric(table, process.platform)
+  }
   // Same table, no second read: on darwin it already carries `top`'s footprint for EVERY pid,
   // Electron's included (reuse the sweep; the pill never polls `top`).
   if (!deps.appProcesses) return report

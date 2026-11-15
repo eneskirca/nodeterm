@@ -30,6 +30,7 @@ const row = (over: Partial<SessionMemoryRow> & { nodeId: string }): SessionMemor
   childrenMb: 0,
   childCount: 0,
   totalMb: 0,
+  largestMb: over.totalMb ?? 0,
   command: 'bash',
   ...over
 })
@@ -46,7 +47,16 @@ const row = (over: Partial<SessionMemoryRow> & { nodeId: string }): SessionMemor
  *   - `ghost` has no node anywhere — the actual orphan.
  */
 const ROWS: SessionMemoryRow[] = [
-  row({ nodeId: 't1', selfMb: 600, childrenMb: 300, childCount: 2, totalMb: 900, command: 'claude' }),
+  row({
+    nodeId: 't1',
+    selfMb: 600,
+    childrenMb: 300,
+    childCount: 2,
+    totalMb: 900,
+    largestMb: 600,
+    largestName: 'claude',
+    command: 'claude'
+  }),
   row({ nodeId: 't3', selfMb: 500, totalMb: 500, command: 'codex' }),
   row({ nodeId: 't2', selfMb: 120, totalMb: 120, command: 'bash' }),
   row({ nodeId: 'ghost', selfMb: 40, totalMb: 40, command: 'zsh' })
@@ -256,13 +266,15 @@ describe('SessionMemoryPanel', () => {
     expect(onGoToNode).not.toHaveBeenCalled()
   })
 
-  it('names the extra processes as CHILD processes, not as MCP servers', () => {
+  it('splits a row into its largest process and the rest, so the two add up to the row', () => {
     mount()
-    // `childCount` counts every descendant of the pane — the agent CLI itself plus whatever it
-    // spawned — because `pane_pid` is the pane's SHELL. Calling them MCP servers would miscount
-    // (claude + 2 MCP servers reads as 3) and mislabel a plain `npm run dev`.
+    // The row's own number is the whole tree. The line under it used to print `childrenMb`, which
+    // is that same tree minus a few MB of shell, so "claude 1.7 GB" sat on top of "+14 child
+    // processes 1.7 GB" and read as two separate sizes (field report, 2026-11-04).
     const kids = rowsOf()[0].querySelector('.sessmem-row__kids')?.textContent ?? ''
-    expect(kids).toContain('2 child processes')
+    expect(kids).toContain('claude')
+    expect(kids).toContain('600.0 MB')
+    expect(kids).toContain('2 other processes')
     expect(kids).toContain('300.0 MB')
     expect(text()).not.toContain('MCP')
     // Only the row that has children gets the sub-line.
@@ -546,6 +558,67 @@ describe('SessionMemoryPanel', () => {
     it('waits for this scope\'s answer like every other figure', () => {
       mount({ loadedScope: null, app: { ...APP, totalMb: 2000 } })
       expect(appBlock()).toBeNull()
+    })
+  })
+
+  it('says "1 other process" in the singular', () => {
+    mount({ rows: [row({ nodeId: 't1', childCount: 1, totalMb: 300, largestMb: 296, largestName: 'claude' })] })
+    expect(rowsOf()[0].querySelector('.sessmem-row__kids')?.textContent).toContain('1 other process ')
+  })
+
+  it('falls back to a generic label when the process table carried no name', () => {
+    mount({ rows: [row({ nodeId: 't1', childCount: 3, totalMb: 300, largestMb: 200 })] })
+    expect(rowsOf()[0].querySelector('.sessmem-row__kids')?.textContent).toContain('Largest process')
+  })
+
+  it('titles the row total as the whole tree, not the command printed beside it', () => {
+    mount()
+    expect(rowsOf()[0].querySelector('.sessmem-row__mb')?.getAttribute('title')).toContain('whole session')
+  })
+
+  it.each([
+    ['footprint', 'Activity Monitor'],
+    ['rss', 'resident memory'],
+    ['working-set', 'Task Manager']
+  ] as const)('names the measure the rows are in: %s', (metric, phrase) => {
+    mount({ metric })
+    expect(host.querySelector('.sessmem-panel__attrib')?.textContent).toContain(phrase)
+  })
+
+  it('claims no measure when the report named none', () => {
+    mount({ metric: undefined })
+    expect(host.querySelector('.sessmem-panel__attrib')?.textContent).not.toContain('process tree')
+  })
+
+  describe('when the numbers were measured', () => {
+    const when = (): string | null | undefined =>
+      host.querySelector('.sessmem-panel__when')?.textContent
+
+    it('says how old they are', () => {
+      mount({ measuredAt: Date.now() - 5 * 60_000 })
+      expect(when()).toBe('Measured 5m ago')
+    })
+
+    it('keeps counting while the panel stays open: nothing re-measures on its own', () => {
+      vi.useFakeTimers()
+      try {
+        mount({ measuredAt: Date.now() })
+        expect(when()).toBe('Measured just now')
+        act(() => vi.advanceTimersByTime(3 * 60_000))
+        expect(when()).toBe('Measured 3m ago')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('says a new reading is on its way while the old rows are still on screen', () => {
+      mount({ measuredAt: Date.now() - 5 * 60_000, loading: true })
+      expect(when()).toBe('Measuring…')
+    })
+
+    it('stays silent before anything was measured', () => {
+      mount({ ok: false, rows: [], measuredAt: null })
+      expect(when()).toBeFalsy()
     })
   })
 })
