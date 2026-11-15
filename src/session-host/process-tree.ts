@@ -2,6 +2,9 @@ import { execFile } from 'child_process'
 import { isShellCommand } from '../shared/agents/pane'
 import { powershellArgs, powershellExe } from '../core/win32-powershell'
 import { getWindowsProbeWorker, type WindowsProbeWorker } from './windows-probe-worker'
+import { WIN32_PANE_TABLE_SCRIPT } from './windows-probe-script'
+
+export { WIN32_PANE_TABLE_SCRIPT }
 
 /**
  * The `#{pane_current_command}` equivalent for a backend with no tmux underneath it. tmux tracks
@@ -52,9 +55,6 @@ export function win32ProcRows(parsed: unknown): ProcRow[] {
     })
     .filter((r) => Number.isFinite(r.pid) && Number.isFinite(r.ppid))
 }
-
-export const WIN32_PANE_TABLE_SCRIPT =
-  'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress'
 
 type ExecFileLike = (
   file: string,

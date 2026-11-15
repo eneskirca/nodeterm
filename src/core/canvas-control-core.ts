@@ -345,6 +345,19 @@ function reportOutcomeDocLines(): string[] {
   ]
 }
 
+/** Project secrets (docs/project-secrets.md), as an agent needs to know them. No verb fetches,
+ *  reveals, sets or clears a secret: only the person does, in the app. */
+export function projectSecretsGuidanceLines(): string[] {
+  return [
+    '  Project secrets: a project may declare environment variables its agents need, which the user',
+    '  pastes or fetches in the app; agent nodes of that project started afterwards receive them as environment',
+    '  variables. No command here fetches, shows, sets or clears one. Never print, log, commit or send',
+    '  their values. A node you open in ANOTHER project gets them only as the user\'s setting allows;',
+    '  when the reply says the node waits for the person, ask the user to answer in that node — do not',
+    '  retry the open or poll for it.'
+  ]
+}
+
 function settingsVerbDocLines(): string[] {
   const keys = SETTINGS_VERB_KEY_LIST.map((key) => {
     const { scope, type } = SETTINGS_VERB_KEYS[key]
@@ -945,6 +958,7 @@ export function buildCanvasControlInstructions(shimPath: string): string {
     '  returned to YOU in this session. A session opened into a non-active project',
     '  starts when the user next views that project (at once with `--run-now`) — do not poll for it.',
     '  `--group`/`--after` cannot be combined with `--project`.',
+    ...projectSecretsGuidanceLines(),
     '  The reply reports delivery: `queued` is true (and `queuedIds`',
     '  lists which) while launch delivery is pending, including a visible node waiting for its PTY,',
     '  or one waiting on `--after`, on a worktree\'s',
@@ -1508,6 +1522,7 @@ Verbs:
   TARGET project's (its cwd, its default account and permission mode). A session opened into a
   non-active project starts when the user next views that project (at once with \`--run-now\`) —
   do not poll for it; the reply says so. \`--group\`/\`--after\` cannot be combined with \`--project\`.
+${projectSecretsGuidanceLines().join('\n')}
   **An open NEVER switches the user's view — not even into your own project.** If the project you
   are running in is not the one on screen, the node is opened **cold**: created and saved there,
   with its session starting when the user next views that project. Every flag still applies

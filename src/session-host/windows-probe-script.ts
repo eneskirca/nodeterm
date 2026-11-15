@@ -8,9 +8,30 @@
 // that has been validated as a safe positive integer; the worker receives its pids as JSON data on
 // stdin and re-validates them in PowerShell (`[int]`, `> 0`) — no request text is ever evaluated.
 
+/** The C# usings both probe types need; one compilation unit may name them only once. */
+const PROBE_USINGS = 'using System; using System.Runtime.InteropServices;'
+
+/**
+ * The process table (pid, parent pid, image name) from a Toolhelp32 snapshot, written as JSON in
+ * the shape `win32ProcRows` reads (`ProcessId` / `ParentProcessId` / `Name`).
+ *
+ * Not `Get-CimInstance Win32_Process`: that goes through WMI, and WMI's cost is the machine's, not
+ * ours. Measured on a Windows 11 machine with ~630 processes (2026-11-03): EVERY CIM query took
+ * 10.3 to 12.1 s, warm or cold, the whole table or one process by id, while the snapshot took
+ * 0.55 to 0.64 s including ConvertTo-Json. The pane-command budgets are 1.5 s (worker) and 5 s
+ * (one-shot), so with CIM every pane read on that machine answered "unknown", and every caller
+ * that must SEE the pane refused: the in-place restart (all variants), the Eco exit, the wake.
+ *
+ * Built in C# rather than with ConvertTo-Json so a read is a few milliseconds. The source has no
+ * single quote (it rides a PowerShell single-quoted string) and no backslash (it rides a TS
+ * template literal): quote, backslash and colon are written as char codes.
+ */
+export const PROC_TABLE_CLASS =
+  'public static class NtProcTable { [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct PE32 { public uint dwSize; public uint cntUsage; public uint th32ProcessID; public IntPtr th32DefaultHeapID; public uint th32ModuleID; public uint cntThreads; public uint th32ParentProcessID; public int pcPriClassBase; public uint dwFlags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string szExeFile; } [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid); [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool Process32FirstW(IntPtr h, ref PE32 e); [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool Process32NextW(IntPtr h, ref PE32 e); [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h); static void Key(System.Text.StringBuilder sb, string k) { sb.Append((char)34).Append(k).Append((char)34).Append((char)58); } public static string Json() { IntPtr h = CreateToolhelp32Snapshot(2, 0); if (h == new IntPtr(-1)) throw new Exception("snapshot failed"); System.Text.StringBuilder sb = new System.Text.StringBuilder(); sb.Append("["); try { PE32 e = new PE32(); e.dwSize = (uint)Marshal.SizeOf(typeof(PE32)); if (!Process32FirstW(h, ref e)) throw new Exception("empty snapshot"); bool first = true; do { if (!first) sb.Append(","); first = false; sb.Append("{"); Key(sb, "ProcessId"); sb.Append(e.th32ProcessID); sb.Append(","); Key(sb, "ParentProcessId"); sb.Append(e.th32ParentProcessID); sb.Append(","); Key(sb, "Name"); sb.Append((char)34); foreach (char c in (e.szExeFile ?? "")) { if (c == (char)34 || c == (char)92) { sb.Append((char)92).Append(c); } else if (c < (char)32) { sb.Append((char)92).Append("u").Append(((int)c).ToString("x4")); } else { sb.Append(c); } } sb.Append((char)34).Append("}"); } while (Process32NextW(h, ref e)); } finally { CloseHandle(h); } sb.Append("]"); return sb.ToString(); } }'
+
 /** `Add-Type` of the console probe. In Windows PowerShell 5.1 this runs csc and writes a temp
  *  assembly, which is the cost the worker pays once instead of per probe. */
-const PROBE_TYPE = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class NtConsoleProbe { [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole(); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid); [DllImport("kernel32.dll", SetLastError=true)] public static extern uint GetConsoleProcessList([Out] uint[] ids, uint length); [DllImport("shell32.dll", SetLastError=true)] static extern IntPtr CommandLineToArgvW([MarshalAs(UnmanagedType.LPWStr)] string cmd, out int count); [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p); public static string ScriptArg(string cmd) { if (String.IsNullOrEmpty(cmd)) return ""; int n; IntPtr p = CommandLineToArgvW(cmd, out n); if (p == IntPtr.Zero) return ""; try { if (n < 2) return ""; string a = Marshal.PtrToStringUni(Marshal.ReadIntPtr(p, IntPtr.Size)); return (a == null || a.StartsWith("-")) ? "" : a; } finally { LocalFree(p); } } }';`
+const PROBE_TYPE = `Add-Type -TypeDefinition '${PROBE_USINGS} public static class NtConsoleProbe { [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole(); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid); [DllImport("kernel32.dll", SetLastError=true)] public static extern uint GetConsoleProcessList([Out] uint[] ids, uint length); [DllImport("shell32.dll", SetLastError=true)] static extern IntPtr CommandLineToArgvW([MarshalAs(UnmanagedType.LPWStr)] string cmd, out int count); [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p); public static string ScriptArg(string cmd) { if (String.IsNullOrEmpty(cmd)) return ""; int n; IntPtr p = CommandLineToArgvW(cmd, out n); if (p == IntPtr.Zero) return ""; try { if (n < 2) return ""; string a = Marshal.PtrToStringUni(Marshal.ReadIntPtr(p, IntPtr.Size)); return (a == null || a.StartsWith("-")) ? "" : a; } finally { LocalFree(p); } } }';`
 
 const INTERPRETERS = `$interpreters = @('node', 'nodejs', 'bun', 'deno', 'python', 'python3', 'ruby', 'perl');`
 
@@ -68,13 +89,13 @@ $ntUtf8 = New-Object System.Text.UTF8Encoding $false;
 $ntIn = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), $ntUtf8);
 $ntOut = New-Object System.IO.StreamWriter([Console]::OpenStandardOutput(), $ntUtf8);
 $ntOut.AutoFlush = $true;
-${PROBE_TYPE}
+${PROBE_TYPE.replace("';", ' ' + PROC_TABLE_CLASS + "';")}
 ${INTERPRETERS}
 function NtOwner([int]$rootPid) {
 ${ownerBody('$rootPid')}
 }
 function NtTable() {
-  ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | ForEach-Object { @{ ProcessId = [int]$_.ProcessId; ParentProcessId = [int]$_.ParentProcessId; Name = [string]$_.Name } })
+  [NtProcTable]::Json()
 }
 while ($true) {
   $line = $ntIn.ReadLine();
@@ -96,3 +117,9 @@ while ($true) {
     $ntOut.WriteLine('{"id":' + $id + ',"ok":false}')
   }
 }`
+
+/** The one-shot process-table read (one powershell.exe), the fallback when the worker cannot
+ *  answer. Same snapshot as the worker's `NtTable` (see PROC_TABLE_CLASS for why not CIM). */
+export const WIN32_PANE_TABLE_SCRIPT = `$ErrorActionPreference = 'Stop';
+Add-Type -TypeDefinition '${PROBE_USINGS} ${PROC_TABLE_CLASS}';
+[NtProcTable]::Json()`

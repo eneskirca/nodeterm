@@ -152,6 +152,71 @@ export function clearEnvEligibility(
  *  remedy (restart the app so a current host serves new sessions) differs from `'not-eligible'`'s. */
 export type RestartOutcome = 'restarted' | 'exit-timeout' | 'not-eligible' | 'host-unsupported'
 
+/**
+ * WHY a restart answered `'not-eligible'`. The outcome union stays as it is (`summarizeOutcomes`
+ * and the bulk line count on it, see `guardConcurrentRestart`); the reason rides beside it, per
+ * node, for the one consumer that shows a single node's result: the notice. Before this the notice
+ * listed five possible causes at once, and a user whose pane simply could not be read had no way
+ * to tell which one applied.
+ */
+export type RestartRefusal =
+  | 'busy'
+  | 'no-session'
+  | 'not-resumable'
+  | 'not-attached'
+  | 'in-flight'
+  | 'pane-unreadable'
+  | 'remote-session'
+  | 'agent-changed'
+  | 'agent-not-in-pane'
+  | 'launch-env'
+
+const refusals = new Map<string, RestartRefusal>()
+
+/** Record why this node's restart refused. The latest note wins; `takeRestartRefusal` reads it once. */
+export function noteRestartRefusal(nodeId: string, why: RestartRefusal): void {
+  refusals.set(nodeId, why)
+}
+
+/** The node's recorded refusal, removed as it is read (undefined = none recorded). */
+export function takeRestartRefusal(nodeId: string): RestartRefusal | undefined {
+  const why = refusals.get(nodeId)
+  refusals.delete(nodeId)
+  return why
+}
+
+/** `restartEligibility`'s reason in the refusal vocabulary. */
+export function refusalForIneligible(reason: IneligibleReason): RestartRefusal {
+  return reason === 'working' ? 'busy' : reason
+}
+
+const REFUSAL_TEXT: Record<RestartRefusal, string> = {
+  busy: 'this agent is working or waiting on a prompt. Try again once its turn is done.',
+  'no-session': 'nodeterm has no session id for this agent yet, so there is nothing to resume.',
+  'not-resumable': 'this agent cannot be quit and resumed in place.',
+  'not-attached': 'this terminal session is closed, ended, or still starting.',
+  'in-flight': 'a restart of this node is already running.',
+  'pane-unreadable':
+    'nodeterm could not read which program runs in this pane, so it could not tell when the ' +
+    'agent quits. With persistent sessions off there is nothing to read; on Windows the session ' +
+    'host reads the process table, and an older session host may be too slow to answer on some ' +
+    'machines (it is replaced once its sessions end).',
+  'remote-session': 'this session runs on another machine (relay).',
+  'agent-changed': 'the agent chosen no longer matches this node.',
+  'agent-not-in-pane': 'the agent is not the program running in this pane right now.',
+  'launch-env': 'the launch command needs environment values that are not set (Settings → Agents).'
+}
+
+/** The notice for a refused restart: the recorded reason when there is one, else every cause. */
+export function restartRefusalText(action: string, why: RestartRefusal | undefined): string {
+  const reason =
+    why === undefined
+      ? 'this session is busy, already restarting, not attached (closed, ended, or nothing to ' +
+        'resume), or its pane cannot be watched without persistent sessions.'
+      : REFUSAL_TEXT[why]
+  return `${action} skipped: ${reason} Nothing was written to the pane.`
+}
+
 export const RESTART_EXIT_TIMEOUT_MS = 6000
 export const RESTART_POLL_MS = 250
 /** Gap between the split exit writes (Ctrl-U, exit text, Enter) for a TUI that batches input. */
@@ -281,6 +346,8 @@ export async function performExitPhase(d: {
    * destroys the tmux session), and there is then no pane left to fail in.
    */
   isLive?: () => boolean
+  /** Told why the exit refused before writing anything (the pre-flight); see `RestartRefusal`. */
+  onRefusal?: (why: RestartRefusal) => void
 }): Promise<ExitPhaseOutcome> {
   const exit = exitSequence(d.agentId)
   // The eligibility GATE (not the command): `canResumeWith` validates the session id the way
@@ -288,19 +355,28 @@ export async function performExitPhase(d: {
   // `launchCmd` from settings (unavailable in this pure module). The typed resume line is the
   // caller's job (`performResumePhase` takes it as `d.command`); the exit half only needs to know
   // the session is one we WOULD resume into, so it does not quit a conversation it cannot bring back.
-  if (!exit || !canResumeWith(d.agentId, d.sessionId)) return 'not-eligible'
+  if (!exit || !canResumeWith(d.agentId, d.sessionId)) {
+    d.onRefusal?.(exit ? 'no-session' : 'not-resumable')
+    return 'not-eligible'
+  }
   const timeoutMs = d.timeoutMs ?? RESTART_EXIT_TIMEOUT_MS
   const pollMs = d.pollMs ?? RESTART_POLL_MS
   // A dead session is not a restart that failed — there is no pane left to fail in. `'not-eligible'`
   // (uncounted) rather than `'exit-timeout'`, which claims something sharper and false: that the CLI
   // is still running and refused to quit, sending the user to look at a pane that is gone.
   const gone = (): boolean => !!d.isLive && !d.isLive()
-  if (gone()) return 'not-eligible'
+  if (gone()) {
+    d.onRefusal?.('not-attached')
+    return 'not-eligible'
+  }
   // ── Pre-flight: prove we can SEE this pane before quitting anything in it (see the header).
   // Reported as `'not-eligible'`, the outcome that means "not a target right now" and is the one
   // the menu and the notice already have wording for. Nothing has been written at this point.
   const before = await queryPaneWithin(d.paneCommand, timeoutMs)
-  if (before === null || gone()) return 'not-eligible'
+  if (before === null || gone()) {
+    d.onRefusal?.(gone() ? 'not-attached' : 'pane-unreadable')
+    return 'not-eligible'
+  }
   // Clear the prompt before typing the exit command. The pane is a REPL the user types into: a
   // half-written prompt left in it would otherwise be submitted as `…refactor the/exit` — the
   // draft lost and a real turn started (tokens, possibly edits) — and the CLI, still running,
@@ -543,6 +619,8 @@ export async function performRestartResume(d: {
   isLive?: () => boolean
   /** See `performResumePhase`. */
   onResumed?: () => void
+  /** See `performExitPhase`. */
+  onRefusal?: (why: RestartRefusal) => void
 }): Promise<RestartOutcome> {
   const exited = await performExitPhase({
     agentId: d.agentId,
@@ -552,7 +630,8 @@ export async function performRestartResume(d: {
     timeoutMs: d.timeoutMs,
     pollMs: d.pollMs,
     lateExitMs: d.lateExitMs ?? RESTART_LATE_EXIT_MS,
-    isLive: d.isLive
+    isLive: d.isLive,
+    onRefusal: d.onRefusal
   })
   // `'exit-timeout'` / `'not-eligible'` mean the same things they always did, so they are the
   // restart's outcome verbatim — nothing has been resumed and nothing more may be written.
@@ -600,7 +679,10 @@ export function guardConcurrentRestart<T extends string, Args extends unknown[]>
   fn: (...args: Args) => Promise<T>
 ): (...args: Args) => Promise<T | 'not-eligible'> {
   return async (...args: Args) => {
-    if (inFlight.has(nodeId)) return 'not-eligible'
+    if (inFlight.has(nodeId)) {
+      noteRestartRefusal(nodeId, 'in-flight')
+      return 'not-eligible'
+    }
     inFlight.add(nodeId)
     try {
       return await fn(...args)

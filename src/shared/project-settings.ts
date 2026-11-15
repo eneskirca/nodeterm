@@ -18,6 +18,8 @@
  * for node-exec.ts).
  */
 
+import { sanitizeSecretDecls, type ProjectSecretDecl } from './project-secrets'
+
 export const PROJECT_SETTINGS_FILE = 'settings.json'
 
 export type ProjectSettingsFamily = 'setup' | 'worktree' | 'agents' | 'terminal'
@@ -36,6 +38,9 @@ export interface ProjectAgentSettings {
   defaultAgentId?: string
   launchCmd?: string
   env?: Record<string, string>
+  /** Declared secrets (@shared/project-secrets): a variable name plus the command whose output
+   *  is the value. A DECLARATION only — a value is never stored in this file or anywhere on disk. */
+  secrets?: ProjectSecretDecl[]
 }
 export interface ProjectTerminalSettings {
   shell?: string
@@ -91,7 +96,7 @@ const SHARED_PATH_STRING_CAP = 1024
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/
 
-type FieldKind = 'string' | 'bigString' | 'trueOnly' | 'env' | 'paths'
+type FieldKind = 'string' | 'bigString' | 'trueOnly' | 'env' | 'paths' | 'secrets'
 
 interface FieldSpec {
   kind: FieldKind
@@ -116,7 +121,8 @@ const FAMILY_FIELDS: Record<ProjectSettingsFamily, Record<string, FieldSpec>> = 
   agents: {
     defaultAgentId: { kind: 'string' },
     launchCmd: { kind: 'string' }, // cap overridden to LAUNCH_CMD_CAP below
-    env: { kind: 'env' }
+    env: { kind: 'env' },
+    secrets: { kind: 'secrets' }
   },
   terminal: {
     shell: { kind: 'string' },
@@ -196,6 +202,8 @@ function sanitizeField(kind: FieldKind, key: string, v: unknown): unknown {
       return sanitizeEnv(v)
     case 'paths':
       return sanitizeSharedPaths(v)
+    case 'secrets':
+      return sanitizeSecretDecls(v)
     default:
       return undefined
   }
@@ -301,7 +309,12 @@ type R<T> = ResolvedProjectSetting<T>
 export interface ResolvedProjectSettings {
   setup: { setupScript?: R<string>; archiveScript?: R<string>; waitForSetup?: R<boolean> }
   worktree: { basePath?: R<string>; baseRef?: R<string>; sharedPaths?: R<string[]> }
-  agents: { defaultAgentId?: R<string>; launchCmd?: R<string>; env?: R<Record<string, string>> }
+  agents: {
+    defaultAgentId?: R<string>
+    launchCmd?: R<string>
+    env?: R<Record<string, string>>
+    secrets?: R<ProjectSecretDecl[]>
+  }
   terminal: { shell?: R<string>; theme?: R<string>; fontFamily?: R<string> }
 }
 

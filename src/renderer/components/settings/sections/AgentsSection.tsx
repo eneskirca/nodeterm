@@ -60,6 +60,18 @@ import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
 import { IntegrationSettings } from '../IntegrationConsent'
+import { isBrowserRuntime } from '../../../bridge/runtime'
+import {
+  CROSS_PROJECT_SECRETS_POLICIES,
+  normalizeCrossProjectSecretsPolicy,
+  type CrossProjectSecretsPolicy
+} from '@shared/project-secrets'
+
+const CROSS_PROJECT_SECRETS_LABELS: Record<CrossProjectSecretsPolicy, string> = {
+  deny: 'Never give them',
+  allow: 'Like any agent node of the project',
+  ask: 'Ask me in the node'
+}
 
 const ROWS = {
   integrations: {
@@ -187,6 +199,10 @@ const ROWS = {
       'strict',
       'refused'
     ]
+  },
+  projectSecretsCrossProject: {
+    title: 'Project secrets for nodes opened by another project',
+    keywords: ['secret', 'secrets', 'token', 'environment', 'cross-project', 'project', 'agent', 'security']
   },
   browserControl: {
     title: 'Browser control',
@@ -744,6 +760,31 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
           }
         />
       </SearchableRow>
+      {!isBrowserRuntime() && (
+        <SearchableRow {...ROWS.projectSecretsCrossProject}>
+          <FieldRow
+            label="Project secrets for nodes opened by another project"
+            description="A project can declare secrets its agents need (Secrets… in the project tab menu). When an agent of a DIFFERENT project opens an agent node in that project, this decides whether the node receives them: never, like any agent node of the project, or only if you agree in that node before its terminal starts. This computer only."
+            control={
+              <Select
+                aria-label="Project secrets for nodes opened by another project"
+                value={normalizeCrossProjectSecretsPolicy(settings.projectSecretsCrossProject)}
+                onChange={(e) =>
+                  update({
+                    projectSecretsCrossProject: normalizeCrossProjectSecretsPolicy(e.target.value)
+                  })
+                }
+              >
+                {CROSS_PROJECT_SECRETS_POLICIES.map((p) => (
+                  <option key={p} value={p}>
+                    {CROSS_PROJECT_SECRETS_LABELS[p]}
+                  </option>
+                ))}
+              </Select>
+            }
+          />
+        </SearchableRow>
+      )}
       <SearchableRow {...ROWS.browserControl}>
         <FieldRow
           label="Browser control"

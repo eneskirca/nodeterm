@@ -25,7 +25,11 @@ import {
   registerAgentHibernate,
   registerAgentRestart,
   restartEligibility,
+  restartRefusalText,
   restartSessionId,
+  noteRestartRefusal,
+  refusalForIneligible,
+  takeRestartRefusal,
   runBoundedBulkRestart,
   settleRecycledNode,
   settleRestart,
@@ -643,6 +647,18 @@ describe('performExitPhase', () => {
     // A pane we cannot WATCH must never be quit: the CLI would die with the resume never sent.
     expect(await p).toBe('not-eligible')
     expect(written).toEqual([])
+  })
+
+  it('says WHY it refused: an unreadable pane, a gone session, an id it would not resume', async () => {
+    const reasons: string[] = []
+    const { io } = fakeIo()
+    const base = { io, timeoutMs: 1000, pollMs: 100, onRefusal: (w: string) => reasons.push(w) }
+    const unreadable = performExitPhase({ ...base, agentId: 'claude', sessionId: 'sid-1', paneCommand: async () => null })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(await unreadable).toBe('not-eligible')
+    await performExitPhase({ ...base, agentId: 'claude', sessionId: 'sid-1', paneCommand: async () => 'claude', isLive: () => false })
+    await performExitPhase({ ...base, agentId: 'claude', sessionId: 'bad id; rm', paneCommand: async () => 'claude' })
+    expect(reasons).toEqual(['pane-unreadable', 'not-attached', 'no-session'])
   })
 
   it('has no late window unless the caller asks for one (Eco sweep, Pause)', async () => {
@@ -1988,5 +2004,36 @@ describe('performExitPhase on a SLOW pane read (Windows session host)', () => {
     await vi.advanceTimersByTimeAsync(1150)
     expect(settled).toBe(true)
     expect(await p).toBe('exit-timeout')
+  })
+})
+
+describe('restart refusal reasons', () => {
+  it('are read once per node, and the latest note wins', () => {
+    noteRestartRefusal('n1', 'busy')
+    noteRestartRefusal('n1', 'pane-unreadable')
+    expect(takeRestartRefusal('n1')).toBe('pane-unreadable')
+    expect(takeRestartRefusal('n1')).toBeUndefined()
+    expect(takeRestartRefusal('other')).toBeUndefined()
+  })
+
+  it('a doubled request is recorded as already running', async () => {
+    let release: () => void = () => {}
+    const run = guardConcurrentRestart('n2', () => new Promise<'restarted'>((r) => (release = () => r('restarted'))))
+    const first = run()
+    expect(await run()).toBe('not-eligible')
+    expect(takeRestartRefusal('n2')).toBe('in-flight')
+    release()
+    expect(await first).toBe('restarted')
+  })
+
+  it('map the eligibility gate and name ONE cause in the notice', () => {
+    expect(refusalForIneligible('working')).toBe('busy')
+    expect(refusalForIneligible('no-session')).toBe('no-session')
+    const text = restartRefusalText('Restart', 'pane-unreadable')
+    expect(text).toMatch(/^Restart skipped: nodeterm could not read which program runs in this pane/)
+    expect(text).not.toMatch(/busy/)
+    expect(text).toMatch(/Nothing was written to the pane\.$/)
+    // Nothing recorded: the old sentence, every cause.
+    expect(restartRefusalText('Restart', undefined)).toMatch(/busy, already restarting, not attached/)
   })
 })
