@@ -1,4 +1,4 @@
-// Live links on the session host, client side: a watcher's attachment (`watch-attach`) carries no
+// The session host's watch-attach, client side: a viewer's attachment (`watch-attach`) carries no
 // size claim, no pause ticket and no input; the client up/downgrades its one connection's attachment
 // as voting subscribers come and go; and the two negotiated reads (`captureVisible`, `paneCwd`) are
 // never sent to a host that did not advertise them. Real client, fake host, real socket.

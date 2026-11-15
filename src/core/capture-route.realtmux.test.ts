@@ -1,11 +1,11 @@
-// A LIVE LINK'S KEYFRAME, CAPTURED FROM A REAL TMUX (R10 + R17, amended by R18: no alt-screen flag).
+// THE VISIBLE-SCREEN CAPTURE, FROM A REAL TMUX (no alt-screen flag).
 //
 // What is measured here is a property of tmux, not of our code, so it cannot be unit-tested:
 //  - the one invocation `capture-pane … ; display-message …` really does print the visible screen
 //    and THEN the cursor line, and only the visible rows (never the history above them);
 //  - the target spelling is EXACT. Node ids end in a counter, so `nt-x-1` is a prefix of `nt-x-12`,
 //    and tmux falls back to prefix matching on a miss: a bare target would capture ANOTHER node's
-//    screen and send it to this link's viewers. `=name:` is the spelling that is exact AND resolves
+//    screen and paint it on this node's client. `=name:` is the spelling that is exact AND resolves
 //    for a target-pane (measured on tmux 3.4: `=name` alone is "can't find pane").
 //
 // Private socket in a private TMUX_TMPDIR (`makeTmuxTmpdir`), never `node-terminal`/`nodeterm-rmt`;

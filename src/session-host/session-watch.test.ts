@@ -1,5 +1,5 @@
 // HostSession's `watch-attach` transaction and its reported cwd, at unit level (the real-protocol
-// wiring is live-links-host.test.ts). A watch attachment must never contribute a geometry claim or
+// wiring is watch-attach-host.test.ts). A watch attachment must never contribute a geometry claim or
 // a pause ticket, and must give up any claim its connection held.
 import { describe, expect, it, vi } from 'vitest'
 import type { Socket } from 'net'

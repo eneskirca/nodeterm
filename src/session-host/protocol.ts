@@ -114,8 +114,8 @@ export type SessionHostRequest =
    *  answers `unknown command`; the client then fails closed and never falls back to sendKeys. */
   | { id: number; cmd: 'writeDetachedV1'; name: string; data: string }
   | { id: number; cmd: 'capture'; name: string; full: boolean }
-  /** `captureVisible` feature only: the VISIBLE rows (no history) plus cursor + active buffer — a
-   *  live link's keyframe. Never sent to a host that did not advertise it. */
+  /** `captureVisible` feature only: the VISIBLE rows (no history) plus cursor + active buffer.
+   *  Never sent to a host that did not advertise it. */
   | { id: number; cmd: 'captureVisible'; name: string }
   /** `paneCwd` feature only: the last cwd the pane REPORTED (OSC 7 / 9;9 / 633), never the spawn
    *  cwd. */

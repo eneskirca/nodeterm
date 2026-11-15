@@ -82,7 +82,6 @@ const subscribeProjectSetupConsentDismiss = subscribe<[{ requestId: string }]>(
 // payload carries the projectId, fanned out the same way — nobody broadcasts it yet (Task 2), but
 // the renderer cache subscribes ahead of the emitter.
 const subscribeProjectTrustChanged = subscribe<[{ projectId: string }]>(IPC.projectTrustChanged)
-// Live links: owner-only pushes from core (the node chip, the popover and Settings all listen).
 
 const api: NodeTerminalApi = {
   pty: {

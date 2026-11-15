@@ -52,7 +52,6 @@ export function noSessionHost(): Record<string, unknown> {
     sessionHostCaptureVisible: async () => null,
     sessionHostPaneCwd: async () => null,
     sessionHostSupportsWatch: async () => false,
-    sessionHostWatchKnown: () => undefined,
     sessionHostListSessionsDetailed: async () => null,
     sessionHostMessageOwner: async () => null,
     sessionHostMessagePasteReady: async () => false,

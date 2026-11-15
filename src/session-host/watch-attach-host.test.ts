@@ -1,6 +1,6 @@
-// Live links on the session host: drives the REAL bundled host over its real socket protocol for the
+// The session host's watch-attach and visible capture: drives the REAL bundled host over its real socket protocol for the
 // three negotiated additions — `watch-attach` (a viewer subscribes with NO geometry claim and cannot
-// type or resize), `captureVisible` (the keyframe: visible rows + cursor + active buffer) and `paneCwd`
+// type or resize), `captureVisible` (visible rows + cursor + active buffer) and `paneCwd`
 // (the cwd the pane REPORTED, never the spawn cwd). The fake pty echoes every write back as output,
 // so a test types escape sequences in and reads what the host's emulator made of them.
 import { afterEach, describe, expect, it } from 'vitest'
@@ -23,7 +23,7 @@ import { sessionHostPaths, type SessionHostState } from './paths'
 
 function fakePtyPlugin(): Plugin {
   return {
-    name: 'session-host-live-links-fake-pty',
+    name: 'session-host-watch-attach-fake-pty',
     setup(bundle) {
       bundle.onResolve({ filter: /^node-pty$/ }, () => ({ path: 'node-pty', namespace: 'geo' }))
       bundle.onLoad({ filter: /^node-pty$/, namespace: 'geo' }, () => ({
@@ -145,7 +145,7 @@ function dataSeen(events: SessionHostEvent[], marker: string): boolean {
   return events.some((event) => event.type === 'data' && event.data.includes(marker))
 }
 
-describe('session-host live link features', () => {
+describe('session-host watch-attach features', () => {
   it('watch-attach, captureVisible and paneCwd over the real protocol', async () => {
     const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'nt-session-host-live-'))
     cleanupPaths.push(fixtureDir)

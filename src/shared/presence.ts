@@ -154,8 +154,7 @@ export function capCodePoints(text: string, max: number): string {
  * The directional formatting characters, as a character-class BODY (escapes only — a bidi character
  * written literally makes the pattern unreadable, and a file carrying one is flagged as bidi text):
  * ALM (U+061C), LRM/RLM (U+200E/F), the embeddings and overrides (U+202A–E) and the isolates
- * (U+2066–9). ONE definition: `UNSAFE_DISPLAY_CHARS` below and the live-link owner side
- * (@shared/watch-link-types `stripBidiControls`) are built from it.
+ * (U+2066–9). ONE definition: `UNSAFE_DISPLAY_CHARS` below is built from it.
  */
 const BIDI_CONTROL_CLASS = '\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069'
 /** Only the directional formatting characters (see BIDI_CONTROL_CLASS) — for text where the other

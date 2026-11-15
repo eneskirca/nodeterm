@@ -1,7 +1,7 @@
 // A POSIX machine with NO tmux: the session host is eligible, but a node may live in Zellij instead.
 // A join-only create (hosted-relay viewer) whose session the host does NOT have must fall through to
 // the existing join decision — which reaches a LIVE Zellij session — rather than being refused by the
-// session-host watch probe before Zellij is ever asked (review of the win-10-live-links package).
+// session-host watch probe before Zellij is ever asked.
 import fs from 'fs'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

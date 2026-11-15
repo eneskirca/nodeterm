@@ -1,7 +1,7 @@
-// LIVE LINK CONTROL INPUT, PROVEN AGAINST A REAL TMUX DRIVING A REAL PANE.
+// PANE INPUT, PROVEN AGAINST A REAL TMUX DRIVING A REAL PANE.
 //
 // The subject is `controlInputPlan` / `remoteControlInputPlan` run through the production
-// `runPasteDelivery`, i.e. exactly what `PtyManager.controlInput` runs: keys as `source-file -` with
+// `runPasteDelivery`, i.e. exactly what `PtyManager.sendPaneKeys` runs: keys as `source-file -` with
 // `send-keys -H` lines behind a mode cancel, pastes as `load-buffer -` + `paste-buffer -d -p -r`.
 // What judges is not a parser of ours: the pane runs a program that puts its tty in RAW mode and
 // appends every byte it receives to a file, so a byte either reached the application or it did not.

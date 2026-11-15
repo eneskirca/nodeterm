@@ -1,6 +1,6 @@
-// Live links on a SESSION-HOST node (Windows, or no tmux): a join-only create — a live link watcher or
-// a hosted-relay viewer — joins a generation the host CONFIRMED through a read-only `watch-attach`
-// attachment, and is refused for every other answer; the keyframe and the pane cwd come from the
+// A SESSION-HOST node (Windows, or no tmux): a join-only create — a hosted-relay viewer — joins a
+// generation the host CONFIRMED through a read-only `watch-attach`
+// attachment, and is refused for every other answer; the visible screen and the pane cwd come from the
 // host's own negotiated reads. Harness mirrors pty-session-host.test.ts: no local tmux, so the
 // session host is the selected backend, and every backend export this file reaches is mocked.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -39,7 +39,6 @@ vi.mock('./session-host-backend', async (importOriginal) => ({
   watchExistingSessionHostPty: backend.watch,
   sessionHostHasSession: backend.hasSession,
   sessionHostSupportsWatch: backend.supportsWatch,
-  sessionHostWatchKnown: () => undefined,
   sessionHostCaptureVisible: backend.captureVisible,
   sessionHostPaneCwd: backend.paneCwd,
   sessionHostCapture: backend.capture,
@@ -152,16 +151,6 @@ describe('PtyManager: join-only creates on the session host', () => {
     expect(backend.watch).not.toHaveBeenCalled()
     expect(backend.create).not.toHaveBeenCalled()
     expect(backend.attachExisting).not.toHaveBeenCalled()
-  })
-
-  it('a live link watcher (joinAsWatcher) takes the same route and has no typing path', async () => {
-    const m = await makeManager()
-    const res = await m.joinAsWatcher(VIEWER, { persistKey: NODE, viewerId: 'link-a' })
-    expect(res.unavailable).toBeUndefined()
-    expect(backend.watch).toHaveBeenCalledTimes(1)
-    expect(m.watcherInputRoute(res.sessionId)).toBe('none')
-    // A session-host watch has no tmux window to read; the host pushes its size itself.
-    await expect(m.syncWatcherClientSize(res.sessionId)).resolves.toBe(true)
   })
 
   it('an owner opening the node afterwards gets its OWN attachment, never the viewer one', async () => {

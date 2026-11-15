@@ -1,4 +1,4 @@
-// The pure builders behind a live link controller's input. What they MEAN on a real tmux (bytes
+// The pure builders behind pane input (`PtyManager.sendPaneKeys`). What they MEAN on a real tmux (bytes
 // exact, the prefix inert, a mode cancelled first, the exact session only) is proven in
 // `pane-input.realtmux.test.ts`; this file pins their shape and their refusals.
 import { describe, expect, it } from 'vitest'

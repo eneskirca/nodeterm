@@ -1,10 +1,11 @@
-// LIVE LINK CONTROL: a controller's typed bytes reach the node's PANE, never a tmux CLIENT.
+// PANE INPUT: typed bytes reach a node's PANE, never a tmux CLIENT. `PtyManager.sendPaneKeys` uses
+// these plans (bulk pause, Esc in the ⌘M chat view, the chat clear). They were written for live-link
+// Control, retired in 2026-11; the measurements below are about tmux and still hold.
 //
-// Why a pane and not a client. Writing into a tmux client's pty — the owner's painter, or the
-// watcher's own `attach-session` client — makes tmux read the bytes as that client's KEYBOARD:
-// they go through its key tables, so `C-b s` opens the session chooser and every other session on
-// the server is one keystroke away (`C-b s`, `j`, Enter). A watcher's own client is also read-only
-// and would drop every byte. So keys are injected into the pane with `send-keys -H`, which tmux
+// Why a pane and not a client. Writing into a tmux client's pty (the owner's painter) makes tmux
+// read the bytes as that client's KEYBOARD: they go through its key tables, so `C-b s` opens the
+// session chooser and every other session on the server is one keystroke away (`C-b s`, `j`,
+// Enter). So keys are injected into the pane with `send-keys -H`, which tmux
 // hands to the pane as `KEYC_LITERAL` bytes (`cmd-send-keys.c` → `window_pane_key` →
 // `input_key`: "Literal keys go as themselves"), with no client and no key table involved — the
 // same command the background-write path already types with (`encodeSendKeysHex`).
@@ -85,31 +86,9 @@ import {
 } from './tmux-naming'
 import { RMT_TMUX_SOCKET, childArgs, remoteDeleteBufferArgs, tmuxCmd } from './remote-ssh/control-master'
 
-/** One unit of a controller's input. `keys` are typed byte for byte; `paste` is text tmux frames
- *  per the pane's own bracketed-paste state. */
+/** One unit of pane input. `keys` are typed byte for byte; `paste` is text tmux frames per the
+ *  pane's own bracketed-paste state. */
 export type ControlInputChunk = { kind: 'keys'; data: string } | { kind: 'paste'; text: string }
-
-/**
- * How a controller's input reaches a session's pane (`PtyManager.watcherInputRoute`):
- *  - `tmux`  — the local tmux, by the plans in this file;
- *  - `ssh`   — the same plans on the host, over the project's ControlMaster;
- *  - `write` — PtyManager's ordinary write path (the Windows session host, a direct Windows pane,
- *              the plain-shell fallback: there is no tmux client in between to reach a key table);
- *  - `none`  — refused (Zellij: its key bindings are session-wide; an unknown session).
- */
-export type WatcherInputRoute = 'tmux' | 'ssh' | 'write' | 'none'
-/** Every route, for a reader that must check one it did not produce (link-host.ts `normalizeJoin`). */
-export const WATCHER_INPUT_ROUTES = ['tmux', 'ssh', 'write', 'none'] as const satisfies readonly WatcherInputRoute[]
-
-/**
- * How long one chunk of a controller's input may take, from the moment it is HANDED OVER: the link
- * host gives up on it then (INPUT_DELIVERY_TIMEOUT_MS is this value) and tells its controller it was
- * dropped, and `PtyManager.controlInput` answers false at the same instant — a chunk that waited
- * behind a slow one gets only what is left — and moves the session's chain on. So a delivery that
- * never answers cannot hold every later chunk behind it, and a chunk with nothing left when its turn
- * comes is never delivered at all.
- */
-export const PANE_INPUT_DEADLINE_MS = 20_000
 
 /** Bytes per `send-keys -H` line: 3 characters each on the line, so ~3 KiB a line. */
 export const KEYS_PER_COMMAND = 1024

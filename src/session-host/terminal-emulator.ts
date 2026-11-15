@@ -88,7 +88,7 @@ export class TerminalEmulator {
   }
 
   /**
-   * A live link's keyframe: the VISIBLE rows of the ACTIVE buffer only (never history), in the shape
+   * The visible-screen capture: the VISIBLE rows of the ACTIVE buffer only (never history), in the shape
    * `capture-pane -p -e` prints — SGR, one `\n`-terminated line per row — plus the viewport-relative
    * cursor and whether the alternate buffer is active.
    *

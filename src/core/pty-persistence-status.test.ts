@@ -4,12 +4,10 @@ import { fakePlatform } from './platform-fake'
 import { PtyManager } from './pty-manager'
 
 const host = vi.hoisted(() => ({
-  supported: vi.fn(() => false),
-  watchKnown: vi.fn((): boolean | undefined => undefined)
+  supported: vi.fn(() => false)
 }))
 vi.mock('./session-host-backend', () => ({
-  sessionHostSupported: host.supported,
-  sessionHostWatchKnown: host.watchKnown
+  sessionHostSupported: host.supported
 }))
 vi.mock('node-pty', () => ({ spawn: vi.fn() }))
 
@@ -17,7 +15,6 @@ describe('local persistence discovery (#575)', () => {
   beforeEach(() => {
     initPlatform(fakePlatform())
     host.supported.mockReturnValue(false)
-    host.watchKnown.mockReset().mockReturnValue(undefined)
   })
   afterEach(() => { vi.restoreAllMocks(); resetPlatformForTests() })
 
@@ -43,9 +40,8 @@ describe('local persistence discovery (#575)', () => {
   it('never treats a Windows tmux path as protection', () => {
     expect(manager('win32', true).tmuxStatus().persistence?.backend).toBeNull()
   })
-  it('reports no live-link join flag, whatever the connected host speaks', () => {
+  it('reports the session-host backend and nothing else', () => {
     host.supported.mockReturnValue(true)
-    host.watchKnown.mockReturnValue(true)
     expect(manager('win32', false).tmuxStatus().persistence).toEqual({ enabled: true, backend: 'session-host' })
   })
   it('keeps the user setting distinct from backend discovery', () => {

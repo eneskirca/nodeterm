@@ -21,6 +21,6 @@ describe('pty-manager: the native ssh pty argv', () => {
   it('assigns nativeSshArgv only from the remote-tmux builders', () => {
     const writes = [...src.matchAll(/\bnativeSshArgv\s*=(?!=)\s*([A-Za-z_][\w]*)/g)].map((m) => m[1])
     expect(writes.length).toBeGreaterThan(0)
-    for (const w of writes) expect(['null', 'remoteTmuxWatcherArgs', 'remoteTmuxPtyArgs']).toContain(w)
+    for (const w of writes) expect(['null', 'remoteTmuxPtyArgs']).toContain(w)
   })
 })

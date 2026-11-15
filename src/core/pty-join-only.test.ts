@@ -222,6 +222,14 @@ describe('joinOnly: a viewer may watch a terminal but never start one', () => {
     expect(spawned).toHaveLength(1) // a tmux CLIENT onto the existing session, not a new session
   })
 
+  it('a hosted Viewer (joinOnly, sizeVote:false) keeps its new-session -A mirror, never attach-session', async () => {
+    await tmuxManager('present')
+    await create(VIEWER, { joinOnly: true, sizeVote: false })
+    expect(spawned[0].args).toContain('new-session')
+    expect(spawned[0].args).toContain('-A')
+    expect(spawned[0].args).not.toContain('attach-session')
+  })
+
   it('a refusal leaves nothing behind: the owner still opens the node normally afterwards', async () => {
     await manager()
     expect(await create(VIEWER, { joinOnly: true })).toEqual(REFUSED)
