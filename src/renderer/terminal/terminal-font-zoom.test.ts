@@ -6,6 +6,7 @@ import {
   TERMINAL_FONT_SIZE_MIN,
   TERMINAL_FONT_ZOOM_EVENT,
   effectiveTerminalFontSize,
+  fontZoomNoticeText,
   fontZoomTargetNodeId,
   forwardedResetMatches,
   leavesSharedGlyphAtlas,
@@ -269,5 +270,24 @@ describe('patchProjectFontSize (the store-level patch the Omni mirror applies)',
     expect(patchProjectFontSize(projects, 'p1', 'a', 15)).toBe(projects)
     expect(patchProjectFontSize(projects, 'p1', 'missing', 20)).toBe(projects)
     expect(patchProjectFontSize(projects, 'nope', 'a', 20)).toBe(projects)
+  })
+})
+
+describe('fontZoomNoticeText', () => {
+  it('names the new size on a step', () => {
+    expect(fontZoomNoticeText('increase', undefined, 14, 13)).toBe('Terminal font size 14')
+    expect(fontZoomNoticeText('decrease', 14, undefined, 13)).toBe('Terminal font size 13')
+  })
+  it('says so when the clamp refuses a step, instead of staying silent', () => {
+    expect(fontZoomNoticeText('increase', TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MAX, 13)).toBe(
+      `Terminal font size ${TERMINAL_FONT_SIZE_MAX} (maximum)`
+    )
+    expect(fontZoomNoticeText('decrease', TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MIN, 13)).toBe(
+      `Terminal font size ${TERMINAL_FONT_SIZE_MIN} (minimum)`
+    )
+  })
+  it('reports a reset to the default, and says nothing for a reset that changes nothing', () => {
+    expect(fontZoomNoticeText('reset', 20, undefined, 13)).toBe('Terminal font size reset to default (13)')
+    expect(fontZoomNoticeText('reset', undefined, undefined, 13)).toBeNull()
   })
 })

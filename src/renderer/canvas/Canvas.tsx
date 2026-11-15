@@ -339,6 +339,7 @@ import {
   normalizeTerminalFontSize,
   patchProjectFontSize,
   requestTerminalFontZoom,
+  fontZoomNoticeText,
   type TerminalFontZoomRequest
 } from '../terminal/terminal-font-zoom'
 import { isMacPlatform, isWindowsPlatform } from '@shared/platform-utils'
@@ -11116,10 +11117,30 @@ export function Canvas() {
     const onFontZoom = (e: Event): void => {
       const d = (e as CustomEvent<TerminalFontZoomRequest>).detail
       if (!d?.nodeId) return
+      const globalSize = useSettings.getState().settings.fontSize
       const node = nodesRef.current.find((n) => n.id === d.nodeId)
-      if (!node || node.type !== 'terminal') return
+      if (!node) {
+        // Not on THIS canvas: a global-board card of another project. Its size is stored content,
+        // so write it through the store's own-write path (like the icon of an off-canvas node), then
+        // persist. A relay tab's node belongs to the host's core and stays untouched.
+        const st = useProjects.getState()
+        const owner = nodeOwner(st.projects, d.nodeId)
+        const stored = owner?.nodes.find((n) => n.id === d.nodeId)
+        if (!owner || owner.remote || !stored || (stored.kind ?? 'terminal') !== 'terminal') return
+        const storedPrev = normalizeTerminalFontSize(stored.terminalFontSize)
+        const storedNext = nextTerminalFontSizeOverride(d.action, storedPrev, globalSize)
+        const storedText = fontZoomNoticeText(d.action, storedPrev, storedNext, globalSize)
+        if (storedText) setNotice({ kind: 'info', text: storedText })
+        if (storedNext === storedPrev) return
+        st.applyOwnNodeMutation(owner.id, { op: 'upsert', node: { ...stored, terminalFontSize: storedNext } })
+        void persist()
+        return
+      }
+      if (node.type !== 'terminal') return
       const prev = normalizeTerminalFontSize(node.data.terminalFontSize)
-      const next = nextTerminalFontSizeOverride(d.action, prev, useSettings.getState().settings.fontSize)
+      const next = nextTerminalFontSizeOverride(d.action, prev, globalSize)
+      const noticeText = fontZoomNoticeText(d.action, prev, next, globalSize)
+      if (noticeText) setNotice({ kind: 'info', text: noticeText })
       if (next === prev) return
       setNodes((ns) =>
         ns.map((n) => (n.id === d.nodeId ? { ...n, data: { ...n.data, terminalFontSize: next } } : n))
@@ -11140,7 +11161,7 @@ export function Canvas() {
     }
     window.addEventListener(TERMINAL_FONT_ZOOM_EVENT, onFontZoom)
     return () => window.removeEventListener(TERMINAL_FONT_ZOOM_EVENT, onFontZoom)
-  }, [setNodes, markDirty, nodesRef])
+  }, [setNodes, markDirty, nodesRef, persist])
 
   // Apply the accent color as a CSS variable.
   useEffect(() => {
