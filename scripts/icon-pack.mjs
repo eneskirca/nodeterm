@@ -9,6 +9,16 @@
 // launcher. Packing our own container with a size check makes that class of skew
 // unshippable.
 
+/** Sizes of the Linux icon set (`build/icons/<N>x<N>.png`, package.json `linux.icon`).
+ *
+ *  Every entry must be a directory the freedesktop `hicolor` theme DECLARES in its index.theme
+ *  (16/22/24/32/36/48/64/72/96/128/192/256/512 as of hicolor-icon-theme 0.18). An icon installed
+ *  under an undeclared size is never found by a theme lookup: issue #1421 — the deb/rpm shipped
+ *  one PNG under `hicolor/1024x1024/apps/`, which the index does not list, so `Icon=node-terminal`
+ *  resolved to nothing and the taskbar showed a generic icon. electron-builder installs one file
+ *  per PNG it finds in the directory and does not check the size against the theme. */
+export const LINUX_ICON_SIZES = [16, 24, 32, 48, 64, 128, 256, 512]
+
 /** Apple's iconutil frame table: icns OSType → the pixel size that type MUST carry.
  *  icp4/icp5 are the 1x small sizes; ic11–ic14 are the @2x (retina) variants; PNG payloads
  *  are legal for all of them. */
