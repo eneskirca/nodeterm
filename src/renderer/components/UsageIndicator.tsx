@@ -36,6 +36,7 @@ import {
   providerPillSegments
 } from '@shared/usage-limits'
 import { systemAccountDisplay } from '../state/workspace'
+import { noteRemoteSystemEmails } from '../state/systemAccount'
 
 /** Grace period before a hover-opened popover closes, so the pointer can cross the pill's own
  *  gap (or clip a corner en route elsewhere) without the panel flickering shut. */
@@ -517,7 +518,9 @@ export function UsageIndicator({
     }
     let cancelled = false
     void window.nodeTerminal.usage.remote({ hostKey: scopeHostKey }).then((rows) => {
-      if (!cancelled) setRemote(rows)
+      if (cancelled) return
+      setRemote(rows)
+      noteRemoteSystemEmails(rows)
     })
     return () => {
       cancelled = true
@@ -650,6 +653,7 @@ export function UsageIndicator({
           .remote({ hostKey: scope.hostKey, force: true })
           .catch((): RemoteAccountUsage[] => [])
         if (remoteScope.current === requestedScope) setRemote(rows)
+        noteRemoteSystemEmails(rows)
       } else {
         // The other providers sit behind the same debounce, so a stale failure (an expired token
         // the CLI has since renewed) would otherwise stay on screen until it runs out. Settled

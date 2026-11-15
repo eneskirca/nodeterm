@@ -52,6 +52,7 @@ import {
   canToggleCollapse,
   selectedRootIds,
   systemAccountDisplay,
+  systemAccountDisplayOn,
   type CanvasNode
 } from '../state/workspace'
 import { clearEnvEligibility, restartEligibility, restartSessionId } from '../terminal/agent-restart'
@@ -830,9 +831,11 @@ export function buildAccountSwitchRows(nodeId: string, ctx: NodeActionCtx): Menu
           const currentAccountId = (n?.data.accountId as string | undefined) || undefined
           // The system row names the machine it is on: an SSH node's is the HOST's
           // `~/.claude`, whose identity this machine's system email says nothing about.
-          const systemLabel = hostKey
-            ? `System account (${hostKey})`
-            : systemAccountDisplay(settingsNow.systemAccountLabel, useSystemAccount.getState().email)
+          const systemLabel = systemAccountDisplayOn(
+            hostKey,
+            { label: settingsNow.systemAccountLabel, email: useSystemAccount.getState().email },
+            hostKey ? useSystemAccount.getState().remoteEmails[hostKey] : undefined
+          )
           const row = (id: string | undefined, label: string): MenuItem => {
             const isCurrent = (id || undefined) === currentAccountId
             return {

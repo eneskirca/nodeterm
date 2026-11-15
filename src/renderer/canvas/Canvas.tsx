@@ -946,7 +946,7 @@ import {
   createCodexAccountLoginNode,
   createSystemLoginNode,
   isAccountLoginNode,
-  systemAccountDisplay,
+  systemAccountDisplayOn,
   createAgentNode,
   createBrowserNode,
   createDinoNode,
@@ -11375,9 +11375,16 @@ export function Canvas() {
       const accounts = accountsForProject(useSettings.getState().settings.claudeAccounts, project)
       // The system entry shows the user's custom label / detected email so it stays
       // distinguishable from managed accounts (falls back to "System account").
-      const systemLabel = systemAccountDisplay(
-        useSettings.getState().settings.systemAccountLabel,
-        useSystemAccount.getState().email
+      // On an SSH project the system row is the HOST's `~/.claude`, so it is named after the host
+      // (its detected email when known) — never after this machine's label or login.
+      const projectHostKey = project?.ssh ? sshHostKey(project.ssh.server) : undefined
+      const systemLabel = systemAccountDisplayOn(
+        projectHostKey,
+        {
+          label: useSettings.getState().settings.systemAccountLabel,
+          email: useSystemAccount.getState().email
+        },
+        projectHostKey ? useSystemAccount.getState().remoteEmails[projectHostKey] : undefined
       )
       // ✓ marks what a bare "New Claude" resolves to: the project default while it still
       // exists, else the system account (mirrors resolveNewNodeAccount's stale-id guard).
@@ -11398,9 +11405,10 @@ export function Canvas() {
         .settings.codexAccounts.filter(
           (a) => !a.pending && (codexHostKey ? a.host === codexHostKey : !a.host)
         )
-      const codexSystemLabel = systemAccountDisplay(
-        undefined,
-        useSystemCodexAccount.getState().email
+      const codexSystemLabel = systemAccountDisplayOn(
+        codexHostKey,
+        { email: useSystemCodexAccount.getState().email },
+        codexHostKey ? useSystemCodexAccount.getState().remoteEmails[codexHostKey] : undefined
       )
       const itemForBuiltin = (aid: (typeof BUILTIN_AGENT_IDS)[number]): MenuItem => {
         // Claude gets an account picker submenu when ≥1 account exists. The System row is an

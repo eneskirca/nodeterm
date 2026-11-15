@@ -17,7 +17,7 @@ import {
   SYSTEM_NODE_COLORS,
   accountsForProject,
   sshAccountsHint,
-  systemAccountDisplay
+  systemAccountDisplayOn
 } from '../../../state/workspace'
 import { FieldRow } from '../FieldRow'
 import { FAMILY_SEARCH_ENTRIES, ProjectFamilyEditors } from '../ProjectSettingsFamilies'
@@ -29,6 +29,7 @@ import { projectSectionId } from '../project-settings-targets'
 import { matchesQuery, type SettingsSearchEntry } from '../search'
 import { useProjectSettings } from '../useProjectSettings'
 import { PROJECT_NAME_MAX, clampProjectName } from '@shared/project-name'
+import { sshHostKey } from '@shared/ssh'
 
 /**
  * Persists an identity/defaults edit. The store setters (`renameProject`, `setProjectColor`,
@@ -174,7 +175,13 @@ function EditableProjectSection({
   const globalMode = useSettings((s) => s.settings.claudePermissionMode)
   const systemLabelSetting = useSettings((s) => s.settings.systemAccountLabel)
   const systemEmail = useSystemAccount((s) => s.email)
-  const systemLabel = systemAccountDisplay(systemLabelSetting, systemEmail)
+  const remoteSystemEmails = useSystemAccount((s) => s.remoteEmails)
+  const projectHostKey = project.ssh ? sshHostKey(project.ssh.server) : undefined
+  const systemLabel = systemAccountDisplayOn(
+    projectHostKey,
+    { label: systemLabelSetting, email: systemEmail },
+    projectHostKey ? remoteSystemEmails[projectHostKey] : undefined
+  )
   const accounts = accountsForProject(claudeAccounts, project)
   const accountsHint = sshAccountsHint(project, accounts)
 

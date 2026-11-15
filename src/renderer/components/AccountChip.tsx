@@ -50,11 +50,15 @@ export function useAccountChip(
   observed: ObservedClaudeAccount | undefined,
   /** The agent-status store of the session the node's project belongs to. Absent = the default
    *  store. */
-  statusStore?: AgentStatusSession['store']
+  statusStore?: AgentStatusSession['store'],
+  /** `user@host` when the node's pane runs on an SSH host (absent = this machine). */
+  hostKey?: string
 ): AccountChipInfo | null {
   const accounts = useSettings((s) => s.settings.claudeAccounts)
   const systemLabel = useSettings((s) => s.settings.systemAccountLabel)
   const systemEmail = useSystemAccount((s) => s.email)
+  // A primitive selector, for the same reason as `multiple` below.
+  const remoteSystemEmail = useSystemAccount((s) => (hostKey ? (s.remoteEmails[hostKey] ?? null) : null))
   // A PRIMITIVE selector (the `usageScopeKey` rule): this subscription lives on every node header
   // on the canvas, and returning the key set itself would re-render all of them on every hook
   // event of every node. `hasMultipleAccountKeys` early-exits at the second key. `accounts` rides
@@ -68,7 +72,17 @@ export function useAccountChip(
     if (known) useSystemAccount.getState().ensure()
   }, [known])
   return useMemo(
-    () => accountChipFor({ dataAccountId, observed, accounts, systemLabel, systemEmail, multiple }),
-    [dataAccountId, observed, accounts, systemLabel, systemEmail, multiple]
+    () =>
+      accountChipFor({
+        dataAccountId,
+        observed,
+        accounts,
+        systemLabel,
+        systemEmail,
+        hostKey,
+        remoteSystemEmail,
+        multiple
+      }),
+    [dataAccountId, observed, accounts, systemLabel, systemEmail, hostKey, remoteSystemEmail, multiple]
   )
 }

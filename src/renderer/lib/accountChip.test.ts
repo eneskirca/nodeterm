@@ -133,6 +133,17 @@ describe('configDirLabel', () => {
 })
 
 describe('accountChipFor (chip visibility, and naming an unlinked dir)', () => {
+
+  it('names an SSH pane\'s system account after the HOST, never this machine', () => {
+    const base = { observed: system, accounts, systemLabel: 'Personal', systemEmail: 'me@x.com', multiple: true }
+    const unknown = accountChipFor({ ...base, hostKey: 'root@box' })
+    expect(unknown?.short).toBe('System')
+    expect(unknown?.tooltip).toContain('System account (root@box)')
+    expect(unknown?.tooltip).not.toContain('Personal')
+    const known = accountChipFor({ ...base, hostKey: 'root@box', remoteSystemEmail: 'ops@server.dev' })
+    expect(known?.tooltip).toContain('ops@server.dev')
+    expect(known?.tooltip).toContain('~/.claude on root@box')
+  })
   const accounts = [acct(), acct({ id: 'a2', label: 'personal', email: undefined, configDir: '/home/me/.claude-2' })]
 
   it('shows no chip for a system node while one identity is in play', () => {

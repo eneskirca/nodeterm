@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
+import { sshHostKey } from '@shared/ssh'
 import { createPortal } from 'react-dom'
 import { isTopDialog, nextDialogId, popDialog, pushDialog } from '../dialog-stack'
 import {
@@ -197,7 +198,12 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   // hides the node, carries it here so the session's name is never two views away.
   const sessionName = agentStatusStore((st) => st.byId[session.id]?.session)
   const portsRemote = useProjects((s) => !!(portsProjectId && s.getProject(portsProjectId)?.ssh))
-  const accountChip = useAccountChip(session.spawn.accountId, observedAccount, agentStatusStore)
+  const accountChip = useAccountChip(
+    session.spawn.accountId,
+    observedAccount,
+    agentStatusStore,
+    session.spawn.ssh ? sshHostKey(session.spawn.ssh) : undefined
+  )
   const [naming, setNaming] = useState(false)
   // The board funnel's progress for this node (`onAiName`), shared with the card menu's row.
   const funnelNaming = useSessionNaming((st) => !!st.byId[session.id])

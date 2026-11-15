@@ -1,6 +1,6 @@
 import type { ClaudeAccount, ObservedClaudeAccount } from '@shared/types'
 import { isRemoteSessionNode } from '@shared/worktree'
-import { accountChipLabel, systemAccountDisplay } from '../state/workspace'
+import { accountChipLabel, systemAccountDisplayOn } from '../state/workspace'
 
 /**
  * Per-node Claude account labelling — the pure half of the account chip.
@@ -427,6 +427,8 @@ export function accountChipFor({
   accounts,
   systemLabel,
   systemEmail,
+  hostKey,
+  remoteSystemEmail,
   multiple
 }: {
   dataAccountId?: string
@@ -436,6 +438,11 @@ export function accountChipFor({
   systemLabel?: string
   /** The detected `~/.claude` login email (`state/systemAccount`), when known. */
   systemEmail?: string | null
+  /** `user@host` when the pane runs on an SSH host: its system account is the HOST's `~/.claude`,
+   *  which this machine's label / email says nothing about. Absent = this machine. */
+  hostKey?: string
+  /** The host's detected system login email (`state/systemAccount` `remoteEmails`), when known. */
+  remoteSystemEmail?: string | null
   /** Are ≥ 2 distinct account keys in play on this core? (`hasMultipleAccountKeys`) */
   multiple?: boolean
 }): AccountChipInfo | null {
@@ -445,7 +452,20 @@ export function accountChipFor({
   if (!key) return null // nothing known — no chip, and nothing counted either
   if (key === SYSTEM_ACCOUNT_KEY) {
     if (!multiple) return null // one identity in play: the system pane is the unremarkable case
-    const display = systemAccountDisplay(systemLabel, systemEmail)
+    const display = systemAccountDisplayOn(
+      hostKey,
+      { label: systemLabel, email: systemEmail },
+      remoteSystemEmail
+    )
+    if (hostKey) {
+      // The short form cannot carry the host tag, so an unknown host login reads "System" and the
+      // tooltip says whose `~/.claude` it is.
+      return {
+        short: remoteSystemEmail ? shortAccountLabel(display) : 'System',
+        tooltip: `${display} — system Claude account (~/.claude on ${hostKey})`,
+        kind: 'system'
+      }
+    }
     return {
       // With neither a custom label nor a detected email the display is the generic "System
       // account", which the 10-char cap turns into "System acc…" — an ellipsis that promises a

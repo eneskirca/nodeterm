@@ -5,7 +5,8 @@ import { isOmniKanbanEnabled, toggleBoardView, useViewMode, viewFor } from '../s
 import { useAgentStatusSig, type AgentStatusLookup } from '../session/agent-status-lookup'
 import { usePauseCounts } from '../state/pauseCounts'
 import { useSettings } from '../state/settings'
-import { accountsForProject, sshAccountsHint, systemAccountDisplay } from '../state/workspace'
+import { accountsForProject, sshAccountsHint, systemAccountDisplayOn } from '../state/workspace'
+import { sshHostKey } from '@shared/ssh'
 import { useSshConn } from '../state/sshConn'
 import { sshAutoModeHint } from '../state/permissionMode'
 import { useSystemAccount } from '../state/systemAccount'
@@ -206,7 +207,7 @@ export function TabBar({
   const globalMode = useSettings((s) => s.settings.claudePermissionMode)
   const systemLabelSetting = useSettings((s) => s.settings.systemAccountLabel)
   const systemEmail = useSystemAccount((s) => s.email)
-  const systemLabel = systemAccountDisplay(systemLabelSetting, systemEmail)
+  const remoteSystemEmails = useSystemAccount((s) => s.remoteEmails)
 
   // Session labels appear only once a second session exists (4c: remote tabs). For a solo user
   // this is always false, so the tab strip renders exactly as before. Plain call, not a
@@ -218,6 +219,14 @@ export function TabBar({
   // Accounts eligible as the caret-menu project's default: local accounts for a local project, this
   // host's accounts for an SSH project (pending logins always excluded).
   const menuAccounts = accountsForProject(claudeAccounts, menuProject)
+  // The system row belongs to the machine the MENU's project runs on: an SSH project's is the
+  // host's own `~/.claude`, which this machine's label / email says nothing about.
+  const menuHostKey = menuProject?.ssh ? sshHostKey(menuProject.ssh.server) : undefined
+  const systemLabel = systemAccountDisplayOn(
+    menuHostKey,
+    { label: systemLabelSetting, email: systemEmail },
+    menuHostKey ? remoteSystemEmails[menuHostKey] : undefined
+  )
   // SSH project with no accounts on its host: say where accounts for this host come from instead
   // of presenting a bare System-only list (which read as "multi-account is broken on SSH").
   const menuAccountsHint = sshAccountsHint(menuProject, menuAccounts)
