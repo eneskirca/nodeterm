@@ -746,18 +746,6 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   credentials, license or pairing belongs in `src/shared/host-control.ts` instead — refused to every
   relay peer.
 
-- **Live links: a new broadcast channel needs nothing, a new per-session pty channel needs a
-  decision.** Live-link viewers are quiet clients, so no broadcast ever reaches them. A per-session pty
-  event reaches a viewer only once it is added to `watcherEventAllowed`
-  (`src/core/watch-link/watcher-policy.ts`) on purpose — and only if its payload is the visible screen,
-  never history (why `pty:resync` is refused). Never add link state to a node, a board or a canvas op:
-  canvas sync and the canvas authority would publish it. `src/shared/watch-link/` is copied byte for
-  byte into the viewer page's repo: import only siblings and `tweetnacl`, write type imports as
-  `import type` (`isomorphism.guard.test.ts` fails otherwise), and expect a change there to need a
-  re-vendor. A new viewer CAST is refused until `watcherAccess` admits it on purpose, and a Control
-  link's typed bytes reach only the node's pane through `PtyManager.controlInput` — never written into a
-  tmux client's pty (the prefix would reach tmux) and never on a command line. `docs/live-links.md`.
-
 - **A change to canvas content that does not travel as a `canvas:mut` op is lost on a hosted core —
   route new content edits through the op vocabulary (`src/shared/canvas-content.ts`).** On a Server
   Edition hosting a team, the canvas authority writes a shared project's nodes, edges and board

@@ -387,7 +387,7 @@ The decision is enes's. Device check 10 below gathers the evidence.
   2. Set the cutoff in the admin console's Project limit card (an ISO instant with an offset).
   3. Same day on nodeterm-web: add a **Plans** section (the site has no pricing page today) —
      Core: `Up to 5 open projects (existing installs keep their current count)`; Pro `$10/mo`:
-     unlimited open projects, live links, 3 team seats, larger dictation models, nodeterm mobile
+     unlimited open projects, 3 team seats, larger dictation models, nodeterm mobile
      Pro — and the changelog line `Free plan: 5 open projects; existing installs keep their current
      count.` No banner, email or in-app notice.
   4. Privacy page additions, deferred to the flip on purpose:
