@@ -41,3 +41,37 @@ export function boundAccountId(
   if (agentId !== undefined && !ACCOUNT_CAPABLE_AGENT_IDS.includes(agentId)) return undefined
   return accountId
 }
+
+/**
+ * `boundAccountId`, plus the question it cannot answer on its own: does this id belong to the
+ * provider this agent logs in with?
+ *
+ * Managed Claude and Codex accounts are two lists sharing one id alphabet, and both builtins are
+ * account-capable, so `boundAccountId` happily binds a CLAUDE account id to a CODEX node. Every
+ * path that inherits an account instead of having the user pick one does exactly that: canvas
+ * control (`open-agent --agent codex` from a session on a managed Claude account stamps the
+ * source's id; a project whose default account is a Claude account stamps that) and the board's
+ * `+ New`. The node is then refused at spawn — the Codex scope gate (`needsCodexAccountScope` in
+ * core) fails closed on an id that is not a Codex account — so it sat QUEUED forever with nothing
+ * naming the account as the cause (issue #1423).
+ *
+ * So a Codex node keeps an id only when the Codex list owns it; anything else is the SYSTEM login
+ * (`undefined`), which is what the same call produced when no Claude account was involved. That is
+ * not the fail-open Property 4 forbids: nobody picked this account for this node — an EXPLICIT
+ * Codex pick still goes through `resolveNewCodexNodeAccount`, which refuses rather than downgrades.
+ *
+ * `isCodexAccount` is required for the reason `needsCodexAccountScope` gives: the id alone cannot
+ * say, and neither default is safe. Claude is not checked the other way round here — every caller
+ * that hands a Claude node an id already resolved it against the Claude list
+ * (`resolveNewNodeAccount`).
+ */
+export function ownedAccountId(
+  accountId: string | undefined,
+  agentId: string | undefined,
+  isCodexAccount: (id: string) => boolean
+): string | undefined {
+  const bound = boundAccountId(accountId, agentId)
+  if (bound === undefined) return undefined
+  if (agentId === 'codex' && !isCodexAccount(bound)) return undefined
+  return bound
+}

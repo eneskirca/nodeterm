@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { boundAccountId } from './account-binding'
+import { boundAccountId, ownedAccountId } from './account-binding'
 
 describe('boundAccountId', () => {
   it('binds a managed account to a Claude node', () => {
@@ -35,5 +35,33 @@ describe('boundAccountId', () => {
   it('is undefined when no account is given', () => {
     expect(boundAccountId(undefined, 'claude')).toBeUndefined()
     expect(boundAccountId('', 'claude')).toBeUndefined()
+  })
+})
+
+// Issue #1423: `open-agent --agent codex` from a session on a managed CLAUDE account stamped that
+// Claude account id on the Codex node, which the Codex scope gate then refused at spawn.
+describe('ownedAccountId', () => {
+  const isCodexAccount = (id: string): boolean => id === 'cx1'
+
+  it('drops a Claude account id from a Codex node — it becomes the system login', () => {
+    expect(ownedAccountId('claude-acct', 'codex', isCodexAccount)).toBeUndefined()
+  })
+
+  it('keeps a Codex account on a Codex node', () => {
+    expect(ownedAccountId('cx1', 'codex', isCodexAccount)).toBe('cx1')
+  })
+
+  it('leaves a Claude node exactly as boundAccountId does', () => {
+    expect(ownedAccountId('claude-acct', 'claude', isCodexAccount)).toBe('claude-acct')
+    expect(ownedAccountId(undefined, 'claude', isCodexAccount)).toBeUndefined()
+  })
+
+  it('still binds nothing to an agent that owns no accounts', () => {
+    expect(ownedAccountId('cx1', 'gemini', isCodexAccount)).toBeUndefined()
+    expect(ownedAccountId('cx1', 'custom:abc', isCodexAccount)).toBeUndefined()
+  })
+
+  it('keeps the unstated-agent binding — the phone may send an account without an agent', () => {
+    expect(ownedAccountId('claude-acct', undefined, isCodexAccount)).toBe('claude-acct')
   })
 })

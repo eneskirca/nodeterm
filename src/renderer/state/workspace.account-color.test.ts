@@ -162,3 +162,26 @@ describe('createAgentNode — account default color', () => {
     expect(createAgentNode('claude', 0).data.color).toBe(AGENT_COLOR('claude'))
   })
 })
+
+// Issue #1423. The canvas-control open paths, the board's `+ New` and the cross-project open all
+// resolve ONE account against the Claude list and hand it to this factory whatever the agent is.
+describe('createAgentNode — an inherited account must belong to the agent’s provider', () => {
+  it('does not stamp a Claude account id on a Codex node', () => {
+    withAccounts([account('claude-acct', '#0a84ff')])
+    const node = createAgentNode('codex', 0, undefined, undefined, undefined, undefined, 'claude-acct')
+    expect(node.data.accountId).toBeUndefined()
+    expect(node.data.color).toBe(AGENT_COLOR('codex'))
+  })
+
+  it('keeps a Codex account on a Codex node', () => {
+    withAccounts([account('claude-acct')], [codexAccount('cx1')])
+    const node = createAgentNode('codex', 0, undefined, undefined, undefined, undefined, 'cx1')
+    expect(node.data.accountId).toBe('cx1')
+  })
+
+  it('keeps a Claude account on a Claude node', () => {
+    withAccounts([account('claude-acct')])
+    const node = createAgentNode('claude', 0, undefined, undefined, undefined, undefined, 'claude-acct')
+    expect(node.data.accountId).toBe('claude-acct')
+  })
+})
