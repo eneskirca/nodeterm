@@ -129,13 +129,13 @@ describe('captureVisible — local tmux', () => {
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
   })
 
-  it('a plain shell (not tmux-backed) gets no keyframe and runs nothing', async () => {
+  it('a plain shell (not tmux-backed) gets no visible capture and runs nothing', async () => {
     const m = await manager({ tmuxBacked: false })
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
     expect(calls).toEqual([])
   })
 
-  it('no tmux binary: no keyframe, nothing run', async () => {
+  it('no tmux binary: no visible capture, nothing run', async () => {
     const m = await manager({}, null)
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
     expect(calls).toEqual([])
@@ -149,7 +149,7 @@ describe('captureVisible — local tmux', () => {
 })
 
 describe('captureVisible — never history', () => {
-  it("a session-host session's keyframe is the host's visible-only read, with its own altScreen", async () => {
+  it("a session-host session's visible capture is the host's visible-only read, with its own altScreen", async () => {
     hostCaptureVisible.mockResolvedValueOnce({ screen: 'vis\n', cursor: { x: 3, y: 0 }, altScreen: false })
     const m = await manager({ sessionHost: true })
     expect(await m.captureVisible('sess-1')).toEqual({ screen: 'vis\n', cursor: { x: 3, y: 0 }, altScreen: false })
@@ -158,7 +158,7 @@ describe('captureVisible — never history', () => {
     expect(calls).toEqual([])
   })
 
-  it('a session host without the read (older build) gets NO keyframe — never its scrollback capture', async () => {
+  it('a session host without the read (older build) gets NO visible capture — never its scrollback capture', async () => {
     hostCaptureVisible.mockResolvedValueOnce(null)
     const m = await manager({ sessionHost: true })
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
@@ -166,7 +166,7 @@ describe('captureVisible — never history', () => {
     expect(calls).toEqual([])
   })
 
-  it('a direct Windows pane gets no keyframe either', async () => {
+  it('a direct Windows pane gets no visible capture either', async () => {
     const capture = vi.fn(() => 'HISTORY')
     const m = await manager({ nativeWindowsPane: { capture } })
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())

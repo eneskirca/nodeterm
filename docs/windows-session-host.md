@@ -894,11 +894,6 @@ via `scripts/patch-node-pty.mjs` is worth doing only if a device shows ≥ ~8 MB
   by default (no OSC 7 / 9;9), so a plain Windows shell's relative file links still resolve against
   the launch cwd only; agent CLIs and shell integrations that emit OSC 7 / 9;9 / 633 work. No prompt
   hook is installed for them (it would rewrite the user's prompt); an opt-in one is a follow-up.
-- **Control typing into a session-host node needs the node open when the viewer joins**: a viewer
-  of a node nobody holds rides a read-only `watch-attach` attachment, which has no typing path (the
-  host refuses its writes, and keys must not be retyped as a framed `sendKeys` paste). The input
-  route is decided at join, so that viewer stays read-only after the owner opens the node, until it
-  rejoins.
 - **No equivalent of `paneOwner` / `bracketPasteRequested` / a standalone `paneCursor` query** —
   see the protocol table's "Not implemented" note. Nothing in this app currently calls these for a
   session-host-backed node (they are gated behind `this.tmuxPath` being set), so nothing is

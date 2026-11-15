@@ -1487,11 +1487,6 @@ export class SessionHostClient {
     return this.hostFeatures.has(feature)
   }
 
-  /** The negotiated answer for `feature` WITHOUT connecting: undefined while there is no connection. */
-  connectedFeature(feature: SessionHostFeature): boolean | undefined {
-    return this.socket ? this.hostFeatures.has(feature) : undefined
-  }
-
   private async attachSubscriber(
     name: string,
     sub: SessionSubscriber,

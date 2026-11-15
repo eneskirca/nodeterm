@@ -71,7 +71,7 @@ describe('localCaptureVisibleArgs', () => {
   })
 
   it('asks for the cursor and nothing else — no alternate-screen flag (R18)', () => {
-    // A keyframe's altScreen comes from the JOIN (tmux-backed client => true), never the capture:
+    // A visible capture's altScreen comes from the JOIN (tmux-backed client => true), never the capture:
     // the pane's `#{alternate_on}` describes a different screen than the tmux client's stream.
     expect(VISIBLE_CAPTURE_FORMAT).toBe('#{cursor_x} #{cursor_y}')
     expect(args.join(' ')).not.toContain('alternate_on')

@@ -175,7 +175,7 @@ describe('PtyManager: join-only creates on the session host', () => {
   })
 })
 
-describe('PtyManager: session-host keyframe and pane cwd', () => {
+describe('PtyManager: session-host visible capture and pane cwd', () => {
   let manager: import('./pty-manager').PtyManager | undefined
   let host: FakePlatform
 

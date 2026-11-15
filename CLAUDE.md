@@ -10314,7 +10314,12 @@ The invariants, each with its reason:
   rewritten to `(null, null)`: a small window must not shrink everyone's terminal. `joinOnly`
   asks the STRICT exact-target probe (`has-session -t =nt-<id>`), refuses when it cannot tell, and
   reattaches without `-D`. The folded probe reads a tmux error as "exists", which is the safe answer
-  for an owner and would let a viewer's `new-session -A` CREATE the session.
+  for an owner and would let a viewer's `new-session -A` CREATE the session. On the Windows session
+  host the join-only viewer rides a read-only `watch-attach` (`SESSION_HOST_WATCH`): no geometry
+  claim and no pause ticket, the host refuses its writes and resizes, it never spawns, and its
+  `Session` is `watcherClient` (never indexed as the node's session). A host without the
+  `watch-attach` feature REFUSES the viewer (`join-only`), never an ordinary attach; details:
+  `docs/windows-session-host.md`.
 - **The host key is never silently regenerated** (`host-key.ts`). Its public key IS the team's
   address (`hostId`), so a new key orphans every bookmark and sends every teammate back through
   first-join approval. Unreadable ⇒ hosting stays off with `host-key-unreadable`; only

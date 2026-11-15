@@ -99,7 +99,6 @@ import {
   type VisibleCapture
 } from './capture-route'
 import { controlInputPlan, remoteControlInputPlan } from './pane-input'
-import { sanitizePasteText } from './paste-injection'
 import {
   recordFreshSpawnOwner,
   forgetPaneOwner,
@@ -408,24 +407,6 @@ function runTypedScript(args: readonly string[], input: string, env: NodeJS.Proc
       /* child gone; the exit code is what decides success */
     })
     child.stdin?.end(input)
-  })
-}
-
-/** `p`'s answer, or false once `ms` passed (the timer never holds the process). A rejection is false. */
-function settleWithin(p: Promise<boolean>, ms: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const timer = setTimeout(() => resolve(false), ms)
-    timer.unref?.()
-    p.then(
-      (v) => {
-        clearTimeout(timer)
-        resolve(v)
-      },
-      () => {
-        clearTimeout(timer)
-        resolve(false)
-      }
-    )
   })
 }
 
@@ -3365,7 +3346,6 @@ export class PtyManager {
     }
   })
 
-
   /** Find the live session registered under a node id (persistKey), if any. */
   private sessionByPersistKey(persistKey: string): Session | undefined {
     for (const session of this.sessions.values()) {
@@ -5912,7 +5892,7 @@ export class PtyManager {
     try {
       if (route === 'sessionHost') {
         // The host's own emulator answers (a negotiated `captureVisible`); an older host, a gone
-        // session or any failure is null ⇒ no keyframe. Never the scrollback `capture` in its place.
+        // session or any failure is null ⇒ no visible capture. Never the scrollback `capture` in its place.
         // `altScreen` comes from the emulator's ACTIVE buffer: no tmux client sits between the pane
         // and the stream here, so the pane's own buffer IS the stream's.
         const cap = await sessionHostCaptureVisible(target)

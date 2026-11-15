@@ -115,7 +115,7 @@ describe('visible capture against a real tmux', () => {
     expect(got.screen).not.toMatch(/(^|\n)\d+ \d+\n?$/)
   })
 
-  itTmux('only the visible rows — the history above them is never in the keyframe', () => {
+  itTmux('only the visible rows — the history above them is never in the visible capture', () => {
     const got = captureVisible('nt-hist')
     expect(got.screen).toContain('L10')
     expect(got.screen).not.toMatch(/^L1$/m)
@@ -128,7 +128,7 @@ describe('visible capture against a real tmux', () => {
     expect(got.screen).toContain('ALT')
     expect(got.screen).not.toContain('MAIN')
     expect(got.cursor).toEqual({ x: 5, y: 1 })
-    // The keyframe's altScreen is the caller's, from the join — the capture reports none.
+    // The visible capture's altScreen is the caller's, from the join — the capture reports none.
     expect(Object.keys(got).sort()).toEqual(['cursor', 'screen'])
   })
 })

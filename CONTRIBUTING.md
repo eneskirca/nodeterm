@@ -662,7 +662,7 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   pty produces no next chunk, so a resume that waits for one never comes: that froze the phone's
   terminal for good after a single >8 MB burst. `host-service.ts` arms a 250 ms sweep while a stream
   is paused, then repaints with a snapshot before it resumes — the same drain-sweep pattern as
-  `core/ui-sink-registry.ts` (whose self-paced sinks never drop). A new paused path needs the same
+  `core/ui-sink-registry.ts`. A new paused path needs the same
   trigger. CLAUDE.md, "Remote access".
 
 - **An SSH project's node runs on the project's host — ask the project, not the node.** Node

@@ -95,12 +95,12 @@ export class TerminalEmulator {
    * Built from `SerializeAddon` with `scrollback: 0` rather than by hand, so attributes, wide cells
    * and soft wraps encode exactly as the warm-attach replay does. Adjustments:
    *  - the ALTERNATE buffer: `serialize` always writes the normal buffer first and the alternate one
-   *    after `CSI ?1049h CSI H`; a keyframe is the active screen only (the viewer switches buffers
+   *    after `CSI ?1049h CSI H`; the capture is the active screen only (the viewer switches buffers
    *    itself from `altScreen` BEFORE painting), so only the part after that marker is kept;
-   *  - row separators: the addon joins rows with `\r\n`; a keyframe's contract is `\n`.
+   *  - row separators: the addon joins rows with `\r\n`; the capture's contract is `\n`.
    * The private-mode tail (bracketed paste, application cursor keys, mouse) IS kept, after the last
    * row: unlike a tmux client, a viewer joining a session-host stream mid-way never saw the app
-   * request them, and a Control viewer's keys encode by them. It is pure DECSET, so the viewer's
+   * request them, and a viewer that types encodes its keys by them. It is pure DECSET, so the viewer's
    * reset + clear paint is unaffected. The addon's trailing relative cursor restore is dropped (the
    * viewer places the cursor absolutely from `cursor`).
    */
@@ -117,7 +117,7 @@ export class TerminalEmulator {
     const body = screenPart
       .replace(/\r\n/g, '\n')
       // The addon's trailing RELATIVE cursor restore (CUU/CUD/CUF/CUB after the last row) is dropped:
-      // the keyframe carries the cursor absolutely, and a relative move followed by the row's `\n`
+      // the capture carries the cursor absolutely, and a relative move followed by the row's `\n`
       // could scroll the viewer. A row itself never ends in one (a gap is only emitted before a
       // following character), so only the tail matches. The pen-style SGR after it is kept.
       // eslint-disable-next-line no-control-regex
