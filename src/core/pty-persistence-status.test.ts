@@ -43,21 +43,10 @@ describe('local persistence discovery (#575)', () => {
   it('never treats a Windows tmux path as protection', () => {
     expect(manager('win32', true).tmuxStatus().persistence?.backend).toBeNull()
   })
-  it('reports watchJoin only for a session-host backend whose CONNECTED host speaks watch-attach', () => {
+  it('reports no live-link join flag, whatever the connected host speaks', () => {
     host.supported.mockReturnValue(true)
     host.watchKnown.mockReturnValue(true)
-    expect(manager('win32', false).tmuxStatus().persistence).toEqual({
-      enabled: true,
-      backend: 'session-host',
-      watchJoin: true
-    })
-    // tmux has its own watcher client: the flag is never asked there.
-    host.watchKnown.mockClear()
-    expect(manager('linux', true).tmuxStatus().persistence).toEqual({ enabled: true, backend: 'tmux' })
-    expect(host.watchKnown).not.toHaveBeenCalled()
-    // An older host (false) or no connection yet (undefined): absent, the conservative note stays.
-    host.watchKnown.mockReturnValue(false)
-    expect(manager('win32', false).tmuxStatus().persistence).not.toHaveProperty('watchJoin')
+    expect(manager('win32', false).tmuxStatus().persistence).toEqual({ enabled: true, backend: 'session-host' })
   })
   it('keeps the user setting distinct from backend discovery', () => {
     host.supported.mockReturnValue(true)

@@ -28,7 +28,6 @@ import type {
 } from '../shared/types'
 import type { ClientId, PeerDiff, PeerIdentity, PeerState } from '../shared/presence'
 import type { ProjectConsentRequest, ProjectSetupEvent } from '../shared/project-settings'
-import type { WatchChatMessage, WatchLinkNotice, WatchLinkView } from '../shared/watch-link-types'
 import type { DevPortForwardRequest, DevPortsQuery } from '../shared/dev-ports'
 
 // Fan a single ipcRenderer listener per channel out to many renderer subscribers. Without
@@ -84,9 +83,6 @@ const subscribeProjectSetupConsentDismiss = subscribe<[{ requestId: string }]>(
 // the renderer cache subscribes ahead of the emitter.
 const subscribeProjectTrustChanged = subscribe<[{ projectId: string }]>(IPC.projectTrustChanged)
 // Live links: owner-only pushes from core (the node chip, the popover and Settings all listen).
-const subscribeWatchLinkState = subscribe<[WatchLinkView[]]>(IPC.watchLinkState)
-const subscribeWatchLinkChat = subscribe<[string, WatchChatMessage]>(IPC.watchLinkChat)
-const subscribeWatchLinkNotice = subscribe<[WatchLinkNotice]>(IPC.watchLinkNotice)
 
 const api: NodeTerminalApi = {
   pty: {
@@ -1069,23 +1065,6 @@ const api: NodeTerminalApi = {
       ipcRenderer.on(IPC.stationHandoverChanged, handler)
       return () => ipcRenderer.removeListener(IPC.stationHandoverChanged, handler)
     }
-  },
-  // Live links (src/core/watch-link/service.ts). Owner-only IPC; the service answers this window.
-  watchLink: {
-    create: (req) => ipcRenderer.invoke(IPC.watchLinkCreate, req),
-    list: () => ipcRenderer.invoke(IPC.watchLinkList),
-    revoke: (linkId) => ipcRenderer.invoke(IPC.watchLinkRevoke, linkId),
-    revokeAll: () => ipcRenderer.invoke(IPC.watchLinkRevokeAll),
-    kick: (linkId, viewerId) => ipcRenderer.invoke(IPC.watchLinkKick, linkId, viewerId),
-    sendChat: (linkId, text) => ipcRenderer.invoke(IPC.watchLinkChatSend, linkId, text),
-    chatHistory: (linkId) => ipcRenderer.invoke(IPC.watchLinkChatHistory, linkId),
-    setControl: (linkId, enabled) => ipcRenderer.invoke(IPC.watchLinkSetControl, linkId, enabled),
-    setPassword: (linkId, password) => ipcRenderer.invoke(IPC.watchLinkSetPassword, linkId, password),
-    allowControl: (linkId) => ipcRenderer.invoke(IPC.watchLinkAllowControl, linkId),
-    controlSupport: (nodeId) => ipcRenderer.invoke(IPC.watchLinkControlSupport, nodeId),
-    onState: subscribeWatchLinkState,
-    onChat: subscribeWatchLinkChat,
-    onNotice: subscribeWatchLinkNotice
   }
 }
 

@@ -257,7 +257,6 @@ import {
   SessionHostProtocolCompatibilityError,
   watchExistingSessionHostPty,
   sessionHostSupportsWatch,
-  sessionHostWatchKnown,
   sessionHostCaptureVisible,
   sessionHostPaneCwd,
   sessionHostMouseTracking,
@@ -2441,7 +2440,7 @@ export class PtyManager {
     }
   }
 
-  /** `tmuxStatus().persistence`: where a new local terminal goes, and what a viewer can join there. */
+  /** `tmuxStatus().persistence`: where a new local terminal goes. */
   private persistenceStatus(available: boolean): NonNullable<TmuxStatus['persistence']> {
     const backend =
       // Zellij when it is selected AND found: that is where a new local terminal goes.
@@ -2452,10 +2451,7 @@ export class PtyManager {
           : sessionHostSupported() ? 'session-host' : null
     return {
       enabled: this.getSettings().tmuxEnabled,
-      backend,
-      // Live links can join a session-host node nobody holds open (`watch-attach`). Only a
-      // CONNECTED host's negotiated answer counts; unknown stays absent (the conservative note).
-      ...(backend === 'session-host' && sessionHostWatchKnown() === true ? { watchJoin: true } : {})
+      backend
     }
   }
 

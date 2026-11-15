@@ -1319,9 +1319,6 @@ export interface TmuxStatus {
   persistence?: {
     enabled: boolean
     backend: 'tmux' | 'zellij' | 'session-host' | null
-    /** Session host only: the CONNECTED host speaks `watch-attach`, so a live link viewer can join a
-     *  node nobody holds open. Absent = no / not known yet. */
-    watchJoin?: boolean
   } | null
   /**
    * The optional Zellij backend (@shared/session-backend): whether a `zellij` binary was found and
@@ -5040,9 +5037,4 @@ export interface NodeTerminalApi {
     list(): Promise<import('./station-handover').StationHandoverRecord[]>
     onChanged(cb: (records: import('./station-handover').StationHandoverRecord[]) => void): () => void
   }
-  /** Live links (src/core/watch-link/service.ts): a read-only, expiring browser link to one terminal,
-   *  hosted by THIS machine. Owner-only (`watchLink:*` is host-only). Desktop: real. Server Edition:
-   *  the real bridge, whose create answers `unsupported` until that edition has a license layer.
-   *  Relay tab: an inert stub (a peer's terminals are not this machine's to publish). */
-  watchLink: import('./watch-link-types').WatchLinkApi
 }

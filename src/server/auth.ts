@@ -43,8 +43,7 @@ export const GLOBAL_MAX_ATTEMPTS = 50
 export const CLIENT_MEMORY_MS = 60 * 60_000
 /** Bounded memory: past this many tracked clients, the least recently seen are forgotten. */
 export const MAX_TRACKED_CLIENTS = 10_000
-/** Concurrent scrypt verifications (each is ~16 MiB and a libuv pool thread) — the live-link
- *  service gates its own scrypt at the same number (core/watch-link/service.ts SCRYPT_SLOTS). */
+/** Concurrent scrypt verifications (each is ~16 MiB and a libuv pool thread). */
 export const SCRYPT_SLOTS = 2
 
 export type LoginOutcome = 'success' | 'failure' | 'abandoned'
@@ -62,8 +61,7 @@ interface ClientState {
   lastSeen: number
 }
 
-/** A FIFO gate: at most `slots` tasks run at once, the rest wait in order. Same shape as the
- *  live-link service's `createFifoGate` (core/watch-link/service.ts). */
+/** A FIFO gate: at most `slots` tasks run at once, the rest wait in order. */
 function fifoGate(slots: number): { run<T>(task: () => Promise<T>): Promise<T>; active(): number } {
   let active = 0
   const waiting: (() => void)[] = []
