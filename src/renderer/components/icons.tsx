@@ -175,6 +175,15 @@ export const IconRemote = () => (
   </svg>
 )
 
+/** Remote access (phone relay) on/off — an antenna with signal arcs. Not `IconRemote` (the globe
+ *  already means "web view") and not `IconBroadcast` ("share live link"). */
+export const IconRemoteAccess = () => (
+  <svg {...S}>
+    <circle cx="12" cy="9" r="1.8" />
+    <path d="M12 10.8V21M8.5 21h7M8.2 12.8a5.4 5.4 0 0 1 0-7.6M15.8 12.8a5.4 5.4 0 0 0 0-7.6M5.4 15.6a9.4 9.4 0 0 1 0-13.2M18.6 15.6a9.4 9.4 0 0 0 0-13.2" />
+  </svg>
+)
+
 export const IconSwitch = () => (
   <svg {...S}>
     <path d="M7 7h11l-3-3M17 17H6l3 3" />
