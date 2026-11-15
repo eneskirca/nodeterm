@@ -116,7 +116,7 @@ import {
   spawnFailureHint,
   type PtyDevices
 } from './pty-devices'
-import { REAP_SWEEP_MS, liveClientIds, shouldReap } from './pty-reap'
+import { REAP_SWEEP_MS, shouldReap } from './pty-reap'
 import { ControlModeClient, type ControlSpawn } from './tmux-control-client'
 import {
   TMUX_SOCKET,
@@ -1491,15 +1491,14 @@ export class PtyManager {
    * and its scrollback are untouched: this is the SAME detach the last subscriber's departure does,
    * and the next `pty:create` re-attaches to it. Read pty-reap.ts before changing any of it.
    *
-   * "Attached" is decided against the platform's live clients (`clientIds()` plus the quiet ones a
-   * live link's viewer attaches as — pty-reap.ts `liveClientIds`), not against the subscriber set:
-   * the whole point is the subscriber whose window/tab/peer is GONE and which therefore can never send
+   * "Attached" is decided against `platform().clientIds()`, not against the subscriber set: the
+   * whole point is the subscriber whose window/tab/peer is GONE and which therefore can never send
    * the `pty:kill` that would release the pty. A client id is never reused (Electron webContents
    * ids and the server's `nextUiId` both only go up), so a client that comes back comes back as a
    * new id and creates its sessions afresh — there is no returning client to strand.
    */
   private reapTick(): void {
-    const live = liveClientIds(platform())
+    const live = new Set(platform().clientIds())
     const now = Date.now()
     for (const [sessionId, session] of [...this.sessions]) {
       // A relay sink is a watcher (somebody's phone is mirroring this session); a parked terminal
@@ -1574,9 +1573,9 @@ export class PtyManager {
    *    outstanding (see `shadowCommand`). This method never rejects; failure is always null.
    *
    * WHAT A SHADOW IS NOT: not a subscriber, not a `Session`, not a renderer client id. Nothing in
-   * this process that decides "is somebody watching" can see it — the reap sweep asks the
-   * platform's live clients (`liveClientIds`) and walks `this.sessions`, and the renderer's park
-   * and offscreen dispose are per-node renderer state.
+   * this process that decides "is somebody watching" can see it — the reap sweep asks
+   * `platform().clientIds()` and walks `this.sessions`, and the renderer's park and offscreen
+   * dispose are per-node renderer state.
    *
    * It IS a real tmux client, so anything that asks TMUX "is this session attached" does see it,
    * and must subtract it. There is one such consumer: the session budget (session-budget.ts) culls
