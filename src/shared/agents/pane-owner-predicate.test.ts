@@ -114,6 +114,16 @@ describe('isAgentPane', () => {
     expect(isAgentPane(owner(['node /opt/bin/other']), 'custom:abc', ['whatever'])).toBe('not-agent')
   })
 
+  it('recognises antigravity after its Linux wrapper has exec-ed into agy-bin (issue #1373)', () => {
+    // `~/.local/bin/agy` is a shell script ending in `exec …/agy-bin "$@"`: the wrapper is gone
+    // from the process table, so `agy-bin` is the only name the foreground group ever shows.
+    expect(isAgentPane(owner(['/home/u/.antigravity/bin/agy-bin'], 'agy-bin'), 'antigravity')).toBe('agent')
+    expect(isAgentPane(owner(['agy-bin --conversation=abc'], 'agy-bin'), 'antigravity')).toBe('agent')
+    // Still exact-name: a look-alike is not the agent, and no other agent accepts it.
+    expect(isAgentPane(owner(['/usr/local/bin/agy-bin-helper']), 'antigravity')).toBe('not-agent')
+    expect(isAgentPane(owner(['/usr/local/bin/agy-bin']), 'gemini')).toBe('not-agent')
+  })
+
   it('covers every built-in agent, so a new one cannot be silently unverifiable', () => {
     for (const id of BUILTIN_AGENT_IDS) {
       expect(AGENT_BINARIES[id], `${id} has no binary list`).toBeTruthy()
