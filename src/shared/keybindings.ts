@@ -58,6 +58,8 @@ export type CommandId =
   | 'panel.sourceControl'
   | 'panel.sessions'
   | 'app.reopenLastClosed'
+  | 'project.next'
+  | 'project.prev'
   | 'canvas.undo'
   | 'canvas.redo'
   | 'canvas.goBack'
@@ -149,6 +151,16 @@ export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
     defaultBindings: both('Cmd+Shift+L'), allowInTerminal: true },
   { id: 'app.reopenLastClosed', title: 'Reopen last closed', group: 'General', scope: 'app',
     defaultBindings: both('Cmd+Shift+T'), allowInTerminal: true },
+  // Chrome's tab-cycling chords, on the project tab strip. `Ctrl` is the LITERAL Control key on
+  // every platform (mac included — ⌘Tab is the OS app switcher), which is also what Chrome uses.
+  // allowWhileTyping + allowInTerminal: like the browser's, it switches from wherever focus is —
+  // Ctrl+Tab types nothing in an input and xterm has no use for it. A browser reserves both
+  // chords for its own tabs and never delivers them to the page, so in the Server Edition these
+  // only fire once rebound.
+  { id: 'project.next', title: 'Next project tab', group: 'General', scope: 'app',
+    defaultBindings: both('Ctrl+Tab'), allowInTerminal: true, allowWhileTyping: true },
+  { id: 'project.prev', title: 'Previous project tab', group: 'General', scope: 'app',
+    defaultBindings: both('Ctrl+Shift+Tab'), allowInTerminal: true, allowWhileTyping: true },
 
   // Canvas — inert while the kanban board is open (scope 'canvas'), blocked while typing.
   { id: 'canvas.undo', title: 'Undo', group: 'Canvas', scope: 'canvas',

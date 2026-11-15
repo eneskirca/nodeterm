@@ -92,6 +92,11 @@ describe('registry invariants', () => {
         darwin: ['Cmd+Shift+L'], other: ['Cmd+Shift+L'], allowInTerminal: true },
       { id: 'app.reopenLastClosed', title: 'Reopen last closed', group: 'General', scope: 'app',
         darwin: ['Cmd+Shift+T'], other: ['Cmd+Shift+T'], allowInTerminal: true },
+      { id: 'project.next', title: 'Next project tab', group: 'General', scope: 'app',
+        darwin: ['Ctrl+Tab'], other: ['Ctrl+Tab'], allowInTerminal: true, allowWhileTyping: true },
+      { id: 'project.prev', title: 'Previous project tab', group: 'General', scope: 'app',
+        darwin: ['Ctrl+Shift+Tab'], other: ['Ctrl+Shift+Tab'], allowInTerminal: true,
+        allowWhileTyping: true },
       { id: 'canvas.undo', title: 'Undo', group: 'Canvas', scope: 'canvas',
         darwin: ['Cmd+Z'], other: ['Cmd+Z'] },
       { id: 'canvas.redo', title: 'Redo', group: 'Canvas', scope: 'canvas',
@@ -538,6 +543,22 @@ const ctx = (
 })
 
 describe('resolveCommandForKeyEvent', () => {
+  it('resolves Ctrl+Tab / Ctrl+Shift+Tab to the project-tab cycle from any focus, on both platforms', () => {
+    for (const isMac of [true, false]) {
+      for (const c of [ctx(), ctx({ terminal: true }), ctx({ typing: true }), ctx({ kanbanOpen: true })]) {
+        expect(resolveCommandForKeyEvent(ev({ ctrlKey: true, key: 'Tab' }), c, {}, isMac))
+          .toBe('project.next')
+        expect(resolveCommandForKeyEvent(ev({ ctrlKey: true, shiftKey: true, key: 'Tab' }), c, {}, isMac))
+          .toBe('project.prev')
+      }
+    }
+    // A bare Tab stays focus traversal, and terminal-first hands the chord back to the pane.
+    expect(resolveCommandForKeyEvent(ev({ key: 'Tab' }), ctx(), {}, true)).toBeNull()
+    expect(resolveCommandForKeyEvent(
+      ev({ ctrlKey: true, key: 'Tab' }), ctx({ terminal: true, terminalFirst: true }), {}, true
+    )).toBeNull()
+  })
+
   it('matches a default app chord', () => {
     expect(resolveCommandForKeyEvent(ev({ metaKey: true, key: 'k' }), ctx(), {}, true))
       .toBe('app.commandPalette')

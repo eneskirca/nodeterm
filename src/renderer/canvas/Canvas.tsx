@@ -327,6 +327,7 @@ import {
   waitingBeforeRestart
 } from '../lib/nextNeedingYou'
 import { liveProjectJumpTarget, projectJumpDigit } from '../lib/projectJump'
+import { adjacentProjectId } from '../lib/projectCycle'
 import {
   liveZoomShortcutAction,
   liveZoomShortcutContext,
@@ -10534,6 +10535,26 @@ export function Canvas() {
     return true
   }, [switchProject])
 
+  // `project.next` / `project.prev` (Ctrl+Tab / Ctrl+Shift+Tab): Chrome-style cycling through the
+  // OPEN project tabs, wrapping at both ends. With the global swimlane kanban up it scrolls to
+  // the neighbouring swimlane instead, the same substitution the ⌘1-9 jump makes above.
+  const cycleProject = useCallback((dir: 1 | -1): boolean => {
+    const { projects, activeProjectId: current } = useProjects.getState()
+    const globalKanban = isGlobalKanbanOpen()
+    const from = globalKanban
+      ? useViewMode.getState().highlightedSwimlaneId ?? current
+      : current
+    const targetId = adjacentProjectId(projects, from, dir)
+    if (!targetId) return false
+    if (globalKanban) {
+      useViewMode.getState().setHighlightedSwimlaneId(targetId)
+      window.dispatchEvent(new CustomEvent('nodeterm:swimlane-jump', { detail: { projectId: targetId } }))
+      return true
+    }
+    switchProject(targetId)
+    return true
+  }, [switchProject])
+
   const copyGesture = useCallback((e: GlobalKeyEvent): boolean => {
     if (!((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'c')) return false
     // Native text selection wins (markdown, editor and terminal keep their normal copy path).
@@ -10868,6 +10889,8 @@ export function Canvas() {
       'panel.sourceControl': () => { setScOpen((v) => !v); return true },
       'panel.sessions': () => { toggleSessionsPin(); return true },
       'app.reopenLastClosed': reopenLastClosedCommand,
+      'project.next': () => cycleProject(1),
+      'project.prev': () => cycleProject(-1),
       'canvas.undo': () => { undo(); return true },
       'canvas.redo': () => { redo(); return true },
       'canvas.goBack': () => { goBack(); return true },
