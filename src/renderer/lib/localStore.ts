@@ -53,3 +53,13 @@ export function writeLocal(key: string, value: string): void {
     /* quota, private mode, disabled storage — never fail the UI over a remembered nicety */
   }
 }
+
+/** Remove a key, or do nothing when storage is absent, method-less, or throws. */
+export function removeLocal(key: string): void {
+  try {
+    if (typeof localStorage?.removeItem !== 'function') return
+    localStorage.removeItem(key)
+  } catch {
+    /* a blocked origin or a locked-down embedder — removing a nicety may fail quietly */
+  }
+}

@@ -85,7 +85,6 @@ export type NodeActionId =
   | 'collapse'
   | 'markdown-view'
   | 'refresh-terminal'
-  | 'live-link'
   | 'branch'
   | 'transfer'
   | 'restart'
@@ -142,7 +141,6 @@ export const BOARD_NODE_ACTION_IDS = [
   'colors',
   'icon',
   'refresh-terminal',
-  'live-link',
   'restart',
   'switch-model',
   'switch-account',
@@ -150,8 +148,8 @@ export const BOARD_NODE_ACTION_IDS = [
 ] as const satisfies readonly NodeActionId[]
 
 /**
- * The card MODAL's actions menu. The modal header already has search, dictate, AI name, color,
- * icon and live link, and its terminal has its own refresh (it re-attaches only the modal's own
+ * The card MODAL's actions menu. The modal header already has search, dictate, AI name, color
+ * and icon, and its terminal has its own refresh (it re-attaches only the modal's own
  * pty, which is a different action from the canvas node's `respawnNonce` bump), so only the
  * session-management sections are offered here.
  */
@@ -209,7 +207,6 @@ export interface NodeActionCtx {
   toggleCollapseNodes: (ids: string[]) => void
   toggleMarkdown: (ids: string[]) => void
   reloadTerminals: (ids: string[]) => void
-  liveLinkMenuItems: (nodeId: string) => MenuItem[]
   branchClaude: (nodeId: string, opts?: { at?: { x: number; y: number } }) => Promise<unknown>
   transferConversation: TransferConversationHandler
   restartAgentNode: (
@@ -461,9 +458,6 @@ export function buildNodeActionSections(
             ]
           : []
     },
-    // Share live link… — single terminal only; disabled with its reason where it cannot
-    // work, hideable as `live-link` (the shared builder applies both).
-    { id: 'live-link', items: anyTerminal && ids.length === 1 ? ctx.liveLinkMenuItems(ids[0]) : [] },
     // Conversation actions — Branch, Transfer ▸ (targets, then models), Restart ▸, Pause — sit
     // together below the view actions, each ONE row: the per-target Transfer list and the six-odd
     // restart variants used to be spliced in flat, which made an agent node's menu run off screen.
@@ -935,7 +929,6 @@ export interface OffCanvasCtxInput {
   cursorModels: () => GatewayModel[]
   /** The project's write router (Canvas `nodeWritesFor(projectId)`). */
   writes: Pick<NodeWrites, 'setColor' | 'pickIcon'>
-  liveLinkMenuItems: (nodeId: string) => MenuItem[]
   connectedProjectIdForHost: (host?: string) => string | undefined
   /** Raised by every row that needs the live canvas. None of them is on a board today
    *  (`BOARD_NODE_ACTION_IDS`); this keeps the day one is added from failing in silence. */
@@ -984,7 +977,6 @@ export function offCanvasNodeActionCtx(o: OffCanvasCtxInput): NodeActionCtx {
     toggleCollapseNodes: refuse,
     toggleMarkdown: refuse,
     reloadTerminals: refuse,
-    liveLinkMenuItems: o.liveLinkMenuItems,
     branchClaude: refuseLater,
     transferConversation: refuse,
     restartAgentNode: refuseLater,

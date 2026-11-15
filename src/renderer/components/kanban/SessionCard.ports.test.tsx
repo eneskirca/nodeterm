@@ -52,7 +52,6 @@ function render(session: KanbanSession, extra: { ports?: typeof ports; onOpenPor
         onDragEnd={noop}
         onDropAt={noop}
         onContext={noop}
-        liveLinkSource="local"
         ports={extra.ports}
         onOpenPort={extra.onOpenPort}
       />

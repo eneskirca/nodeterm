@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import type { PopupAnnouncement } from '@shared/types'
 import { useEntitlement } from '../state/entitlement'
 import { useSettings } from '../state/settings'
-import { useUpgradeGate } from '../state/upgradeGate'
 import {
   PENDING_RECHECK_MS,
   loadSeenPopups,
@@ -44,13 +43,12 @@ async function readyPopup(items: PopupAnnouncement[], isPremium: boolean): Promi
  * reach a Pro user on the default `isPremium: false`).
  *
  * `blocked`: Canvas's own surfaces that are not on the dialog stack (the setup tour, Settings, the
- * command palette, the shortcuts panel, …). The upgrade gate is read here.
+ * command palette, the shortcuts panel, …).
  */
 export function AnnouncementPopup({ blocked }: { blocked: boolean }): React.JSX.Element | null {
   const isPremium = useEntitlement((s) => s.isPremium)
   const licenseKnown = useEntitlement((s) => s.known)
   const settingsKnown = useSettings((s) => s.hydrated)
-  const upgradeOpen = useUpgradeGate((s) => s.open)
   const [pending, setPending] = useState<ReadyPopup | null>(null)
   const [shown, setShown] = useState<ReadyPopup | null>(null)
   const lastKeyAt = useRef(0)
@@ -101,7 +99,7 @@ export function AnnouncementPopup({ blocked }: { blocked: boolean }): React.JSX.
     return () => window.removeEventListener('keydown', onKey, true)
   }, [])
 
-  const held = blocked || upgradeOpen || !settingsKnown
+  const held = blocked || !settingsKnown
   useEffect(() => {
     if (!pending || shown) return
     const tryShow = (): boolean => {

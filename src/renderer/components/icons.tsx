@@ -176,7 +176,7 @@ export const IconRemote = () => (
 )
 
 /** Remote access (phone relay) on/off — an antenna with signal arcs. Not `IconRemote` (the globe
- *  already means "web view") and not `IconBroadcast` ("share live link"). */
+ *  already means "web view"). */
 export const IconRemoteAccess = () => (
   <svg {...S}>
     <circle cx="12" cy="9" r="1.8" />
@@ -243,16 +243,6 @@ export const IconEye = () => (
   <svg {...S}>
     <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
     <circle cx="12" cy="12" r="3" />
-  </svg>
-)
-
-/** "Share live link" — a dot inside two pairs of arcs (the Settings → Live links glyph, at this
- *  set's 24-unit scale). Deliberately NOT `IconEye`: that already means "Hide cards & connections"
- *  in the same node header, and one glyph must not mean two things. */
-export const IconBroadcast = () => (
-  <svg {...S}>
-    <circle cx="12" cy="12" r="2.4" />
-    <path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.95 4.95a9.9 9.9 0 0 0 0 14.1M19.05 4.95a9.9 9.9 0 0 1 0 14.1" />
   </svg>
 )
 
@@ -367,22 +357,6 @@ export const IconCircleCheck = () => (
 
 /* Stroked padlocks: the canvas lock moved out of the React Flow controls (whose filled 12px
    glyph set is why these used to be filled) into the dock, where every icon is an outline. */
-/** A clock face — when something ends (the live-link dialog's "Expires" row). */
-export const IconClock = () => (
-  <svg {...S}>
-    <circle cx="12" cy="12" r="9" />
-    <path d="M12 7v5l3 2" />
-  </svg>
-)
-
-/** One person — who someone is shown as (the live-link dialog's name row). */
-export const IconUser = () => (
-  <svg {...S}>
-    <circle cx="12" cy="8" r="4" />
-    <path d="M4.5 20a7.5 7.5 0 0 1 15 0" />
-  </svg>
-)
-
 export const IconLock = () => (
   <svg {...S}>
     <rect x="4.5" y="10.5" width="15" height="10.5" rx="2.5" />

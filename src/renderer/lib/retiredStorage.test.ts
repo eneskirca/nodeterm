@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import { describe, expect, it } from 'vitest'
 import { RETIRED_STORAGE_KEYS, removeRetiredStorageKeys } from './retiredStorage'
 
@@ -24,5 +26,15 @@ describe('removeRetiredStorageKeys', () => {
   it('no storage at all is a no-op', () => {
     expect(() => removeRetiredStorageKeys(null)).not.toThrow()
     expect(() => removeRetiredStorageKeys(undefined)).not.toThrow()
+  })
+})
+
+// A dropped call compiles; this is the only thing that notices one.
+describe('renderer boot', () => {
+  it('removes the retired keys before the React root renders, through lib/localStore', () => {
+    const boot = fs.readFileSync(path.join(__dirname, '..', 'boot.tsx'), 'utf8').replace(/\r\n/g, '\n')
+    const call = boot.indexOf('removeRetiredStorageKeys({ removeItem: removeLocal })')
+    expect(call).toBeGreaterThan(-1)
+    expect(call).toBeLessThan(boot.indexOf('ReactDOM.createRoot('))
   })
 })

@@ -11,8 +11,8 @@ import { useDialogStack } from './dialog-stack'
 /**
  * The free-tier limit moment (docs/project-limit.md): the dialog the open gate
  * (lib/projectLimitGate.ts) shows when a new open would go past the allowance, plus the brief
- * "Checking…" panel while a person's claim is in flight. Mounted once, in Canvas, beside
- * `UpgradeDialog`; it renders only what `useProjectLimit` asks for.
+ * "Checking…" panel while a person's claim is in flight. Mounted once, in Canvas; it renders only
+ * what `useProjectLimit` asks for.
  *
  * THE RULE: every way out of a dialog goes through `resolveDialog` — Cancel, an overlay click,
  * Escape, the automatic `proceed`, Pro arriving, and this component unmounting while one is up. The

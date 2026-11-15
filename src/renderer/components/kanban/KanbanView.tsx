@@ -31,7 +31,6 @@ import { labelSwatch } from '../../lib/kanbanLabelColors'
 import { CardModal } from './CardModal'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
-import { projectSessionSource } from '../../lib/projectSessionSource'
 import { GitHubIssueCard } from './GitHubIssueCard'
 import { GitHubPullCard } from './GitHubPullCard'
 import { kanbanSource, sourceVisible } from '../../lib/kanbanSources'
@@ -148,7 +147,7 @@ export interface KanbanViewProps {
   /**
    * The node's own rows for its card menu — the SAME builder the canvas node menu and the sessions
    * sidebar use (lib/nodeActionItems), narrowed by Canvas to `BOARD_NODE_ACTION_IDS`: stop agent
-   * control, color, icon, refresh terminal, Share live link…, restart, switch model, Switch
+   * control, color, icon, refresh terminal, restart, switch model, Switch
    * Claude/Codex account, pause. Optional: a board with no canvas behind it (a test, a future
    * read-only view) shows none.
    */
@@ -317,9 +316,6 @@ export const KanbanView = memo(function KanbanView({
   const projectId = useProjects((s) => s.activeProjectId)
   const projectName = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.name)
   const projectColor = useProjects((s) => s.projects.find((p) => p.id === s.activeProjectId)?.color)
-  // Which machine this board's nodes run on — only a local board shows this machine's LIVE chips
-  // (R57). A primitive, so the memoized cards are not re-rendered by it.
-  const liveLinkSource = projectSessionSource(projectId)
   // The agent-status store of the session this board's PROJECT belongs to: a team tab's cards read
   // its relay session's store (they share node ids with the handed-off SSH project, whose entries
   // are the default store's). Every card, the chips' signature and the open card's read mark use it.
@@ -999,7 +995,6 @@ export const KanbanView = memo(function KanbanView({
             team={teams?.get(s.id) ?? NO_STATIONS}
             onTravel={onOpenNode}
             columnCategory={category}
-            liveLinkSource={liveLinkSource}
             ports={cardPorts}
             onOpenPort={openPort}
             onRunQueued={onRunQueued}

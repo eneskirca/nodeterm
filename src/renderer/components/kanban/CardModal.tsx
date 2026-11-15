@@ -3,7 +3,6 @@ import { sshHostKey } from '@shared/ssh'
 import { createPortal } from 'react-dom'
 import { isTopDialog, nextDialogId, popDialog, pushDialog } from '../dialog-stack'
 import {
-  IconBroadcast,
   IconChat,
   IconClose,
   IconColor,
@@ -26,10 +25,6 @@ import { normalizeNodeIcon, type NodeIcon } from '@shared/node-icon'
 import { ContextMeter } from '../ContextMeter'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { AccountChip, useAccountChip } from '../AccountChip'
-import { LiveLinkChip } from '../LiveLinkChip'
-import { projectSessionSource } from '../../lib/projectSessionSource'
-import { useWatchLinks } from '../../state/watchLinks'
-import { liveLinkUnavailable } from '../../lib/liveLinkEntry'
 import { isBrowserRuntime } from '@renderer/bridge/runtime'
 import { IssueRefChip } from '../IssueRefChip'
 import { TeamProgressChip } from '../TeamProgressChip'
@@ -70,7 +65,6 @@ import { ModalTerminal } from './ModalTerminal'
 import { BrowserSurface } from '../../nodes/BrowserSurface'
 import { BrowserDrivingIndicator } from '../../nodes/BrowserDrivingChip'
 import { NoteMarkdown } from '../NoteMarkdown'
-import { inLiveChatDrawer } from '../../lib/liveChatPin'
 import { relativeTime } from '../../lib/relativeTime'
 import { TerminalMarkdownView } from '../../nodes/TerminalMarkdownView'
 import { canChat } from '@shared/agents/config'
@@ -95,8 +89,7 @@ interface CardModalProps {
    *  on the Omni board. Both boards mount the modal under THAT project's session
    *  (`ProjectSessionScope`: `sessionForProject(projectId)` + `OwningProjectContext`), so
    *  `useSession()` here and in the terminal, chat and file views below is the core the node runs
-   *  on — a team tab's relay session, never this desktop's local one. The LIVE chip (R57) and the
-   *  "Share live link" action (H4) still resolve through this id. */
+   *  on — a team tab's relay session, never this desktop's local one. */
   projectId: string
   /** Owning project, supplied by the board (not necessarily the active project in Omni). */
   projectName?: string
@@ -160,17 +153,6 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   // The header slot decides "icon or smiley" on the NORMALIZED value, the answer NodeIconView
   // itself gives — on the raw one, an invalid stored icon drew an empty, un-muted slot.
   const sessionIcon = normalizeNodeIcon(session.icon)
-  // Which machine this node runs on, for the live-link chip and action (R57, H4).
-  const liveLinkSource = projectSessionSource(projectId)
-  const activeLiveLinks = useWatchLinks((s) => s.links.length)
-  // The ONE availability rule every opener checks before the Pro gate. The modal paints ABOVE the
-  // canvas's notice strip, so the reason goes on the button (disabled + title) rather than into a
-  // notice nobody could see.
-  const liveLinkWhy = liveLinkUnavailable({
-    serverEdition: isBrowserRuntime(),
-    source: liveLinkSource,
-    activeLinks: activeLiveLinks
-  })
   const idRef = useRef<string>()
   if (!idRef.current) idRef.current = nextDialogId()
   const id = idRef.current
@@ -426,10 +408,6 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !isTopDialog(id)) return
-      // An Escape typed in the Live chat drawer is the drawer's, never this modal's: docked over the
-      // modal (raised), the drawer is not a dialog, so this modal is still the top one. Not consumed —
-      // the drawer's own rule decides (unpinned: close the drawer; pinned: nothing).
-      if (inLiveChatDrawer(e.target) || inLiveChatDrawer(document.activeElement)) return
       // The header Color swatches own Esc first: close the menu, not the whole modal. (The menu is
       // not a dialog-stack entry, so this modal still reads as the top dialog while it is open.)
       if (colorMenuOpenRef.current) {
@@ -584,7 +562,6 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
             </span>
           )}
           {isTerminal && <AccountChip chip={accountChip} />}
-          {isTerminal && <LiveLinkChip nodeId={session.id} source={liveLinkSource} className="kanban-modal__live" />}
           {/* The driving chip, so a user watching a browser card THROUGH the modal is not
               driving-blind. The lease is keyed by node id (not by webview object), so this shows
               when the node is being driven even though the drive lands on the CANVAS webview, not
@@ -680,26 +657,6 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
                 onClick={nameWithAi}
               >
                 {naming || funnelNaming ? '…' : '✦'}
-              </button>
-              {/* Share a live link to this terminal — the canvas node menu's row, as a header action.
-                  The canvas opens the dialog (`nodeterm:live-link`) after re-checking availability
-                  and the Pro gate; the event names the card's PROJECT so a node of an Omni lane is
-                  judged by its own session, not the active tab's. */}
-              <button
-                className="kanban-modal__action"
-                data-action="live-link"
-                title={liveLinkWhy ?? 'Share live link'}
-                aria-label="Share live link"
-                disabled={!!liveLinkWhy}
-                onClick={() =>
-                  window.dispatchEvent(
-                    new CustomEvent('nodeterm:live-link', {
-                      detail: { nodeId: session.id, title: session.title, projectId }
-                    })
-                  )
-                }
-              >
-                <IconBroadcast />
               </button>
               {hasSessionRows && (
                 <button

@@ -214,7 +214,6 @@ describe('SessionCard', () => {
           onDragEnd={noop}
           onDropAt={noop}
           onContext={noop}
-          liveLinkSource="relay"
           statusStore={statusStore}
         />
       )

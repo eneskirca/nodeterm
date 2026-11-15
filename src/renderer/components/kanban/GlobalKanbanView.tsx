@@ -12,7 +12,6 @@ import {
 } from '../../lib/kanban'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
-import { projectSessionSource } from '../../lib/projectSessionSource'
 import { toKanbanSessionState } from '../../canvas/toKanbanSessionState'
 import { createAgentNode, createBrowserNode, createStickyNode, createTerminalNode, flowToNodeStates, resolveNewNodeAccount } from '../../state/workspace'
 import { markCanvasCovered } from '../../lib/canvasCovered'
@@ -163,8 +162,6 @@ const Swimlane = memo(function Swimlane({
     return teamsRef.current
   }, [liveTeams, ropes, nodes])
   const travel = useCallback((nodeId: string) => onOpenNode(nodeId, projectId), [onOpenNode, projectId])
-  // Which machine this lane's nodes run on: only a local lane shows this machine's LIVE chips (R57).
-  const liveLinkSource = projectSessionSource(projectId)
   // The agent-status store of the session this LANE's project belongs to — a lane is not the
   // active project, and a team lane's cards read its relay session's store (they share node ids
   // with the handed-off SSH project, whose entries are the default store's).
@@ -304,7 +301,6 @@ const Swimlane = memo(function Swimlane({
           team={teams.get(s.id) ?? NO_STATIONS}
           onTravel={travel}
           columnCategory={category}
-          liveLinkSource={liveLinkSource}
           ports={cardPorts}
           onOpenPort={openPort}
           onRunQueued={runQueued}

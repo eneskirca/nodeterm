@@ -1422,8 +1422,8 @@ export function ChatPanel({
           )}
         </div>
         {!following && messages.length > 0 && (
-          // The Live chat drawer's "N new messages ↓" pill (LiveChatDrawer.tsx), plus a bare "↓" while
-          // nothing new has come in: here the thread is also read back from deep in its history.
+          // An "N new messages ↓" pill, plus a bare "↓" while nothing new has come in: the thread is
+          // also read back from deep in its history.
           <button
             type="button"
             className="confirm__btn primary term-chat__to-latest"

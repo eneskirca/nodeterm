@@ -8,6 +8,8 @@ import { initAgentResolver } from './state/agent-resolver'
 import { refreshAgentEnv } from './lib/agentEnv'
 import { applyWindowChrome } from './lib/windowChrome'
 import { installMarkdownLinkGuard, LOCAL_LINK_MESSAGE, openExternalQuietly } from './lib/markdownLinks'
+import { removeRetiredStorageKeys } from './lib/retiredStorage'
+import { removeLocal } from './lib/localStore'
 import './styles.css'
 import './tailwind.css'
 
@@ -31,6 +33,10 @@ installMarkdownLinkGuard(document, {
       new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: LOCAL_LINK_MESSAGE } })
     )
 })
+
+// Live links were retired: drop the localStorage keys they kept. Through lib/localStore, so a
+// storage that is missing, method-less or throws never stops the boot.
+removeRetiredStorageKeys({ removeItem: removeLocal })
 
 // Register the custom-agent → baseAgent resolver so the capability predicates (hasHooks, canResume,
 // canControlCanvas, …) resolve a custom agent's inherited harness. Reads the live settings store.

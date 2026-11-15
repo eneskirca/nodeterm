@@ -19,7 +19,7 @@ function args(over: Partial<CardMenuArgs> = {}): CardMenuArgs {
     openOnCanvas: vi.fn(),
     rename: vi.fn(),
     aiName: vi.fn(),
-    nodeActions: () => [{ label: 'Share live link…', onClick: () => {} }],
+    nodeActions: () => [{ label: 'Refresh terminal', onClick: () => {} }],
     remove: vi.fn(),
     ...over
   }
@@ -43,7 +43,7 @@ describe('buildCardMenuItems', () => {
       'Rename…',
       'Name with AI',
       '—',
-      'Share live link…',
+      'Refresh terminal',
       '—',
       'Delete'
     ])

@@ -243,7 +243,7 @@ import {
 } from '../terminal/useMdModeFocus'
 import { canvasOwnsMarkdownChord } from '../lib/markdownChord'
 import { carryDraftToChat, carryDraftToTerminal } from '../lib/chatDraftCarry'
-import { IconBroadcast, IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
+import { IconChat, IconChevronDown, IconChevronRight, IconClose, IconEye, IconEyeOff, IconGrid, IconMic, IconMoveTo, IconPlay, IconReload, IconSearch, IconSparkle } from '../components/icons'
 import { NodeLabels } from '../components/kanban/NodeLabels'
 import { MdViewHintButton } from '../components/MdViewHintButton'
 import { mdViewHint } from '../lib/mdViewHint'
@@ -288,7 +288,6 @@ import { pullBoardFor, useGitHubIssues } from '../state/githubIssues'
 import type { AgentState } from '@shared/agents/normalize'
 import type { ClientId } from '@shared/presence'
 import { PresenceChips } from '../components/PresenceChips'
-import { LiveLinkChip } from '../components/LiveLinkChip'
 import { useAgentNodes } from '../state/agentNodes'
 import { useTerminalFocus } from '../state/terminalFocus'
 import { useProjects } from '../state/projects'
@@ -302,8 +301,6 @@ import { isRemoteProjectId, useSession, useSessionStores, useActiveSessionPresen
 import { relayStatusGates } from '../terminal/relay-status-gates'
 import { isHostedReadOnly, useHostedReadOnly } from '../state/hostedTeams'
 import { isBrowserRuntime } from '../bridge/runtime'
-import { liveLinkUnavailable } from '../lib/liveLinkEntry'
-import { useWatchLinks } from '../state/watchLinks'
 import { agentLaunchOverride, toggleCollapsed, type CanvasNode } from '../state/workspace'
 import { NodeColorSwatches } from '../components/NodeColorSwatches'
 import { AccountChip, useAccountChip } from '../components/AccountChip'
@@ -1462,15 +1459,6 @@ export function TerminalNode({
   // mounted node right away instead of waiting for a remount. Search, Close and the worktree-move
   // button are absent from `isHidden`'s inventory and stay put whatever the list says.
   const hiddenHeaderButtons = useSettings((s) => s.settings.hiddenHeaderButtons)
-  // The header's "Share live link" button: the same availability rule every opener checks before the
-  // Pro gate (lib/liveLinkEntry). A primitive selector — the header must not re-render on every
-  // watch-link state push.
-  const activeLiveLinks = useWatchLinks((s) => s.links.length)
-  const shareLinkWhy = liveLinkUnavailable({
-    serverEdition: isBrowserRuntime(),
-    source: session.source,
-    activeLinks: activeLiveLinks
-  })
   const bodyRef = useRef<HTMLDivElement>(null)
   const middleClickPaste = useSettings((st) => st.settings.terminalMiddleClickPaste)
   // Chromium pastes the X PRIMARY selection into xterm's hidden textarea on middle click — a path
@@ -6408,9 +6396,6 @@ export function TerminalNode({
         {showUsage && <ContextMeter sessionId={transcript.sessionId ?? null} fromLaunchId={transcript.fallback} nodeId={id} remote={!!remoteSession} agentId={agentId} />}
         {/* Who else is in this node. Subscribes to presence itself — see PresenceChips. */}
         <PresenceChips nodeId={id} />
-        {/* This terminal is broadcast by a live link — never hideable (live-link.guard.test.ts).
-            Only through the LOCAL session: a relay tab's node with the same id is not ours (R57). */}
-        <LiveLinkChip nodeId={id} source={session.source} />
         {status?.state === 'working' && (
           <span className="term-node__status term-node__status--busy" title={`${agentLabel} is working`}>
             <AgentMascot agentId={agentId} />
@@ -6698,28 +6683,6 @@ export function TerminalNode({
               onClick={() => setCommentsOpen((v) => !v)}
             >
               <IconChat />
-            </button>
-          </Tooltip>
-        )}
-        {!isHidden('share-link', hiddenHeaderButtons) && (
-          <Tooltip label={shareLinkWhy ?? 'Share live link'}>
-            {/* The node menu's "Share live link…" row as a header button. Canvas opens the dialog
-                (`nodeterm:live-link`) after re-checking availability and the Pro gate; a node only
-                ever lives in the active project's canvas, so that is the project it names. */}
-            <button
-              className="term-node__share nodrag"
-              aria-label="Share live link"
-              disabled={!!shareLinkWhy}
-              onClick={(e) => {
-                e.stopPropagation()
-                window.dispatchEvent(
-                  new CustomEvent('nodeterm:live-link', {
-                    detail: { nodeId: id, title: data.title, projectId: owningProjectId() }
-                  })
-                )
-              }}
-            >
-              <IconBroadcast />
             </button>
           </Tooltip>
         )}
