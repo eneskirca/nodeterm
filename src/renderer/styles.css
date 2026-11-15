@@ -6223,6 +6223,15 @@ body,
   height: 18px;
 }
 
+/* Remote-access toggle: green while the standing relay host is on, muted while off. */
+.controls-cluster > button.cluster-remote {
+  color: var(--muted);
+}
+.controls-cluster > button.cluster-remote[aria-pressed='true'] {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
 /* Search button shows the ⌘K shortcut so its purpose is obvious */
 .cluster-search {
   width: auto !important;
