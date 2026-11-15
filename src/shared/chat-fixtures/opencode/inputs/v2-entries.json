@@ -1,0 +1,291 @@
+{
+  "info": {
+    "id": "ses_0a1b2c3d4ffeSynthetic000001",
+    "projectID": "prj_fixture",
+    "model": {
+      "id": "demo-model",
+      "providerID": "opencode",
+      "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1780000000000,
+      "updated": 1780000000000,
+      "busy": 1780000000000,
+      "idle": 1780000000000
+    },
+    "title": "Fixture session",
+    "location": {
+      "directory": "/srv/demo"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_1",
+      "time": {
+        "created": 1780000001000
+      },
+      "text": "SYSTEM TEXT NEVER SHOWN",
+      "type": "system"
+    },
+    {
+      "id": "msg_2",
+      "time": {
+        "created": 1780000002000
+      },
+      "text": "SYNTHETIC TEXT NEVER SHOWN",
+      "description": "file read",
+      "type": "synthetic"
+    },
+    {
+      "id": "msg_3",
+      "time": {
+        "created": 1780000003000
+      },
+      "skill": "skl_fixture",
+      "name": "demo",
+      "text": "SKILL TEXT NEVER SHOWN",
+      "type": "skill"
+    },
+    {
+      "id": "msg_4",
+      "time": {
+        "created": 1780000004000
+      },
+      "agent": "plan",
+      "previous": "build",
+      "type": "agent-switched"
+    },
+    {
+      "id": "msg_5",
+      "time": {
+        "created": 1780000005000
+      },
+      "model": {
+        "id": "other",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "type": "model-switched"
+    },
+    {
+      "id": "msg_6",
+      "time": {
+        "created": 1780000006000
+      },
+      "location": {
+        "directory": "/srv/other"
+      },
+      "type": "location-switched"
+    },
+    {
+      "id": "msg_7",
+      "time": {
+        "created": 1780000007000
+      },
+      "text": "",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_8",
+      "time": {
+        "created": 1780000008000
+      },
+      "shellID": "sh_fixture",
+      "command": "git status",
+      "status": "exited",
+      "exit": 0,
+      "output": {
+        "output": "On branch main\nnothing to commit",
+        "cursor": 0,
+        "size": 33,
+        "truncated": false
+      },
+      "type": "shell"
+    },
+    {
+      "id": "msg_9",
+      "time": {
+        "created": 1780000009000
+      },
+      "shellID": "sh_fixture2",
+      "command": "sleep 9",
+      "status": "running",
+      "type": "shell"
+    },
+    {
+      "id": "msg_10",
+      "time": {
+        "created": 1780000010000
+      },
+      "status": "completed",
+      "reason": "auto",
+      "summary": "Summary of the work so far.",
+      "type": "compaction"
+    },
+    {
+      "id": "msg_11",
+      "time": {
+        "created": 1780000011000
+      },
+      "status": "running",
+      "reason": "manual",
+      "summary": "PARTIAL SUMMARY NEVER SHOWN",
+      "type": "compaction"
+    },
+    {
+      "id": "msg_12",
+      "time": {
+        "created": 1780000012000
+      },
+      "agent": "build",
+      "model": {
+        "id": "demo-model",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "partial"
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 12,
+        "output": 8,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "error": {
+        "type": "provider.error",
+        "message": "  rate limited  ",
+        "status": 429
+      },
+      "type": "assistant"
+    },
+    {
+      "id": "msg_13",
+      "time": {
+        "created": 1780000013000
+      },
+      "agent": "build",
+      "model": {
+        "id": "demo-model",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "content": [],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 12,
+        "output": 8,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "error": {
+        "type": "aborted",
+        "message": ""
+      },
+      "type": "assistant"
+    },
+    {
+      "id": "msg_14",
+      "time": {
+        "created": 1780000014000
+      },
+      "agent": "build",
+      "model": {
+        "id": "demo-model",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "kept"
+        },
+        {
+          "type": "image",
+          "url": "x"
+        },
+        "nope",
+        {
+          "type": "text",
+          "text": 7
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 12,
+        "output": 8,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "error": "boom",
+      "type": "assistant"
+    },
+    {
+      "id": "msg_15",
+      "time": {
+        "created": 1780000015000
+      },
+      "text": "UNKNOWN TYPE NEVER SHOWN",
+      "type": "hologram"
+    },
+    {
+      "id": "msg_16",
+      "time": {
+        "created": 1780000016000
+      },
+      "type": "user"
+    },
+    {
+      "id": "msg_17",
+      "time": {
+        "created": 1780000017000
+      },
+      "type": "assistant",
+      "model": {
+        "id": "last-model",
+        "providerID": "opencode",
+        "variant": "default"
+      }
+    },
+    {
+      "id": "msg_18",
+      "time": {
+        "created": 1780000018000
+      },
+      "shellID": "sh_fixture3",
+      "status": "exited",
+      "type": "shell"
+    }
+  ]
+}

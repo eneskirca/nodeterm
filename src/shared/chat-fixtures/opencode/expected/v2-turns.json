@@ -1,0 +1,131 @@
+{
+  "sessionId": "ses_0a1b2c3d4ffeSynthetic000001",
+  "parse": {
+    "messages": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Read `note.txt` — özet lütfen 🧪"
+          }
+        ],
+        "at": 1780000001000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "read",
+            "arg": "note.txt",
+            "result": "Read file note.txt, lines 1-1 1: hello fixture"
+          }
+        ],
+        "at": 1780000002000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "It holds **one** line."
+          },
+          {
+            "kind": "text",
+            "text": "Second block."
+          }
+        ],
+        "at": 1780000003000
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "and with a variant?"
+          }
+        ],
+        "at": 1780000005000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Yes."
+          }
+        ],
+        "at": 1780000006000
+      }
+    ],
+    "skipped": 0,
+    "model": "demo-model-2",
+    "effort": "high"
+  },
+  "page": {
+    "messages": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Read `note.txt` — özet lütfen 🧪"
+          }
+        ],
+        "at": 1780000001000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "read",
+            "arg": "note.txt",
+            "result": "Read file note.txt, lines 1-1 1: hello fixture"
+          }
+        ],
+        "at": 1780000002000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "It holds **one** line."
+          },
+          {
+            "kind": "text",
+            "text": "Second block."
+          }
+        ],
+        "at": 1780000003000
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "and with a variant?"
+          }
+        ],
+        "at": 1780000005000
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Yes."
+          }
+        ],
+        "at": 1780000006000
+      }
+    ],
+    "found": true,
+    "olderCursor": null,
+    "unmatchedResults": [],
+    "model": "demo-model-2",
+    "effort": "high"
+  }
+}

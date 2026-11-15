@@ -150,9 +150,15 @@ export function linesFromGemini(buf: string): string[] {
 }
 
 /**
- * An `opencode export <sessionID>` JSON document -> display strings. opencode >= 1.18 keeps
- * sessions in SQLite, so its disk is never parsed; the export is the contract. Shapes are read
- * defensively: a messages array whose items carry role + parts[] (text / tool) or a plain string.
+ * An opencode export JSON document -> display strings. opencode >= 1.18 keeps sessions in SQLite,
+ * so its disk is never parsed; the export is the contract. Two measured message shapes:
+ *
+ *   1.x  `{info: {role}, parts: [{type:'text', text} | {type:'tool', tool, state:{input}}]}`
+ *   2.x  `{type:'user', text}` · `{type:'assistant', content: [{type:'text', text} |
+ *        {type:'tool', name, state:{input}}]}` · bookkeeping types with no conversation in them
+ *        (`idle`, `synthetic`, `system`, `skill`, `*-switched`, …) — measured on 2.2.7, issue #1438
+ *
+ * Anything else is read defensively: a role + parts[] or a plain string content.
  */
 export function linesFromOpencodeExport(raw: string): string[] | null {
   const o = parseJson(raw) as
@@ -166,13 +172,24 @@ export function linesFromOpencodeExport(raw: string): string[] | null {
     const m = raw as {
       role?: string
       info?: { role?: string }
+      type?: unknown
+      text?: unknown
       parts?: unknown[]
       content?: unknown
     }
     if (!m) continue
-    const role = (m.role ?? m.info?.role) === 'user' ? 'user' : 'assistant'
+    const stated = m.role ?? m.info?.role
+    // A 2.x entry states its kind in `type`. One that is neither speaker is harness bookkeeping
+    // (a `synthetic` or `system` entry carries `text` the human never typed) — never a line.
+    if (stated === undefined && typeof m.type === 'string' && m.type !== 'user' && m.type !== 'assistant') continue
+    const role = (stated ?? m.type) === 'user' ? 'user' : 'assistant'
     if (typeof m.content === 'string' && m.content) {
       res.push(`${role}: ${m.content}`)
+      continue
+    }
+    // 2.x user message: the prompt is a top-level `text`, with no parts at all.
+    if (stated === undefined && m.type === 'user' && typeof m.text === 'string' && m.text) {
+      res.push(`user: ${m.text}`)
       continue
     }
     const parts = m.parts ?? (Array.isArray(m.content) ? (m.content as unknown[]) : null)
@@ -192,7 +209,10 @@ export function linesFromOpencodeExport(raw: string): string[] | null {
       } else if (c.type === 'tool' || c.type === 'tool_use' || c.tool) {
         const name = c.tool || c.name || 'tool'
         const input = c.state?.input ?? c.input
-        const a = input && (input.command ?? input.filePath ?? input.file_path ?? input.pattern ?? input.description)
+        // `path` last: 2.x's read/list tools state the file as `path` (1.x: `filePath`).
+        const a =
+          input &&
+          (input.command ?? input.filePath ?? input.file_path ?? input.pattern ?? input.description ?? input.path)
         res.push(`  $ ${name}${typeof a === 'string' ? ` ${a.slice(0, TOOL_ARG_MAX)}` : ''}`)
       }
     }
@@ -536,7 +556,7 @@ export interface ContextLinkFetch {
   transcript: (node: LinkDocEntry) => Promise<string | null>
   /** The linked node's recent terminal output ('' when the session is not running). */
   terminal: (node: LinkDocEntry) => Promise<string>
-  /** `opencode export <sessionId>` output, or null when it could not be produced. */
+  /** The opencode export document for the node's session, or null when it could not be produced. */
   opencodeExport: (node: LinkDocEntry) => Promise<string | null>
 }
 
@@ -572,7 +592,12 @@ async function transcriptLinesFor(node: LinkDocEntry, fetch: ContextLinkFetch): 
   if (node.agent === 'opencode') {
     if (!node.sessionId) return `"${node.title}" has no session id yet.`
     const raw = await fetch.opencodeExport(node)
-    if (raw == null) return `Could not export "${node.title}" session (is opencode installed?).`
+    // Null covers every failed read — no binary on the login PATH, a CLI that refused or crashed, a
+    // timeout, a session opencode does not have. Naming one of them as THE cause sent a user with a
+    // working opencode 2.x looking for a missing install (issue #1438).
+    if (raw == null) {
+      return `Could not export "${node.title}" session: opencode was not found, or its export failed or timed out.`
+    }
     const lines = linesFromOpencodeExport(raw)
     if (lines == null) return `Unreadable opencode export for "${node.title}".`
     if (!lines.length) return `"${node.title}" export contained no readable messages.`

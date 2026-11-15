@@ -1,0 +1,107 @@
+{
+  "sessionId": "ses_0a1b2c3d4ffeSynthetic000001",
+  "parse": {
+    "messages": [
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "bash",
+            "arg": ""
+          },
+          {
+            "kind": "tool",
+            "name": "bash",
+            "arg": "sleep 5"
+          },
+          {
+            "kind": "tool",
+            "name": "grep",
+            "arg": "TODO",
+            "result": "a b c"
+          },
+          {
+            "kind": "tool",
+            "name": "read",
+            "arg": "shot.png"
+          },
+          {
+            "kind": "tool",
+            "name": "bash",
+            "arg": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "result": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do"
+          },
+          {
+            "kind": "tool",
+            "name": "bash",
+            "arg": "false",
+            "result": "Error: exit 1 more"
+          },
+          {
+            "kind": "tool",
+            "name": "tool",
+            "arg": "",
+            "result": "unnamed"
+          }
+        ],
+        "at": 1780000001000
+      }
+    ],
+    "skipped": 1,
+    "model": "demo-model"
+  },
+  "page": {
+    "messages": [
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "kind": "tool",
+            "name": "bash",
+            "arg": ""
+          },
+          {
+            "kind": "tool",
+            "name": "bash",
+            "arg": "sleep 5"
+          },
+          {
+            "kind": "tool",
+            "name": "grep",
+            "arg": "TODO",
+            "result": "a b c"
+          },
+          {
+            "kind": "tool",
+            "name": "read",
+            "arg": "shot.png"
+          },
+          {
+            "kind": "tool",
+            "name": "bash",
+            "arg": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "result": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do"
+          },
+          {
+            "kind": "tool",
+            "name": "bash",
+            "arg": "false",
+            "result": "Error: exit 1 more"
+          },
+          {
+            "kind": "tool",
+            "name": "tool",
+            "arg": "",
+            "result": "unnamed"
+          }
+        ],
+        "at": 1780000001000
+      }
+    ],
+    "found": true,
+    "olderCursor": null,
+    "unmatchedResults": [],
+    "model": "demo-model"
+  }
+}

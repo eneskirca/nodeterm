@@ -1,0 +1,224 @@
+{
+  "info": {
+    "id": "ses_0a1b2c3d4ffeSynthetic000001",
+    "projectID": "prj_fixture",
+    "model": {
+      "id": "demo-model",
+      "providerID": "opencode",
+      "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1780000000000,
+      "updated": 1780000000000,
+      "busy": 1780000000000,
+      "idle": 1780000000000
+    },
+    "title": "Fixture session",
+    "location": {
+      "directory": "/srv/demo"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_1",
+      "time": {
+        "created": 1780000001000
+      },
+      "agent": "build",
+      "model": {
+        "id": "demo-model",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "tool",
+          "id": "call_fixture64",
+          "name": "bash",
+          "executed": false,
+          "state": {
+            "status": "streaming",
+            "input": "{\"command\":\"ls"
+          },
+          "time": {
+            "created": 1780000000000,
+            "ran": 1780000000001,
+            "completed": 1780000000002
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_fixture65",
+          "name": "bash",
+          "executed": false,
+          "state": {
+            "status": "running",
+            "input": {
+              "command": "sleep 5"
+            },
+            "metadata": {}
+          },
+          "time": {
+            "created": 1780000000000,
+            "ran": 1780000000001,
+            "completed": 1780000000002
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_fixture66",
+          "name": "grep",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "TODO",
+              "path": "src"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "a\nb"
+              },
+              {
+                "type": "text",
+                "text": "c\nd"
+              }
+            ],
+            "metadata": {
+              "truncated": false
+            }
+          },
+          "time": {
+            "created": 1780000000000,
+            "ran": 1780000000001,
+            "completed": 1780000000002
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_fixture67",
+          "name": "read",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {
+              "path": "shot.png"
+            },
+            "content": [
+              {
+                "type": "file",
+                "uri": "media:00",
+                "mime": "image/png"
+              }
+            ]
+          },
+          "time": {
+            "created": 1780000000000,
+            "ran": 1780000000001,
+            "completed": 1780000000002
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_fixture68",
+          "name": "bash",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+              }
+            ],
+            "metadata": {
+              "truncated": false
+            }
+          },
+          "time": {
+            "created": 1780000000000,
+            "ran": 1780000000001,
+            "completed": 1780000000002
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_fixture69",
+          "name": "bash",
+          "executed": false,
+          "state": {
+            "status": "error",
+            "input": {
+              "command": "false"
+            },
+            "error": {
+              "type": "tool.failed",
+              "message": "exit 1\nmore"
+            }
+          },
+          "time": {
+            "created": 1780000000000,
+            "ran": 1780000000001,
+            "completed": 1780000000002
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_fixture70",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {},
+            "content": [
+              {
+                "type": "text",
+                "text": "unnamed"
+              }
+            ],
+            "metadata": {
+              "truncated": false
+            }
+          },
+          "time": {
+            "created": 1780000000000,
+            "ran": 1780000000001,
+            "completed": 1780000000002
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_fixture_stateless",
+          "name": "bash"
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 12,
+        "output": 8,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "type": "assistant"
+    }
+  ]
+}

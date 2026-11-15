@@ -22,7 +22,7 @@ import { IPC } from '../shared/ipc'
 import type { ContextLinkInfo, ContextLinkMap } from '../shared/types'
 import { type PtyManager } from './pty-manager'
 import { findInLoginPath } from './exec-path'
-import { isSafeOpencodeSessionId, runOpencodeExportAt } from './opencode-export'
+import { isSafeOpencodeSessionId, remoteOpencodeExportCommand, runOpencodeExportAt } from './opencode-export'
 import { TMUX_SOCKET } from './tmux-naming'
 import {
   buildContextShimScript,
@@ -225,7 +225,7 @@ async function fetchOpencodeExport(node: LinkDocEntry): Promise<string | null> {
   if (!node.sessionId || !isSafeOpencodeSessionId(node.sessionId)) return null
   if (deps.isRemoteNode?.(node.id)) {
     return deps.runRemoteCommand
-      ? await deps.runRemoteCommand(node.id, `opencode export ${shellQuote(node.sessionId)}`)
+      ? await deps.runRemoteCommand(node.id, remoteOpencodeExportCommand(shellQuote(node.sessionId)))
       : null
   }
   const bin = await findInLoginPath('opencode')

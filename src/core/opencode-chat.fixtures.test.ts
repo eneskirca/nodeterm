@@ -5,8 +5,9 @@
 // Regenerate (never in CI):
 //   UPDATE_CHAT_FIXTURES=1 npx vitest run src/core/opencode-chat.fixtures.test.ts
 //
-// Every input is SYNTHETIC: an `opencode export` document built from the schema measured on
-// opencode 1.18.25 (see core/opencode-chat.ts). None is a slice of a real session.
+// Every input is SYNTHETIC: an export document built from the schema measured on opencode 1.18.25
+// and, for the `v2-*` set, @opencode/cli 2.2.7 (see core/opencode-chat.ts). None is a slice of a
+// real session.
 import fs from 'fs'
 import path from 'path'
 import { describe, expect, it } from 'vitest'
@@ -98,6 +99,59 @@ const done = (input: Record<string, unknown>, output: string, title = 'Done') =>
   title,
   metadata: {},
   time: { start: T0, end: T0 + 1 }
+})
+
+// ── opencode 2.x builders — the schema measured on @opencode/cli 2.2.7 (see core/opencode-chat.ts) ──
+const exportDocV2 = (messages: unknown[], id: string = SID): string =>
+  JSON.stringify(
+    {
+      info: {
+        id,
+        projectID: 'prj_fixture',
+        model: { id: 'demo-model', providerID: 'opencode', variant: 'default' },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        outcome: 'succeeded',
+        time: { created: T0, updated: T0, busy: T0, idle: T0 },
+        title: 'Fixture session',
+        location: { directory: '/srv/demo' }
+      },
+      messages
+    },
+    null,
+    2
+  ) + '\n'
+const v2Entry = (id: string, type: string, fields: Record<string, unknown> = {}) => ({
+  id,
+  time: { created: tick(id) },
+  ...fields,
+  type
+})
+const v2User = (id: string, text: string) => v2Entry(id, 'user', { text, files: [] })
+const v2Asst = (id: string, content: unknown[], extra: Record<string, unknown> = {}) =>
+  v2Entry(id, 'assistant', {
+    agent: 'build',
+    model: { id: 'demo-model', providerID: 'opencode', variant: 'default' },
+    content,
+    finish: 'stop',
+    rawFinish: 'stop',
+    cost: 0,
+    tokens: { input: 12, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+    ...extra
+  })
+const v2Tool = (name: string | undefined, state: Record<string, unknown>) => ({
+  type: 'tool',
+  id: `call_fixture${++seq}`,
+  ...(name === undefined ? {} : { name }),
+  executed: false,
+  state,
+  time: { created: T0, ran: T0 + 1, completed: T0 + 2 }
+})
+const v2Done = (input: Record<string, unknown>, texts: string[]) => ({
+  status: 'completed',
+  input,
+  content: texts.map((text) => ({ type: 'text', text })),
+  metadata: { truncated: false }
 })
 
 const lorem = (n: number): string =>
@@ -206,7 +260,68 @@ const INPUTS: Record<string, string> = {
   // The 100-unit cap counts UTF-16 code units: a 101-unit model is absent, a 100-unit variant kept.
   'model-utf16': exportDoc([asstMsg('msg_1', [textPart('x')], { modelID: '🧪'.repeat(50) + 'm', variant: '🧪'.repeat(50) })]),
   // An export whose `info.id` is another session: nothing of it is shown, and the page is unreadable.
-  'foreign-session': exportDoc([userMsg('msg_1', [textPart('SOMEONE ELSE PRIVATE')])], 'ses_someoneElse00000000000')
+  'foreign-session': exportDoc([userMsg('msg_1', [textPart('SOMEONE ELSE PRIVATE')])], 'ses_someoneElse00000000000'),
+
+  // ── opencode 2.x (`opencode session export`): flat entries discriminated by `type` ────────────
+  // The measured turn: a prompt, a tool-only assistant entry, the answer, the `idle` marker. The
+  // newest assistant entry answers `model`; its `variant: "default"` is not an effort.
+  'v2-turns': exportDocV2([
+    v2User('msg_1', 'Read `note.txt` — özet lütfen 🧪'),
+    v2Asst('msg_2', [v2Tool('read', v2Done({ path: 'note.txt' }, ['Read file note.txt, lines 1-1\n1: hello fixture']))], {
+      finish: 'tool-calls'
+    }),
+    v2Asst('msg_3', [{ type: 'reasoning', text: 'thinking it over' }, { type: 'text', text: 'It holds **one** line.' }, { type: 'text', text: 'Second block.' }]),
+    v2Entry('msg_4', 'idle', { outcome: 'succeeded' }),
+    v2User('msg_5', 'and with a variant?'),
+    v2Asst('msg_6', [{ type: 'text', text: 'Yes.' }], { model: { id: 'demo-model-2', providerID: 'opencode', variant: 'high' } })
+  ]),
+  // Every 2.x tool state: the raw-string `streaming` input, running, completed (text blocks joined,
+  // a `file` block ignored, the 3-line / 500-unit summary), error, a missing name, a stateless tool.
+  'v2-tools': exportDocV2([
+    v2Asst('msg_1', [
+      v2Tool('bash', { status: 'streaming', input: '{"command":"ls' }),
+      v2Tool('bash', { status: 'running', input: { command: 'sleep 5' }, metadata: {} }),
+      v2Tool('grep', v2Done({ pattern: 'TODO', path: 'src' }, ['a\nb', 'c\nd'])),
+      v2Tool('read', {
+        status: 'completed',
+        input: { path: 'shot.png' },
+        content: [{ type: 'file', uri: 'media:00', mime: 'image/png' }]
+      }),
+      v2Tool('bash', v2Done({ command: 'x'.repeat(250) }, [lorem(200)])),
+      v2Tool('bash', { status: 'error', input: { command: 'false' }, error: { type: 'tool.failed', message: 'exit 1\nmore' } }),
+      v2Tool(undefined, v2Done({}, ['unnamed'])),
+      { type: 'tool', id: 'call_fixture_stateless', name: 'bash' }
+    ])
+  ]),
+  // Everything that is not a user/assistant turn: the user's own shell command and a compaction are
+  // chips; harness text and bookkeeping are dropped uncounted; an assistant error ends its text; an
+  // unknown type, a text-less user, a content-less assistant and a bad content block are counted.
+  'v2-entries': exportDocV2([
+    v2Entry('msg_1', 'system', { text: 'SYSTEM TEXT NEVER SHOWN' }),
+    v2Entry('msg_2', 'synthetic', { text: 'SYNTHETIC TEXT NEVER SHOWN', description: 'file read' }),
+    v2Entry('msg_3', 'skill', { skill: 'skl_fixture', name: 'demo', text: 'SKILL TEXT NEVER SHOWN' }),
+    v2Entry('msg_4', 'agent-switched', { agent: 'plan', previous: 'build' }),
+    v2Entry('msg_5', 'model-switched', { model: { id: 'other', providerID: 'opencode', variant: 'default' } }),
+    v2Entry('msg_6', 'location-switched', { location: { directory: '/srv/other' } }),
+    v2User('msg_7', ''),
+    v2Entry('msg_8', 'shell', {
+      shellID: 'sh_fixture',
+      command: 'git status',
+      status: 'exited',
+      exit: 0,
+      output: { output: 'On branch main\nnothing to commit', cursor: 0, size: 33, truncated: false }
+    }),
+    v2Entry('msg_9', 'shell', { shellID: 'sh_fixture2', command: 'sleep 9', status: 'running' }),
+    v2Entry('msg_10', 'compaction', { status: 'completed', reason: 'auto', summary: 'Summary of the work so far.' }),
+    v2Entry('msg_11', 'compaction', { status: 'running', reason: 'manual', summary: 'PARTIAL SUMMARY NEVER SHOWN' }),
+    v2Asst('msg_12', [{ type: 'text', text: 'partial' }], { error: { type: 'provider.error', message: '  rate limited  ', status: 429 } }),
+    v2Asst('msg_13', [], { error: { type: 'aborted', message: '' } }),
+    v2Asst('msg_14', [{ type: 'text', text: 'kept' }, { type: 'image', url: 'x' }, 'nope', { type: 'text', text: 7 }], { error: 'boom' }),
+    v2Entry('msg_15', 'hologram', { text: 'UNKNOWN TYPE NEVER SHOWN' }),
+    { id: 'msg_16', time: { created: tick('msg_16') }, type: 'user' },
+    { id: 'msg_17', time: { created: tick('msg_17') }, type: 'assistant', model: { id: 'last-model', providerID: 'opencode', variant: 'default' } },
+    v2Entry('msg_18', 'shell', { shellID: 'sh_fixture3', status: 'exited' })
+  ])
 }
 
 const serialize = (x: unknown): string => JSON.stringify(x, null, 2) + '\n'
@@ -266,6 +381,24 @@ describe('opencode chat golden fixtures', () => {
     expect(e.parse.skipped).toBe(11) // 3 bad entries, a system role, non-array parts, a foreign session, 4 bad parts, a stateless tool
     expect(JSON.stringify(e.page)).not.toContain('SOMEONE ELSE PRIVATE')
     expect(e.page.messages).toEqual([{ role: 'user', parts: [{ kind: 'text', text: 'kept' }], at: T0 + 3000 }])
+  })
+
+  it('v2-entries: harness text is never rendered and exactly the unmappable shapes are counted', () => {
+    const e = JSON.parse(fs.readFileSync(fixture('expected/v2-entries.json'), 'utf8'))
+    expect(JSON.stringify(e.page)).not.toContain('NEVER SHOWN')
+    // a non-object error, 3 bad content blocks, an unknown type, a text-less user, a content-less
+    // assistant, a command-less shell
+    expect(e.parse.skipped).toBe(8)
+    // The content-less assistant entry is the newest one, and still answers `model`.
+    expect(e.parse.model).toBe('last-model')
+    expect('effort' in e.parse).toBe(false)
+  })
+
+  it('v2-turns: both speakers render, and "default" is not an effort', () => {
+    const e = JSON.parse(fs.readFileSync(fixture('expected/v2-turns.json'), 'utf8'))
+    expect(e.parse.skipped).toBe(0)
+    expect(e.page.messages.map((m: { role: string }) => m.role)).toEqual(['user', 'assistant', 'assistant', 'user', 'assistant'])
+    expect(e.parse.effort).toBe('high')
   })
 
   it('model-utf16: 101 UTF-16 units is over the cap, 100 is not', () => {
