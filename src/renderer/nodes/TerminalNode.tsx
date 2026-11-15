@@ -3731,6 +3731,9 @@ export function TerminalNode({
           // Belt AND braces: the guard above cannot see a `ssh` executable that has gone missing,
           // which is core's other route into the local branch.
           requireRemote: sshRemoteTmux,
+          // Same rule `attachReplay` applies below: a node with a one-shot launch command is being
+          // opened for the first time and has no history to restore.
+          restoreScrollback: !data.initialCommand,
           // The one local terminal an SSH project's canvas may hold (issue #1186): core refuses
           // every other local spawn owned by an SSH project. In-memory mark, never node data.
           ...(isLocalOnSshCanvas(id) ? { localOnSshCanvas: true } : {})
@@ -3750,7 +3753,8 @@ export function TerminalNode({
           tmuxClient,
           persistent,
           sessionHost,
-          unavailable
+          unavailable,
+          scrollbackSeeded
         }) => {
         // The spawn answered: whatever it says, we are no longer waiting on the host.
         clearTimeout(slowSpawn)
@@ -4006,7 +4010,10 @@ export function TerminalNode({
           if (replay === 'cold-snapshot') {
             const snapshot = await scrollbackPromise
             if ((toreDown = onDisposed())) return
-            if (seedPaint({ replay, superseded, snapshot }) === 'snapshot') {
+            if (
+              seedPaint({ replay, superseded, snapshot, coreSeeded: scrollbackSeeded }) ===
+              'snapshot'
+            ) {
               // The snapshot comes from `capture-pane -p`: LF-separated, no CR bytes. xterm runs
               // with convertEol:false, so writing it raw would render as a staircase.
               term.write(toXtermText(snapshot))

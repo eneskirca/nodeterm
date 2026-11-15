@@ -1507,7 +1507,16 @@ session (you can't keep a live OS process across a reboot):
   timer (`SCROLLBACK_SNAPSHOT_MS`) + on detach/quit (`tmux capture-pane -e`). On a cold start the
   renderer reads it via `pty.readScrollback` and writes it back into xterm (with a "session
   restored" separator). Warm reattach skips it (tmux already redraws). Deleted with the node in
-  `destroySession`.
+  `destroySession`. **That emulator replay is only for the non-tmux backends.** A fresh tmux
+  client puts xterm on the alternate screen at attach, so a snapshot written into xterm is hidden
+  an instant later and cannot be scrolled back to — the feature silently did nothing on every
+  local tmux terminal for months, with every decision test green. For a local tmux cold start the
+  caller passes `PtyCreateOptions.restoreScrollback`, core stages the snapshot and chains a
+  `run-shell` onto the same `new-session` that writes it to the new **pane's tty**
+  (`scrollbackSeedTmuxArgs`), so it is ordinary pane output tmux paints and keeps as history, and
+  answers `PtyCreateResult.scrollbackSeeded` so the renderer writes nothing (`seedPaint`'s
+  `coreSeeded`). Proven against a real tmux in `scrollback-seed.realtmux.test.ts`. **SSH-project
+  and Zellij nodes are not covered yet** — they still take the hidden emulator replay.
   **The periodic capture is paced, serialized and deduplicated** (`snapshotTick`,
   `core/scrollback-cadence.ts`). A working agent's spinner keeps its session dirty forever, so the
   old tick spawned a `capture-pane -S -1500` (an ssh exec for a remote node) and rewrote up to

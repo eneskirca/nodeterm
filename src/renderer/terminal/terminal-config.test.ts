@@ -681,6 +681,19 @@ describe('seedPaint', () => {
     expect(seedPaint({ replay: 'cold-snapshot', superseded: false, snapshot: '' })).toBe('none')
   })
 
+  it('paints NOTHING when core already seeded the snapshot into the tmux pane', () => {
+    // The fresh tmux client puts the emulator on the alternate screen at attach, so a copy written
+    // here is hidden an instant later — that was the "session restored never shows" bug. tmux
+    // paints the pane's copy; a second one here would be the same text twice on a non-tmux day.
+    expect(
+      seedPaint({ replay: 'cold-snapshot', superseded: false, snapshot: 'old', coreSeeded: true })
+    ).toBe('none')
+    // Not seeded by core (plain shell / session-host / SSH): the emulator replay still applies.
+    expect(
+      seedPaint({ replay: 'cold-snapshot', superseded: false, snapshot: 'old', coreSeeded: false })
+    ).toBe('snapshot')
+  })
+
   it('paints NOTHING on a plain warm reattach — tmux redraws the pane itself', () => {
     // Hydrating here is exactly what produced the black bands and duplicated screens: tmux is a
     // screen painter, and its repaints leaked into whatever we had seeded.

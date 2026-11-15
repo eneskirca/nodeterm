@@ -521,9 +521,15 @@ export function seedPaint(opts: {
   snapshot?: string | null
   /** `PtyCreateResult.screen`: present (and non-empty) only for a joiner that did not resize. */
   screen?: string | null
+  /**
+   * `PtyCreateResult.scrollbackSeeded`: core already wrote the snapshot into the new tmux PANE.
+   * Then the emulator must be seeded with nothing — tmux paints the restored text itself, and a
+   * second copy written here would only sit on the normal screen the attach is about to leave.
+   */
+  coreSeeded?: boolean
 }): SeedPaint {
   if (opts.replay === 'none' || opts.superseded) return 'none'
-  if (opts.replay === 'cold-snapshot') return opts.snapshot ? 'snapshot' : 'none'
+  if (opts.replay === 'cold-snapshot') return opts.snapshot && !opts.coreSeeded ? 'snapshot' : 'none'
   // `warm-attach`: tmux paints this client itself, so the only thing left to write is a joiner's
   // captured screen (it never gets a redraw). Everyone else seeds nothing.
   return shouldApplyResync(opts.screen) ? 'create-screen' : 'none'
