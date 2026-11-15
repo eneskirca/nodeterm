@@ -22,6 +22,7 @@ import { normalizeRunConfig } from '@shared/run-config'
 import { normalizeSimulatorConfig } from '@shared/simulator'
 import { absolutePosition, type FocusableNode } from './nodeFocus'
 import { normalizeNodeIcon } from '@shared/node-icon'
+import { normalizeTerminalFontSize } from '../terminal/terminal-font-zoom'
 
 export type RestorableNodeKind = Exclude<NodeKind, 'group' | 'subagent' | 'loop'>
 
@@ -122,6 +123,10 @@ function withCosmetics(node: CanvasNode, data: NodeData): CanvasNode {
   // Without this a reopened session came back without the icon it was closed with.
   const icon = normalizeNodeIcon(data.icon)
   if (icon) cosmetics.icon = icon
+  // The per-terminal font size (issue #915) is a cosmetic too, and crosses the same validator the
+  // serializers use: the persisted twin comes from the hand-editable workspace.json.
+  const terminalFontSize = normalizeTerminalFontSize(data.terminalFontSize)
+  if (terminalFontSize !== undefined) cosmetics.terminalFontSize = terminalFontSize
   return { ...node, data: { ...node.data, ...cosmetics } }
 }
 

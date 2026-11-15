@@ -168,3 +168,20 @@ describe('terminal font zoom — shortcuts panel', () => {
     expect(labels({ terminalFontZoomKeys: true })).toContain('Terminal font size back to the global size')
   })
 })
+
+describe('terminal font zoom — cards of another project (Omni board) and notices', () => {
+  const writer = CANVAS.slice(CANVAS.indexOf('const onFontZoom = (e: Event)'))
+  const body = writer.slice(0, writer.indexOf('window.addEventListener(TERMINAL_FONT_ZOOM_EVENT'))
+  it('a node that is not on the live canvas is written through the store and persisted, never dropped', () => {
+    expect(body).toContain('nodeOwner(st.projects, d.nodeId)')
+    expect(body).toContain('applyOwnNodeMutation(owner.id')
+    expect(body).toContain('void persist()')
+  })
+  it('a relay tab keeps its host-owned nodes untouched', () => {
+    expect(body).toContain('owner.remote')
+  })
+  it('both paths raise the info notice from the one pure text', () => {
+    expect(body.match(/fontZoomNoticeText\(/g)).toHaveLength(2)
+    expect(body).toContain("setNotice({ kind: 'info'")
+  })
+})

@@ -156,6 +156,19 @@ describe('recreateNodeFromSnapshot', () => {
     expect(withIcon({ type: 'lucide', name: 'nope' })!.data.icon).toBeUndefined()
   })
 
+  // ⇧⌘T used to bring a terminal back at the global size: the per-terminal override (issue #915)
+  // was in the snapshot but not a cosmetic key.
+  it('carries the per-terminal font size over, re-validated', () => {
+    const withSize = (terminalFontSize: unknown) =>
+      recreateNodeFromSnapshot(
+        snap({ type: 'terminal', data: { title: 't', color: '#fff', group: null, terminalFontSize: terminalFontSize as never } }),
+        baseCtx()
+      )
+    expect(withSize(18)!.data.terminalFontSize).toBe(18)
+    expect(withSize(999)!.data.terminalFontSize).toBeUndefined()
+    expect(withSize('x')!.data.terminalFontSize).toBeUndefined()
+  })
+
   it('recreates a dino node carrying its high score', () => {
     const node = recreateNodeFromSnapshot(
       snap({ type: 'dino', data: { title: 'Dino', color: '#a2a2a2', group: null, highScore: 42 } }),
