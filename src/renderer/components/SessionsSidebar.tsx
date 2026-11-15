@@ -21,7 +21,7 @@ import {
 } from '../lib/sessionList'
 import { sidebarEmptyState, sidebarFilterKeyAction } from '../lib/sidebarFilter'
 import { SessionRow } from './SessionRow'
-import { projectSessionSource } from './LiveLinkChip'
+import { projectSessionSource } from '../lib/projectSessionSource'
 import { ProjectGlyph } from './ProjectGlyph'
 import { ClosedHistorySection } from './ClosedHistorySection'
 import { IconBellFilled, IconCircleCheck, IconClose, IconPin } from './icons'

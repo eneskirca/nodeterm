@@ -13,8 +13,8 @@ import {
   remoteKeysArgs,
   remotePasteArgs
 } from './pane-input'
-import { RMT_TMUX_SOCKET } from '../remote-ssh/control-master'
-import { remoteTmuxPathPrologue } from '../../shared/ssh'
+import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import { remoteTmuxPathPrologue } from '../shared/ssh'
 
 const CONN = { host: 'h.example.com', user: 'deploy', port: 2222, identityFile: '/k/id' }
 const CM = '/cm/p1'

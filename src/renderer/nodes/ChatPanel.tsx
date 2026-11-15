@@ -36,7 +36,7 @@ import {
 import { E_UNSUPPORTED } from '@shared/rpc'
 import { GROK_AMBIGUOUS_SESSION_MESSAGE, isGrokAmbiguousSessionError } from '@shared/chat-page'
 import { Spinner } from '../components/Spinner'
-import { newMessagesLabel } from '../lib/liveChatLook'
+import { newMessagesLabel } from '../lib/chatLabels'
 import {
   CHAT_LIVE_RELOAD_MIN_MS,
   CHAT_OPTIMISTIC_WORKING_MS,

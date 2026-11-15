@@ -24,9 +24,9 @@ import { execFileSync, spawn, spawnSync, type ChildProcess } from 'child_process
 import fs from 'fs'
 import path from 'path'
 import { controlInputPlan, remoteControlInputPlan, type ControlInputChunk } from './pane-input'
-import { runPasteDelivery } from '../tmux-naming'
-import { RMT_TMUX_SOCKET } from '../remote-ssh/control-master'
-import { makeTmuxTmpdir } from '../tmux-test-socket'
+import { runPasteDelivery } from './tmux-naming'
+import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
+import { makeTmuxTmpdir } from './tmux-test-socket'
 
 const SOCKET = `nt-ctl-test-${process.pid}`
 const CONN = { host: 'h.example.com', user: 'deploy', port: 2222, identityFile: '/k/id' }

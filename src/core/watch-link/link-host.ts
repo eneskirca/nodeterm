@@ -168,9 +168,9 @@ import {
   type WatchMeta
 } from '../../shared/watch-link/protocol'
 import type { HostTokenResult } from './api'
-import { unavailableCapture, type VisibleCapture } from './capture-route'
+import { unavailableCapture, type VisibleCapture } from '../capture-route'
 import { createInputSplitter, createTypingTracker, type InputSplitter } from './control-input'
-import { PANE_INPUT_DEADLINE_MS, WATCHER_INPUT_ROUTES, type ControlInputChunk, type WatcherInputRoute } from './pane-input'
+import { PANE_INPUT_DEADLINE_MS, WATCHER_INPUT_ROUTES, type ControlInputChunk, type WatcherInputRoute } from '../pane-input'
 import { isTerminalReport } from '../terminal-reports'
 import { createStreamFilter, type StreamFilter } from './stream-filter'
 import { historyPageFrom, type HistoryRead } from './history'

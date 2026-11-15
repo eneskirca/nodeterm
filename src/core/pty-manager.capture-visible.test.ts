@@ -1,13 +1,13 @@
 // `PtyManager.captureVisible` — a live link's keyframe: WHICH binary is asked with WHICH argv, and
 // the failure contract. The argv's meaning (exact target, visible rows only, the cursor line from the
-// same invocation) is proven against a real tmux in `watch-link/capture-route.realtmux.test.ts` and
+// same invocation) is proven against a real tmux in `capture-route.realtmux.test.ts` and
 // through a real /bin/sh in `remote-ssh/capture-visible.realsh.test.ts`; this file pins dispatch.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 import { TMUX_SOCKET, sessionName } from './tmux-naming'
 import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
-import { VISIBLE_CAPTURE_FORMAT, unavailableCapture } from './watch-link/capture-route'
+import { VISIBLE_CAPTURE_FORMAT, unavailableCapture } from './capture-route'
 
 /** Every `runAsync` in pty-manager lands here. `answer` decides what each call resolves to. */
 const calls: Array<{ file: string; args: string[] }> = []

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chatClock, chatNameColor, nearBottom, NEAR_BOTTOM_PX, newMessagesLabel, VIEWER_NAME_COLORS } from './liveChatLook'
+import { chatClock, chatNameColor, nearBottom, NEAR_BOTTOM_PX, VIEWER_NAME_COLORS } from './liveChatLook'
 
 describe('the viewer page\'s chat look, copied (nodeterm-web src/lib/watch-viewer/chat-panel.ts)', () => {
   it('the same name gets the same colour as on the viewer page (FNV-1a over UTF-16 units)', () => {
@@ -19,12 +19,6 @@ describe('the viewer page\'s chat look, copied (nodeterm-web src/lib/watch-viewe
     expect(nearBottom({ scrollTop: 600, clientHeight: 400, scrollHeight: 1000 })).toBe(true)
     expect(nearBottom({ scrollTop: 568, clientHeight: 400, scrollHeight: 1000 })).toBe(true)
     expect(nearBottom({ scrollTop: 567, clientHeight: 400, scrollHeight: 1000 })).toBe(false)
-  })
-
-  it('the pill label', () => {
-    expect(newMessagesLabel(1)).toBe('1 new message')
-    expect(newMessagesLabel(4)).toBe('4 new messages')
-    expect(newMessagesLabel(140)).toBe('99+ new messages')
   })
 
   it('chatClock: a time the page cannot read is nothing', () => {

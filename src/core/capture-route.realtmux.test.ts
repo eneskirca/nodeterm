@@ -19,7 +19,7 @@ import {
   unavailableCapture,
   type VisibleCapture
 } from './capture-route'
-import { makeTmuxTmpdir } from '../tmux-test-socket'
+import { makeTmuxTmpdir } from './tmux-test-socket'
 
 const SOCKET = `nt-wlcap-${process.pid}`
 const HAS_TMUX = (() => {

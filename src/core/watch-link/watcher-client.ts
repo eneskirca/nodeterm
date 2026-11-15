@@ -29,7 +29,7 @@
 //
 // Client flags (`-f`) need tmux 3.2. Locally the version is probed (`supportsWatcherClient`) and an
 // older or unreadable one refuses the watcher; over SSH the remote tmux rejects the flags itself.
-import { capturePaneTarget } from './capture-route'
+import { capturePaneTarget } from '../capture-route'
 
 export const WATCHER_CLIENT_FLAGS = 'ignore-size,read-only'
 

@@ -44,7 +44,3 @@ export function chatClock(at: unknown, locale?: string): string {
   if (typeof at !== 'number' || !Number.isFinite(at)) return ''
   return new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }).format(at)
 }
-
-export function newMessagesLabel(n: number): string {
-  return n === 1 ? '1 new message' : `${n > 99 ? '99+' : n} new messages`
-}

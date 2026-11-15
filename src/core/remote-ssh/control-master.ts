@@ -22,7 +22,7 @@ import { sanitizePasteText } from '../paste-injection'
 import { typedInputScript } from '../typed-input'
 import { canControlCanvas } from '../../shared/agents/config'
 import { COMBINED_PANE_MARKER, PANE_OWNER_FMT, PS_FOREGROUND_FLAGS } from '../agents/pane-owner'
-import { VISIBLE_CAPTURE_FORMAT, capturePaneTarget } from '../watch-link/capture-route'
+import { VISIBLE_CAPTURE_FORMAT, capturePaneTarget } from '../capture-route'
 import { WATCHER_CLIENT_FLAGS, WINDOW_SIZE_FORMAT } from '../watch-link/watcher-client'
 // Dependency-free (no node-pty): safe to import from these pure builders.
 
@@ -58,7 +58,7 @@ export const LEGACY_RMT_TMUX_SOCKET = 'nodeterm-rmt'
  * `command not found` on any host whose ssh exec-channel PATH misses the install dir — most
  * visibly macOS with Homebrew's tmux in `/opt/homebrew/bin`. The prologue is one assignment, so
  * the command's own exit code (what `probeSaysAbsent` and every caller reads) is unchanged.
- * Exported for the live link's pane-input builders (`watch-link/pane-input.ts`), which build their
+ * Exported for the live link's pane-input builders (`pane-input.ts`), which build their
  * remote commands beside their local twins rather than here.
  */
 export function tmuxCmd(body: string): string {
@@ -580,7 +580,7 @@ export function remoteCapturePaneArgs(conn: SshConnection, controlPath: string, 
 /**
  * The VISIBLE screen of a remote session, with SGR, and nothing above it — a live link's keyframe
  * must never carry history, and `remoteCapturePaneArgs` always adds `-S`. The cursor line rides the
- * SAME tmux invocation (see `watch-link/capture-route.ts` for why, and for the measured exact-target
+ * SAME tmux invocation (see `capture-route.ts` for why, and for the measured exact-target
  * spelling). Every piece that the REMOTE shell would otherwise read is single-quoted: tmux's `;`
  * separator (bare, it would end the tmux command and run `display-message` as a shell command), the
  * `=name:` target and the `#{…}` format. Proven under a real /bin/sh in capture-visible.realsh.test.ts.

@@ -7,7 +7,8 @@ import { isTopDialog, nextDialogId, popDialog, pushDialog } from './dialog-stack
 import { ControlHold, ControlSection, hasChat, kickViewer, type ControlHoldKind } from './LiveLinkControls'
 import { IconClose, IconPin } from './icons'
 import { CHAT_NOT_SENT_MESSAGE, kickNote, ROLE_NAME, statusLine, viewerName, waitingViewers } from '../lib/liveLink'
-import { chatClock, chatNameColor, nearBottom, newMessagesLabel } from '../lib/liveChatLook'
+import { chatClock, chatNameColor, nearBottom } from '../lib/liveChatLook'
+import { newMessagesLabel } from '../lib/chatLabels'
 import { chatLinkOptionLabels, inLiveChatDrawer, LIVE_CHAT_DRAWER_ATTR, pickChatLink } from '../lib/liveChatPin'
 import { useLinkThread, useWatchLinks } from '../state/watchLinks'
 

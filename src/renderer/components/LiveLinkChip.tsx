@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useState } from 'react'
 import { chipView } from '../lib/liveLink'
-import { sessionForProject, type SessionSource } from '../session/session'
+import type { SessionSource } from '../session/session'
 import { EMPTY_LINKS, liveChipSig, useWatchLinks } from '../state/watchLinks'
 import { LiveLinkPopover, type PopoverAnchor } from './LiveLinkPopover'
 
@@ -13,20 +13,6 @@ import { LiveLinkPopover, type PopoverAnchor } from './LiveLinkPopover'
  */
 export function showsLiveLinks(source: SessionSource | null): boolean {
   return source === 'local'
-}
-
-/**
- * The source of the session a project's surfaces are viewed through — for the surfaces that know a
- * project id but sit outside that project's `SessionProvider` (the boards, the sessions sidebar).
- * Null when no session resolves (a registry with no session at all, e.g. a unit test), which
- * `showsLiveLinks` reads as "do not show".
- */
-export function projectSessionSource(projectId: string): SessionSource | null {
-  try {
-    return sessionForProject(projectId).source
-  } catch {
-    return null
-  }
 }
 
 /**

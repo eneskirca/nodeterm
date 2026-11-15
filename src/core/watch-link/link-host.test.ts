@@ -55,11 +55,11 @@ import {
   type WatchPty
 } from './link-host'
 import type { HostTokenResult } from './api'
-import { unavailableCapture, type VisibleCapture } from './capture-route'
+import { unavailableCapture, type VisibleCapture } from '../capture-route'
 import { hashControlPassword, verifyControlPassword, type ControlPasswordHash } from './password'
 import type { WatchLinkControlRecord, WatchLinkRecord } from './store'
 import type { UiSink } from '../ui-sink-registry'
-import type { ControlInputChunk, WatcherInputRoute } from './pane-input'
+import type { ControlInputChunk, WatcherInputRoute } from '../pane-input'
 import { PASTE_END, PASTE_START, TYPING_WINDOW_MS } from './control-input'
 import type { HistoryRead } from './history'
 import type { ChatMessage } from '../../shared/types'

@@ -73,17 +73,17 @@
 // Read from tmux's source (window.c `window_pane_key`), not measured: `send-keys` honours a window's
 // `synchronize-panes` (the keys are copied to its other panes) and silently drops input to a pane
 // disabled with `select-pane -d` while still exiting 0. nodeterm's conf sets neither.
-import type { SshConnection } from '../../shared/ssh'
-import { posixQuote } from '../../shared/ssh'
-import { sanitizePasteText } from '../paste-injection'
+import type { SshConnection } from '../shared/ssh'
+import { posixQuote } from '../shared/ssh'
+import { sanitizePasteText } from './paste-injection'
 import {
   assertPasteBuffer,
   exactPaneTarget,
   localTmuxDeleteBufferArgs,
   pasteBufferName,
   type PasteDelivery
-} from '../tmux-naming'
-import { RMT_TMUX_SOCKET, childArgs, remoteDeleteBufferArgs, tmuxCmd } from '../remote-ssh/control-master'
+} from './tmux-naming'
+import { RMT_TMUX_SOCKET, childArgs, remoteDeleteBufferArgs, tmuxCmd } from './remote-ssh/control-master'
 
 /** One unit of a controller's input. `keys` are typed byte for byte; `paste` is text tmux frames
  *  per the pane's own bracketed-paste state. */

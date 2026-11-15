@@ -2,7 +2,7 @@
 // input: WHICH route a session gets, WHICH binary is asked with WHICH argv and WHICH stdin, the
 // per-session order, and the never-rejects contract. What the plans MEAN on a real tmux (bytes
 // exact, the prefix inert, a mode cancelled first, the exact session only) is
-// `watch-link/pane-input.realtmux.test.ts`; this file pins dispatch, in the style of
+// `pane-input.realtmux.test.ts`; this file pins dispatch, in the style of
 // `pty-manager.capture-visible.test.ts`. It is its own file because the runner here must carry
 // STDIN (`runWithStdin` reads the child off execFile's promise, as Node's own promisified execFile
 // provides it), which the capture-visible harness has no reason to fake.
@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 import { TMUX_SOCKET, sessionName } from './tmux-naming'
-import { PANE_INPUT_DEADLINE_MS, keysCommandText, remoteKeysArgs } from './watch-link/pane-input'
+import { PANE_INPUT_DEADLINE_MS, keysCommandText, remoteKeysArgs } from './pane-input'
 import { INPUT_DELIVERY_TIMEOUT_MS } from './watch-link/link-host'
 import { DEFAULT_SETTINGS } from '../shared/types'
 import { DaReplyGate } from './da-reply-gate'

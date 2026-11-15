@@ -99,14 +99,14 @@ import {
   unavailableCapture,
   visibleCaptureRoute,
   type VisibleCapture
-} from './watch-link/capture-route'
+} from './capture-route'
 import {
   PANE_INPUT_DEADLINE_MS,
   controlInputPlan,
   remoteControlInputPlan,
   type ControlInputChunk,
   type WatcherInputRoute
-} from './watch-link/pane-input'
+} from './pane-input'
 import type { ControlSupport } from '../shared/watch-link-types'
 import { sanitizePasteText } from './paste-injection'
 import {
@@ -6009,7 +6009,7 @@ export class PtyManager {
    * A live link's keyframe: the VISIBLE screen of a session, with the cursor read in the same tmux
    * invocation — never history. The keyframe's `altScreen` is the caller's, from the join (a
    * tmux-backed client paints on the alternate screen; see `VisibleCapture`). Which backends get
-   * one, the exact target and the parse are `watch-link/capture-route.ts`. The session host
+   * one, the exact target and the parse are `capture-route.ts`. The session host
    * (scrollback only), a direct Windows pane and a plain shell get `unavailableCapture()`, as does
    * any failure — a dead ControlMaster, tmux's own "can't find session" for an exact-target miss.
    */
@@ -6053,7 +6053,7 @@ export class PtyManager {
   }
 
   /**
-   * How a live-link controller's input reaches this session's PANE (watch-link/pane-input.ts).
+   * How a live-link controller's input reaches this session's PANE (pane-input.ts).
    *
    * Never through a tmux CLIENT: a byte written into a client's pty is that client's KEYBOARD, so
    * the prefix would reach tmux (`C-b s` opens the session chooser) — and a watcher's own client is

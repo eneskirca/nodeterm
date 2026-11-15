@@ -30,7 +30,7 @@
 //    newline a command run in the shell. A dropped input that ENDS in a start-marker prefix keeps that
 //    prefix, marked dropped: completed by the next input it opens a paste that is discarded whole;
 //    not completed, it is dropped (never typed, never drained).
-import type { ControlInputChunk } from './pane-input'
+import type { ControlInputChunk } from '../pane-input'
 
 export const PASTE_START = '\x1b[200~'
 export const PASTE_END = '\x1b[201~'

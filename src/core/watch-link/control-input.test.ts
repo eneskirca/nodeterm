@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { ControlInputChunk } from './pane-input'
+import type { ControlInputChunk } from '../pane-input'
 import {
   PASTE_END,
   PASTE_MAX,

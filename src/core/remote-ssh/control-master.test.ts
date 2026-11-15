@@ -38,7 +38,7 @@ import {
   remoteScpPath
 } from './control-master'
 import { remoteTmuxPathPrologue } from '../../shared/ssh'
-import { VISIBLE_CAPTURE_FORMAT } from '../watch-link/capture-route'
+import { VISIBLE_CAPTURE_FORMAT } from '../capture-route'
 
 /** The PATH-append prologue every remote tmux line now starts with (issue #449). */
 const TP = remoteTmuxPathPrologue()

@@ -12,7 +12,7 @@ import {
 } from '../../lib/kanban'
 import { KanbanColumn, type KanbanLane } from './KanbanColumn'
 import { SessionCard } from './SessionCard'
-import { projectSessionSource } from '../LiveLinkChip'
+import { projectSessionSource } from '../../lib/projectSessionSource'
 import { toKanbanSessionState } from '../../canvas/toKanbanSessionState'
 import { createAgentNode, createBrowserNode, createStickyNode, createTerminalNode, flowToNodeStates, resolveNewNodeAccount } from '../../state/workspace'
 import { markCanvasCovered } from '../../lib/canvasCovered'
