@@ -5,7 +5,7 @@ import type { AgentState } from '@shared/agents/normalize'
 import type { NodeKind, ObservedClaudeAccount } from '@shared/types'
 import type { NodeIcon } from '@shared/node-icon'
 import { hasUsage } from '@shared/agents/config'
-import type { SshConnection } from '@shared/ssh'
+import { sshHostKey, type SshConnection } from '@shared/ssh'
 import type { ProjectIcon } from '@shared/project-icon'
 import { relativeTime } from './relativeTime'
 
@@ -306,6 +306,8 @@ export interface SessionRowVM {
   loop?: { kind: 'loop' | 'schedule' | 'cron'; count: number }
   cwd?: string
   sshHost?: string
+  /** `user@host` of the SSH host the pane runs on — keys the account chip's system identity. */
+  sshHostKey?: string
   sessionId?: string
   /** Creation-time account + what the session was OBSERVED running as — the two halves the
    *  account chip resolves (`lib/accountChip`). */
@@ -396,6 +398,7 @@ function toRow(
         : undefined,
     cwd: n.cwd,
     sshHost: n.ssh?.host,
+    sshHostKey: n.ssh ? sshHostKey(n.ssh) : undefined,
     sessionId: status?.sessionId,
     accountId: n.accountId,
     account: status?.account,

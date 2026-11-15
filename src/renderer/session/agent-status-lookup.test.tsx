@@ -306,15 +306,16 @@ describe('the board surfaces read the store of the project they show', () => {
     )
 
     const node = read('nodes/TerminalNode.tsx')
-    expect(node).toContain('const accountChip = useAccountChip(data.accountId, observedAccount, agentStatusStore)')
+    // The store stays the THIRD argument; a fourth (the pane's SSH host key) follows it.
+    expect(node).toMatch(/const accountChip = useAccountChip\(\s*data\.accountId,\s*observedAccount,\s*agentStatusStore,/)
     expect(node).toContain(
       '{team && <TeamProgressChip stations={team} onTravel={travelToStation} menuZIndex={60} statusStore={agentStatusStore} />}'
     )
     const cardSrc = read('components/kanban/SessionCard.tsx')
-    expect(cardSrc).toContain('const accountChip = useAccountChip(session.spawn.accountId, status?.account, statusStore)')
+    expect(cardSrc).toMatch(/const accountChip = useAccountChip\(\s*session\.spawn\.accountId,\s*status\?\.account,\s*statusStore,/)
     expect(cardSrc).toContain('<TeamProgressChip stations={team} onTravel={onTravel} statusStore={statusStore} />')
     const modal = read('components/kanban/CardModal.tsx')
-    expect(modal).toContain('const accountChip = useAccountChip(session.spawn.accountId, observedAccount, agentStatusStore)')
+    expect(modal).toMatch(/const accountChip = useAccountChip\(\s*session\.spawn\.accountId,\s*observedAccount,\s*agentStatusStore,/)
     expect(modal).toContain('<TeamProgressChip stations={team} onTravel={onTravel} statusStore={agentStatusStore} />')
   })
 })

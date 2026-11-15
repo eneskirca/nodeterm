@@ -1023,6 +1023,23 @@ export function systemAccountDisplay(label: string | undefined, email?: string |
 }
 
 /**
+ * The system-account name for the machine a PROJECT runs on. A local project's is this machine's
+ * (`systemAccountDisplay`). An SSH project's is the HOST's own `~/.claude` / `~/.codex` login —
+ * a "New Claude" there launches under that identity, so naming the row after this machine's
+ * custom label or email mislabels the account the session will actually run as. The host's
+ * detected email when one is known, else the generic name tagged with the host; never anything
+ * borrowed from this machine.
+ */
+export function systemAccountDisplayOn(
+  hostKey: string | undefined,
+  local: { label?: string; email?: string | null },
+  remoteEmail?: string | null
+): string {
+  if (!hostKey) return systemAccountDisplay(local.label, local.email)
+  return remoteEmail || `System account (${hostKey})`
+}
+
+/**
  * Terminal node used to log a new managed account in: the session runs under the account's
  * CLAUDE_CONFIG_DIR (Task-3 env injection keyed off `data.accountId`), so `claude /login`
  * writes credentials + `.claude.json` into the account dir, where the main process captures

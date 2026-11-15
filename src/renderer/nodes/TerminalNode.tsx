@@ -1967,7 +1967,12 @@ export function TerminalNode({
    * stays creation-time (`transport.create` keeps passing `data.accountId`).
    */
   const observedAccount = status?.account
-  const accountChip = useAccountChip(data.accountId, observedAccount, agentStatusStore)
+  const accountChip = useAccountChip(
+    data.accountId,
+    observedAccount,
+    agentStatusStore,
+    data.ssh ? sshHostKey(data.ssh as SshConnection) : undefined
+  )
   // This node's team (the stations it opened), published by Canvas from the live ropes. The store
   // keeps each unchanged team's array identity, so this re-renders only when THIS team changes.
   const team = useTeamStations((s) => s.byNode.get(id))
