@@ -40,6 +40,7 @@ export const HIDEABLE_HEADER_BUTTONS: readonly HideableRow[] = [
   // itself, so it hides on all three places the pill is drawn: node header, kanban card, card
   // modal. Display only — usage tracking and the ⌘M composer's model label are unaffected.
   { id: 'context-meter', label: 'Model & context meter' },
+  { id: 'remote-control', label: 'Claude Remote Control' },
   { id: 'maximize', label: 'Maximize' },
   { id: 'refresh', label: 'Refresh' },
   { id: 'mic', label: 'Dictate' },

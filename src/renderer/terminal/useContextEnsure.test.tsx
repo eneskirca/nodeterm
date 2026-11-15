@@ -13,7 +13,7 @@ function Probe({ api, node = 'canvas', sid = 's1', account = 'a', agent = 'codex
   return null
 }
 it('rehydrates canvas/modal mounts and changed node, account, session and core identities', async () => {
-  const first = { ensure: vi.fn(), onUpdate: vi.fn() }, second = { ensure: vi.fn(), onUpdate: vi.fn() }
+  const first = { ensure: vi.fn(), onUpdate: vi.fn(), onRemoteControl: vi.fn() }, second = { ensure: vi.fn(), onUpdate: vi.fn(), onRemoteControl: vi.fn() }
   const local = vi.fn()
   Object.defineProperty(window, 'nodeTerminal', { configurable: true, value: { context: { ensure: local } } })
   const root = createRoot(document.createElement('div'))
@@ -33,7 +33,7 @@ it('rehydrates canvas/modal mounts and changed node, account, session and core i
   } finally { await act(async () => root.unmount()) }
 })
 it('does not ask for an unknown session or unsupported agent; keeps Claude routing', async () => {
-  const api = { ensure: vi.fn(), onUpdate: vi.fn() }
+  const api = { ensure: vi.fn(), onUpdate: vi.fn(), onRemoteControl: vi.fn() }
   const root = createRoot(document.createElement('div'))
   try {
     await act(async () => root.render(<Probe api={api} sid="" />))

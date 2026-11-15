@@ -17,6 +17,7 @@ import {
   type ContextTailOptions
 } from '../core/context-tail'
 import { splitCompleteLines } from '../core/subagent-tail'
+import { parseRemoteControl } from '../core/remote-control-scan'
 import { ContextReadError, type RemoteFile, type RemoteFileRef } from './remote-ssh/remote-file'
 
 const POLL_MS = 1000
@@ -134,6 +135,12 @@ export function createRemoteContextTail(
     if (historical) t.interrupts.scan(completeLines, { record: true })
     else if (opts?.onTurnInterrupted)
       for (const id of t.interrupts.scan(eventLines)) opts.onTurnInterrupted(sessionId, id)
+    // Remote Control is a STATE (latest record wins), so a historical read reports it too —
+    // unlike the event scanners above, replaying it is correct, not a duplicate.
+    if (opts?.onRemoteControl) {
+      const rc = parseRemoteControl(completeLines)
+      if (rc !== null) opts.onRemoteControl(sessionId, rc)
+    }
   }
 
   const push = (sessionId: string, t: Tracked): void => {

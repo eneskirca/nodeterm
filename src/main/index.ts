@@ -298,6 +298,7 @@ import { createCursorSubagentTracker } from '../core/cursor-subagents'
 import { ClaudeSubagentLifecycle } from '../core/claude-subagent-lifecycle'
 import { claudeSubagentTranscriptPath, isClaudeAgentId } from '../shared/agents/claude-subagents'
 import { createContextTail, type TaskNotification } from '../core/context-tail'
+import { remoteControlHandler } from '../core/remote-control-scan'
 import { registerContextEnsureIpc } from '../core/context-ensure'
 import { grokContextParse, GROK_SIGNALS_FILE } from '../core/grok-signals'
 import { applyCursorRaw, cursorContextParse, readCursorContextSource, releaseCursorRaw } from '../core/cursor-chat'
@@ -3072,7 +3073,12 @@ app.whenReady().then(async () => {
       }
     }
   }
-  const contextTail = createContextTail(pushContextUpdate, { onTaskNotification, onToolResult, onTurnInterrupted })
+  // Claude Remote Control on/off, read from the transcript (no hook exists). ONE handler for the
+  // local and the SSH tail; the Server Edition wires the same core helper.
+  const onRemoteControl = remoteControlHandler(nodeContextSession, (u) =>
+    corePlatform.broadcast(IPC.agentRemoteControl, u)
+  )
+  const contextTail = createContextTail(pushContextUpdate, { onTaskNotification, onToolResult, onTurnInterrupted, onRemoteControl })
   // ONE TAIL PER AGENT, each with its own parser — not one tail switching on an agent id, which
   // would mean changing `ContextTail.track(sessionId, path)` and the four call sites that depend on
   // it. The poller (offset reads, torn-line carry, change-gated push) is written once in
@@ -3113,7 +3119,7 @@ app.whenReady().then(async () => {
   const remoteFile = new RemoteFile((args) =>
     sshProjectManager ? sshProjectManager.sshRun(args) : Promise.resolve({ code: 1, stdout: '' })
   )
-  const remoteContextTail = createRemoteContextTail(win, remoteFile, { onTaskNotification, onToolResult, onTurnInterrupted })
+  const remoteContextTail = createRemoteContextTail(win, remoteFile, { onTaskNotification, onToolResult, onTurnInterrupted, onRemoteControl })
   const remoteCodexContextTail = createRemoteContextTail((usage) => {
     const scoped = remoteCodexContext.publish(usage)
     if (scoped) pushContextUpdate(scoped)
