@@ -172,7 +172,13 @@ import { NESTED_AGENT_ENV_STRIP } from './nested-agent-env'
 import { effectiveSize, type PtySize } from './pty-size'
 import { DaReplyGate, DA_REPLY_TTL_OTHER_MS, DA_REPLY_TTL_TMUX_MS } from './da-reply-gate'
 import { machOArch, archMismatch } from './macho-arch'
-import { writeScrollback, readScrollback, deleteScrollback } from './scrollback-store'
+import {
+  writeScrollback,
+  readScrollback,
+  deleteScrollback,
+  prepareScrollbackSeed,
+  scrollbackSeedTmuxArgs
+} from './scrollback-store'
 import { snapshotDue } from './scrollback-cadence'
 import { createHash, randomUUID } from 'node:crypto'
 import { claudeConfigDirFor } from './claude-config-dir'
@@ -953,6 +959,10 @@ interface Session {
   /** True when this node had an `accountId` but its config dir was gone at spawn, so we fell back
    *  to the system account. `create()` surfaces it to the renderer (warning chip). */
   accountFallback?: boolean
+  /** The spawn that created this session chained the cold-restore scrollback seed onto its
+   *  `new-session` (see scrollback-store.ts). `create()` surfaces it so the renderer does not
+   *  replay the same snapshot into its emulator. */
+  scrollbackSeeded?: boolean
   /** Set once `join` has warned that this session holds a remote-only node's id somewhere other
    *  than that node's host (`held-elsewhere`). A watcher retries its join every 2/4/8/15 s for as
    *  long as the link lives, and every retry is refused the same way, so the warning is logged once
@@ -3177,6 +3187,19 @@ export class PtyManager {
             background: options.onScreen === false
           })
         : null
+    // Cold start of a LOCAL tmux session whose caller wants its scrollback back: stage the
+    // snapshot so `spawnSession` can chain it into the new pane. It has to go into the PANE — the
+    // emulator is put on the alternate screen by the attach and would hide it (scrollback-store.ts).
+    // Staged here because `spawnSession` is synchronous. Null = no snapshot = nothing to seed.
+    const scrollbackSeed =
+      fresh &&
+      tmuxBacked &&
+      !options.sshRemote &&
+      !warmWindowsBackend &&
+      zellijChoice?.use !== true &&
+      options.restoreScrollback
+        ? await prepareScrollbackSeed(options.persistKey as string)
+        : null
     let sessionId: string
     try {
       sessionId = this.spawnSession(
@@ -3185,7 +3208,8 @@ export class PtyManager {
         undefined,
         warmWindowsBackend,
         projectOverrides,
-        zellijChoice?.use === true
+        zellijChoice?.use === true,
+        scrollbackSeed
       )
     } catch (err) {
       // A spawn that never happened must not hold a slot until the settle deadline — the next node
@@ -3293,7 +3317,8 @@ export class PtyManager {
       // tmux emitted at attach — see PtyCreateResult.tmuxClient. Same gate as the join's alt screen.
       ...(spawned?.tmuxBacked && !spawned.sessionHost ? { tmuxClient: true as const } : {}),
       ...(staleCwd ? { staleCwd: true as const } : {}),
-      ...(screen ? { screen } : {})
+      ...(screen ? { screen } : {}),
+      ...(spawned?.scrollbackSeeded && fresh ? { scrollbackSeeded: true as const } : {})
     }
   }
 
@@ -4354,7 +4379,10 @@ export class PtyManager {
     /** `create()`'s Zellij decision. Absent on the detached (relay host) paths, which fall back to
      *  what this process knows about the node (`zellijKeys`) — a phone attaching to a Zellij node
      *  must join that session, never create a tmux one beside it. */
-    zellijBackend?: boolean
+    zellijBackend?: boolean,
+    /** A staged cold-restore seed file (`prepareScrollbackSeed`) to write into the pane this spawn
+     *  creates. Only honored by the local-tmux attach-or-create branch. */
+    scrollbackSeed?: string | null
   ): string {
     // PRE-FLIGHT — refuse before node-pty is touched, not after it fails.
     //
@@ -4718,6 +4746,9 @@ export class PtyManager {
     // Unlike the installed-binary probe, this records the backend selected for THIS generation.
     // A Windows profile may coexist with an MSYS/Cygwin tmux on PATH and must not inherit it.
     let useLocalTmux = false
+    // Set only where the seed was actually chained onto a `new-session` — so the answer the
+    // renderer gets describes what this spawn did, not what `spawnNew` hoped it would do.
+    let scrollbackSeeded = false
     // Set by the Zellij branch below; see zellij-backend.ts.
     let useLocalZellij = false
     const zellijBin =
@@ -5027,6 +5058,12 @@ export class PtyManager {
         args.push(shell)
         args.push(...programArgs)
       }
+      // Cold restore: write the staged snapshot into the pane this invocation creates, as a
+      // second tmux command on the same line (after the session program, which it must follow).
+      if (scrollbackSeed) {
+        args.push(...scrollbackSeedTmuxArgs(scrollbackSeed, sessionName(options.persistKey)))
+        scrollbackSeeded = true
+      }
       }
     } else if (
       !options.sshRemote &&
@@ -5206,6 +5243,7 @@ export class PtyManager {
       unwatchedSince: null,
       pausedBy: new Set<string>(),
       accountFallback,
+      ...(scrollbackSeeded ? { scrollbackSeeded } : {}),
       sessionHost: useSessionHost,
       ...(useSessionHost && options.agentId ? { launchAgentId: options.agentId } : {}),
       ...(useSessionHost && env[envPathKey(env)] ? { launchPath: env[envPathKey(env)] } : {}),

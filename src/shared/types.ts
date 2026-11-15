@@ -223,6 +223,18 @@ export interface PtyCreateOptions {
    */
   requireRemote?: boolean
   /**
+   * "If this create turns out to be a COLD start, I want the persisted scrollback back." Set by a
+   * caller that would otherwise replay the snapshot into its own emulator (i.e. not a node being
+   * opened for the first time with an `initialCommand`).
+   *
+   * It exists because the emulator is the wrong place for it on a tmux-backed session: tmux puts
+   * the client on the alternate screen at attach, hiding anything written before it. With this
+   * set, core writes the snapshot into the new PANE instead and answers
+   * `PtyCreateResult.scrollbackSeeded`. Ignored on a warm attach, a co-attach join, an SSH-project
+   * node and the non-tmux backends — there the caller's own replay still applies.
+   */
+  restoreScrollback?: boolean
+  /**
    * The ONE way a terminal may run on THIS machine while it sits on an SSH project's canvas: the
    * local-account login node Settings → Accounts drops onto whatever canvas is active. Core refuses
    * every other local spawn whose `ownerProjectId` is an SSH project (`PtyManager.setSshProjectCheck`,
@@ -452,6 +464,12 @@ export interface PtyCreateResult {
    * checked. Nothing was joined or started, and the existing session was left untouched.
    */
   unavailable?: 'ssh' | 'codex-account' | 'join-only' | 'held-elsewhere' | 'new-only'
+  /**
+   * Core already put the persisted scrollback (and the "session restored" separator) into the new
+   * tmux pane — see `PtyCreateOptions.restoreScrollback`. The caller must NOT replay the snapshot
+   * into its emulator: tmux paints it and owns it as history. Only ever set with `fresh: true`.
+   */
+  scrollbackSeeded?: boolean
 }
 
 /** Payload of `pty:recycled` — see IPC.ptyRecycled and `recycleAction` in the renderer. */
