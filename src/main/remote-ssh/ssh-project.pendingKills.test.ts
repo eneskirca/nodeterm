@@ -17,6 +17,7 @@ vi.mock('electron', () => ({
 
 import { SshProjectManager } from './ssh-project'
 import { remoteTmuxPathPrologue } from '../../shared/ssh'
+import { SESSION_SOCKET_REF, sessionSocketProbe } from '../../core/remote-ssh/control-master'
 import { initPlatform, resetPlatformForTests } from '../../core/platform'
 import { fakePlatform } from '../../core/platform-fake'
 import { pendingRemoteKillsFor, recordPendingRemoteKill } from '../../core/pending-remote-kills'
@@ -66,7 +67,9 @@ describe('SshProjectManager: settling owed remote kills on connect', () => {
 
     await settle(mgr)
 
-    expect(runs.map((r) => r.at(-1))).toEqual([`${TP}tmux -L node-terminal kill-session -t '=nt-abc'`])
+    expect(runs.map((r) => r.at(-1))).toEqual([
+      `${TP}${sessionSocketProbe('nt-abc')}tmux -L ${SESSION_SOCKET_REF} kill-session -t '=nt-abc'`
+    ])
     expect(await pendingRemoteKillsFor(HOST)).toEqual([])
   })
 

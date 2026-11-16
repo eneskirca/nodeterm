@@ -84,7 +84,7 @@ import {
   pasteBufferName,
   type PasteDelivery
 } from './tmux-naming'
-import { RMT_TMUX_SOCKET, childArgs, remoteDeleteBufferArgs, tmuxCmd } from './remote-ssh/control-master'
+import { SESSION_SOCKET_REF, childArgs, remoteDeleteBufferArgs, sessionTmuxCmd } from './remote-ssh/control-master'
 
 /** One unit of pane input. `keys` are typed byte for byte; `paste` is text tmux frames per the
  *  pane's own bracketed-paste state. */
@@ -135,8 +135,9 @@ export function localPasteArgs(socket: string, session: string, buffer: string):
 }
 
 /** ssh args running `tmux -L node-terminal source-file -` on the host; the command text rides stdin. */
-export function remoteKeysArgs(conn: SshConnection, controlPath: string): string[] {
-  return childArgs(conn, controlPath, tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} source-file -`))
+export function remoteKeysArgs(conn: SshConnection, controlPath: string, session: string): string[] {
+  // The socket is the one HOLDING `session` (an adopted legacy session lives on the other server).
+  return childArgs(conn, controlPath, sessionTmuxCmd(session, `tmux -L ${SESSION_SOCKET_REF} source-file -`))
 }
 
 /**
@@ -152,8 +153,9 @@ export function remotePasteArgs(conn: SshConnection, controlPath: string, sessio
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(
-      `tmux -L ${RMT_TMUX_SOCKET} load-buffer -b ${buffer} - ';' ` +
+    sessionTmuxCmd(
+      session,
+      `tmux -L ${SESSION_SOCKET_REF} load-buffer -b ${buffer} - ';' ` +
         `if-shell -F -t ${q} '#{pane_in_mode}' ${posixQuote(`copy-mode -q -t ${t}`)} ';' ` +
         `paste-buffer -d -p -r -b ${buffer} -t ${q}`
     )
@@ -185,7 +187,7 @@ export function remoteControlInputPlan(
   chunk: ControlInputChunk
 ): PasteDelivery | null {
   if (chunk.kind === 'keys') {
-    return { args: remoteKeysArgs(conn, controlPath), body: keysCommandText(session, chunk.data), cleanup: null }
+    return { args: remoteKeysArgs(conn, controlPath, session), body: keysCommandText(session, chunk.data), cleanup: null }
   }
   const body = sanitizePasteText(chunk.text)
   if (body.length === 0) return null
@@ -193,6 +195,6 @@ export function remoteControlInputPlan(
   return {
     args: remotePasteArgs(conn, controlPath, session, buffer),
     body,
-    cleanup: remoteDeleteBufferArgs(conn, controlPath, buffer)
+    cleanup: remoteDeleteBufferArgs(conn, controlPath, buffer, session)
   }
 }

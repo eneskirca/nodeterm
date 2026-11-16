@@ -56,6 +56,10 @@ export function typedLines(text: string): string[] {
     .split('\n')
 }
 
+/** The socket as a shell word read from the script's environment — see control-master.ts
+ *  `SESSION_SOCKET_REF`, which must be this exact text (pinned in typed-input.test.ts). */
+export const TYPED_SOCKET_ENV_REF = '"$_nts"'
+
 /**
  * The script that types stdin into the pane. `tmux` is a FIXED shell word that runs tmux
  * (`"$NT_TYPED_TMUX"` locally, see `localTypedArgs`; `tmux` on an SSH host) — never a path spliced in.
@@ -64,7 +68,10 @@ export function typedLines(text: string): string[] {
  */
 export function typedInputScript(tmux: string, socket: string, target: string, buffer: string): string {
   assertPasteTarget(target, buffer)
-  if (!/^[A-Za-z0-9._-]+$/.test(socket)) throw new Error(`unsafe tmux socket: ${JSON.stringify(socket)}`)
+  // A socket NAME, or the one fixed shell word the SSH leg passes when the host decides which socket
+  // holds the session (`TYPED_SOCKET_ENV_REF`, set in this script's environment by the caller).
+  if (socket !== TYPED_SOCKET_ENV_REF && !/^[A-Za-z0-9._-]+$/.test(socket))
+    throw new Error(`unsafe tmux socket: ${JSON.stringify(socket)}`)
   const t = `${tmux} -L ${socket}`
   // The EXACT target (tmux-naming.ts `exactPaneTarget`): a bare name prefix-matches a longer session
   // on a miss. Single-quoted for the shell (`sh -c` here, and the same text runs on an SSH host): a

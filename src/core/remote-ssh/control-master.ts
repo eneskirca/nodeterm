@@ -43,11 +43,14 @@ import { VISIBLE_CAPTURE_FORMAT, capturePaneTarget } from '../capture-route'
 export const RMT_TMUX_SOCKET: string = TMUX_SOCKET
 
 /**
- * The socket the SSH path used BEFORE the unification. Nothing is spawned here any more; the sweeps
- * (session memory, dev ports), the reaper and the by-name kill still list it so sessions an older
- * build left there stay visible as orphans and reapable/killable instead of leaking. A session
- * still living here is NOT re-attached — the node cold-restores onto `TMUX_SOCKET` exactly as after
- * a host reboot, and the old one shows up in the session-memory panel as an orphan.
+ * The socket the SSH path used BEFORE the unification. Nothing is CREATED here any more, but a
+ * session an older build left here is ADOPTED in place — re-attached, written to, captured and
+ * killed on this socket — for as long as it lives (`sessionSocketProbe`, which is also where the
+ * incident that forced this is written down). The first-merged unification did the opposite: it
+ * cold-restored the node onto `TMUX_SOCKET` "exactly as after a host reboot" and left the original
+ * running as an orphan. A reboot ends the old process; an upgrade does not, so that turned every
+ * upgrade into a duplicated, half-resumed canvas. The sweeps (session memory, dev ports), the
+ * reaper and the by-name kill still list this socket for what no node claims.
  */
 export const LEGACY_RMT_TMUX_SOCKET = 'nodeterm-rmt'
 
@@ -62,6 +65,56 @@ export const LEGACY_RMT_TMUX_SOCKET = 'nodeterm-rmt'
  */
 export function tmuxCmd(body: string): string {
   return `${remoteTmuxPathPrologue()}${body}`
+}
+
+/** The shell variable `sessionSocketProbe` sets, as the word a builder splices after `tmux -L`. */
+export const SESSION_SOCKET_REF = '"$_nts"'
+
+/**
+ * WHICH SOCKET HOLDS THIS SESSION, decided on the host, in the same shell line that then uses it.
+ *
+ * The unification (2026-11) moved every SSH spawn onto `RMT_TMUX_SOCKET` and, as first merged,
+ * simply stopped looking at `LEGACY_RMT_TMUX_SOCKET`. A session living there was therefore
+ * invisible on the first launch after the upgrade: `new-session -A` on the new socket found nothing
+ * and CREATED a second `nt-<id>`, the node cold-restored, and the original — a live agent CLI with
+ * its conversation — kept running detached beside it. Measured on the reporting host (2026-11-15):
+ * 27 nodes respawned in one second, 13 of them into a bare `claude` with no `--resume`, while all
+ * 27 originals (and 45 more) sat on the legacy socket holding RAM.
+ *
+ * tmux cannot move a session between servers, so the session is ADOPTED where it is: when the
+ * unified socket does not hold the name and the legacy one does, every command about that session
+ * targets the legacy socket. Nothing is ever CREATED there by choice — a name neither socket holds
+ * resolves to the unified one — so the legacy server only drains as its sessions end.
+ *
+ * Stateless on purpose. The desktop could remember "this node is on the legacy socket", but most
+ * commands here run for nodes it holds no live session for (after an app restart, for a backgrounded
+ * project), and a remembered answer outlives the session it was about. Asking costs one host-local
+ * `has-session` (two when the unified socket misses) inside an ssh exec we were making anyway.
+ *
+ * The unified socket WINS when both hold the name: that is what the first-merged build left behind
+ * on every host it ran against, and the pane the user has been typing into since is the new one.
+ *
+ * `</dev/null` because several callers ride a payload on the ssh child's stdin (`load-buffer -`);
+ * the probe must never be the one that reads it. The exact `=name` target is double-quoted — under
+ * zsh a bare leading `=` is a command lookup — and the id is spliced only when it is the
+ * `[A-Za-z0-9._-]` shape `sessionName()` produces; anything else gets the unified socket and no
+ * probe, so a hostile id never reaches a shell line through here.
+ */
+export function sessionSocketProbe(sessionId: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return `_nts=${RMT_TMUX_SOCKET}; `
+  const t = `"=${sessionId}"`
+  return (
+    `_nts=${RMT_TMUX_SOCKET}; ` +
+    `tmux -L ${RMT_TMUX_SOCKET} has-session -t ${t} </dev/null >/dev/null 2>&1 || ` +
+    `{ tmux -L ${LEGACY_RMT_TMUX_SOCKET} has-session -t ${t} </dev/null >/dev/null 2>&1 && _nts=${LEGACY_RMT_TMUX_SOCKET}; }; `
+  )
+}
+
+/** `tmuxCmd` for a command about ONE session: PATH prologue, the socket probe, then the body —
+ *  which names the socket as `SESSION_SOCKET_REF`. The body stays last, so its exit code is the
+ *  command's, exactly as with `tmuxCmd`. */
+export function sessionTmuxCmd(sessionId: string, body: string): string {
+  return tmuxCmd(`${sessionSocketProbe(sessionId)}${body}`)
 }
 
 /**
@@ -311,7 +364,17 @@ export function remoteListSessionsArgs(conn: SshConnection, controlPath: string)
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} list-sessions -F '#{session_name}'`)
+    tmuxCmd(
+      // Both sockets, one exec: a session still on the legacy socket is ADOPTED
+      // (`sessionSocketProbe`), so it must also read as PRESENT here — this list is what decides
+      // warm vs cold, and "cold" types `claude --resume` into the pane. The exit code stays the
+      // unified socket's own (1 = no server = evidence of absence), except that a legacy server
+      // that listed something turns that 1 into 0: the host does hold sessions.
+      `a=$(tmux -L ${RMT_TMUX_SOCKET} list-sessions -F '#{session_name}'); r=$?; ` +
+        `b=$(tmux -L ${LEGACY_RMT_TMUX_SOCKET} list-sessions -F '#{session_name}' 2>/dev/null); ` +
+        `[ -n "$b" ] && [ "$r" = 1 ] && r=0; ` +
+        `printf '%s\\n%s\\n' "$a" "$b"; exit $r`
+    )
   )
 }
 
@@ -364,7 +427,7 @@ export function remoteTmuxPasteArgs(
   enter: boolean
 ): string[] {
   assertPasteTarget(sessionId, buffer)
-  const tmux = `tmux -L ${RMT_TMUX_SOCKET}`
+  const tmux = `tmux -L ${SESSION_SOCKET_REF}`
   // EXACT target (`exactPaneTarget`): a bare name prefix-matches a longer session on a miss.
   // Quoted for the remote shell where it is a word of its own (zsh expands a leading `=`); inside
   // the single-quoted `if-shell` body tmux's own lexer reads it.
@@ -375,7 +438,7 @@ export function remoteTmuxPasteArgs(
     `if-shell -F -t ${t} '#{pane_in_mode}' 'send-keys -t ${pane} -X cancel' ';' ` +
     `paste-buffer -d -p -r -b ${buffer} -t ${t}`
   if (enter) cmd += ` ';' send-keys -t ${t} Enter`
-  return childArgs(conn, controlPath, tmuxCmd(cmd))
+  return childArgs(conn, controlPath, sessionTmuxCmd(sessionId, cmd))
 }
 
 /**
@@ -403,7 +466,12 @@ export function remoteTypedArgs(
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`sh -c ${posixQuote(typedInputScript('tmux', RMT_TMUX_SOCKET, sessionId, buffer))}`)
+    // The script runs under its own `sh`, which does not see this line's variables: hand the probed
+    // socket over as that process's environment.
+    sessionTmuxCmd(
+      sessionId,
+      `_nts="$_nts" sh -c ${posixQuote(typedInputScript('tmux', SESSION_SOCKET_REF, sessionId, buffer))}`
+    )
   )
 }
 
@@ -434,7 +502,7 @@ export function remoteTmuxEnterArgs(
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} ${keys}`)
+    sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} ${keys}`)
   )
 }
 
@@ -442,10 +510,19 @@ export function remoteTmuxEnterArgs(
 export function remoteDeleteBufferArgs(
   conn: SshConnection,
   controlPath: string,
-  buffer: string
+  buffer: string,
+  /** The session the paste was for — the buffer lives on THAT session's server
+   *  (`sessionSocketProbe`). Omitted = the unified socket. */
+  sessionId?: string
 ): string[] {
   assertPasteBuffer(buffer)
-  return childArgs(conn, controlPath, tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} delete-buffer -b ${buffer}`))
+  return childArgs(
+    conn,
+    controlPath,
+    sessionId === undefined
+      ? tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} delete-buffer -b ${buffer}`)
+      : sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} delete-buffer -b ${buffer}`)
+  )
 }
 
 /**
@@ -470,7 +547,7 @@ export function remotePasteDelivery(
   return {
     args: remoteTmuxPasteArgs(conn, controlPath, sessionId, buffer, enter),
     body,
-    cleanup: remoteDeleteBufferArgs(conn, controlPath, buffer)
+    cleanup: remoteDeleteBufferArgs(conn, controlPath, buffer, sessionId)
   }
 }
 /**
@@ -546,10 +623,17 @@ export function remoteTmuxKillArgs(
   conn: SshConnection,
   controlPath: string,
   sessionId: string,
-  socket: string = RMT_TMUX_SOCKET
+  socket?: string
 ): string[] {
   // Quoted: on a zsh login shell an unquoted word starting with `=` is a command-path lookup.
-  return childArgs(conn, controlPath, tmuxCmd(`tmux -L ${socket} kill-session -t ${posixQuote(exactTarget(sessionId))}`))
+  const kill = (word: string): string => `tmux -L ${word} kill-session -t ${posixQuote(exactTarget(sessionId))}`
+  // No socket named = "this node's session, wherever it lives": the one the probe resolves, so an
+  // ADOPTED legacy session ends with its node instead of leaking as an orphan.
+  return childArgs(
+    conn,
+    controlPath,
+    socket === undefined ? sessionTmuxCmd(sessionId, kill(SESSION_SOCKET_REF)) : tmuxCmd(kill(socket))
+  )
 }
 
 /**
@@ -573,7 +657,7 @@ export function remoteCapturePaneArgs(conn: SshConnection, controlPath: string, 
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t ${posixQuote(exactPaneTarget(sessionId))} -S ${full ? '-' : '-200'}`)
+    sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} capture-pane -p -e -t ${posixQuote(exactPaneTarget(sessionId))} -S ${full ? '-' : '-200'}`)
   )
 }
 /**
@@ -589,8 +673,9 @@ export function remoteCaptureVisibleArgs(conn: SshConnection, controlPath: strin
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(
-      `tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t ${target} ';' ` +
+    sessionTmuxCmd(
+      sessionId,
+      `tmux -L ${SESSION_SOCKET_REF} capture-pane -p -e -t ${target} ';' ` +
         `display-message -p -t ${target} ${posixQuote(VISIBLE_CAPTURE_FORMAT)}`
     )
   )
@@ -616,8 +701,9 @@ export function remoteSessionAgeArgs(conn: SshConnection, controlPath: string, s
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(
-      `printf '%s %s\n' "$(tmux -L ${RMT_TMUX_SOCKET} display-message -p -t '=${sessionId}:' '#{session_created}')" "$(date +%s)"`
+    sessionTmuxCmd(
+      sessionId,
+      `printf '%s %s\n' "$(tmux -L ${SESSION_SOCKET_REF} display-message -p -t '=${sessionId}:' '#{session_created}')" "$(date +%s)"`
     )
   )
 }
@@ -648,7 +734,7 @@ export function remotePaneCommandArgs(conn: SshConnection, controlPath: string, 
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '#{pane_current_command}'`)
+    sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '#{pane_current_command}'`)
   )
 }
 
@@ -668,7 +754,7 @@ export function remoteSendKeyArgs(
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} ${keyArgs.join(' ')}`)
+    sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} send-keys -t ${posixQuote(exactPaneTarget(sessionId))} ${keyArgs.join(' ')}`)
   )
 }
 
@@ -677,7 +763,7 @@ export function remotePaneCwdArgs(conn: SshConnection, controlPath: string, sess
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '#{pane_current_path}'`)
+    sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '#{pane_current_path}'`)
   )
 }
 
@@ -690,7 +776,7 @@ export function remotePaneProcessArgs(
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '#{pane_pid}|#{pane_current_command}'`)
+    sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '#{pane_pid}|#{pane_current_command}'`)
   )
 }
 
@@ -757,7 +843,7 @@ export function remotePaneOwnerCombinedArgs(
   assertPasteTarget(sessionId)
   const ps = PS_FOREGROUND_FLAGS.join(' ')
   const script =
-    `o=$(${tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '${PANE_OWNER_FMT}'`)}) || exit 9; ` +
+    `o=$(${sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '${PANE_OWNER_FMT}'`)}) || exit 9; ` +
     `printf '%s\\n' "${COMBINED_PANE_MARKER.trimEnd()} $o"; ` +
     'tty=${o#*|}; tty=${tty%%|*}; ' +
     `case "$tty" in /dev/*) ps ${ps} -t "$tty" 2>/dev/null || : ;; esac`
@@ -788,7 +874,7 @@ export function remotePaneCursorArgs(
   return childArgs(
     conn,
     controlPath,
-    tmuxCmd(`tmux -L ${RMT_TMUX_SOCKET} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '#{cursor_x} #{cursor_y} #{cursor_flag}'`)
+    sessionTmuxCmd(sessionId, `tmux -L ${SESSION_SOCKET_REF} display-message -p -t ${posixQuote(exactPaneTarget(sessionId))} '#{cursor_x} #{cursor_y} #{cursor_flag}'`)
   )
 }
 export function tmuxProbeArgs(conn: SshConnection, controlPath: string): string[] {
@@ -1019,7 +1105,7 @@ export function remoteTmuxPtyArgs(
   confPath?: string,
   sessionEnv?: RemoteSessionEnv
 ): string[] {
-  let cmd = remoteTmuxCommand({ sessionId, remoteCwd, program, programArgs, socket: RMT_TMUX_SOCKET, confPath })
+  let cmd = remoteTmuxCommand({ sessionId, remoteCwd, program, programArgs, socket: SESSION_SOCKET_REF, confPath })
   if (extraEnv.length)
     // The replacement is a FUNCTION, not a string. This is load-bearing and not a style choice:
     // in a STRING replacement `$'`, `` $` ``, `$&` and `$$` are expansion patterns, and `$'`
@@ -1035,7 +1121,7 @@ export function remoteTmuxPtyArgs(
   // The PATH prologue goes at the very FRONT of the composed line: the session-env prologue's own
   // tmux calls (start-server / show-options) and the `command -v tmux` guard must resolve the
   // binary the same way new-session does.
-  return ['-t', ...childArgs(conn, controlPath, tmuxCmd(cmd))]
+  return ['-t', ...childArgs(conn, controlPath, sessionTmuxCmd(sessionId, cmd))]
 }
 
 /** What a tmux-less remote loses, told to the user IN the pane. English + apostrophe-free: each
@@ -1087,7 +1173,7 @@ export interface RemoteSessionEnv {
  *  upload. The `rm -f` runs unconditionally so a late-landing file cannot linger at rest. */
 function remoteSessionEnvPrologue(sessionEnv: RemoteSessionEnv, confPath?: string): string {
   const f = posixQuote(sessionEnv.file)
-  const t = `tmux -L ${RMT_TMUX_SOCKET}`
+  const t = `tmux -L ${SESSION_SOCKET_REF}`
   const parts: string[] = []
   // Names only ever come from isSafeEnvName-shaped keys, but this builder is exported territory —
   // re-filter at the splice point, the same idiom every other remote builder here uses.

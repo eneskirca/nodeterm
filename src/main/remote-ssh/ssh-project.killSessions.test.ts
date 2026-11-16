@@ -12,6 +12,7 @@ vi.mock('electron', () => ({
 
 import { SshProjectManager } from './ssh-project'
 import { remoteTmuxPathPrologue } from '../../shared/ssh'
+import { SESSION_SOCKET_REF, sessionSocketProbe } from '../../core/remote-ssh/control-master'
 
 /** The PATH-append prologue every remote tmux line now starts with (issue #449). */
 const TP = remoteTmuxPathPrologue()
@@ -39,6 +40,7 @@ function managerWithConn(): { mgr: SshProjectManager; runs: string[][] } {
 }
 
 const commands = (runs: string[][]): string[] => runs.map((r) => r.at(-1)!).sort()
+const PROBED_KILL = `${TP}${sessionSocketProbe('nt-abc')}tmux -L ${SESSION_SOCKET_REF} kill-session -t '=nt-abc'`
 
 describe('SshProjectManager.killSessions', () => {
   it('kills the name on EVERY tmux socket when the caller opts in', async () => {
@@ -53,18 +55,19 @@ describe('SshProjectManager.killSessions', () => {
     ])
   })
 
-  it('stays on the project s own socket by default', async () => {
-    // Project deletion knows its own nodes and they are all on the host's `node-terminal`. The
-    // legacy `nodeterm-rmt` holds only what an older build left, so a delete must not speculate there.
+  it('kills ONE session by default: the one the node is attached to, on whichever socket holds it', async () => {
+    // Project deletion knows its own nodes. Each lives on the host's `node-terminal` — or, when an
+    // older build left it there and it was adopted, on the legacy `nodeterm-rmt`. The host decides
+    // (`sessionSocketProbe`); a delete still fires exactly one kill and never fans out.
     const { mgr, runs } = managerWithConn()
     await mgr.killSessions('p1', ['abc'])
-    expect(commands(runs)).toEqual([`${TP}tmux -L node-terminal kill-session -t '=nt-abc'`])
+    expect(commands(runs)).toEqual([PROBED_KILL])
   })
 
   it('demands a literal true — the flag comes off the wire', async () => {
     const { mgr, runs } = managerWithConn()
     await mgr.killSessions('p1', ['abc'], { everySocket: 'yes' as unknown as boolean })
-    expect(commands(runs)).toEqual([`${TP}tmux -L node-terminal kill-session -t '=nt-abc'`])
+    expect(commands(runs)).toEqual([PROBED_KILL])
   })
 
   it('is best-effort: a socket that refuses does not spare the others', async () => {

@@ -890,11 +890,23 @@ locally on the server and the same folder opened over SSH from a laptop were two
 same-named sessions that never saw each other, and every switch of machines cold-restored into a
 fresh shell (field report; issue #1319 was the mobile half of it). The original "never collide with
 the user's own tmux" rationale is satisfied by `node-terminal` already — the user's own tmux is on
-`default`. `nodeterm-rmt` survives only as `LEGACY_RMT_TMUX_SOCKET`: the session-memory sweep, the
-dev-ports sweep, the reaper and the by-name kill still list it so sessions an older build left there
-stay visible as orphans and reapable/killable; nothing is spawned or re-attached there (a node whose
-session is still on the legacy socket cold-restores onto `node-terminal`, exactly as after a host
-reboot, and the old one shows up in the session-memory panel as an orphan). Do not give the SSH path
+`default`. `nodeterm-rmt` survives as `LEGACY_RMT_TMUX_SOCKET`, and **a session an older build left
+there is ADOPTED in place, never shadowed**: nothing is CREATED on it, but every remote command
+about ONE session first asks the host which socket holds that name (`sessionSocketProbe` →
+`sessionTmuxCmd`, `control-master.ts`) and targets it — attach, write, capture, pane queries, kill —
+and the warm/cold list (`remoteListSessionsArgs`) reads both sockets, so an adopted session reads
+WARM and nothing is typed into it. The first-merged unification did the opposite ("cold-restore onto
+`node-terminal`, exactly as after a host reboot") and it was wrong in a way a reboot is not: a reboot
+ENDS the old process, an upgrade does not. Measured on the reporting host, 2026-11-15, first launch
+after the upgrade: 27 nodes respawned in one second, 13 of them into a bare `claude` with no
+`--resume`, while all 27 originals kept running detached on the legacy socket. Rules that fall out:
+**a new builder for a per-session remote tmux command goes through `sessionTmuxCmd` and names the
+socket as `SESSION_SOCKET_REF`, never `RMT_TMUX_SOCKET`** (a bare constant silently misses every
+adopted session); the unified socket wins when both hold the name; the probe is stateless on purpose
+(most of these commands run for nodes we hold no live session for). It is generated shell, so it is
+run for real under `/bin/sh` against a two-socket fake tmux in `adopt-legacy-socket.realsh.test.ts`
+— keep it that way. The sweeps, the reaper and the by-name kill still list the legacy socket for
+what no node claims. Do not give the SSH path
 a socket of its own again. **Known limit, deliberately out of scope here:** hook events reach ONE
 nodeterm — the endpoint baked into the session's env at creation, or the failover winner when that
 one is dead (`agents/hooks/managed-script.ts`) — so a session two machines share shows its RUNNING /

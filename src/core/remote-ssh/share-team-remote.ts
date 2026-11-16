@@ -19,7 +19,7 @@
 import { posixQuote, quoteRemotePath, remoteTmuxPathPrologue } from '../../shared/ssh'
 import type { ShareProbe } from '../../shared/share-team'
 import { isSafeNodeId } from '../../shared/safe-id'
-import { RMT_TMUX_SOCKET } from './control-master'
+import { LEGACY_RMT_TMUX_SOCKET, RMT_TMUX_SOCKET } from './control-master'
 import { sessionName } from '../tmux-naming'
 import { CONTROL_RE } from '../relay/team-admin'
 import { isRecord } from '../../shared/is-record'
@@ -125,7 +125,7 @@ export function shareProbeCommand(remoteCwd: string, systemUnit: string = SYSTEM
       "  echo '##BOOTSTRAP no'",
       'fi',
       `if cd ${quoteRemotePath(remoteCwd)} 2>/dev/null; then printf '##CWD %s\\n' "$(pwd -P)"; else echo '##CWD'; fi`,
-      `${remoteTmuxPathPrologue()}echo '##PANES'; tmux -L ${RMT_TMUX_SOCKET} list-panes -a -F '#{session_name}|#{pane_current_command}' 2>/dev/null; echo '##PANESEND'`,
+      `${remoteTmuxPathPrologue()}echo '##PANES'; tmux -L ${LEGACY_RMT_TMUX_SOCKET} list-panes -a -F '#{session_name}|#{pane_current_command}' 2>/dev/null; tmux -L ${RMT_TMUX_SOCKET} list-panes -a -F '#{session_name}|#{pane_current_command}' 2>/dev/null; echo '##PANESEND'`,
       "echo '##END'"
     ].join('\n')
   )
@@ -336,8 +336,13 @@ export function killVerifyCommand(nodeIds: readonly string[]): string {
     const t = posixQuote(`=${sessionName(id)}`)
     const n = posixQuote(sessionName(id))
     return [
+      // Both sockets: a node's session may be an ADOPTED one on the legacy socket
+      // (control-master.ts `sessionSocketProbe`), and "gone" must mean gone from wherever a
+      // reattach would find it — a survivor there is a second agent beside the resumed one.
       `tmux -L ${RMT_TMUX_SOCKET} kill-session -t ${t} >/dev/null 2>&1`,
+      `tmux -L ${LEGACY_RMT_TMUX_SOCKET} kill-session -t ${t} >/dev/null 2>&1`,
       `o=$(tmux -L ${RMT_TMUX_SOCKET} has-session -t ${t} 2>&1); r=$?`,
+      `if [ "$(nt_state "$r" "$o")" = gone ]; then o=$(tmux -L ${LEGACY_RMT_TMUX_SOCKET} has-session -t ${t} 2>&1); r=$?; fi`,
       `printf '##K %s %s\\n' ${n} "$(nt_state "$r" "$o")"`
     ].join('\n')
   })
@@ -364,7 +369,9 @@ export function parseKillVerify(
   return nodeIds.map((nodeId) => ({ nodeId, state: states.get(sessionName(nodeId)) ?? 'unknown' }))
 }
 
-/** Map probe panes onto node ids (session names come only from `sessionName`). */
+/** Map probe panes onto node ids (session names come only from `sessionName`). Last row wins, and
+ *  the probe lists the legacy socket FIRST — so a name on both resolves to the unified socket's
+ *  pane, the same precedence `sessionSocketProbe` applies. */
 export function paneCommandsByNode(panes: ShareProbe['panes'], nodeIds: readonly string[]): Record<string, string> {
   const bySession = new Map(panes.map((p) => [p.session, p.command]))
   const out: Record<string, string> = {}

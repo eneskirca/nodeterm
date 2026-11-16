@@ -185,7 +185,7 @@ describe('captureVisible — SSH project', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].file).toBe('/usr/bin/ssh')
     const remote = calls[0].args.at(-1)!
-    expect(remote).toContain(`tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t '${TARGET}' ';' display-message`)
+    expect(remote).toContain(`tmux -L "$_nts" capture-pane -p -e -t '${TARGET}' ';' display-message`)
     expect(remote).not.toMatch(/-S\b/)
     expect(calls[0].args).toContain('ControlPath=/tmp/cm-abc')
   })
