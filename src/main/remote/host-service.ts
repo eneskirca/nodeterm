@@ -58,7 +58,7 @@ import { parseRelayKeys } from '../../core/relay-keys'
 import { parseRelayLaunch, type RelayLaunchRequest } from '../../core/relay-launch'
 import { browseHostDirectory, isWithinRootsFor, type BrowseFs } from '../../core/remote/host-fs-rpc'
 import { stripAnsi } from '../../core/transcript-reader'
-import type { VisibleCapture } from '../../core/watch-link/capture-route'
+import type { VisibleCapture } from '../../core/capture-route'
 import { resumeRepaintText } from '../../shared/capture-paint'
 
 // Default relay endpoint; `NODETERM_RELAY_URL` overrides it (mirrors license.ts's API_BASE /

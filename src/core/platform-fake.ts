@@ -47,8 +47,6 @@ export interface FakePlatform extends CorePlatform {
   opened: string[]
   /** Attached UI ids returned by clientIds() — tests push/splice this directly. */
   clients: number[]
-  /** Quiet client ids returned by quietClientIds() (a live link's viewer) — same, push directly. */
-  quietClients: number[]
 }
 
 /**
@@ -92,7 +90,6 @@ export function fakePlatform(overrides: Partial<CorePlatform> = {}): FakePlatfor
     sent: [],
     opened: [],
     clients: [],
-    quietClients: [],
     handle(ch, fn) {
       f.handlers[ch] = fn
     },
@@ -112,7 +109,6 @@ export function fakePlatform(overrides: Partial<CorePlatform> = {}): FakePlatfor
       f.sent.push({ to: 'broadcast', channel, args })
     },
     clientIds: () => f.clients,
-    quietClientIds: () => f.quietClients,
     async openExternal(url) {
       f.opened.push(url)
     },

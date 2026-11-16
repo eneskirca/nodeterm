@@ -153,7 +153,7 @@ export class HostSession {
    * the minimum across live claims so every viewer fits; removing the smallest claim grows it. */
   private readonly geometryClaims = new Map<Socket, Geometry>()
   /** Subscribed connections attached in `watch` mode (`watch-attach` feature): they receive output
-   *  but hold NO geometry claim, so a live link / relay viewer can never size the pty. A claim-
+   *  but hold NO geometry claim, so a relay viewer can never size the pty. A claim-
    *  carrying attach on the same connection takes it out of this set again. */
   private readonly watchers = new Set<Socket>()
   /** The cwd the pane last REPORTED in its output (OSC 7 / 9;9 / 633 — see cwd-report.ts). Null

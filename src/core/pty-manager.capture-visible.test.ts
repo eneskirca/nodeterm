@@ -1,13 +1,13 @@
-// `PtyManager.captureVisible` — a live link's keyframe: WHICH binary is asked with WHICH argv, and
+// `PtyManager.captureVisible` — the visible-screen capture: WHICH binary is asked with WHICH argv, and
 // the failure contract. The argv's meaning (exact target, visible rows only, the cursor line from the
-// same invocation) is proven against a real tmux in `watch-link/capture-route.realtmux.test.ts` and
+// same invocation) is proven against a real tmux in `capture-route.realtmux.test.ts` and
 // through a real /bin/sh in `remote-ssh/capture-visible.realsh.test.ts`; this file pins dispatch.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { initPlatform, resetPlatformForTests } from './platform'
 import { fakePlatform } from './platform-fake'
 import { TMUX_SOCKET, sessionName } from './tmux-naming'
 import { RMT_TMUX_SOCKET } from './remote-ssh/control-master'
-import { VISIBLE_CAPTURE_FORMAT, unavailableCapture } from './watch-link/capture-route'
+import { VISIBLE_CAPTURE_FORMAT, unavailableCapture } from './capture-route'
 
 /** Every `runAsync` in pty-manager lands here. `answer` decides what each call resolves to. */
 const calls: Array<{ file: string; args: string[] }> = []
@@ -129,13 +129,13 @@ describe('captureVisible — local tmux', () => {
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
   })
 
-  it('a plain shell (not tmux-backed) gets no keyframe and runs nothing', async () => {
+  it('a plain shell (not tmux-backed) gets no visible capture and runs nothing', async () => {
     const m = await manager({ tmuxBacked: false })
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
     expect(calls).toEqual([])
   })
 
-  it('no tmux binary: no keyframe, nothing run', async () => {
+  it('no tmux binary: no visible capture, nothing run', async () => {
     const m = await manager({}, null)
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
     expect(calls).toEqual([])
@@ -149,7 +149,7 @@ describe('captureVisible — local tmux', () => {
 })
 
 describe('captureVisible — never history', () => {
-  it("a session-host session's keyframe is the host's visible-only read, with its own altScreen", async () => {
+  it("a session-host session's visible capture is the host's visible-only read, with its own altScreen", async () => {
     hostCaptureVisible.mockResolvedValueOnce({ screen: 'vis\n', cursor: { x: 3, y: 0 }, altScreen: false })
     const m = await manager({ sessionHost: true })
     expect(await m.captureVisible('sess-1')).toEqual({ screen: 'vis\n', cursor: { x: 3, y: 0 }, altScreen: false })
@@ -158,7 +158,7 @@ describe('captureVisible — never history', () => {
     expect(calls).toEqual([])
   })
 
-  it('a session host without the read (older build) gets NO keyframe — never its scrollback capture', async () => {
+  it('a session host without the read (older build) gets NO visible capture — never its scrollback capture', async () => {
     hostCaptureVisible.mockResolvedValueOnce(null)
     const m = await manager({ sessionHost: true })
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
@@ -166,7 +166,7 @@ describe('captureVisible — never history', () => {
     expect(calls).toEqual([])
   })
 
-  it('a direct Windows pane gets no keyframe either', async () => {
+  it('a direct Windows pane gets no visible capture either', async () => {
     const capture = vi.fn(() => 'HISTORY')
     const m = await manager({ nativeWindowsPane: { capture } })
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
@@ -203,59 +203,5 @@ describe('captureVisible — SSH project', () => {
     }
     const m = await manager({ sshRemote: SSH_REMOTE })
     expect(await m.captureVisible('sess-1')).toEqual(unavailableCapture())
-  })
-})
-
-describe('readWindowSize — the size a watcher client is spawned at', () => {
-  async function bare(tmux: string | null = '/usr/bin/tmux') {
-    const { PtyManager } = await import('./pty-manager')
-    const mgr = new PtyManager() as unknown as {
-      tmuxPath: string | null
-      readWindowSize(k: string, ssh?: unknown): Promise<unknown>
-    }
-    mgr.tmuxPath = tmux
-    return mgr
-  }
-
-  it('asks the local tmux for exactly this session and parses the reply', async () => {
-    script.answer = () => ({ stdout: '120 39 off\n' })
-    const m = await bare()
-    expect(await m.readWindowSize(NODE)).toEqual({ cols: 120, rows: 39 })
-    expect(calls).toEqual([
-      {
-        file: '/usr/bin/tmux',
-        args: ['-L', TMUX_SOCKET, 'display-message', '-p', '-t', TARGET, '#{window_width} #{window_height} #{status}']
-      }
-    ])
-  })
-
-  it('asks the REMOTE tmux over the ControlMaster for an SSH node', async () => {
-    script.answer = () => ({ stdout: '100 30 off\n' })
-    const m = await bare(null)
-    expect(await m.readWindowSize(NODE, SSH_REMOTE)).toEqual({ cols: 100, rows: 30 })
-    expect(calls).toHaveLength(1)
-    expect(calls[0].file).toBe('/usr/bin/ssh')
-    expect(calls[0].args.at(-1)).toContain(
-      `tmux -L "$_nts" display-message -p -t '${TARGET}' '#{window_width} #{window_height} #{status}'`
-    )
-  })
-
-  it('an exact-target miss (every format empty), a failure or no tmux is undefined', async () => {
-    script.answer = () => ({ stdout: ' \n' })
-    expect(await (await bare()).readWindowSize(NODE)).toBeUndefined()
-    script.answer = () => {
-      throw Object.assign(new Error('no server running'), { code: 1 })
-    }
-    expect(await (await bare()).readWindowSize(NODE)).toBeUndefined()
-    calls.length = 0
-    expect(await (await bare(null)).readWindowSize(NODE)).toBeUndefined()
-    expect(calls).toEqual([])
-  })
-
-  it('a remote node with no ssh binary is undefined — never read from the local tmux', async () => {
-    ssh.path = null
-    const m = await bare()
-    expect(await m.readWindowSize(NODE, SSH_REMOTE)).toBeUndefined()
-    expect(calls).toEqual([])
   })
 })

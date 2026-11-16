@@ -178,9 +178,7 @@ export function electronPlatform(): ElectronPlatform {
       // fan out via broadcast, so a peer that only received sendTo would still see nothing.
       const peers = peerRegistry()
       if (peers.size === 0) return // solo desktop: no ids() array, no loop — allocation-free
-      // A quiet peer (a live link's viewer) is never broadcast to: canvas ops, presence and agent
-      // status are not its business. It is reached by an addressed sendTo only.
-      for (const id of peers.broadcastIds()) {
+      for (const id of peers.ids()) {
         // One peer must never break the fan-out. UiSinkRegistry.sendTo already contains a throwing
         // SINK (and evicts a dead one), so this only catches the rest of the path — the flow
         // controller it may call into. Either way the invariant is the same: an exception here
@@ -196,10 +194,7 @@ export function electronPlatform(): ElectronPlatform {
         }
       }
     },
-    clientIds: () => [...mainWindowClientIds(), ...peerRegistry().broadcastIds()],
-    // Quiet peers are absent from clientIds() (the canvas reflector, like broadcast, must skip
-    // them) but still watch the sessions they subscribe to — the pty reaper reads this.
-    quietClientIds: () => peerRegistry().quietIds(),
+    clientIds: () => [...mainWindowClientIds(), ...peerRegistry().ids()],
     // The app's own window is the owner; every relay peer (peerRegistry) is not.
     isOwnerClient: (id) => !peerRegistry().has(id) && mainWindowClientIds().includes(id),
     openExternal: (url) => shell.openExternal(url),

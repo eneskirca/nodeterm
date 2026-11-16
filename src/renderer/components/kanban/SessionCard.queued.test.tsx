@@ -47,7 +47,6 @@ function render(session: KanbanSession, extra: { onRunQueued?: (id: string) => v
         onDragEnd={noop}
         onDropAt={noop}
         onContext={noop}
-        liveLinkSource="local"
         onRunQueued={extra.onRunQueued}
       />
     )

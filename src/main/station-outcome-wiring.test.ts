@@ -72,8 +72,7 @@ describe('desktop main', () => {
     expect(withdraw).toBeGreaterThan(-1)
     expect(withdraw).toBeLessThan(main.indexOf('corePlatform.broadcast(IPC.agentStatus, enriched)'))
     expect(main).toContain('flushAllDurableFactsSync()')
-    // The restore waits for the workspace index, or a restore-time expiry reaches no sender. The boot
-    // read is shared with the live links' init (which must not judge a node gone before it either).
+    // The restore waits for the workspace index, or a restore-time expiry reaches no sender.
     expect(main.slice(queue, queue + 200)).toContain('ready: bootWorkspaceLoad')
     const bootLoad = main.indexOf('const bootWorkspaceLoad = workspaceStore.load({ sideline: false })')
     expect(bootLoad).toBeGreaterThan(holds)

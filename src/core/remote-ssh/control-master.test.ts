@@ -11,8 +11,6 @@ import {
   probeSaysAbsent,
   remoteCapturePaneArgs,
   remoteCaptureVisibleArgs,
-  remoteTmuxWatcherArgs,
-  remoteWindowSizeArgs,
   remotePaneCommandArgs,
   remotePaneCwdArgs,
   remotePaneProcessArgs,
@@ -40,7 +38,7 @@ import {
   remoteScpPath
 } from './control-master'
 import { remoteTmuxPathPrologue } from '../../shared/ssh'
-import { VISIBLE_CAPTURE_FORMAT } from '../watch-link/capture-route'
+import { VISIBLE_CAPTURE_FORMAT } from '../capture-route'
 
 /** The PATH-append prologue every remote tmux line now starts with (issue #449). */
 const TP = remoteTmuxPathPrologue()
@@ -290,34 +288,6 @@ describe('remoteCaptureVisibleArgs', () => {
     expect(args[args.length - 1]).toBe(
       `${SX}tmux -L ${SESSION_SOCKET_REF} capture-pane -p -e -t '=nt-x:' ';' ` +
         `display-message -p -t '=nt-x:' '${VISIBLE_CAPTURE_FORMAT}'`
-    )
-  })
-})
-
-describe('remoteTmuxWatcherArgs', () => {
-  it('a tty-allocating child that ATTACHES read-only and ignore-size, never creates', () => {
-    const args = remoteTmuxWatcherArgs(conn, '/s.sock', 'nt-x')
-    expect(args[0]).toBe('-t')
-    expect(args.slice(1, 1 + childPrefix.length)).toEqual(childPrefix)
-    expect(args[args.length - 1]).toBe(
-      `${SX}tmux -L ${SESSION_SOCKET_REF} attach-session -E -f 'ignore-size,read-only' -t '=nt-x:'`
-    )
-  })
-
-  it('has no create path and no plain-shell fallback — a watcher never gets a shell', () => {
-    const cmd = remoteTmuxWatcherArgs(conn, '/s.sock', 'nt-x').at(-1)!
-    expect(cmd).not.toContain('new-session')
-    expect(cmd).not.toContain('SHELL')
-    expect(cmd).not.toContain('exec')
-  })
-})
-
-describe('remoteWindowSizeArgs', () => {
-  it('reads the window size of exactly this session on the host', () => {
-    const args = remoteWindowSizeArgs(conn, '/s.sock', 'nt-x')
-    expect(args.slice(0, childPrefix.length)).toEqual(childPrefix)
-    expect(args[args.length - 1]).toBe(
-      `${SX}tmux -L ${SESSION_SOCKET_REF} display-message -p -t '=nt-x:' '#{window_width} #{window_height} #{status}'`
     )
   })
 })

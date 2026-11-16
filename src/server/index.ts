@@ -134,17 +134,7 @@ import { launchHeadless } from '../core/headless-launch'
 import { HEADLESS_COLS, HEADLESS_ROWS, localNodePtyOptions } from '../shared/node-pty-options'
 import { assembleResumeCommand } from '../shared/agents/launch'
 import { gatePermissionMode, type AgentId, type BuiltinAgentId } from '../shared/agents/config'
-import {
-  createWatchLinkService,
-  registerWatchLinkIpc,
-  sendToOwners,
-  shutdownWithin,
-  workspaceNodeState,
-  type WatchLinkService
-} from '../core/watch-link/service'
-import { createWatchLinkApi } from '../core/watch-link/api'
-import { WatchLinkStore } from '../core/watch-link/store'
-import { createWatchPty, watchRemoteFor, watchRemoteRecords, type WatchRemote } from '../core/watch-link/pty-seam'
+import { removeRetiredLiveLinkData } from '../core/retired-data-cleanup'
 
 // Same env-override + default as src/core/check.ts / license.ts / src/main/telemetry.ts — each
 // shell derives it locally rather than sharing an import (src/server must not import src/main).
@@ -152,8 +142,6 @@ const API_BASE = process.env.NODETERM_API_BASE || 'https://api.nodeterm.dev'
 // The hosted team relay's wss endpoint. Same env override + default as the desktop's RELAY_URL
 // (src/main/remote/host-service.ts), derived locally for the same reason as API_BASE.
 const RELAY_URL = process.env.NODETERM_RELAY_URL || 'wss://relay.nodeterm.dev'
-/** How long close() waits for the live-link service's last write (the desktop races 1.5 s). */
-const WATCH_LINKS_STOP_MS = 2_000
 
 /**
  * App version fed to ServerPlatform (surfaced to the renderer as the desktop app's
@@ -813,21 +801,15 @@ export async function startServer(
       (project) => platform.broadcast(IPC.workspaceServerChange, project)
     )
   })
-  // Live links (src/core/watch-link/service.ts). Assigned after the hosted-team block below; declared
-  // here because the onPersist closure runs at the boot load just below (a later `const` would be a
-  // TDZ throw inside that load, which it would then report as a failed load).
-  let watchLinks: WatchLinkService | null = null
-  // Every load()/save() is a canvas change as far as links are concerned: a browser drawing a
-  // bridge edge reaches us as the workspace save it triggers. It also refreshes the local-ref
-  // watcher set, so projects added or removed while the server runs get the same hand-edit path.
+  // Every load()/save() refreshes the local-ref watcher set, so projects added or removed while the
+  // server runs get the same hand-edit path.
   workspaceStore.onPersist = () => {
     workspaceWatcher.sync()
     contextLink.refresh()
     refreshNodeTokens()
-    watchLinks?.onWorkspaceChanged()
   }
   // Nothing has read the workspace index yet — the desktop gets its first load from the renderer,
-  // and this shell may never have one. Read it once so links are live before any browser connects.
+  // and this shell may never have one. Read it once, before any browser connects.
   // Read-only: boot must not sideline a conflict-marked project.json (that stays a renderer/probe
   // decision). The onPersist above turns this load into the initial refresh.
   await workspaceStore.load({ sideline: false }).catch((e) => {
@@ -1155,45 +1137,9 @@ export async function startServer(
     authority.sharedChanged()
   }
 
-  // Live links (docs/live-links.md): the SAME core service the desktop registers, over the real seams.
-  // This edition has no license layer yet (`initLicense` is desktop-only), so the service is registered
-  // UNSUPPORTED with no entitlement (controller ruling R43): create answers `unsupported` — the browser
-  // shows "Live links need a Pro license on this server — not available in the Server Edition yet",
-  // never an Upgrade button — list answers [], and nothing is loaded, hosted or revoked. A server
-  // license layer (a named follow-up) changes `entitlement` and drops `unsupported`, nothing else.
-  // Headless, no keychain: the links file is a 0600 file in the data dir (spec D8). The workspace
-  // index was read above, so there is no load to wait for.
-  const watchRemote = (nodeId: string): WatchRemote => watchRemoteFor(nodeId, watchRemoteRecords(workspaceStore, () => undefined))
-  watchLinks = createWatchLinkService({
-    api: createWatchLinkApi({ apiBase: API_BASE }),
-    relayUrl: RELAY_URL,
-    store: new WatchLinkStore({ file: path.join(config.dataDir, 'watch-links.json') }),
-    entitlement: () => null,
-    relayAllowed: () => true,
-    nodeState: (nodeId) => workspaceNodeState(workspaceStore, nodeId),
-    clients: {
-      attach: (sink) => platform.attach(sink, { quiet: true, selfPaced: true }),
-      // The per-client drops a departed client is owed (its pty subscriptions), then the sink.
-      detach: (id) => {
-        dropUiClient(id)
-        platform.detach(id)
-      }
-    },
-    // The desktop's rule (core's `watchRemoteFor`), with no SSH-project manager here (no master): a node
-    // in a HOST's tmux — an SSH project's, or a remote-tmux node in a local project — is joinable only
-    // while this core holds its session live (join-only never spawns), and never through the local tmux.
-    pty: createWatchPty(ptyManager, watchRemote),
-    // The same check as the desktop (links stay unsupported here, but the member answers): a node in a
-    // host's tmux would run there, never in this core's Zellij.
-    controlSupport: (nodeId) => (watchRemote(nodeId).requireRemote ? 'ok' : ptyManager.nodeControlSupport(nodeId)),
-    emit: (channel, ...args) => sendToOwners(platform, channel, ...args),
-    unsupported: true
-  })
-  registerWatchLinkIpc(platform, watchLinks)
-  // Two servers on one data dir would host (and revoke) each other's links.
-  if (otherServerHere) {
-    console.error('Live links: NOT started — another nodeterm server owns this data directory.')
-  } else void watchLinks.init()
+  // Live links were retired (2026-11): remove an old store's files from the data dir once per boot
+  // (they almost certainly never existed here). Never throws.
+  void removeRetiredLiveLinkData(config.dataDir)
 
   // Headless notification host: every core service above (incl. the loopback hook server, which
   // is its own listener and MUST run) is booted, but we bind NO public HTTP/WS listener — no
@@ -1211,9 +1157,6 @@ export async function startServer(
         // pty subscriptions) while the pty layer is still up. Same two lines in the serving close().
         await teamAdmin.close()
         hosted.stop()
-        // Stop the live-link hosts while the pty layer is still up (their viewers leave cleanly),
-        // bounded: the links file's last write must not hold the close on a stalled disk.
-        await shutdownWithin(watchLinks, WATCH_LINKS_STOP_MS)
         // Detach PTY clients — tmux sessions keep running (Phase 1 contract).
         sessionReaper.stop()
         pressure.stop()
@@ -1280,8 +1223,6 @@ export async function startServer(
       // headless close() above).
       await teamAdmin.close()
       hosted.stop()
-      // Stop the live-link hosts while the pty layer is still up (see the headless close() above).
-      await shutdownWithin(watchLinks, WATCH_LINKS_STOP_MS)
       // End the browser WebSockets next, BEFORE the canvas authority stops (N3). Once it has stopped
       // and been detached, a save from a still-attached tab is written un-overlaid, over its final
       // flush. Ending the sockets stops new saves; the `idle()` below lets the ones already queued

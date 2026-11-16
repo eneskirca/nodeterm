@@ -36,7 +36,7 @@ import {
 import { E_UNSUPPORTED } from '@shared/rpc'
 import { GROK_AMBIGUOUS_SESSION_MESSAGE, isGrokAmbiguousSessionError } from '@shared/chat-page'
 import { Spinner } from '../components/Spinner'
-import { newMessagesLabel } from '../lib/liveChatLook'
+import { newMessagesLabel } from '../lib/chatLabels'
 import {
   CHAT_LIVE_RELOAD_MIN_MS,
   CHAT_OPTIMISTIC_WORKING_MS,
@@ -1422,8 +1422,8 @@ export function ChatPanel({
           )}
         </div>
         {!following && messages.length > 0 && (
-          // The Live chat drawer's "N new messages ↓" pill (LiveChatDrawer.tsx), plus a bare "↓" while
-          // nothing new has come in: here the thread is also read back from deep in its history.
+          // An "N new messages ↓" pill, plus a bare "↓" while nothing new has come in: the thread is
+          // also read back from deep in its history.
           <button
             type="button"
             className="confirm__btn primary term-chat__to-latest"

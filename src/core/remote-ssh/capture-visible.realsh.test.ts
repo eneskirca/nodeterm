@@ -13,7 +13,7 @@ import { execFileSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { remoteCaptureVisibleArgs, RMT_TMUX_SOCKET } from './control-master'
-import { VISIBLE_CAPTURE_FORMAT, parseVisibleCapture } from '../watch-link/capture-route'
+import { VISIBLE_CAPTURE_FORMAT, parseVisibleCapture } from '../capture-route'
 import { testTmpDir } from '../test-tmp'
 import { makeTmuxTmpdir } from '../tmux-test-socket'
 

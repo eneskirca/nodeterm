@@ -7,7 +7,7 @@
 // handled and must stay handled.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { readLocal, writeLocal } from './localStore'
+import { readLocal, removeLocal, writeLocal } from './localStore'
 
 const KEY = 'nodeterm.test.key'
 
@@ -87,6 +87,34 @@ describe('writeLocal', () => {
   it('is silent when the global is absent entirely', () => {
     Reflect.deleteProperty(globalThis as object, 'localStorage')
     expect(() => writeLocal(KEY, 'v')).not.toThrow()
+  })
+})
+
+describe('removeLocal', () => {
+  it('removes through when storage works', () => {
+    const removeItem = vi.fn()
+    install({ removeItem })
+    removeLocal(KEY)
+    expect(removeItem).toHaveBeenCalledWith(KEY)
+  })
+
+  it('is silent on a method-less global', () => {
+    install({})
+    expect(() => removeLocal(KEY)).not.toThrow()
+  })
+
+  it('is silent when the removal throws (a blocked origin)', () => {
+    install({
+      removeItem: () => {
+        throw new Error('SecurityError')
+      }
+    })
+    expect(() => removeLocal(KEY)).not.toThrow()
+  })
+
+  it('is silent when the global is absent entirely', () => {
+    Reflect.deleteProperty(globalThis as object, 'localStorage')
+    expect(() => removeLocal(KEY)).not.toThrow()
   })
 })
 

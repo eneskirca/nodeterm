@@ -59,22 +59,3 @@ describe('every nodeterm CustomEvent the renderer dispatches has a listener', ()
     expect(orphans).toEqual([])
   })
 })
-
-// The LIVE chip's "Open chat" (LiveLinkPopover) asks for the Live chat drawer. Task 7 wired a stub
-// listener that opened nothing; the drawer's listener REPLACES it — two listeners would open the
-// drawer twice, a stub alone opens nothing.
-describe('nodeterm:live-chat', () => {
-  const listened = names(/addEventListener\(\s*['"](nodeterm:live-chat)['"]/g)
-
-  it('has exactly one listener, in Canvas', () => {
-    expect((listened.get('nodeterm:live-chat') ?? []).map((f) => f.split(path.sep).join('/'))).toEqual(['canvas/Canvas.tsx'])
-  })
-
-  it('that listener opens the drawer on the link it names', () => {
-    const src = fs.readFileSync(path.join(RENDERER, 'canvas/Canvas.tsx'), 'utf8').replace(/\r\n/g, '\n')
-    const at = src.indexOf("window.addEventListener('nodeterm:live-chat'")
-    const effect = src.slice(src.lastIndexOf('useEffect(', at), at)
-    expect(effect).toContain("nextLiveChat(s, { kind: 'open', linkId })")
-    expect(effect).toContain('writeLiveChatLink(linkId)')
-  })
-})

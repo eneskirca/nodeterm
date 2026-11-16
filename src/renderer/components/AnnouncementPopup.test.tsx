@@ -7,7 +7,6 @@ import { AnnouncementPopup } from './AnnouncementPopup'
 import { popDialog, pushDialog, resetDialogStack } from './dialog-stack'
 import { useEntitlement } from '../state/entitlement'
 import { useSettings } from '../state/settings'
-import { useUpgradeGate } from '../state/upgradeGate'
 import { KEY_QUIET_MS, PENDING_RECHECK_MS, loadSeenPopups } from '../lib/announcementPopup'
 
 // The real store subscribes to the license bridge when it is created; the popup reads the bits and
@@ -71,7 +70,6 @@ afterEach(async () => {
   vi.useRealTimers()
   useEntitlement.setState({ isPremium: false, known: true, upgrade: async () => {} })
   useSettings.setState({ hydrated: false })
-  useUpgradeGate.setState({ open: false })
   localStorage.clear()
   vi.restoreAllMocks()
 })
@@ -127,16 +125,6 @@ it('waits while Canvas reports a surface of its own open', async () => {
   await act(async () => vi.advanceTimersByTime(10_000))
   expect(dialog()).toBeNull()
   await rerender(false)
-  expect(dialog()?.textContent).toContain('Title a')
-})
-
-it('waits while the upgrade dialog is open', async () => {
-  useUpgradeGate.setState({ open: true })
-  setFeed([pop('a')])
-  await mount()
-  await act(async () => vi.advanceTimersByTime(10_000))
-  expect(dialog()).toBeNull()
-  await act(async () => useUpgradeGate.setState({ open: false }))
   expect(dialog()?.textContent).toContain('Title a')
 })
 

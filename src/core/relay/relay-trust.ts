@@ -26,17 +26,15 @@
 // its own `onTunnel` — so a confirm arriving on session A's tunnel is physically unable to reach
 // session B's state, and `recordApproval` can only ever pin the key bound into the state it is given.
 //
-// LOCAL confirms have exactly six call sites, four on the HOST side and two on the CLIENT side.
+// LOCAL confirms have exactly five call sites, three on the HOST side and two on the CLIENT side.
 // Host side: `confirmHere()` from the desktop's Team Access dialog (`relay:host:confirm`), the host's
-// `autoApprove` for a key its pin store holds (the hosted team's `team.json`), a hosted owner's
-// `relay:hosted:approve`, and a live link's `autoApprove` for the ONE viewer key derived from that
-// link's own secret, read from the host's own link record (src/core/watch-link/link-host.ts; any
-// other key is denied at once, never asked). Client side: the joining human's
+// `autoApprove` for a key its pin store holds (the hosted team's `team.json`), and a hosted owner's
+// `relay:hosted:approve`. Client side: the joining human's
 // `relay:client:confirm`, and the client's `autoApprove` for a hosted team's approved bookmark
 // (src/main/remote/hosted-join.ts). That auto-confirm reads the bookmark's `approvedAt` alone
 // (`source` is a label). Share with team's `seedBookmark` sets it without a SAS comparison; that is
 // not a new confirm site, because the code it is given came back from `team bootstrap` over an
-// authenticated ssh channel. A seventh is a design change.
+// authenticated ssh channel. A sixth is a design change.
 import {
   confirmLocal,
   confirmRemote,

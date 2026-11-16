@@ -6,6 +6,10 @@ describe('isHidden', () => {
     expect(isHidden('duplicate', ['duplicate'])).toBe(true)
     expect(isHidden('mic', ['mic', 'comments'])).toBe(true)
   })
+  it('ignores the retired live-link ids a settings.json from an older build still carries', () => {
+    expect(isHidden('live-link', ['live-link', 'share-link'])).toBe(false)
+    expect(isHidden('share-link', ['live-link', 'share-link'])).toBe(false)
+  })
   it('shows everything when nothing is listed', () => {
     for (const { id } of [...HIDEABLE_MENU_ITEMS, ...HIDEABLE_HEADER_BUTTONS])
       expect(isHidden(id, [])).toBe(false)
@@ -28,10 +32,10 @@ describe('hideable inventories', () => {
   it('list the agreed ids and nothing destructive', () => {
     expect(HIDEABLE_MENU_ITEMS.map((r) => r.id)).toEqual([
       'group', 'remove-from-group', 'colors', 'icon', 'duplicate', 'snap-zone', 'collapse',
-      'markdown-view', 'refresh-terminal', 'live-link', 'vanilla-restart'
+      'markdown-view', 'refresh-terminal', 'vanilla-restart'
     ])
     expect(HIDEABLE_HEADER_BUTTONS.map((r) => r.id)).toEqual([
-      'context-meter', 'remote-control', 'maximize', 'refresh', 'mic', 'ai-name', 'comments', 'share-link', 'hide-fanout', 'tidy-fanout', 'md-hint'
+      'context-meter', 'remote-control', 'maximize', 'refresh', 'mic', 'ai-name', 'comments', 'hide-fanout', 'tidy-fanout', 'md-hint'
     ])
   })
   it('gives every entry a user-facing label', () => {

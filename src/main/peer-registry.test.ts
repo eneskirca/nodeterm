@@ -52,10 +52,9 @@ function fakePlatformWithPeers(wc: { sent: Array<{ id: number; channel: string; 
     },
     broadcast: (ch, ...args) => {
       for (const id of wcIds) wc.sent.push({ id, channel: ch, args })
-      for (const id of peerRegistry().broadcastIds()) peerRegistry().sendTo(id, ch, ...args)
+      for (const id of peerRegistry().ids()) peerRegistry().sendTo(id, ch, ...args)
     },
-    clientIds: () => [...wcIds, ...peerRegistry().broadcastIds()],
-    quietClientIds: () => peerRegistry().quietIds(),
+    clientIds: () => [...wcIds, ...peerRegistry().ids()],
     openExternal: async () => {}
   }
   initPlatform(p)
@@ -189,12 +188,5 @@ describe('peer sink registry', () => {
     expect(vi.getTimerCount()).toBe(0)
     vi.advanceTimersByTime(5_000)
     expect(flow).toEqual([[id, 'nt-a', false, 'socket']])
-  })
-
-  it('passes sink options through to the registry', () => {
-    registerPeerSink(4242, { sendText: () => {}, sendBinary: () => {} }, { quiet: true })
-    expect(peerRegistry().quietIds()).toContain(4242)
-    expect(peerRegistry().broadcastIds()).not.toContain(4242)
-    peerRegistry().unregister(4242)
   })
 })
