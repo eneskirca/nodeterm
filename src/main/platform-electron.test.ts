@@ -237,24 +237,6 @@ describe('electronPlatform + relay peers', () => {
     warn.mockRestore()
   })
 
-  it('a QUIET peer gets no broadcast and is not a client, but is reachable and counts as watching', () => {
-    const p = electronPlatform()
-    h.clientIds = [1]
-    const loud = peerSink()
-    const quiet = peerSink()
-    registerPeerSink(PEER, loud.sink)
-    registerPeerSink(PEER + 1, quiet.sink, { quiet: true, selfPaced: true })
-
-    p.broadcast('presence:peer', { op: 'join' })
-    expect(loud.text).toHaveLength(1)
-    expect(quiet.text).toEqual([])
-    expect(p.clientIds()).toEqual([1, PEER])
-    expect(p.quietClientIds?.()).toEqual([PEER + 1])
-
-    p.sendTo(PEER + 1, 'watch:meta', {})
-    expect(JSON.parse(quiet.text[0]!).channel).toBe('watch:meta')
-  })
-
   it('the main window hears a broadcast exactly once, however many peers are registered', () => {
     // The desktop host's agent events (agent:status, agent:subagent-activity, context:update) ride
     // broadcast so a joined team tab hears them; the host's own window must not hear them twice.
@@ -270,17 +252,14 @@ describe('electronPlatform + relay peers', () => {
     }
     const a = peerSink()
     const b = peerSink()
-    const quiet = peerSink()
     registerPeerSink(PEER, a.sink)
     registerPeerSink(PEER + 1, dead)
-    registerPeerSink(PEER + 2, quiet.sink, { quiet: true, selfPaced: true })
     registerPeerSink(PEER + 3, b.sink)
 
     p.broadcast('agent:status', { nodeId: 'n1', kind: 'state', state: 'working' })
     expect(h.sent).toEqual([{ channel: 'agent:status', args: [{ nodeId: 'n1', kind: 'state', state: 'working' }] }])
     expect(a.text).toHaveLength(1)
     expect(b.text).toHaveLength(1)
-    expect(quiet.text).toEqual([])
     warn.mockRestore()
   })
 

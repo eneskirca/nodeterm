@@ -17,7 +17,7 @@ function text(screen: string): string {
   return screen.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
 }
 
-describe('TerminalEmulator.captureVisible (live link keyframe)', () => {
+describe('TerminalEmulator.captureVisible (the visible-screen capture)', () => {
   it('returns exactly the visible rows — no history — with the cursor and SGR', async () => {
     const e = emulator()
     let data = ''

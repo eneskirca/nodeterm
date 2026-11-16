@@ -208,7 +208,7 @@ type SubscriberEntry = {
   spawn?: SessionHostSpawnOptions
   scrollback: number
   phase: 'attaching' | 'attached'
-  /** A `watch-attach` viewer (live link / relay viewer): it never holds a size claim or a pause
+  /** A `watch-attach` viewer (a relay viewer): it never holds a size claim or a pause
    *  ticket, and its writes are dropped here — the host refuses them too. */
   watch?: boolean
 }
@@ -1463,7 +1463,7 @@ export class SessionHostClient {
   }
 
   /**
-   * A live link / relay viewer's READ-ONLY attach (`watch-attach`): never spawns, never claims a size,
+   * A relay viewer's READ-ONLY attach (`watch-attach`): never spawns, never claims a size,
    * never pauses, never types. Rejects with `SessionHostWatchUnsupportedError` — before anything is
    * registered — when the connected host did not advertise the feature (a long-lived host from an
    * older build), so the caller can refuse the viewer instead of casting a size vote for it.
@@ -1485,11 +1485,6 @@ export class SessionHostClient {
       return false
     }
     return this.hostFeatures.has(feature)
-  }
-
-  /** The negotiated answer for `feature` WITHOUT connecting: undefined while there is no connection. */
-  connectedFeature(feature: SessionHostFeature): boolean | undefined {
-    return this.socket ? this.hostFeatures.has(feature) : undefined
   }
 
   private async attachSubscriber(
@@ -1925,8 +1920,8 @@ export class SessionHostClient {
     return result.text
   }
 
-  /** A live link's keyframe (`captureVisible` feature). Null when the host did not advertise the
-   *  feature (never sent then), the session is gone, or anything failed — a keyframe is an
+  /** The visible screen (`captureVisible` feature). Null when the host did not advertise the
+   *  feature (never sent then), the session is gone, or anything failed — a capture is an
    *  optimisation, and "no capture" must stay distinguishable from an empty screen. */
   async captureVisible(name: string): Promise<CaptureVisibleResult | null> {
     try {

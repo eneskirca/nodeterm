@@ -966,7 +966,7 @@ async function main(): Promise<void> {
         const s = sessions.get(req.name)
         if (!s || s.exited) return { ok: false, error: 'no such session' }
         if (!s.subscribers.has(socket)) return { ok: false, error: 'not attached to session' }
-        // A watch attachment (live link / relay viewer) is read-only end to end.
+        // A watch attachment (a relay viewer) is read-only end to end.
         if (s.isWatching(socket)) return { ok: false, error: 'watch attachment is read-only' }
         s.proc.write(req.data)
         return { ok: true }

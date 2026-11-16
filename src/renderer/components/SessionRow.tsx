@@ -1,7 +1,5 @@
 import { useState } from 'react'
 import { AccountChip, useAccountChip } from './AccountChip'
-import { LiveLinkChip } from './LiveLinkChip'
-import type { SessionSource } from '../session/session'
 import { IconBellFilled, IconCircleCheck, IconClose } from './icons'
 import { NodeIconView } from './NodeIcon'
 import { ProjectGlyph } from './ProjectGlyph'
@@ -23,9 +21,6 @@ export interface SessionRowProps {
   onDragEnd(): void
   /** Status-group mode only: elapsed time since the current state began. */
   stateAgeLabel?: string
-  /** The session this row's PROJECT belongs to (`projectSessionSource`): only a local one shows
-   *  this machine's LIVE chip — a relay tab's node with the same id is not ours (R57). */
-  liveLinkSource: SessionSource | null
 }
 
 function dirName(p?: string): string {
@@ -43,8 +38,7 @@ export function SessionRow({
   onContextMenu,
   onDragStart,
   onDragEnd,
-  stateAgeLabel,
-  liveLinkSource
+  stateAgeLabel
 }: SessionRowProps): JSX.Element {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(row.title)
@@ -163,7 +157,6 @@ export function SessionRow({
             </span>
           )}
           <AccountChip chip={accountChip} className="ss-account" />
-          <LiveLinkChip nodeId={row.id} source={liveLinkSource} className="ss-live" />
           {row.loop && (
             <span className="ss-loop">
               {row.loop.kind} · {row.loop.count}

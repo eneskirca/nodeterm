@@ -44,7 +44,7 @@ describe('project-limit wiring (source)', () => {
   it('a license change and a settings change both push it, only when it changed', () => {
     // pushIfChanged, not refresh: settings change on every save, and the windows need only news.
     expect(main).toMatch(
-      /initLicense\(\(\) => \{\s*watchLinks\?\.onEntitlementChanged\(\)\s*projectLimit\.pushIfChanged\(\)\s*\}\)/
+      /initLicense\(\(\) => \{\s*projectLimit\.pushIfChanged\(\)\s*\}\)/
     )
     expect(main).toMatch(/settingsStore\.onChange\(\(\) => projectLimit\.pushIfChanged\(\)\)/)
     expect(main).not.toMatch(/projectLimit\.refresh\(\)/)

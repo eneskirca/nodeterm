@@ -38,7 +38,6 @@ function input(nodes: CanvasNodeState[], over: Partial<OffCanvasCtxInput> = {}):
     grokModels: () => [],
     cursorModels: () => [],
     writes: { setColor: vi.fn(), pickIcon: vi.fn() },
-    liveLinkMenuItems: () => [],
     connectedProjectIdForHost: () => undefined,
     refuse: vi.fn(),
     ...over

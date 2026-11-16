@@ -3,9 +3,6 @@ import { sshHostKey } from '@shared/ssh'
 import type { KanbanCardMeta, KanbanColumnCategory, KanbanLabel, KanbanPriority } from '@shared/types'
 import { useAgentStatus, type AgentStatusSession } from '../../state/agentStatus'
 import { AccountChip, useAccountChip } from '../AccountChip'
-import { LiveLinkChip, showsLiveLinks } from '../LiveLinkChip'
-import type { SessionSource } from '../../session/session'
-import { useWatchLinks } from '../../state/watchLinks'
 import { ContextMeter } from '../ContextMeter'
 import { transcriptSessionFor } from '../../lib/transcriptSession'
 import { isRemoteSessionNode } from '@shared/worktree'
@@ -54,10 +51,6 @@ interface SessionCardProps {
   onTravel?: (nodeId: string) => void
   /** The lifecycle category of the column the card sits in (lib/cardRedundancy reads it). */
   columnCategory?: KanbanColumnCategory
-  /** The session the board's PROJECT belongs to (`projectSessionSource`). Only a local one shows
-   *  this machine's LIVE chip, or counts a link as card detail — a relay tab's node with the same
-   *  id is another machine's terminal (R57). */
-  liveLinkSource: SessionSource | null
   /** The card's project, when the dev-port scanner covers it (the project on the canvas). Absent =
    *  no Ports chip: the scanner scans the active project only, so an Omni lane of a background
    *  project would only ever show a stale or empty list. A stable object per board (memo). */
@@ -83,7 +76,7 @@ interface SessionCardProps {
 
 export const SessionCard = memo(function SessionCard({
   session, meta, labels = [], onOpen, onDragStart, onDragEnd, onDropAt, onContext, pulls,
-  pullFreshness = 'fresh', onOpenIssue, team, onTravel, columnCategory, liveLinkSource, ports, onOpenPort, onRunQueued,
+  pullFreshness = 'fresh', onOpenIssue, team, onTravel, columnCategory, ports, onOpenPort, onRunQueued,
   statusStore, selected = false, onSelectClick
 }: SessionCardProps) {
   // THIS card's agent status, subscribed per card rather than threaded down from the board.
@@ -128,16 +121,10 @@ export const SessionCard = memo(function SessionCard({
     ? status.session
     : undefined
   const priority = meta?.priority
-  // A live link counts as detail: "this terminal is being broadcast" must show on the card whatever
-  // else it has to say (a primitive selector — see LiveLinkChip).
-  const showLive = showsLiveLinks(liveLinkSource)
-  const hasLiveLink = useWatchLinks(
-    (s) => showLive && session.kind === 'terminal' && (s.byNode[session.id]?.length ?? 0) > 0
-  )
   // The account chip counts as detail in its own right: a card whose only thing to say is "this
   // one is on the other Claude login" is exactly the card that must say it.
   const hasDetail =
-    !!status?.sessionId || !!sessionName || !!accountChip || hasLiveLink || stickyPreview.includes('\n')
+    !!status?.sessionId || !!sessionName || !!accountChip || stickyPreview.includes('\n')
   return (
     <div
       className={`kanban-card kanban-card--session${dragging ? ' kanban-card--dragging' : ''}${
@@ -293,7 +280,6 @@ export const SessionCard = memo(function SessionCard({
             <>
               <ContextMeter sessionId={cardTranscript.sessionId ?? null} fromLaunchId={cardTranscript.fallback} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? status?.agentId} />
               <AccountChip chip={accountChip} />
-              <LiveLinkChip nodeId={session.id} source={liveLinkSource} className="kanban-card__live" />
               {sessionName && (
                 <span className="kanban-card__session" title={sessionName}>
                   {sessionName}

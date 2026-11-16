@@ -174,14 +174,14 @@ long-lived connection (no positional-FIFO fragility, unlike this app's tmux cont
 | `detach`                         | a client's own `tmux detach-client`     | full |
 | `listSessions`                   | `list-sessions -F '#{session_name}'` — plus, with `sessionDetails`, `list-windows`/`list-panes` | full; see "Observability" below |
 | `ping`                           | (liveness probe used during the startup race) | full |
-| `attachExisting {watch: true}`   | `attach-session -E -f ignore-size,read-only` (a live link watcher's client) | feature `watch-attach`: subscribes with NO geometry claim and no pause ticket, refuses `write`/`resize` from that connection, never spawns; on an already-attached connection it withdraws the claim (its last voting subscriber left) |
-| `captureVisible`                 | `capture-pane -p -e` + `display-message '#{cursor_x} #{cursor_y}'` | feature `captureVisible`: visible rows of the ACTIVE buffer only (never history), viewport cursor, `altScreen` — a live link's keyframe |
+| `attachExisting {watch: true}`   | `attach-session -E -f ignore-size,read-only` (a read-only viewer) | feature `watch-attach`: subscribes with NO geometry claim and no pause ticket, refuses `write`/`resize` from that connection, never spawns; on an already-attached connection it withdraws the claim (its last voting subscriber left) |
+| `captureVisible`                 | `capture-pane -p -e` + `display-message '#{cursor_x} #{cursor_y}'` | feature `captureVisible`: visible rows of the ACTIVE buffer only (never history), viewport cursor, `altScreen` — the phone's resume repaint |
 | `paneCwd`                        | `display-message -p '#{pane_current_path}'` | feature `paneCwd`: the cwd the pane last REPORTED (OSC 7 / 9;9 / 633, parsed by `cwd-report.ts`), null until one arrives — never the spawn cwd |
 
 The last three are **negotiated at hello** (`SESSION_HOST_FEATURES`) like `geometry`/`shutdown`: the
 client never sends one to a host that did not advertise it (an older, long-lived host keeps serving
-everything else and is never replaced for them). Without them: a live link viewer of a node this app
-does not hold is refused (`join-only`), there is no keyframe (R36), and `paneCwd` is null.
+everything else and is never replaced for them). Without them: a hosted-relay viewer of a node this
+app does not hold is refused (`join-only`), there is no visible-screen capture, and `paneCwd` is null.
 
 **Not implemented — deliberately out of scope for this pass:**
 
@@ -894,11 +894,6 @@ via `scripts/patch-node-pty.mjs` is worth doing only if a device shows ≥ ~8 MB
   by default (no OSC 7 / 9;9), so a plain Windows shell's relative file links still resolve against
   the launch cwd only; agent CLIs and shell integrations that emit OSC 7 / 9;9 / 633 work. No prompt
   hook is installed for them (it would rewrite the user's prompt); an opt-in one is a follow-up.
-- **Control typing into a session-host node needs the node open when the viewer joins**: a viewer
-  of a node nobody holds rides a read-only `watch-attach` attachment, which has no typing path (the
-  host refuses its writes, and keys must not be retyped as a framed `sendKeys` paste). The input
-  route is decided at join, so that viewer stays read-only after the owner opens the node, until it
-  rejoins.
 - **No equivalent of `paneOwner` / `bracketPasteRequested` / a standalone `paneCursor` query** —
   see the protocol table's "Not implemented" note. Nothing in this app currently calls these for a
   session-host-backed node (they are gated behind `this.tmuxPath` being set), so nothing is

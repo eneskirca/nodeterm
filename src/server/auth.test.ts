@@ -35,7 +35,7 @@ describe('Auth', () => {
   it('verifies OFF the event loop and at most two at a time (S1)', async () => {
     // A synchronous scrypt per login froze every terminal's WebSocket for ~35 ms per guess, and a
     // burst of held requests froze the whole server. The event loop must stay free while verifying,
-    // and the libuv pool must not be flooded (two at a time, the live-link gate's number).
+    // and the libuv pool must not be flooded (two at a time).
     const a = new Auth(dir)
     a.setPassword('correct horse')
     let ticks = 0

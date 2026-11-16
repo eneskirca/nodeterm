@@ -35,7 +35,6 @@ const column = (html: string, heading: string): string[] => {
 }
 
 const AGENT_NODES = `Agent nodes (${BUILTIN_AGENT_IDS.map((id) => AGENT_CONFIG[id].label).join(' / ')})`
-const LIVE_LINKS = 'Live links to a terminal: watch, chat, or let people type — viewers need nothing installed'
 const DICTATION = 'Larger on-device dictation models (base, small, large-v3-turbo)'
 
 let root: Root
@@ -60,8 +59,9 @@ function render(state: ProjectLimitState): string {
 }
 
 describe('ProCompare — limit inactive', () => {
-  it('lists live links under Pro', () => {
-    expect(column(render(INACTIVE_PROJECT_LIMIT), 'Pro<')).toContain(LIVE_LINKS)
+  it('lists no live links anywhere (the feature is retired)', () => {
+    expect(render(INACTIVE_PROJECT_LIMIT).toLowerCase()).not.toContain('live link')
+    expect(render(ACTIVE).toLowerCase()).not.toContain('live link')
   })
 
   it('leaves the free Core list exactly as it was', () => {
@@ -76,12 +76,11 @@ describe('ProCompare — limit inactive', () => {
     ])
   })
 
-  it('lists the larger dictation models right after live links, and nothing about projects', () => {
+  it('lists the larger dictation models right after the team seats, and nothing about projects', () => {
     expect(column(render(INACTIVE_PROJECT_LIMIT), 'Pro<')).toEqual([
       'Everything in Core',
       'nodeterm mobile Pro included',
       '3 team seats included (extra seats $5/seat/mo)',
-      LIVE_LINKS,
       DICTATION
     ])
   })
@@ -115,7 +114,6 @@ describe('ProCompare — limit active', () => {
       'Unlimited open projects',
       'nodeterm mobile Pro included',
       '3 team seats included (extra seats $5/seat/mo)',
-      LIVE_LINKS,
       DICTATION
     ])
   })

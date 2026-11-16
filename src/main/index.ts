@@ -2,6 +2,7 @@ import { registerUpdatePrepIpc } from './update-prep'
 import { installOpenLinks } from './open-link-wiring'
 import { nodetermUrlFromArgv } from '../shared/open-link'
 import { createRemoteContextEnsure } from '../core/remote-context-ensure'
+import { removeRetiredLiveLinkData } from '../core/retired-data-cleanup'
 import { isKnownRemoteCodexAccount } from '../core/remote-ssh/codex-home'
 import { createRemoteCodexContext, type RemoteCodexContextTarget } from '../core/remote-ssh/codex-context'
 import { subagentReplay } from '../core/subagent-replay'
@@ -124,18 +125,7 @@ import type { CardLabelEdit } from '../core/project-kanban-write'
 import { WorkspaceWatcher } from '../core/workspace-watcher'
 import { SettingsStore } from '../core/settings-store'
 import { registerAgentEnvIpc } from '../core/agent-env-ipc'
-import { allocateRelayClientId, presenceHub } from '../core/presence/hub'
-import {
-  createWatchLinkService,
-  registerWatchLinkIpc,
-  sendToOwners,
-  workspaceNodeState,
-  type WatchLinkService
-} from '../core/watch-link/service'
-import { createWatchLinkApi } from '../core/watch-link/api'
-import { WatchLinkStore } from '../core/watch-link/store'
-import { HISTORY_READ_BYTES } from '../core/watch-link/history'
-import { createWatchPty, watchRemoteFor, watchRemoteRecords, type WatchRemote } from '../core/watch-link/pty-seam'
+import { presenceHub } from '../core/presence/hub'
 import { SshStore } from './ssh-store'
 import { GitService } from '../core/git-service'
 import { ProjectTrustStore } from '../core/project-trust-store'
@@ -312,7 +302,7 @@ import { codexHome } from '../core/usage/codex-usage'
 import { isAsyncSubagentLaunch, isCursorPayload, grokRawFields, type NormalizedAgentEvent } from '../shared/agents/normalize'
 import { applyGrokHookSession } from '../core/grok-hook-session'
 import { agentAccountColor } from '../shared/agents/account-color'
-import { canChat, capabilityAgentId } from '../shared/agents/config'
+import { capabilityAgentId } from '../shared/agents/config'
 import {
   setRemoteTranscriptReader,
   TITLE_TAIL_BYTES,
@@ -433,8 +423,7 @@ import {
   loadOrCreateKeyPair,
   relayAllowed,
   API_BASE as RELAY_API_BASE,
-  RELAY_URL,
-  type HostChatOps
+  RELAY_URL
 } from './remote/host-service'
 import { initStandingHost } from './remote/standing-host'
 import { initRelayHost } from './remote/relay-host-service'
@@ -462,7 +451,7 @@ import {
 } from './media-protocol'
 import { initPlatform, platform } from '../core/platform'
 import { electronPlatform } from './platform-electron'
-import { registerPeerSink, unregisterPeerSink, wirePeerRegistry } from './peer-registry'
+import { wirePeerRegistry } from './peer-registry'
 import { WEBGL_CONTEXT_CAP_DESKTOP } from '../shared/webgl'
 
 // Dev-only: NT_MULTI lets a SECOND instance run (host + client testing on one machine) with an
@@ -608,10 +597,6 @@ wirePeerRegistry({
 // Set once the app window is ready; used by the quit hooks to tear down SSH-project masters and
 // (via the closures below) to resolve a live SSH project's ControlMaster for remote workspace IO.
 let sshProjectManager: ReturnType<typeof initSshProject> | undefined
-// Live links (src/core/watch-link/service.ts). Assigned in `whenReady`; declared here because the
-// workspace store's `onPersist`, the license callback and the quit handler read it at call time (the
-// boot workspace load's `onPersist` runs before the assignment — a later `const` would be a TDZ throw).
-let watchLinks: WatchLinkService | null = null
 
 // The standalone Codex relay bundle (`out/main/codex-relay.js`, built by scripts/build-codex-relay.mjs
 // after electron-vite build), uploaded to a Linux host for managed Codex accounts. Read once, beside
@@ -664,8 +649,6 @@ const workspaceWatcher = new WorkspaceWatcher({
 workspaceStore.onPersist = () => {
   workspaceWatcher.sync()
   refreshNodeTokens()
-  // A node the store now provably holds nowhere (a delete, the canvas authority's op) ends its links.
-  watchLinks?.onWorkspaceChanged()
 }
 // "Which host owns this node?", answered WITHOUT a live session — the persisted index, not the
 // in-memory `Session`. A delete arrives precisely when there may be nothing attached (an app
@@ -2558,7 +2541,6 @@ app.whenReady().then(async () => {
   // here, and its sender leg (board-log line in the sender's project) resolves projects through the
   // index, which nothing else has loaded yet at this point of boot (the renderer's own
   // `workspace.load` comes later). Read-only load (`sideline: false`), like the relay path's.
-  // Shared with the live links' `init()` below, which must not judge a node gone before this read.
   const bootWorkspaceLoad = workspaceStore.load({ sideline: false })
   void restoreDeliveryQueue(messagingDeps.queue, deliveryQueueFile, {
     ready: bootWorkspaceLoad
@@ -3697,67 +3679,9 @@ app.whenReady().then(async () => {
       }
     }
   })
-  // Live links (docs/live-links.md): a Pro, read-only, expiring browser link to one terminal, hosted
-  // by this machine over the E2E relay. The viewer is a QUIET, SELF-PACED relay peer (never in a
-  // broadcast, never a pause ticket); the pty seam and the node-gone rule are core's, shared with the
-  // Server Edition. `init()` decides nothing before the boot workspace load (R40): an empty answer
-  // while the index is still being read is not evidence that a node is gone.
-  // Where a watcher join goes (core's ONE rule, over this machine's records and its live masters).
-  // Read-back for a link's viewers (docs/live-links.md → Read-back) reads through the phone Chat
-  // screen's page reader (host-chat.ts, `hostBridge.chat` below): the node from this machine's
-  // records, the renderer's session id first, an SSH node read on its host and never here. That reader
-  // is built later in boot, so it is bound late; a read-back before it exists is a failed read the
-  // viewer may repeat. The link host cuts every page at the link's creation; this only reads.
-  let watchHistoryChat: Pick<HostChatOps, 'page'> | null = null
-  const watchRemote = (nodeId: string): WatchRemote =>
-    watchRemoteFor(nodeId, watchRemoteRecords(workspaceStore, (connectionId) => sshProjectManager?.refForProject(connectionId)))
-  watchLinks = createWatchLinkService({
-    api: createWatchLinkApi({ apiBase: RELAY_API_BASE }),
-    relayUrl: RELAY_URL,
-    // Sealed through the keychain seam; if it refuses, links live in memory and the owner is told.
-    store: new WatchLinkStore({
-      file: join(corePlatform.userDataDir, 'watch-links.json'),
-      seal: corePlatform.sealSecret?.bind(corePlatform),
-      unseal: corePlatform.unsealSecret?.bind(corePlatform)
-    }),
-    entitlement: getStoredEntitlement,
-    relayAllowed,
-    nodeState: (nodeId) => workspaceNodeState(workspaceStore, nodeId),
-    workspaceReady: () => bootWorkspaceLoad,
-    clients: {
-      attach: (sink) => {
-        const id = allocateRelayClientId()
-        // No presence join: a viewer puts no cursor or facepile on the owner's canvas.
-        registerPeerSink(id, sink, { quiet: true, selfPaced: true })
-        return id
-      },
-      // → presenceHub.leave (a no-op for an id that never joined) and PtyManager.dropClient.
-      detach: (id) => unregisterPeerSink(id)
-    },
-    // A node whose session lives in a HOST's tmux — every node of an SSH project, and a remote-tmux node
-    // in a LOCAL project (`ssh` + `sshRemoteTmux`, served by the project's host attachment) — is watched
-    // on that host over the master this machine holds for it, or not at all: `requireRemote` for every
-    // such node, the remote fields from this machine's own records (core's `watchRemoteFor`).
-    pty: createWatchPty(ptyManager, watchRemote),
-    // Can a Control link type into this node? A node in a HOST's tmux (the same `watchRemoteFor` answer:
-    // Zellij is a local-only backend) is not decided by this machine's backend choice: 'ok' (a host
-    // with no tmux at all answers every keystroke false, which the link host reports as dropped).
-    controlSupport: (nodeId) => (watchRemote(nodeId).requireRemote ? 'ok' : ptyManager.nodeControlSupport(nodeId)),
-    history: async (nodeId, before) => {
-      const chat = watchHistoryChat
-      if (!chat) throw new Error('read-back is not ready yet')
-      const page = await chat.page(nodeId, before === null ? { maxBytes: HISTORY_READ_BYTES } : { before, maxBytes: HISTORY_READ_BYTES })
-      return page === null || page === 'unsupported' ? { kind: 'unsupported' } : { kind: 'page', result: page }
-    },
-    // The same question host-chat's page asks before it reads: an agent the ⌘M view can render.
-    historySupported: (nodeId) => {
-      const agentId = workspaceStore.getNodeResolved(nodeId)?.agentId ?? mirrorEntry(nodeId)?.agentId
-      return !!agentId && canChat(capabilityAgentId(agentId))
-    },
-    emit: (channel, ...args) => sendToOwners(corePlatform, channel, ...args)
-  })
-  registerWatchLinkIpc(corePlatform, watchLinks)
-  void watchLinks.init()
+  // Live links were retired (2026-11): remove the old store's files (sealed link secrets, password
+  // hashes) from userData once per boot. Never throws; ENOENT is the normal case.
+  void removeRetiredLiveLinkData(corePlatform.userDataDir)
   // Dev-server ports (CLAUDE.md → Dev-server ports). Same identity predicate and the same
   // exit-code-gated runner shape as session memory above; forwarding rides the project's master.
   const devPorts = startDevPortsService({
@@ -4933,11 +4857,8 @@ app.whenReady().then(async () => {
   // none, so the next license call is the 6 h refresh, an activate or an upgrade; a claim reads the
   // gate itself.)
   setLicenseNetworkConsent(() => settingsStore.get().licenseNetworkConsent === true)
-  // A license change (activate, refresh, a lapsed token replaced) re-arms every live link the API
-  // refused: a link host whose 7-day entitlement expired under it stops minting until then (R41).
-  // It can also change Pro for the project limit, which nothing else would tell the renderer.
+  // A license change can change Pro for the project limit, which nothing else would tell the renderer.
   initLicense(() => {
-    watchLinks?.onEntitlementChanged()
     projectLimit.pushIfChanged()
   })
   // Lazy getter: sshProjectManager is created just below, so a remote account op (which only runs
@@ -5159,7 +5080,6 @@ app.whenReady().then(async () => {
     // to have focused (that gap read as "cwd is outside the shared project roots" on the phone).
     workspaceRoots: () => workspaceStore.localProjectCwds()
   }
-  watchHistoryChat = hostBridge.chat
   // The renderer owns the Eco hibernation flag (persisted in ITS localStorage) and main only
   // mirrors it — same direction as `terminalFocused`. Feeds the agent-status mirror so the phone
   // renders SLEEPING (and re-fed at renderer boot from the persisted store, so a desktop restart
@@ -5667,10 +5587,6 @@ app.on('before-quit', (e) => {
   }
   quitFlushed = true
   e.preventDefault()
-  // Live links: tell every viewer the host is stopping while the relay sockets are still up, before
-  // killAll tears their pty subscriptions out from under the link hosts. The records stay on disk (the
-  // links resume at the next launch); the last write the service issued lands inside the raced flush.
-  const watchLinksStopped = watchLinks?.shutdown()
   // Pending throttled .nodeterm mirror writes must land BEFORE the ControlMasters die — killing
   // a master mid-write used to leave a truncated project.json on the server. The masters are
   // therefore kept up through the raced flush and dropped on the second before-quit pass.
@@ -5686,8 +5602,7 @@ app.on('before-quit', (e) => {
   const flush = Promise.allSettled([
     requestRendererFlush(getMainWindow()?.webContents, ipcMain).then(() => remoteWorkspaceIO.flush()),
     remoteWorkspaceIO.flush(),
-    ptyManager.killAll(),
-    watchLinksStopped
+    ptyManager.killAll()
   ])
   void Promise.race([flush, new Promise((r) => setTimeout(r, 1500))])
     // Then let whisper go. A dictation still transcribing when Electron tears down the main

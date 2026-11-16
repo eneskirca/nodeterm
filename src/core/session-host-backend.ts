@@ -148,7 +148,7 @@ export function attachExistingSessionHostPty(name: string): SessionHostPty {
   return new SessionHostPty(getClient(), name, null, 0)
 }
 
-/** A live link / relay viewer's READ-ONLY attachment to an already-running session: never spawns,
+/** A relay viewer's READ-ONLY attachment to an already-running session: never spawns,
  * casts no size claim, takes no pause ticket, cannot type. `ready` rejects with
  * `SessionHostWatchUnsupportedError` when the running host predates the `watch-attach` feature. */
 export function watchExistingSessionHostPty(name: string): SessionHostPty {
@@ -161,13 +161,7 @@ export async function sessionHostSupportsWatch(): Promise<boolean> {
   return getClient().supportsFeature('watch-attach')
 }
 
-/** The same answer WITHOUT connecting — undefined while this process has no connection (nothing
- *  session-host-backed has been opened yet). Synchronous, for `tmuxStatus`. */
-export function sessionHostWatchKnown(): boolean | undefined {
-  return client?.connectedFeature('watch-attach')
-}
-
-/** A live link's keyframe: the visible screen, cursor and active buffer. Null = no capture (an
+/** The visible screen, cursor and active buffer. Null = no capture (an
  *  older host, a gone session, any failure) — never history in its place. */
 export async function sessionHostCaptureVisible(name: string): Promise<CaptureVisibleResult | null> {
   return getClient().captureVisible(name)

@@ -15,7 +15,6 @@ const CORE = ['Unlimited local terminals & canvas', 'Unlimited SSH projects', ..
 const PRO = [
   'nodeterm mobile Pro included',
   '3 team seats included (extra seats $5/seat/mo)',
-  'Live links to a terminal: watch, chat, or let people type — viewers need nothing installed',
   'Larger on-device dictation models (base, small, large-v3-turbo)'
 ]
 

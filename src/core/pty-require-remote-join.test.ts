@@ -166,8 +166,8 @@ describe('requireRemote create vs a live session of the same node id', () => {
   })
 
   it('warns once for the held session, however often the refused join is retried', async () => {
-    // A live-link watcher retries its join every 2/4/8/15 s for as long as the link lives, and each
-    // retry is refused the same way: one warning for the held session, not one per retry.
+    // A caller may retry a refused join on a backoff, and each retry is refused the same way: one
+    // warning for the held session, not one per retry.
     const local = await localHeld()
     const retry = () => create(MODAL_OR_SECOND_VIEW, { agentId: 'claude', requireRemote: true })
     const results = [await retry(), await retry(), await retry()]

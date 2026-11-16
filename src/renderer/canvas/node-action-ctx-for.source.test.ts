@@ -28,7 +28,6 @@ describe('Canvas nodeActionCtxFor', () => {
     expect(live).toContain('...liveNodeActionCtx()')
     expect(live).toContain('setNodesColor: writes.setColor')
     expect(live).toContain('pickNodeIcon: writes.pickIcon')
-    expect(live).toContain('liveLinkMenuItems: liveLink')
   })
 
   it('every other project gets the stored copy, its own session source and its own router', () => {
