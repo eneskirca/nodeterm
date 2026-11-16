@@ -225,7 +225,7 @@ describe('both shells register a 4-arg raw listener', () => {
     for (const rel of ['src/main/index.ts', 'src/server/agent-status.ts']) {
       const src = code(rel)
       expect(src, `${rel}: the claude context tail is not given onTurnInterrupted`).toMatch(
-        /createContextTail\(pushContextUpdate, \{ onTaskNotification, onToolResult, onTurnInterrupted \}\)/
+        /createContextTail\(pushContextUpdate, \{ onTaskNotification, onToolResult, onTurnInterrupted(?:, \w+)* \}\)/
       )
       // The event must go through the shell's ONE hook-event path (mirror + every tap), not be
       // broadcast on the side.
@@ -237,7 +237,7 @@ describe('both shells register a 4-arg raw listener', () => {
       )
     }
     expect(code('src/main/index.ts'), 'the desktop remote (SSH) tail is not given onTurnInterrupted').toMatch(
-      /createRemoteContextTail\(win, remoteFile, \{ onTaskNotification, onToolResult, onTurnInterrupted \}\)/
+      /createRemoteContextTail\(win, remoteFile, \{ onTaskNotification, onToolResult, onTurnInterrupted(?:, \w+)* \}\)/
     )
   })
 

@@ -579,6 +579,7 @@ export const SCOPED_REFUSED: ReadonlySet<string> = new Set<string>([
   IPC.agentStatus,
   IPC.agentUnreadClear,
   IPC.agentSubagentActivity,
+  IPC.agentRemoteControl,
   IPC.presenceSync,
   IPC.presencePeer,
   // Hosted-team verbs: answered by the Server Edition's hosted service only, never on Team Access.
