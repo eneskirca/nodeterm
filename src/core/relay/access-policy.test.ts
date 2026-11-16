@@ -379,6 +379,12 @@ describe('outbound filter: deny by default for non-editors', () => {
     expect(filterOutboundEvent(ev(IPC.agentUnreadClear, 'n2'), ctx('viewer'))).toBe(false)
   })
 
+  it('a Remote Control update reaches a non-editor only for a shared node, like agent:status', () => {
+    expect(filterOutboundEvent(ev(IPC.agentRemoteControl, { nodeId: 'n1', sessionId: 's', on: true }), ctx('viewer'))).toBe(true)
+    expect(filterOutboundEvent(ev(IPC.agentRemoteControl, { nodeId: 'n2', sessionId: 's', on: true }), ctx('viewer'))).toBe(false)
+    expect(filterOutboundEvent(ev(IPC.agentRemoteControl, { sessionId: 's', on: true }), ctx('commenter'))).toBe(false)
+  })
+
   it('an unattributable message is dropped for a non-editor, never guessed', () => {
     expect(filterOutboundEvent('not json', ctx('viewer'))).toBe(false)
     expect(filterOutboundEvent(JSON.stringify({ t: 'ev', args: [] }), ctx('viewer'))).toBe(false)
