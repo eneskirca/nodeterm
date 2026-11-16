@@ -24,6 +24,7 @@ import { nodeIconDialog } from '../NodeIconPicker'
 import { applyIconChoice } from '../../lib/nodeIconChoice'
 import { normalizeNodeIcon, type NodeIcon } from '@shared/node-icon'
 import { ContextMeter } from '../ContextMeter'
+import { RemoteControlButton } from '../RemoteControlButton'
 import { isRemoteSessionNode } from '@shared/worktree'
 import { AccountChip, useAccountChip } from '../AccountChip'
 import { LiveLinkChip, projectSessionSource } from '../LiveLinkChip'
@@ -72,7 +73,7 @@ import { NoteMarkdown } from '../NoteMarkdown'
 import { inLiveChatDrawer } from '../../lib/liveChatPin'
 import { relativeTime } from '../../lib/relativeTime'
 import { TerminalMarkdownView } from '../../nodes/TerminalMarkdownView'
-import { canChat } from '@shared/agents/config'
+import { canChat, canRemoteControl } from '@shared/agents/config'
 import { transcriptSessionFor } from '../../lib/transcriptSession'
 import { effectiveAccountId } from '../../lib/accountChip'
 import { useSettings } from '../../state/settings'
@@ -259,6 +260,8 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   const useChat = mdOpen && !!createdAgent && canChat(createdAgent) && !!transcript.sessionId
   // Whether the ⌘M face is the chat panel, asked before it is open (the carry into the composer).
   const chatFace = !!createdAgent && canChat(createdAgent) && !!transcript.sessionId
+  // Same gate as the node header: Claude only, and not on a relay tab (no local transcript tail).
+  const remoteControlShown = !!createdAgent && canRemoteControl(createdAgent) && coreSource !== 'relay'
   const chatFaceRef = useRef(chatFace)
   chatFaceRef.current = chatFace
   const mdOpenRef = useRef(mdOpen)
@@ -644,6 +647,15 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
             <>
               {/* Same context-window pill + popover as the node header (null until usage data). */}
               <ContextMeter sessionId={transcript.sessionId ?? null} fromLaunchId={transcript.fallback} nodeId={session.id} remote={isRemoteSessionNode(session.spawn)} agentId={session.agentId ?? session.spawn.agentId ?? observedAgentId} />
+              {remoteControlShown && (
+                <RemoteControlButton
+                  className="kanban-modal__action kanban-modal__remote-control"
+                  nodeId={session.id}
+                  sessionId={transcript.sessionId}
+                  readState={() => agentStatusStore.getState().byId[session.id]?.state}
+                  pty={api.pty}
+                />
+              )}
               <button
                 className="kanban-modal__action"
                 title={commandTooltip(mdOpen ? 'Back to the live terminal' : 'Markdown / chat view', 'node.toggleMarkdown')}

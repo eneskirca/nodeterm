@@ -175,8 +175,8 @@ export const IconRemote = () => (
   </svg>
 )
 
-/** Remote access (phone relay) on/off — an antenna with signal arcs. Not `IconRemote` (the globe
- *  already means "web view") and not `IconBroadcast` ("share live link"). */
+/** Claude Remote Control on/off in a terminal header — an antenna with signal arcs. Not
+ *  `IconRemote` (the globe already means "web view") and not `IconBroadcast` ("share live link"). */
 export const IconRemoteAccess = () => (
   <svg {...S}>
     <circle cx="12" cy="9" r="1.8" />

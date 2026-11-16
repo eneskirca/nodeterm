@@ -5016,6 +5016,29 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   cleared by a `CronDelete` `recurring`-end event or the card's own × (dismisses the card only).
   `clearForParent` (new turn) leaves the loop card's dragged position alone. Renders an ephemeral
   **LoopNode** labelled by kind, connected by an edge to the parent, plus a small header badge.
+- **Claude Remote Control toggle** (agents in `REMOTE_CONTROL_CAPABLE` — claude only) — an antenna
+  button in the terminal header, right of the context meter, and in the kanban card modal (ONE
+  component, `components/RemoteControlButton.tsx`). Green = this session is reachable from
+  claude.ai / the Claude app; a click types Claude's own `/remote-control` into the session. It
+  replaced a short-lived app-wide toolbar toggle for the PHONE RELAY, which read as unrelated to
+  any terminal. Rules a refactor must keep:
+  - **State is read from the transcript, because no hook exists** (`core/remote-control-scan.ts`,
+    fed by both context tails → `agent:remote-control` → `state/remoteControl.ts`). ON is a
+    `system`/`bridge_status` record, OFF a `local_command` record whose stdout says "Remote Control
+    disconnected"; the latest wins. **Only the `local_command` shape is measured** (2.1.325); the
+    other two strings come from the CLI's source and no live connect has been run against the
+    parser. It therefore matches exactly and degrades to OFF — it can under-report, never invent ON.
+  - **The command is one toggle with two different dialogs.** OFF→ON may show a one-time "Enable
+    Remote Control?" consent (measured) — never answered by us. ON→OFF opens a dialog whose first
+    row is "Disconnect this session"; we press Enter **only after reading the pane and finding the
+    cursor on that exact row** (`disconnectRowSelected`). A timer-based Enter would accept the
+    consent dialog whenever our state was stale. The card modal has no live write, so there the
+    dialog is left for the user.
+  - Refused while `blocked`/`waiting` (typed text ANSWERS a prompt); allowed while `working` (the
+    command is `immediate`). Hidden on relay tabs (no local tail). Server Edition: works (same core
+    helper, real bridge subscription). Mobile: N/A.
+  - Owed device checks: a real connect turns it green; a real disconnect turns it off and the
+    gated Enter fires; state after an app restart and after `--resume`.
 - **Branch conversation** — node action (`IconBranch`, Claude-only via `BRANCH_CAPABLE`): sends `/branch` into the
   existing terminal via `pty.sendText` (tmux `send-keys`) and opens a new Claude node that
   resumes the parked original with `claude --settings … -r <ORIGINAL_ID>`. The original id is

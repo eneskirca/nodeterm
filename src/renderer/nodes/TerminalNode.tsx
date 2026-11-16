@@ -255,6 +255,7 @@ import { pasteWithImageReceipt } from '../terminal/image-paste-confirm'
 import { usePasteReceipt } from '../terminal/usePasteReceipt'
 import { createBoardPauseSlot } from '../terminal/board-render-pause'
 import { ContextMeter } from '../components/ContextMeter'
+import { RemoteControlButton } from '../components/RemoteControlButton'
 import { isZoomModifierHeld } from '../lib/zoomModifier'
 import { HoverGuard } from './HoverGuard'
 import {
@@ -322,6 +323,7 @@ import {
   canChat,
   canResume,
   canRename,
+  canRemoteControl,
   canReadTitle,
   createdAgentId,
   reportsOwnCopy,
@@ -1842,12 +1844,16 @@ export function TerminalNode({
   const contextLinkCapable = !!agentId && canContextLink(agentId) // context-link tip wording only; handles render on all terminals
   const showUsage = !!agentId && hasUsage(agentId) // per-node context-window meter
   const showChat = !!agentId && canChat(agentId) // Cmd+M opens a chat panel instead of markdown
+  // Claude Remote Control toggle (header, right of the context meter). Not on a relay tab: the
+  // on/off signal is this machine's transcript tail, which never sees a guest core's session.
+  const showRemoteControl = !!agentId && canRemoteControl(agentId) && session.source !== 'relay'
   // Everything that reads the conversation through CLAUDE's transcript readers (`context.ensure`'s
   // mount-time meter rehydration, the find bar's transcript index) — deliberately NOT `showUsage`,
   // which now spans three agents. See lib/transcriptGates.ts for what sharing that gate broke.
   const claudeTranscript = readsClaudeTranscript(agentId)
   // The header 💬 now opens the board-log comments flyout (right side); ⌘M keeps the markdown/chat view.
   const [commentsOpen, setCommentsOpen] = useState(false)
+  const rawWriteRef = useRef<((data: string) => void) | null>(null)
   const canRenameNode = !!agentId && canRename(agentId) // WRITE leg: push `/rename <name>` back
   // READ leg: adopt the agent's own session name into the title. A superset of canRenameNode —
   // gemini names its own sessions but has no rename command, so it polls and never pushes.
@@ -4511,6 +4517,9 @@ export function TerminalNode({
       },
       onData: (cb) => (sessionId && !life.dead ? transport.onData(sessionId, cb) : () => {})
     }
+    // Published for the header's Remote Control toggle (its one gated Enter). Never cleared: the
+    // write is already a no-op once this session is dead, and the next lifecycle run replaces it.
+    rawWriteRef.current = restartIo.write
     // The wake buffer flushes held keystrokes through the SAME session-scoped, lifetime-gated write
     // as the resume line — so a flush into a torn-down session no-ops instead of throwing. Published
     // to the ref the wake `.then` (component body) reads; re-set on every mount, which is when a new
@@ -6406,6 +6415,16 @@ export function TerminalNode({
           </span>
         ) : null}
         {showUsage && <ContextMeter sessionId={transcript.sessionId ?? null} fromLaunchId={transcript.fallback} nodeId={id} remote={!!remoteSession} agentId={agentId} />}
+        {showRemoteControl && (
+          <RemoteControlButton
+            className="term-node__remote-control"
+            nodeId={id}
+            sessionId={transcript.sessionId}
+            readState={() => agentStatusStore.getState().byId[id]?.state}
+            pty={session.api.pty}
+            write={(d) => rawWriteRef.current?.(d)}
+          />
+        )}
         {/* Who else is in this node. Subscribes to presence itself — see PresenceChips. */}
         <PresenceChips nodeId={id} />
         {/* This terminal is broadcast by a live link — never hideable (live-link.guard.test.ts).

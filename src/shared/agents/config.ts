@@ -506,6 +506,11 @@ export const LINKED_CONTEXT_SKILL_AGENTS = ['claude', 'cursor'] as const
 // rename command, so it stays out of RENAME_CAPABLE — the read⊇write invariant holds either way.
 // cursor: its `name` (AI-generated, or `/rename`) is in the chat store meta; the write leg joined
 // RENAME_CAPABLE once `/rename` was measured to land there.
+// Agents with an in-session "reach this session from another device" toggle the node header can
+// drive. claude only: `/remote-control` (alias `/rc`, measured on 2.1.325) connects the session to
+// claude.ai / the Claude mobile app and, run again, offers to disconnect it. State is read from
+// the transcript (core/remote-control-scan.ts). No other builtin has a measured equivalent.
+export const REMOTE_CONTROL_CAPABLE = ['claude'] as const
 export const TITLE_READ_CAPABLE = ['claude', 'codex', 'grok', 'gemini', 'cursor'] as const
 // Agents whose canvas nodes share ONE managed CLI server per machine and keep a stable per-node
 // identity inside it, instead of each node owning a whole process tree.
@@ -741,6 +746,7 @@ export const reportsSessionEnd = (id: AgentId): boolean => includes(SESSION_END_
 export const canRename = (id: AgentId): boolean => includes(RENAME_CAPABLE, id)
 export const submitsSeparately = (id: AgentId): boolean => includes(SEPARATE_SUBMIT_AGENTS, id)
 export const readsLinkedContextSkill = (id: AgentId): boolean => includes(LINKED_CONTEXT_SKILL_AGENTS, id)
+export const canRemoteControl = (id: AgentId): boolean => includes(REMOTE_CONTROL_CAPABLE, id)
 export const canReadTitle = (id: AgentId): boolean => includes(TITLE_READ_CAPABLE, id)
 export const canControlCanvas = (id: AgentId): boolean => includes(CANVAS_CONTROL_CAPABLE, id)
 export const usesPosixToolShellOnWindows = (id: AgentId): boolean => includes(POSIX_TOOL_SHELL_ON_WINDOWS, id)

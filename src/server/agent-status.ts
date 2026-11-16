@@ -19,6 +19,7 @@ import { createCursorSubagentTracker } from '../core/cursor-subagents'
 import { ClaudeSubagentLifecycle } from '../core/claude-subagent-lifecycle'
 import { claudeSubagentTranscriptPath, isClaudeAgentId } from '../shared/agents/claude-subagents'
 import { createContextTail, type ContextTail, type TaskNotification } from '../core/context-tail'
+import { remoteControlHandler } from '../core/remote-control-scan'
 import { geminiContextParse } from '../core/gemini-session'
 import { antigravityContextParse, rememberAntigravityModel } from '../core/antigravity-session'
 import { codexContextParse } from '../core/codex-session'
@@ -172,8 +173,13 @@ export function wireAgentStatus(
       }
     }
   }
+  // Claude Remote Control on/off, read from the transcript — same core helper as the desktop.
+  const onRemoteControl = remoteControlHandler(nodeContextSession, (u) =>
+    platform.broadcast(IPC.agentRemoteControl, u)
+  )
   const contextTail =
-    opts.contextTail ?? createContextTail(pushContextUpdate, { onTaskNotification, onToolResult, onTurnInterrupted })
+    opts.contextTail ??
+    createContextTail(pushContextUpdate, { onTaskNotification, onToolResult, onTurnInterrupted, onRemoteControl })
   // ONE TAIL PER AGENT, each with its own parser — not one tail switching on an agent id, which
   // would mean changing `ContextTail.track(sessionId, path)` and the four call sites that depend on
   // it. The poller (offset reads, torn-line carry, change-gated push) is written once in
