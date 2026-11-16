@@ -40,7 +40,7 @@ beforeAll(() => {
   // A fake tmux: sessions are files in $STATE; a "*.stuck" one survives kill-session. Like real
   // tmux, a target WITHOUT the leading `=` that matches no session exactly falls back to a prefix
   // match, and a miss prints tmux's own message (measured on tmux 3.4) with exit 1. Any socket but
-  // the host's `node-terminal` is recorded and refused, so a kill aimed at another socket fails.
+  // the host's `node-terminal` and the legacy `nodeterm-rmt` is recorded and refused.
   // FAKE_TMUX_MODE makes every call fail with one of tmux's connect or version errors.
   write(
     path.join(bin, 'tmux'),
@@ -50,12 +50,13 @@ beforeAll(() => {
       `W=${JSON.stringify(wrongSocketLog)}`,
       'cmd=""; target=""; sock=""',
       'while [ $# -gt 0 ]; do case "$1" in -L) shift; sock="$1";; -t) shift; target="$1";; kill-session|has-session|list-panes) cmd="$1";; esac; shift; done',
-      'if [ "$sock" != node-terminal ]; then echo "$sock $cmd $target" >> "$W"; echo "fake tmux: unexpected socket" >&2; exit 99; fi',
+      // The legacy socket is a second, separate server with its own state dir (`<state>-rmt`).
+      'case "$sock" in node-terminal) ;; nodeterm-rmt) S="$S-rmt"; mkdir -p "$S";; *) echo "$sock $cmd $target" >> "$W"; echo "fake tmux: unexpected socket" >&2; exit 99;; esac',
       'case "$FAKE_TMUX_MODE" in',
       "  mismatch) echo 'protocol version mismatch (client 8, server 7)' >&2; exit 1;;",
-      "  denied) echo 'error connecting to /tmp/tmux-1000/node-terminal (Permission denied)' >&2; exit 1;;",
-      "  nofile) echo 'error connecting to /tmp/tmux-1000/node-terminal (No such file or directory)' >&2; exit 1;;",
-      "  refused) echo 'error connecting to /tmp/tmux-1000/node-terminal (Connection refused)' >&2; exit 1;;",
+      "  denied) echo 'error connecting to /tmp/tmux-1000/$sock (Permission denied)' >&2; exit 1;;",
+      "  nofile) echo 'error connecting to /tmp/tmux-1000/$sock (No such file or directory)' >&2; exit 1;;",
+      "  refused) echo 'error connecting to /tmp/tmux-1000/$sock (Connection refused)' >&2; exit 1;;",
       'esac',
       'name="${target#=}"',
       'exact=0; [ "$name" != "$target" ] && exact=1',
@@ -65,7 +66,7 @@ beforeAll(() => {
       '  for f in "$S/$name"*; do [ -e "$f" ] || continue; b=$(basename "$f"); name="${b%.stuck}"; return 0; done',
       '  return 1',
       '}',
-      "missing() { if [ -n \"$(ls \"$S\")\" ]; then echo \"can't find session: $name\" >&2; else echo 'no server running on /tmp/tmux-1000/node-terminal' >&2; fi; exit 1; }",
+      "missing() { if [ -n \"$(ls \"$S\")\" ]; then echo \"can't find session: $name\" >&2; else echo \"no server running on /tmp/tmux-1000/$sock\" >&2; fi; exit 1; }",
       'case "$cmd" in',
       '  list-panes) for f in "$S"/*; do [ -e "$f" ] || continue; b=$(basename "$f"); b="${b%.stuck}"; echo "$b|$(cat "$f")"; done; exit 0;;',
       '  kill-session) resolve || missing; [ -e "$S/$name.stuck" ] && exit 0; rm -f "$S/$name"; exit 0;;',
@@ -101,7 +102,7 @@ beforeAll(() => {
 })
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }))
 afterEach(() => {
-  // Only this desktop's socket may ever be addressed (see the fake tmux).
+  // Only nodeterm's own two sockets may ever be addressed (see the fake tmux).
   const wrong = fs.existsSync(wrongSocketLog) ? fs.readFileSync(wrongSocketLog, 'utf8') : ''
   fs.rmSync(wrongSocketLog, { force: true })
   expect(wrong).toBe('')
@@ -356,6 +357,24 @@ describe.skipIf(process.platform === 'win32')('share-team remote shell (real /bi
     ])
     expect(fs.existsSync(path.join(state, 'nt-term-12'))).toBe(true) // exact target: a longer id is untouched
     for (const f of fs.readdirSync(state)) fs.rmSync(path.join(state, f))
+  })
+  it('an ADOPTED session on the legacy socket is killed and verified too: gone means gone from both', async () => {
+    const legacy = `${state}-rmt`
+    fs.mkdirSync(legacy, { recursive: true })
+    fs.writeFileSync(path.join(legacy, 'nt-term-1'), 'x')
+    fs.writeFileSync(path.join(legacy, 'nt-term-2.stuck'), 'x')
+    fs.writeFileSync(path.join(legacy, 'nt-term-12'), 'x')
+    const ids = ['term-1', 'term-2']
+    const r = parseKillVerify(await sh(killVerifyCommand(ids)), ids)
+    expect(r).toEqual([
+      { nodeId: 'term-1', state: 'gone' },
+      // Gone from the unified socket, still alive on the legacy one: NOT gone — resuming it on the
+      // server would start a second agent beside the survivor.
+      { nodeId: 'term-2', state: 'alive' }
+    ])
+    expect(fs.existsSync(path.join(legacy, 'nt-term-1'))).toBe(false)
+    expect(fs.existsSync(path.join(legacy, 'nt-term-12'))).toBe(true)
+    fs.rmSync(legacy, { recursive: true, force: true })
   })
   it('a node with no session is gone without touching a session whose name it prefixes', async () => {
     fs.writeFileSync(path.join(state, 'nt-term-9x'), 'x')

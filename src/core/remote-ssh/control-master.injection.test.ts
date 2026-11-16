@@ -166,7 +166,8 @@ describe('remoteTmuxPtyArgs: an attacker-controlled node id is DATA, never comma
     // and the command still carries exactly one tmux invocation with the expected shape (the
     // PATH prologue + tmux-missing fallback now precede it, so the head is indexOf, not slice).
     const t = argv.lastIndexOf('tmux') // the guard's `command -v tmux` also carries the word
-    expect(argv.slice(t, t + 3)).toEqual(['tmux', '-L', 'node-terminal'])
+    // The socket is the probed one (`sessionSocketProbe`), a shell word — never a spliced name.
+    expect(argv.slice(t, t + 3)).toEqual(['tmux', '-L', '"$_nts"'])
     expect(argv.filter((a) => a === 'new-session')).toHaveLength(1)
     expect(argv).toContain('nt-n1')
   })

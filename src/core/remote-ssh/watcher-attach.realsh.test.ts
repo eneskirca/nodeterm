@@ -74,10 +74,12 @@ beforeAll(() => {
   fs.writeFileSync(path.join(recordDir, 'tmux'), `#!/bin/sh\nfor a in "$@"; do printf '%s\\0' "$a"; done\n`, {
     mode: 0o755
   })
-  // tmux 3.1c's own answer to `attach-session -f …`: a usage line and exit 1. Every call is counted.
+  // tmux 3.1c's own answer to `attach-session -f …`: a usage line and exit 1. Every call is counted
+  // except the socket probe's `has-session` (control-master.ts `sessionSocketProbe`), which is not
+  // an attach attempt.
   fs.writeFileSync(
     path.join(oldDir, 'tmux'),
-    `#!/bin/sh\n: > "${markerDir}/old-tmux-$$"\necho 'usage: attach-session [-dErx] [-c working-directory] [-t target-session]' >&2\nexit 1\n`,
+    `#!/bin/sh\ncase " $* " in *' has-session '*) exit 1;; esac\n: > "${markerDir}/old-tmux-$$"\necho 'usage: attach-session [-dErx] [-c working-directory] [-t target-session]' >&2\nexit 1\n`,
     { mode: 0o755 }
   )
   if (!REAL_TMUX) return

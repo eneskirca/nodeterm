@@ -13,7 +13,7 @@ import {
   remoteKeysArgs,
   remotePasteArgs
 } from './pane-input'
-import { RMT_TMUX_SOCKET } from '../remote-ssh/control-master'
+import { SESSION_SOCKET_REF, sessionSocketProbe } from '../remote-ssh/control-master'
 import { remoteTmuxPathPrologue } from '../../shared/ssh'
 
 const CONN = { host: 'h.example.com', user: 'deploy', port: 2222, identityFile: '/k/id' }
@@ -113,17 +113,17 @@ describe('the plan one chunk runs (local)', () => {
 })
 
 describe('the remote twins (over the ControlMaster)', () => {
-  it('keys: ssh runs `tmux -L nodeterm-rmt source-file -` on the host; the command text rides stdin', () => {
-    const args = remoteKeysArgs(CONN, CM)
+  it('keys: ssh runs `tmux source-file -` on the socket HOLDING the session; the command text rides stdin', () => {
+    const args = remoteKeysArgs(CONN, CM, 'nt-a')
     expect(args).toContain(`ControlPath=${CM}`)
-    expect(args.at(-1)).toBe(`${remoteTmuxPathPrologue()}tmux -L ${RMT_TMUX_SOCKET} source-file -`)
+    expect(args.at(-1)).toBe(`${remoteTmuxPathPrologue()}${sessionSocketProbe('nt-a')}tmux -L ${SESSION_SOCKET_REF} source-file -`)
     expect(args.at(-2)).toBe('deploy@h.example.com')
   })
 
   it('paste: exact quoted target, mode cancel, -p, no Enter, and the text is not in argv', () => {
     const cmd = remotePasteArgs(CONN, CM, 'nt-a', 'nt-paste-0a').at(-1)!
     expect(cmd).toBe(
-      `${remoteTmuxPathPrologue()}tmux -L ${RMT_TMUX_SOCKET} load-buffer -b nt-paste-0a - ';' ` +
+      `${remoteTmuxPathPrologue()}${sessionSocketProbe('nt-a')}tmux -L ${SESSION_SOCKET_REF} load-buffer -b nt-paste-0a - ';' ` +
         `if-shell -F -t '=nt-a:' '#{pane_in_mode}' 'copy-mode -q -t =nt-a:' ';' ` +
         `paste-buffer -d -p -r -b nt-paste-0a -t '=nt-a:'`
     )
@@ -134,7 +134,7 @@ describe('the remote twins (over the ControlMaster)', () => {
 
   it('a remote plan carries the same body as the local one and sweeps on the host', () => {
     const keys = remoteControlInputPlan(CONN, CM, 'nt-a', { kind: 'keys', data: '\x02s' })
-    expect(keys).toEqual({ args: remoteKeysArgs(CONN, CM), body: keysCommandText('nt-a', '\x02s'), cleanup: null })
+    expect(keys).toEqual({ args: remoteKeysArgs(CONN, CM, 'nt-a'), body: keysCommandText('nt-a', '\x02s'), cleanup: null })
     const paste = remoteControlInputPlan(CONN, CM, 'nt-a', { kind: 'paste', text: 'p\x1bq' })!
     expect(paste.body).toBe('pq')
     const buffer = /load-buffer -b (nt-paste-[a-z0-9]+) -/.exec(paste.args.at(-1)!)![1]

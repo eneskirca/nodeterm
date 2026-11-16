@@ -185,7 +185,7 @@ describe('captureVisible — SSH project', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].file).toBe('/usr/bin/ssh')
     const remote = calls[0].args.at(-1)!
-    expect(remote).toContain(`tmux -L ${RMT_TMUX_SOCKET} capture-pane -p -e -t '${TARGET}' ';' display-message`)
+    expect(remote).toContain(`tmux -L "$_nts" capture-pane -p -e -t '${TARGET}' ';' display-message`)
     expect(remote).not.toMatch(/-S\b/)
     expect(calls[0].args).toContain('ControlPath=/tmp/cm-abc')
   })
@@ -236,7 +236,7 @@ describe('readWindowSize — the size a watcher client is spawned at', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].file).toBe('/usr/bin/ssh')
     expect(calls[0].args.at(-1)).toContain(
-      `tmux -L ${RMT_TMUX_SOCKET} display-message -p -t '${TARGET}' '#{window_width} #{window_height} #{status}'`
+      `tmux -L "$_nts" display-message -p -t '${TARGET}' '#{window_width} #{window_height} #{status}'`
     )
   })
 

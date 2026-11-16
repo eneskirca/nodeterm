@@ -1606,8 +1606,11 @@ a read that slices a `\n`-bearing literal without it.
 
 **An SSH project spawns on the host's `node-terminal` socket — the same one a nodeterm running on
 that host uses.** That is what lets the same folder, opened locally on the server and over SSH from a
-laptop, attach the same `nt-<id>` sessions. `nodeterm-rmt` is a legacy name the sweeps and kills still
-list; never spawn on it, and never give the SSH path a socket of its own again
+laptop, attach the same `nt-<id>` sessions. `nodeterm-rmt` is the legacy socket: never spawn on it,
+but a session an older build left there is **adopted in place** — so a remote tmux command about ONE
+session must go through `sessionTmuxCmd` and name the socket as `SESSION_SOCKET_REF`
+(`control-master.ts`), not `RMT_TMUX_SOCKET`; a bare constant silently misses every adopted session
+and the node respawns beside its own live agent. Never give the SSH path a socket of its own again
 (`src/core/remote-ssh/unified-socket.test.ts` pins the equality; CLAUDE.md "One tmux socket per host").
 
 **A test never touches a live tmux server.** You will most likely run `npm test` from inside a

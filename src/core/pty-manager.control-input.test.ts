@@ -211,7 +211,7 @@ describe('controlInput — ssh', () => {
     expect(calls).toEqual([
       {
         file: '/usr/bin/ssh',
-        args: remoteKeysArgs(SSH_REMOTE.conn, SSH_REMOTE.controlPath),
+        args: remoteKeysArgs(SSH_REMOTE.conn, SSH_REMOTE.controlPath, NAME),
         input: keysCommandText(NAME, 'ls\r')
       }
     ])
