@@ -2509,6 +2509,7 @@ body,
 .term-node__mic,
 .term-node__search,
 .term-node__refresh,
+.term-node__remote-control,
 .term-node__external,
 .term-node__maximize,
 .term-node__close,
@@ -2539,6 +2540,7 @@ body,
 .term-node__mic:hover,
 .term-node__search:hover,
 .term-node__refresh:hover,
+.term-node__remote-control:hover:not(:disabled),
 .term-node__external:hover,
 .term-node__maximize:hover,
 .term-node__move-worktree:hover,
@@ -2571,6 +2573,16 @@ body,
 
 
 
+
+/* Claude Remote Control: green while the session is reachable from another device. */
+.term-node__remote-control[aria-pressed='true'],
+.kanban-modal__remote-control[aria-pressed='true'] {
+  color: var(--success);
+}
+.term-node__remote-control:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 
 .term-node__hide-fanout[aria-pressed='true'] {
   color: var(--accent-text);
@@ -6218,15 +6230,6 @@ body,
 .sessions-icon-cluster > button svg {
   width: 18px;
   height: 18px;
-}
-
-/* Remote-access toggle: green while the standing relay host is on, muted while off. */
-.controls-cluster > button.cluster-remote {
-  color: var(--muted);
-}
-.controls-cluster > button.cluster-remote[aria-pressed='true'] {
-  color: var(--success);
-  border-color: color-mix(in srgb, var(--success) 45%, transparent);
 }
 
 /* Search button shows the ⌘K shortcut so its purpose is obvious */

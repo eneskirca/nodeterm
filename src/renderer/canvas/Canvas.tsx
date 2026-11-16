@@ -68,7 +68,7 @@ import {
   wheelGestureReporting
 } from './wheel-gesture'
 import { isBrowserRuntime } from '@renderer/bridge/runtime'
-import { applyPhoneAccess } from '@renderer/lib/phoneAccess'
+import { useRemoteControl } from '@renderer/state/remoteControl'
 import { WheelZoomBurstLimiter, clampWheelZoomSpeed, nextWheelZoom } from './wheel-zoom'
 import { canCopyFilesToClipboard, selectedLocalFilePaths } from './canvas-file-copy'
 import {
@@ -176,7 +176,6 @@ import {
   IconPower,
   IconProject,
   IconRemote,
-  IconRemoteAccess,
   IconSave,
   IconSearch,
   IconSelectAll,
@@ -5060,6 +5059,11 @@ export function Canvas() {
   // Feed per-session context-window fill from main into the transient store.
   useEffect(() => {
     return window.nodeTerminal.context.onUpdate((u) => useContextWindow.getState().set(u))
+  }, [])
+
+  // Claude Remote Control on/off per node (transcript-read in core) into its transient store.
+  useEffect(() => {
+    return window.nodeTerminal.context.onRemoteControl((u) => useRemoteControl.getState().set(u))
   }, [])
 
   // Prevent a stray file drop (outside a terminal body) from navigating the whole window to
@@ -19731,24 +19735,6 @@ export function Canvas() {
         >
           <IconPhone />
         </button>
-        {/* Remote access on/off at a glance — green = the standing relay host is on, so a paired
-            phone can reach this machine from anywhere. Same switch as the pair popover and
-            Settings → Phone. Hidden on the Server Edition: there is no relay host to start there
-            (the bridge's setPhoneAccess is a no-op), and a toggle that only changed colour would lie. */}
-        {!isBrowserRuntime() && (
-          <button
-            className="cluster-remote"
-            aria-pressed={settings.phoneAccessEnabled}
-            title={
-              settings.phoneAccessEnabled
-                ? 'Remote access is on — click to turn off'
-                : 'Remote access is off — click to turn on'
-            }
-            onClick={() => applyPhoneAccess(!settings.phoneAccessEnabled)}
-          >
-            <IconRemoteAccess />
-          </button>
-        )}
         <button
           title={commandTooltip('Settings', 'app.settings')}
           onClick={() => {

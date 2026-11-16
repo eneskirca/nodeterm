@@ -3587,6 +3587,11 @@ export interface ContextApi {
   /** Fires whenever a session's context fill changes. Returns unsubscribe. */
   onUpdate(listener: (usage: ContextWindowUsage) => void): () => void
   /**
+   * Fires when a Claude session's transcript records Remote Control (`/remote-control`) connecting
+   * or disconnecting. Fed by the same transcript tails as `onUpdate`. Returns unsubscribe.
+   */
+  onRemoteControl(listener: (update: { nodeId: string; sessionId: string; on: boolean }) => void): () => void
+  /**
    * Ask the core to start (or refresh) tracking a session's transcript so the meter populates
    * without waiting for a live hook event — e.g. on node mount after an app restart, when
    * the continuing session is idle. `cwd` is a transcript-path fallback only.

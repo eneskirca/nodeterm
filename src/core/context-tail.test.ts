@@ -102,6 +102,30 @@ describe('createContextTail — task notifications', () => {
 })
 
 
+describe('createContextTail — Remote Control', () => {
+  it('reports the state already in the transcript, then each change', async () => {
+    const dir = testTmpDir('ctxtail-rc-')
+    const file = path.join(dir, 'sess.jsonl')
+    const on = JSON.stringify({ type: 'system', subtype: 'bridge_status', url: 'https://claude.ai/code/x' })
+    const off = JSON.stringify({
+      type: 'system',
+      subtype: 'local_command',
+      content: '<local-command-stdout>Remote Control disconnected.</local-command-stdout>'
+    })
+    fs.writeFileSync(file, on + '\n')
+    const onRemoteControl = vi.fn()
+    const tail = createContextTail(vi.fn(), { onRemoteControl })
+    tail.track('s1', file)
+    await new Promise((r) => setTimeout(r, 1300))
+    expect(onRemoteControl.mock.calls).toEqual([['s1', true]])
+    fs.appendFileSync(file, off + '\n')
+    await new Promise((r) => setTimeout(r, 1300))
+    expect(onRemoteControl.mock.calls).toEqual([['s1', true], ['s1', false]])
+    tail.untrack('s1')
+  }, 8000)
+})
+
+
 describe('createContextTail — the `parse` dep (gemini/codex)', () => {
   /** Write a transcript, tail it with `parse`, and return whatever it pushed. */
   async function pushesFor(

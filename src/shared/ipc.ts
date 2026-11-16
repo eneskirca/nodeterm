@@ -422,6 +422,8 @@ export const IPC = {
   triggersStatus: 'triggers:status',
   triggersRunNow: 'triggers:run-now',
   contextUpdate: 'context:update',
+  /** core → renderer: a Claude session's Remote Control connected/disconnected (transcript-read). */
+  agentRemoteControl: 'agent:remote-control',
   contextEnsure: 'context:ensure',
   // Team presence (docs/team-presence.md). `presence:hello` is a REQUEST: its response tells the
   // client its own clientId, so it never draws its own cursor. The rest are casts (client→server)

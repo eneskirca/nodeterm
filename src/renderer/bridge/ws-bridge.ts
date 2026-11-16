@@ -743,6 +743,7 @@ export function buildFilesApi(
 
   const context: ContextApi = {
     onUpdate: (listener) => client.subscribe(IPC.contextUpdate, listener as Listener),
+    onRemoteControl: (listener) => client.subscribe(IPC.agentRemoteControl, listener as Listener),
     ensure: (sessionId, cwd, accountId, nodeId, agentId) =>
       client.cast(IPC.contextEnsure, sessionId, cwd, accountId, nodeId, agentId)
   }

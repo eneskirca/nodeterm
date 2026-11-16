@@ -6,6 +6,7 @@ import fs from 'fs'
 import type { ContextWindowUsage } from '../shared/types'
 import { cachedWindowFor } from './model-window'
 import { splitCompleteLines } from './subagent-tail'
+import { parseRemoteControl } from './remote-control-scan'
 import { claudeInterruptMarkerOf } from '../shared/agents/claude-interrupt'
 
 const POLL_MS = 1000
@@ -261,6 +262,10 @@ export interface ContextTailOptions {
   /** Fired when a tracked session's transcript records a turn INTERRUPT marker, with that turn's id
    *  — see `parseTurnInterrupts`. Claude only; the consumer decides whether it is the live turn. */
   onTurnInterrupted?: (sessionId: string, turnId: string) => void
+  /** Fired when a tracked session's transcript records Claude Remote Control connecting (`true`)
+   *  or disconnecting (`false`) — see `parseRemoteControl`. Claude only. A STATE, not an event:
+   *  the latest record in a read wins, and a read of old history may report it too. */
+  onRemoteControl?: (sessionId: string, on: boolean) => void
   /**
    * How to read the used/window numbers out of this agent's transcript. Defaults to claude's
    * `parseLatestUsage`. gemini and codex pass their own (`core/gemini-session.ts`
@@ -443,6 +448,10 @@ export function createContextTail(
             for (const id of parseToolResultIds(completeLines)) opts.onToolResult(sessionId, id)
           if (opts?.onTurnInterrupted)
             for (const id of t.interrupts.scan(completeLines)) opts.onTurnInterrupted(sessionId, id)
+          if (opts?.onRemoteControl) {
+            const rc = parseRemoteControl(completeLines)
+            if (rc !== null) opts.onRemoteControl(sessionId, rc)
+          }
         }
       }
 

@@ -659,6 +659,11 @@ const api: NodeTerminalApi = {
       ipcRenderer.on(IPC.contextUpdate, handler)
       return () => ipcRenderer.removeListener(IPC.contextUpdate, handler)
     },
+    onRemoteControl: (listener) => {
+      const handler = (_e: unknown, payload: Parameters<typeof listener>[0]) => listener(payload)
+      ipcRenderer.on(IPC.agentRemoteControl, handler)
+      return () => ipcRenderer.removeListener(IPC.agentRemoteControl, handler)
+    },
     ensure: (sessionId, cwd, accountId, nodeId, agentId) =>
       ipcRenderer.send(IPC.contextEnsure, sessionId, cwd, accountId, nodeId, agentId)
   },
