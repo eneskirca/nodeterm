@@ -506,6 +506,7 @@ export const EDITOR_ONLY: ReadonlySet<string> = new Set<string>([
   IPC.agentStatus,
   IPC.agentUnreadClear,
   IPC.agentSubagentActivity,
+  IPC.agentRemoteControl,
   IPC.presenceSync,
   IPC.presencePeer
 ])
@@ -564,6 +565,8 @@ export const VIEW_EVENTS: Readonly<Record<string, EventCheck>> = Object.freeze({
     return typeof toolUseId === 'string' && sharedNode(owners?.get(toolUseId), ctx)
   },
   [IPC.agentUnreadClear]: (a, ctx) => sharedNode(a[0], ctx),
+  // Claude Remote Control on/off for one node (core/remote-control-scan.ts), judged by its node.
+  [IPC.agentRemoteControl]: (a, ctx) => sharedNode(field(a[0], 'nodeId'), ctx),
   // Both carry a whole Project document.
   [IPC.workspaceExternalChange]: (a, ctx) => sharedProject(field(a[0], 'id'), ctx),
   [IPC.workspaceServerChange]: (a, ctx) => sharedProject(field(a[0], 'id'), ctx),
