@@ -235,19 +235,19 @@ describe('autoHideFinished: dropping a card the moment its subagent finishes', (
   })
 
   it('takes the dropped card’s overrides, selection and activity with it', () => {
+    // Not expanded: an OPEN card is pinned and survives its finish (see the pin-rule tests).
     const s = useAgentNodes.getState()
     s.setAutoHideFinished(true)
     s.start('tu1', { parentNodeId: 'n1' })
     s.setPosition('tu1', { x: 1, y: 2 })
     s.setSize('tu1', { width: 400, height: 300 })
-    s.toggleExpanded('tu1')
     s.appendActivity('tu1', 'ran')
     s.select('tu1')
     useAgentNodes.getState().finish('tu1', {})
     const st = useAgentNodes.getState()
+    expect(st.byId['tu1']).toBeUndefined()
     expect(st.positions['tu1']).toBeUndefined()
     expect(st.sizes['tu1']).toBeUndefined()
-    expect(st.expanded['tu1']).toBeUndefined()
     expect(st.activityById['tu1']).toBeUndefined()
     expect(st.selectedId).toBeNull()
   })
@@ -339,6 +339,18 @@ describe('Eco still sees the live subagent after a new turn (issue #547)', () =>
     s.start('tu1', { parentNodeId: 'n1' })
     s.finish('tu1', {})
     s.clearFinishedForParent('n1')
+    expect(candidates()[0].liveSubagents).toBe(false)
+  })
+
+  it('an opened (pinned) finished card survives the boundary but does not pin its parent', () => {
+    // The card stays because the user is reading it; it is `done`, so Eco and the bulk restart
+    // must still see the parent as free of live subagents.
+    const s = useAgentNodes.getState()
+    s.start('tu1', { parentNodeId: 'n1' })
+    s.toggleExpanded('tu1')
+    s.finish('tu1', {})
+    s.clearFinishedForParent('n1')
+    expect(useAgentNodes.getState().byId['tu1']?.state).toBe('done')
     expect(candidates()[0].liveSubagents).toBe(false)
   })
 

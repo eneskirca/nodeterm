@@ -91,6 +91,15 @@ describe('Claude native subagents (core/claude-subagent-lifecycle.ts)', () => {
     const reused = replay.snapshot(300).find((e) => e.toolUseId === 'toolu_1')
     expect(reused?.subagentLastActivityAt).toBeUndefined()
   })
+  it('a replayed start keeps which signal drew it, so a reloaded native card stays native', () => {
+    const replay = new SubagentReplay()
+    replay.record({ ...start, toolUseId: 'toolu_1', subagentSignal: 'tool' }, 100)
+    replay.record({ ...start, toolUseId: 'a1', subagentSignal: 'native', supersedes: 'toolu_1' }, 150)
+    replay.record({ ...start, agentId: 'grok', toolUseId: 'g1' }, 160)
+    const snap = replay.snapshot(200)
+    expect(snap.find((e) => e.toolUseId === 'a1')).toMatchObject({ subagentSignal: 'native', agentId: 'claude' })
+    expect(snap.find((e) => e.toolUseId === 'g1')).not.toHaveProperty('subagentSignal')
+  })
   it('a repeated start of a running card corrects its label and keeps its start time', () => {
     const replay = new SubagentReplay()
     replay.record({ ...start, toolUseId: 'a1', taskLabel: 'guess' }, 100)

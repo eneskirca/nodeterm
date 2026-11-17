@@ -37,10 +37,13 @@ export class SubagentReplay {
         if (event.subagentType !== undefined) running.subagentType = event.subagentType
       } else {
         // Copy just the display fields. In particular, a replay never carries verified identity.
+        // `subagentSignal` says which hook drew the card: a native one's key is the child's
+        // agent_id, which is what lets a reloaded card keep reading the subagent's conversation.
         this.starts.set(key, {
           kind: 'subagent-start', nodeId: event.nodeId, agentId: event.agentId,
           toolUseId: event.toolUseId, subagentType: event.subagentType,
-          taskLabel: event.taskLabel?.slice(0, 4000), subagentStartedAt: replaced?.subagentStartedAt ?? now
+          taskLabel: event.taskLabel?.slice(0, 4000), subagentStartedAt: replaced?.subagentStartedAt ?? now,
+          ...(event.subagentSignal ? { subagentSignal: event.subagentSignal } : {})
         })
       }
       while (this.starts.size > this.limit) this.forget(this.starts.keys().next().value!)

@@ -122,6 +122,16 @@ export function applyAgentEvent(
     }
     case 'subagent-start':
       if (e.toolUseId && an) {
+        // The parent's session and account NOW, which the card keeps (a later resume or account
+        // switch of the parent must not repoint it). A subagent start names the PARENT's session
+        // (every agent's start does), so the event's wins; a reload replay carries none, and the
+        // entry's is the one `setSessionId` above has just written or the one persisted for it.
+        // The account is the entry's observed one: the node's own `data.accountId` (what
+        // `effectiveAccountId` would read first) is not reachable from these stores, and the
+        // observation names the same account for a managed or linked node.
+        const parent = status.getState().byId[e.nodeId]
+        const sessionId = e.sessionId || parent?.sessionId
+        const accountId = parent?.account?.accountId ?? undefined
         an.start(
           e.toolUseId,
           {
@@ -129,7 +139,11 @@ export function applyAgentEvent(
             type: e.subagentType,
             label: e.taskLabel,
             startedAt: e.subagentStartedAt,
-            lastActivityAt: e.subagentLastActivityAt
+            lastActivityAt: e.subagentLastActivityAt,
+            agent: e.agentId,
+            native: e.subagentSignal === 'native',
+            ...(sessionId ? { sessionId } : {}),
+            ...(accountId ? { accountId } : {})
           },
           // A Claude native card replacing the card its tool call drew (claude-subagent-lifecycle).
           e.supersedes
