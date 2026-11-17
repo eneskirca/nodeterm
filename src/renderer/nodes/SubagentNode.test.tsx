@@ -50,6 +50,7 @@ import {
 } from './SubagentNode'
 import { useAgentNodes } from '../state/agentNodes'
 import { useAgentStatus } from '../state/agentStatus'
+import { useSettings } from '../state/settings'
 import { CHAT_LIVE_RELOAD_MIN_MS } from '../lib/chatLive'
 
 const CARD = 'a089017271138740d' // a native card's key is the child's agent_id
@@ -139,6 +140,7 @@ afterEach(async () => {
     delete byId[PARENT]
     return { byId }
   })
+  useSettings.setState((s) => ({ settings: { ...s.settings, claudeAccounts: [] } }))
   vi.useRealTimers()
 })
 
@@ -186,6 +188,34 @@ describe('an open native Claude card is the conversation', () => {
     expect(subagentReads()[0][2]).toBe('acct-parent')
   })
 
+  it("with neither a recorded account nor one on the parent node, reads under the parent's OBSERVED account", async () => {
+    // A hand-launched claude in a plain terminal: no `data.accountId`, but its hooks named the dir.
+    useSettings.setState((s) => ({
+      settings: { ...s.settings, claudeAccounts: [{ id: 'acct-obs', label: 'Work', createdAt: 0 }] }
+    }))
+    useAgentStatus.getState().setAccount(PARENT, { configDir: '/u/.nodeterm/claude-accounts/acct-obs', accountId: 'acct-obs', known: true })
+    startCard(CARD, { ...native, accountId: undefined })
+    await mount(CARD)
+    expect(subagentReads()[0][2]).toBe('acct-obs')
+  })
+
+  it("the parent node's own account wins over the observed one, as on the parent's ⌘M panel", async () => {
+    useSettings.setState((s) => ({
+      settings: { ...s.settings, claudeAccounts: [{ id: 'acct-obs', label: 'Work', createdAt: 0 }] }
+    }))
+    useAgentStatus.getState().setAccount(PARENT, { configDir: '/u/.nodeterm/claude-accounts/acct-obs', accountId: 'acct-obs', known: true })
+    startCard(CARD, { ...native, accountId: undefined })
+    await mount(CARD, { accountId: 'acct-parent' })
+    expect(subagentReads()[0][2]).toBe('acct-parent')
+  })
+
+  it('an observed dir this machine has no account for reads under the system default (no account)', async () => {
+    useAgentStatus.getState().setAccount(PARENT, { configDir: '/u/.claude-2', accountId: null, known: false })
+    startCard(CARD, { ...native, accountId: undefined })
+    await mount(CARD)
+    expect(subagentReads()[0][2]).toBeUndefined()
+  })
+
   it('a finished card closes with its report and the stats under it', async () => {
     startCard(CARD, native)
     useAgentNodes.getState().finish(CARD, { result: 'The loader caches forever.', tokens: 2100, toolUses: 3, durationMs: 4000 })
@@ -195,6 +225,18 @@ describe('an open native Claude card is the conversation', () => {
     expect(report.querySelector('.subagent-node__meta')!.textContent).toBe('4s · ↓ 2.1k tokens · 3 tools')
     // The stats are not shown twice.
     expect(host.querySelectorAll('.subagent-node__meta')).toHaveLength(1)
+  })
+
+  it('a finished card keeps a strip to drag it by: the stats line is not `nodrag`, the report text is', async () => {
+    startCard(CARD, native)
+    useAgentNodes.getState().finish(CARD, { result: 'The loader caches forever.', tokens: 2100, toolUses: 3, durationMs: 4000 })
+    await mount(CARD)
+    const stats = host.querySelector<HTMLElement>('.subagent-node__report .subagent-node__meta')!
+    // React Flow starts a node drag unless the pointer is inside a `.nodrag` element.
+    expect(stats.closest('.nodrag')).toBeNull()
+    const text = host.querySelector<HTMLElement>('.subagent-node__report-text')!
+    expect(text.closest('.nodrag')).not.toBeNull()
+    expect(text.closest('.nowheel')).not.toBeNull()
   })
 
   it('a working card has no report yet; its live timer stays at the top', async () => {

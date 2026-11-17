@@ -21,6 +21,7 @@ import type { TeamStation } from '../../lib/teamProgress'
 import { cardShowsOverdue, sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
 import { PortsChip } from '../PortsChip'
 import { QueuedLaunchChip } from './QueuedLaunchChip'
+import { SubagentChip } from './SubagentChip'
 import type { SelectMods } from '../../lib/cardSelection'
 
 const PRIO_COLOR = Object.fromEntries(PRIORITIES.map((p) => [p.id, p.color])) as Record<KanbanPriority, string>
@@ -184,6 +185,8 @@ export const SessionCard = memo(function SessionCard({
         {session.kind === 'terminal' && team && team.length > 0 && onTravel && (
           <TeamProgressChip stations={team} onTravel={onTravel} statusStore={statusStore} />
         )}
+        {/* The node's subagent cards, counted (nothing while it has none); the modal lists them. */}
+        {session.kind === 'terminal' && <SubagentChip nodeId={session.id} />}
         {session.kind === 'terminal' && session.pendingLaunch && (
           <QueuedLaunchChip
             nodeId={session.id}

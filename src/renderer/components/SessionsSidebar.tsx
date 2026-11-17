@@ -21,6 +21,7 @@ import {
 } from '../lib/sessionList'
 import { sidebarEmptyState, sidebarFilterKeyAction } from '../lib/sidebarFilter'
 import { SessionRow } from './SessionRow'
+import { SubagentRows } from './SubagentRows'
 import { ProjectGlyph } from './ProjectGlyph'
 import { ClosedHistorySection } from './ClosedHistorySection'
 import { IconBellFilled, IconCircleCheck, IconClose, IconPin } from './icons'
@@ -324,6 +325,8 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
             setDropKey(null)
           }}
         />
+        {/* The node's subagents, the same cards the canvas draws for it (nothing for a node with none). */}
+        <SubagentRows parentNodeId={row.id} />
       </div>
     )
   }
@@ -517,6 +520,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
         onDragEnd={() => {}}
         stateAgeLabel={sessionStateAgeLabel(row.statusUpdatedAt, statusNow, row.statusClock)}
       />
+      <SubagentRows parentNodeId={row.id} />
     </div>
   )
 

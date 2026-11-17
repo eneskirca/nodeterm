@@ -531,6 +531,7 @@ import { useTerminalFocus } from '../state/terminalFocus'
 import { useCodexIdentity, codexFallbackText } from '../state/codexIdentity'
 import { useTeamAccessEvents } from '../state/teamAccess'
 import { useAgentNodes } from '../state/agentNodes'
+import { openSubagentCard, type OpenSubagentDetail } from '../lib/subagentRows'
 import { SubagentNode, subagentCardSize } from '../nodes/SubagentNode'
 import { LoopNode } from '../nodes/LoopNode'
 import type { NormalizedAgentEvent } from '@shared/agents/normalize'
@@ -18726,6 +18727,23 @@ export function Canvas() {
   // OS-notification click → focus the originating node (see the note beside focusNodeById:
   // travelToNode, not focusNodeById, so a closed project's tab is reopened first).
   useEffect(() => window.nodeTerminal.onFocusNode(travelToNode), [travelToNode])
+
+  // A subagent row (sessions sidebar, the kanban card modal's list) asks for one card: go to its
+  // parent node the way every "go to node" does — `travelToNode` switches to, or reopens, the
+  // parent's project and frames it with setViewport, never fitView — then open (never close) and
+  // select the card. The card is opened at once rather than when the travel lands: opening pins it,
+  // so the turn boundary cannot take it on the way, and the only thing that can (the parent going
+  // away) clears its flags with it. A card that is already gone is left alone.
+  useEffect(() => {
+    const handler = (e: CustomEvent<OpenSubagentDetail>): void => {
+      const d = e.detail
+      if (!d || typeof d.parentNodeId !== 'string' || typeof d.cardId !== 'string') return
+      travelToNode(d.parentNodeId)
+      openSubagentCard(useAgentNodes.getState(), d.parentNodeId, d.cardId)
+    }
+    window.addEventListener('nodeterm:open-subagent' as never, handler as never)
+    return () => window.removeEventListener('nodeterm:open-subagent' as never, handler as never)
+  }, [travelToNode])
 
   // Memory pressure (core/memory-pressure.ts, pushed by the shell): run the renderer's reclaim
   // levers. Both are idempotent and cost only warmth — a reclaimed hidden context re-grants on its

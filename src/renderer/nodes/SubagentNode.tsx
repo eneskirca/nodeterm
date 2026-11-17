@@ -216,9 +216,16 @@ export function SubagentNode({ id, data, selected }: NodeProps<CanvasNode>) {
             />
           </Suspense>
           {reportBelow && (result || meta) && (
-            <div className="subagent-node__report nodrag nowheel">
-              {result && <div className="subagent-node__report-text">{result}</div>}
-              {meta && <div className="subagent-node__meta">{meta}</div>}
+            // The result is text to read and select (`nodrag nowheel`, it scrolls); the stats line
+            // under it is NOT, because once the card finished it is the one strip left to drag the
+            // card by — the head toggles on a click, and the thread above selects text.
+            <div className="subagent-node__report">
+              {result && <div className="subagent-node__report-text nodrag nowheel">{result}</div>}
+              {meta && (
+                <div className="subagent-node__meta subagent-node__drag" title="Drag to move the card">
+                  {meta}
+                </div>
+              )}
             </div>
           )}
         </>

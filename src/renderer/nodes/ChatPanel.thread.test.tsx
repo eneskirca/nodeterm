@@ -182,6 +182,32 @@ describe('⌘M thread look', () => {
     expect(host.querySelectorAll('.term-chat__tool')).toHaveLength(2)
   })
 
+  it("a subagent's thread folds by the SUBAGENT's state, never its parent's", async () => {
+    // A subagent card's panel names its PARENT node; the parent here is idle (`done`, the
+    // beforeEach), while the subagent still runs: its last run of tool calls stays open chips.
+    const run: ChatMessage[] = [
+      { role: 'user', task: true, parts: [{ kind: 'text', text: 'find it' }], key: 0 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Bash', arg: 'a' }], key: 10 },
+      { role: 'assistant', parts: [{ kind: 'tool', name: 'Read', arg: 'b' }], key: 20 }
+    ]
+    reads.messages = run
+    await act(async () => {
+      root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="claude" subagent={{ agentId: 'a089017271138740d', working: true }} />)
+    })
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(host.querySelector('.term-chat__tool-group')).toBeNull()
+    expect(host.querySelectorAll('.term-chat__tool')).toHaveLength(2)
+
+    // The subagent finished while its parent is busy on another turn: the run folds.
+    useAgentStatus.setState((st) => ({ byId: { ...st.byId, [NODE]: { state: 'working' } as (typeof st.byId)[string] } }))
+    await act(async () => {
+      root.render(<ChatPanel nodeId={NODE} sessionId="s1" agentId="claude" subagent={{ agentId: 'a089017271138740d', working: false }} />)
+    })
+    expect(host.querySelector('.term-chat__tool-group')).not.toBeNull()
+  })
+
   it('a prompt queued mid-turn does not fold the live run it lands after', async () => {
     // The "Queued" bubble is drawn at the END of the thread; the run before it is still the live tail.
     useAgentStatus.setState((s) => ({ byId: { ...s.byId, [NODE]: { state: 'working' } as (typeof s.byId)[string] } }))

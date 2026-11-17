@@ -62,6 +62,8 @@ import { BoardLogPanel } from './BoardLogPanel'
 import type { MentionCandidate } from '../../lib/boardMentions'
 import { CardMetaBar } from './CardMetaBar'
 import { CardPullRequests } from './CardPullRequests'
+import { SubagentRows } from '../SubagentRows'
+import { showCanvas } from '../../state/viewMode'
 import { ModalTerminal } from './ModalTerminal'
 import { BrowserSurface } from '../../nodes/BrowserSurface'
 import { BrowserDrivingIndicator } from '../../nodes/BrowserDrivingChip'
@@ -758,6 +760,19 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
           />
         )}
         <CardMetaBar nodeId={session.id} board={board} onChange={onChangeBoard} />
+        {isTerminal && (
+          // The node's subagents (nothing while it has none). Their conversations are read on the
+          // canvas, in their own cards — never a second time in here: a row closes the modal,
+          // leaves the board for THIS card's project's canvas, and asks the canvas to open it.
+          <SubagentRows
+            parentNodeId={session.id}
+            variant="list"
+            onBeforeOpen={() => {
+              onClose()
+              showCanvas(projectId)
+            }}
+          />
+        )}
         <CardPullRequests session={session} board={board} onChangeBoard={onChangeBoard} />
         <div className="kanban-modal__body">
           {/* Body is a flex row: the card's own pane (2/3) + the board-log panel (1/3, all kinds). */}

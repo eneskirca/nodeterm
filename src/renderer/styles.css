@@ -8907,24 +8907,37 @@ button.group-node__setup:disabled {
   border-radius: 8px;
   overflow: hidden;
 }
+/* The report scrolls inside itself (its text), so the stats line under it stays in view: it is the
+   strip a finished card is dragged by. */
 .subagent-node__report {
   flex: 0 1 auto;
   min-height: 0;
   max-height: 40%;
+  display: flex;
+  flex-direction: column;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--border);
-  overflow: auto;
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
 }
 .subagent-node__report-text {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.subagent-node__drag {
+  flex: none;
+  cursor: grab;
+}
+.subagent-node__drag:active {
+  cursor: grabbing;
 }
 
 /* ---- Loop (ephemeral, hook-driven) node ---- */
@@ -10820,6 +10833,37 @@ button.group-node__setup:disabled {
 /* Reorder: insertion line above the row the dragged session will land before */
 .ss-rowdrop { position: relative; }
 .ss-rowdrop.is-drop-before::before { content: ''; position: absolute; top: -1px; left: 6px; right: 6px; height: 2px; border-radius: 1px; background: var(--accent); pointer-events: none; }
+
+/* A session's subagents (components/SubagentRows.tsx): one row per card the canvas draws for the
+   node, indented under its session row. Absent for a node with none, so a session row keeps its
+   height. The same row, under a heading, is the kanban card modal's list (`.card-subagents`). */
+.ss-subagents { display: flex; flex-direction: column; gap: 1px; margin: 0 0 4px 24px; }
+.subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+.subagent-row:hover { background: rgba(var(--tint-rgb), 0.08); color: var(--text); }
+.subagent-row .nt-spinner { color: var(--agent-working); font-size: 10px; border-width: 1.5px; }
+.subagent-row__done { flex: 0 0 auto; color: var(--success); line-height: 0; }
+.subagent-row__done svg { width: 11px; height: 11px; }
+.subagent-row__type { flex: 0 1 auto; max-width: 45%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }
+.subagent-row__sep { flex: 0 0 auto; }
+.subagent-row__label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-row__state { flex: 0 0 auto; margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; color: var(--muted); }
+.subagent-row--working .subagent-row__state { color: var(--agent-working); }
 /* Project reorder: vertical insertion line before the tab / horizontal line above the
    sidebar project header the dragged project will land before */
 /* The insertion line, drawn INSIDE the tab it lands in front of. Two things it must not do:
@@ -12580,6 +12624,22 @@ button.pull-checks__name {
   color: rgba(var(--tint-rgb), 0.65);
   font-size: 11px;
 }
+/* The card modal's subagent list — the same rows as the sidebar's, laid out like the pull
+   requests strip below it. */
+.card-subagents {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 16px 8px;
+  border-bottom: 1px solid rgba(var(--tint-rgb), 0.08);
+}
+.card-subagents__title {
+  margin-bottom: 2px;
+  color: rgba(var(--tint-rgb), 0.6);
+  font-size: 11px;
+  font-weight: 600;
+}
+.card-subagents .subagent-row { padding: 3px 6px; font-size: 12px; }
 .github-issue-source {
   flex: 0 0 auto;
   border: 1px solid rgba(var(--tint-rgb), 0.15);
@@ -12917,6 +12977,24 @@ button.pull-checks__name {
   background: var(--state-error);
 }
 /* The station list's state dots (ContextMenu row icons). */
+/* "N subagents" on a session card (kanban/SubagentChip.tsx); the running count is the emphasized
+   part. Static on purpose: no spinner per card on a board. */
+.kanban-subagent-chip {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid rgba(var(--tint-rgb), 0.16);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.kanban-subagent-chip__working {
+  color: var(--agent-working);
+  font-weight: 700;
+}
 .team-progress__dot {
   display: inline-block;
   width: 8px;
@@ -17852,7 +17930,7 @@ body.focus-mode .dock:hover {
 /* Hovers that painted `--panel-header` (= the fill again, a dark slab on glass — N5). The hover
    lift is not in the solver's highlight list, so its ink is --text-strong like every other
    highlight (--text on it measured 4.11 dark / 4.04 light, code review 5 #1). */
-:root[data-nt-glass='on'] :is(.dock-btn:not(.dock-add):hover:not(:disabled), .dock-zoom:hover, .ss-row:hover) {
+:root[data-nt-glass='on'] :is(.dock-btn:not(.dock-add):hover:not(:disabled), .dock-zoom:hover, .ss-row:hover, .subagent-row:hover) {
   background: var(--glass-lift-hover);
   color: var(--text-strong);
 }
