@@ -163,11 +163,17 @@ export function queuedHumanPrompt(o: { type?: unknown; attachment?: unknown }): 
   if (a.type !== 'queued_command' || a.commandMode !== 'prompt' || a.isMeta === true) return null
   const origin = originKind(a.origin)
   if (a.origin != null && origin !== 'human') return null
+  return queuedPromptText(a.prompt)
+}
+
+/** A queued_command's `prompt` as text: a string as is; an array's `text` blocks (non-empty string
+ *  `text` only) joined by `\n`; anything else empty. Null when the text is blank. */
+function queuedPromptText(prompt: unknown): string | null {
   const text =
-    typeof a.prompt === 'string'
-      ? a.prompt
-      : Array.isArray(a.prompt)
-        ? a.prompt
+    typeof prompt === 'string'
+      ? prompt
+      : Array.isArray(prompt)
+        ? prompt
             .map((b: unknown) =>
               b && typeof b === 'object' && (b as { type?: unknown }).type === 'text' && typeof (b as { text?: unknown }).text === 'string'
                 ? (b as { text: string }).text
@@ -177,6 +183,116 @@ export function queuedHumanPrompt(o: { type?: unknown; attachment?: unknown }): 
             .join('\n')
         : ''
   return text.trim() === '' ? null : text
+}
+
+// ── A Claude subagent's own transcript (`ChatParseOptions.subagentFile`) ─────────────────────────
+// MEASURED on Claude Code 2.1.326 (the fixtures README, "Subagent files"): a person can message a
+// background subagent from the TUI, and the message is recorded ONLY in the subagent's file, in one
+// of two shapes. To a RUNNING subagent: an `attachment` record `{type:'queued_command', prompt,
+// source_uuid, origin:{kind:'human'}, isMeta:true}` — the same shape a peer or coordinator message
+// has in a MAIN transcript, which is why this reading is scoped to a subagent read. To a FINISHED
+// subagent (revived): a `type:'user'` record with `isMeta:true` and `origin:{kind:'human'}` whose
+// content is the CLI's wrapper around the words. Both wrapper strings are the CLI's own (`TQe` /
+// `QYe` in the 2.1.326 bundle), and so is the unwrap rule: both ends must match exactly.
+
+/** The CLI's wrapper around a person's message to a busy (or revived) agent: the head. */
+export const SUBAGENT_MESSAGE_HEAD = 'The user sent a new message while you were working:\n'
+/** The CLI's wrapper around a person's message: the tail. */
+export const SUBAGENT_MESSAGE_TAIL =
+  '\n\nThis is how Claude Code surfaces messages the user sends mid-turn \u2014 within the running turn, ' +
+  'often alongside the next tool result, rather than as a separate conversation turn. Address the message ' +
+  'above as you continue this turn.'
+
+const REMINDER_OPEN = '<system-reminder>'
+const REMINDER_CLOSE = '</system-reminder>'
+
+/**
+ * `text` without `<system-reminder>` markup, which is the harness's, never the person's: when the
+ * whole text is ONE reminder element its body is kept (the CLI renders a queued message that way);
+ * otherwise every complete element is removed with its body (an unclosed open tag is left as is).
+ * `indexOf` scans only, each moving forward: linear on any input.
+ */
+function withoutReminders(text: string): string {
+  const t = text.trim()
+  if (
+    t.startsWith(REMINDER_OPEN) &&
+    t.indexOf(REMINDER_OPEN, REMINDER_OPEN.length) < 0 &&
+    t.indexOf(REMINDER_CLOSE) === t.length - REMINDER_CLOSE.length
+  ) {
+    let inner = t.slice(REMINDER_OPEN.length, t.length - REMINDER_CLOSE.length)
+    if (inner.startsWith('\n')) inner = inner.slice(1)
+    if (inner.endsWith('\n')) inner = inner.slice(0, -1)
+    return inner
+  }
+  let out = ''
+  let from = 0
+  for (;;) {
+    const open = text.indexOf(REMINDER_OPEN, from)
+    if (open < 0) break
+    const close = text.indexOf(REMINDER_CLOSE, open + REMINDER_OPEN.length)
+    if (close < 0) break
+    out += text.slice(from, open)
+    from = close + REMINDER_CLOSE.length
+  }
+  if (from === 0) return text
+  out += text.slice(from)
+  let start = 0
+  while (out.charCodeAt(start) === 0x0a) start++
+  return out.slice(start).trimEnd()
+}
+
+/**
+ * A person's message to a subagent as the person wrote it: reminder markup removed
+ * (`withoutReminders`), then the CLI's wrapper — the exact head AND tail, the CLI's own unwrap rule;
+ * when only the head matches (a CLI that changed its tail), the head alone. Text with no wrapper is
+ * returned as is.
+ */
+export function unwrapSubagentMessage(text: string): string {
+  const t = withoutReminders(text)
+  if (!t.startsWith(SUBAGENT_MESSAGE_HEAD)) return t
+  if (t.length >= SUBAGENT_MESSAGE_HEAD.length + SUBAGENT_MESSAGE_TAIL.length && t.endsWith(SUBAGENT_MESSAGE_TAIL)) {
+    return t.slice(SUBAGENT_MESSAGE_HEAD.length, t.length - SUBAGENT_MESSAGE_TAIL.length)
+  }
+  return t.slice(SUBAGENT_MESSAGE_HEAD.length)
+}
+
+/** The revived-subagent shape: a `user` record, `isMeta`, from a person. */
+function isSubagentPersonRecord(o: { type?: unknown; isMeta?: unknown; origin?: unknown }): boolean {
+  return o.type === 'user' && o.isMeta === true && originKind(o.origin) === 'human'
+}
+
+/** The running-subagent shape: a `queued_command` attachment from a person, as its prompt text. */
+function subagentQueuedPrompt(o: { type?: unknown; attachment?: unknown }): string | null {
+  if (o.type !== 'attachment' || !isRecord(o.attachment)) return null
+  const a = o.attachment
+  if (a.type !== 'queued_command' || originKind(a.origin) !== 'human') return null
+  return queuedPromptText(a.prompt)
+}
+
+/**
+ * The ids that name the MESSAGE a record carries — the CLI's own rule for a record's identity: its
+ * `uuid`, plus a queued attachment's `source_uuid` (the CLI sends the queued message to the model as
+ * a user message with that uuid) or a user record's `sentAsUuid`. Two records naming one id are one
+ * message, drawn once.
+ */
+function messageIds(o: { type?: unknown; uuid?: unknown; sentAsUuid?: unknown; attachment?: unknown }): string[] {
+  const ids: string[] = []
+  const add = (v: unknown): void => {
+    if (typeof v === 'string' && v) ids.push(v)
+  }
+  add(o.uuid)
+  if (o.type === 'attachment') add(isRecord(o.attachment) ? o.attachment.source_uuid : undefined)
+  else add(o.sentAsUuid)
+  return ids
+}
+
+/** A person's message content (a string, or an array's `text` blocks) unwrapped; other blocks as is. */
+function unwrapSubagentContent(content: unknown): unknown {
+  if (typeof content === 'string') return unwrapSubagentMessage(content)
+  if (!Array.isArray(content)) return content
+  return content.map((c: unknown) =>
+    isRecord(c) && c.type === 'text' && typeof c.text === 'string' ? { ...c, text: unwrapSubagentMessage(c.text) } : c
+  )
 }
 
 export function classifyLocalCommand(content: string): LocalCommandRecord | null {
@@ -424,6 +540,23 @@ export interface ChatParseOptions {
    * team's teammate (`teammateElements`) in place of the one `Agent message` chip.
    */
   rich?: boolean
+  /**
+   * The records are a Claude SUBAGENT's own transcript (`subagents/agent-<id>.jsonl`), not a main
+   * one. Honoured only together with `rich`, and set by core in exactly one place: the parser of a
+   * read that carries `subagent` (`readChatPage`). It adds three readings, and only these:
+   * - the file's first non-`isMeta` `user` record, when it is a sidechain record and the read holds
+   *   the file's first line (byte 0), is the subagent's TASK: a user message with `task: true`
+   *   (string content as one text part whatever it looks like — it is the prompt the parent wrote);
+   * - a `queued_command` attachment with `origin.kind: 'human'` is the person's message to the
+   *   running subagent: a user message with its `prompt`;
+   * - a `user` record with `isMeta: true` and `origin.kind: 'human'` is the person's message to the
+   *   finished subagent: a user message with the CLI's wrapper and reminder markup removed
+   *   (`unwrapSubagentMessage`).
+   * One bubble per message: records naming the same message (`messageIds`) are drawn once. In a
+   * MAIN transcript an `isMeta` queued attachment is a peer message, which is why none of this runs
+   * there.
+   */
+  subagentFile?: boolean
 }
 
 /**
@@ -730,11 +863,28 @@ function parseChatRecords(
   // The tool part the LAST user/assistant record rejected (Claude's canned "doesn't want to proceed"
   // result), for an interrupt marker right after it. Read only on the opt-in branch.
   let rejectedTool: Extract<ChatPart, { kind: 'tool' }> | null = null
+  // A subagent file (see `ChatParseOptions.subagentFile`; only with `rich`).
+  const subagent = opts?.rich === true && opts.subagentFile === true
+  // Whether the read holds the file's first line: the task is the FILE's first user record, which a
+  // window that starts later cannot name. An unpaged read is handed whole lines (offset 0).
+  let atFileStart = false
+  // The task is still to come / the current record is it.
+  let taskPending = false
+  let taskRecord = false
+  // Ids of the person's messages already drawn (`messageIds`), for one bubble per message.
+  const drawnIds = new Set<string>()
+  const alreadyDrawn = (o: Parameters<typeof messageIds>[0]): boolean => {
+    const ids = messageIds(o)
+    const seen = ids.some((id) => drawnIds.has(id))
+    for (const id of ids) drawnIds.add(id)
+    return seen
+  }
   const push = (m: ChatMessage, offset: number): void => {
     awaitingOutput = null
+    const base = taskRecord && m.role === 'user' ? { ...m, task: true as const } : m
     // `at` rides BOTH paths (additive): the time the line was written, for the thread's relative
     // timestamp. Absent when the line states none — never a made-up time.
-    const withAt = at === undefined ? m : { ...m, at }
+    const withAt = at === undefined ? base : { ...base, at }
     messages.push(paged ? { ...withAt, key: offset } : withAt)
   }
   type Rec = Parameters<typeof isHiddenMetaRecord>[0] &
@@ -744,11 +894,14 @@ function parseChatRecords(
       subtype?: unknown
       compactMetadata?: unknown
       isCompactSummary?: unknown
+      attachment?: unknown
+      sentAsUuid?: unknown
       message?: { content?: unknown; model?: unknown }
     }
   // Parsed once, up front: whether a prompt was abandoned depends on records AFTER it.
   const parsed: Array<{ o: Rec; offset: number }> = []
   for (const { raw, offset } of records) {
+    if (offset === 0) atFileStart = true
     if (!raw.trim()) continue
     let o: Rec
     try {
@@ -762,15 +915,22 @@ function parseChatRecords(
     parsed.push({ o, offset })
   }
   const abandoned = abandonedPromptUuids(parsed.map((p) => p.o))
+  taskPending = subagent && atFileStart
   for (const { o, offset } of parsed) {
+    taskRecord = false
     // A prompt the model never received (see `abandonedPromptUuids`). Skipped before anything else,
     // so it moves no clock and attaches to nothing.
     if (typeof o.uuid === 'string' && abandoned.has(o.uuid)) continue
     // Before the meta check: a hidden user line is still a request the model answers.
     if (o.type === 'user') lastUserAt = lineTime(o.timestamp)
     if (isHiddenMetaRecord(o)) continue
+    // The first non-meta user record of a subagent file is its task (only a sidechain record is).
+    if (taskPending && o.type === 'user' && o.isMeta !== true) {
+      taskPending = false
+      taskRecord = o.isSidechain === true
+    }
     at = lineTime(o.timestamp)
-    const content = o.message?.content
+    let content = o.message?.content
     if (paged && o.type === 'assistant' && o.message?.model !== SYNTHETIC_MODEL) {
       model = metaString(o.message?.model)
       effort = metaString(o.effort)
@@ -794,6 +954,21 @@ function parseChatRecords(
       continue
     }
     if (o.type === 'user' || o.type === 'assistant') rejectedTool = null
+    // A subagent's task: string content is the parent's prompt, drawn as one text part whatever it
+    // looks like (it is not a system record or a command). Array content takes the user branch.
+    if (taskRecord && typeof content === 'string') {
+      if (content.trim()) push({ role: 'user', parts: [{ kind: 'text', text: userTextOf(content, opts) }] }, offset)
+      continue
+    }
+    // The person's message to a finished subagent (see `ChatParseOptions.subagentFile`).
+    if (subagent && isSubagentPersonRecord(o)) {
+      if (alreadyDrawn(o)) continue
+      content = unwrapSubagentContent(content)
+      if (typeof content === 'string') {
+        if (content.trim()) push({ role: 'user', parts: [{ kind: 'text', text: userTextOf(content, opts) }] }, offset)
+        continue
+      }
+    }
     if (o.type === 'assistant' && Array.isArray(content)) {
       const parts: ChatPart[] = []
       for (const c of content as Array<{
@@ -906,9 +1081,12 @@ function parseChatRecords(
       }
     } else {
       // A prompt typed while a turn was running (see `queuedHumanPrompt`), in the place the model
-      // received it.
-      const queued = queuedHumanPrompt(o)
-      if (queued !== null) push({ role: 'user', parts: [{ kind: 'text', text: userTextOf(queued, opts) }] }, offset)
+      // received it. In a subagent file also the person's message to the running subagent
+      // (`subagentQueuedPrompt`), drawn once per message.
+      const queued = subagent ? (subagentQueuedPrompt(o) ?? queuedHumanPrompt(o)) : queuedHumanPrompt(o)
+      if (queued !== null && !(subagent && alreadyDrawn(o))) {
+        push({ role: 'user', parts: [{ kind: 'text', text: userTextOf(queued, opts) }] }, offset)
+      }
     }
   }
   const out: ChatRecordsOut = { messages, unmatched }

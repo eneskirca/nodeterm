@@ -172,6 +172,69 @@ describe('chat:read-transcript with `subagent` — local', () => {
     const res = await ipcRead(SID, CWD, undefined, undefined, 'claude', PAGE, { agentId: AGENT })
     expect(texts(res)).toEqual(['hook-fed CHILD'])
   })
+
+  it("a hook-fed parent that is ANOTHER session's file is not used: not found", async () => {
+    const other = '00000000-0000-4000-8000-000000000001'
+    const dir = path.join(home, 'hooked')
+    fs.mkdirSync(path.join(dir, other, 'subagents'), { recursive: true })
+    const parent = path.join(dir, `${other}.jsonl`)
+    fs.writeFileSync(parent, lines(assistantLine('another PARENT')))
+    fs.writeFileSync(path.join(dir, other, 'subagents', `agent-${AGENT}.jsonl`), lines(assistantLine('another CHILD')))
+    registerTranscriptIpc({ pathFor: (s) => (s === SID ? parent : undefined) })
+    const res = await ipcRead(SID, CWD, undefined, undefined, 'claude', PAGE, { agentId: AGENT })
+    expect(res.found).toBe(false)
+    expect(res.messages).toEqual([])
+  })
+})
+
+describe('chat:read-transcript with `subagent` — the subagent readings (`subagentFile`)', () => {
+  // The person's message to a running subagent, in the measured shape (Claude Code 2.1.326).
+  const queuedLine = {
+    type: 'attachment',
+    isSidechain: true,
+    attachment: { type: 'queued_command', prompt: 'stop now', source_uuid: 's1', origin: { kind: 'human' }, isMeta: true }
+  }
+  const taskLine = { type: 'user', isSidechain: true, message: { content: 'the task' } }
+  const RICH = { ...PAGE, rich: true }
+
+  it('a rich subagent read flags the task and draws the queued message', async () => {
+    writeSession(lines(assistantLine('from the PARENT')), lines(taskLine, queuedLine, assistantLine('stopped')))
+    registerTranscriptIpc()
+    const res = await ipcRead(SID, CWD, undefined, undefined, 'claude', RICH, { agentId: AGENT })
+    expect(res.messages.map((m) => [m.role, m.task === true])).toEqual([
+      ['user', true],
+      ['user', false],
+      ['assistant', false]
+    ])
+    expect(texts(res)).toEqual(['the task', 'stop now', 'stopped'])
+  })
+
+  it('the same records read as a MAIN transcript (no `subagent`) draw neither', async () => {
+    writeSession(lines(taskLine, queuedLine, assistantLine('stopped')))
+    registerTranscriptIpc()
+    const res = await ipcRead(SID, CWD, undefined, undefined, 'claude', RICH)
+    expect(res.messages.some((m) => 'task' in m)).toBe(false)
+    expect(texts(res)).toEqual(['the task', 'stopped'])
+  })
+
+  it('without `rich` a subagent read is the plain parse', async () => {
+    writeSession(lines(assistantLine('from the PARENT')), lines(taskLine, queuedLine, assistantLine('stopped')))
+    registerTranscriptIpc()
+    const res = await ipcRead(SID, CWD, undefined, undefined, 'claude', PAGE, { agentId: AGENT })
+    expect(res.messages.some((m) => 'task' in m)).toBe(false)
+    expect(texts(res)).toEqual(['the task', 'stopped'])
+  })
+
+  it('the remote leg parses with the same options', async () => {
+    const body = Buffer.from(lines(taskLine, queuedLine))
+    const res = await readChatTranscript(
+      { sessionId: SID, nodeId: 'nt-1', agentId: 'claude', subagent: { agentId: AGENT } },
+      RICH,
+      { readRemotePage: async () => ({ ok: true, data: body, start: 0 }) }
+    )
+    expect(res.messages[0].task).toBe(true)
+    expect(texts(res)).toEqual(['the task', 'stop now'])
+  })
 })
 
 describe('chat:read-transcript with `subagent` — remote', () => {

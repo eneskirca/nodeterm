@@ -3780,6 +3780,12 @@ export interface ChatMessage {
    * divider at each local day's first stamped message.
    */
   at?: number
+  /**
+   * This user message is a Claude subagent's TASK — its transcript's first user record, the prompt
+   * the parent wrote — so the panel can label it. Set only by a rich read of a subagent's own file
+   * (`ChatParseOptions.subagentFile`); absent everywhere else, the phone's read included.
+   */
+  task?: true
 }
 
 /** A `tool_result` whose `tool_use` was not in the same page (it lives in an OLDER one). */

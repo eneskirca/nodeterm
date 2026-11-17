@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import { testTmpDir } from './test-tmp'
-import { normalizeSubagentArg, subagentTranscriptFor } from './subagent-transcript-path'
+import { isSessionTranscript, normalizeSubagentArg, subagentTranscriptFor } from './subagent-transcript-path'
 
 const SID = '46b36ce2-dd77-4f5e-a89e-4a0e831e83df'
 // Creating a symlink on Windows needs Developer Mode or elevation, which a contributor's machine may
@@ -115,5 +115,27 @@ describe('subagentTranscriptFor', () => {
 
   it('a parent whose directory is gone is not found', async () => {
     expect(await subagentTranscriptFor('/nonexistent-nodeterm-dir/x/S.jsonl', AGENT)).toBeUndefined()
+  })
+})
+
+describe('isSessionTranscript', () => {
+  it("is true only for the session's own `<sessionId>.jsonl`, with either separator", () => {
+    expect(isSessionTranscript(`/home/u/.claude/projects/-w/${SID}.jsonl`, SID)).toBe(true)
+    expect(isSessionTranscript(`C:\\Users\\u\\.claude\\projects\\-w\\${SID}.jsonl`, SID)).toBe(true)
+    expect(isSessionTranscript(`${SID}.jsonl`, SID)).toBe(true)
+  })
+
+  it.each([
+    ['another session', `/p/00000000-0000-4000-8000-000000000001.jsonl`],
+    ['a longer name ending in the id', `/p/x${SID}.jsonl`],
+    ['the id as a directory', `/p/${SID}/other.jsonl`],
+    ['not a transcript', `/p/${SID}`],
+    ['the id with another suffix', `/p/${SID}.jsonl.bak`]
+  ])('is false for %s', (_label, p) => {
+    expect(isSessionTranscript(p, SID)).toBe(false)
+  })
+
+  it('an empty session id matches nothing', () => {
+    expect(isSessionTranscript('/p/.jsonl', '')).toBe(false)
   })
 })

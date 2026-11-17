@@ -238,6 +238,37 @@ describe('createReadRemotePage — a SUBAGENT read derives the child beside the 
     expect(readPage).not.toHaveBeenCalled()
   })
 
+  it("a parent ref that is not the session's own file is unreadable, and nothing is read", async () => {
+    const readPage = vi.fn()
+    const isSafePath = vi.fn(() => true)
+    const read = createReadRemotePage({ isSafePath, cache: cache(), refFor: async () => ref('/home/u/.claude/projects/-w/other.jsonl'), readPage })
+    expect(await read(sq, PAGE)).toEqual({ ok: false })
+    expect(readPage).not.toHaveBeenCalled()
+    expect(isSafePath).not.toHaveBeenCalled()
+    // No session id to compare with: refused the same way.
+    expect(await read({ ...sq, sessionId: undefined }, PAGE)).toEqual({ ok: false })
+  })
+
+  it('a failed SUBAGENT read keeps a parent ref WE located (the parent is not what failed)', async () => {
+    const c = cache()
+    c.bySession.set('sid', ref(PARENT))
+    c.located.add('sid')
+    const read = createReadRemotePage({
+      isSafePath: safe,
+      cache: c,
+      refFor: async () => c.bySession.get('sid'),
+      readPage: async () => {
+        throw new Error('no such file yet')
+      }
+    })
+    expect(await read(sq, PAGE)).toEqual({ ok: false })
+    expect(c.bySession.get('sid')).toEqual(ref(PARENT))
+    expect(c.located.has('sid')).toBe(true)
+    // The parent's own failed read still forgets it, as before.
+    expect(await read(q, PAGE)).toEqual({ ok: false })
+    expect(c.bySession.has('sid')).toBe(false)
+  })
+
   it('without `subagent` the parent itself is read (unchanged)', async () => {
     const readPage = vi.fn(async () => ({ data: Buffer.from('p'), start: 0, end: 1, size: 1 }))
     const isSafePath = vi.fn(() => true)

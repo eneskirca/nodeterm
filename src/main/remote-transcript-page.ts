@@ -9,6 +9,7 @@ import type { TranscriptPage } from '../core/remote-ssh/transcript-window'
 import type { RemoteFileRef } from './remote-ssh/remote-file'
 import { parseLocatedTranscript } from '../core/remote-transcript-locate'
 import { claudeSubagentTranscriptPath } from '../shared/agents/claude-subagents'
+import { isSessionTranscript } from '../core/subagent-transcript-path'
 import { SESSION_ID_RE } from '../core/transcript-reader'
 import type { TranscriptPresence } from '../shared/types'
 
@@ -120,9 +121,10 @@ export async function remotePresenceFromLocate(
  * The desktop's remote leg of a paged chat read. With `q.subagent` it reads that Claude subagent's
  * file instead of the session's: derived from the HOST's parent path (the cached or located ref —
  * the locate is strictly by session id, never a cwd's newest) with `claudeSubagentTranscriptPath`,
- * and jailed with the same host jail the parent passed before anything is read. A child that cannot
- * be derived or is refused is a failed read (`{ok:false}`), never the parent and never this
- * machine's disk.
+ * and jailed with the same host jail the parent passed before anything is read. A parent that is not
+ * the session's own file (`isSessionTranscript`), or a child that cannot be derived or is refused, is
+ * a failed read (`{ok:false}`), never the parent and never this machine's disk. A failed subagent
+ * read keeps the parent ref (it is not the parent that failed).
  */
 export function createReadRemotePage(deps: {
   cache: RemoteTranscriptRefCache
@@ -142,6 +144,8 @@ export function createReadRemotePage(deps: {
     if (ref === 'unreadable') return { ok: false }
     let target = ref
     if (q.subagent) {
+      // The parent must be this session's own file before a child is named after it.
+      if (!q.sessionId || !isSessionTranscript(ref.path, q.sessionId)) return { ok: false }
       const child = claudeSubagentTranscriptPath(ref.path, q.subagent.agentId)
       if (!child || !deps.isSafePath(child, ref)) return { ok: false }
       target = { ...ref, path: child }
@@ -150,7 +154,9 @@ export function createReadRemotePage(deps: {
       const w = await deps.readPage(target, page.before, page.maxBytes)
       return { ok: true, data: w.data, start: w.start }
     } catch {
-      if (q.sessionId) forgetLocatedRef(deps.cache, q.sessionId)
+      // A failed SUBAGENT read says nothing about the parent ref (the child may not exist yet), so
+      // it is kept: forgetting it would cost a re-locate on every read of a card that has no file.
+      if (q.sessionId && !q.subagent) forgetLocatedRef(deps.cache, q.sessionId)
       return { ok: false }
     }
   }

@@ -29,7 +29,7 @@ import { readOpencodeChat, type OpencodeExportRun } from './opencode-chat'
 import { readCursorChat } from './cursor-chat'
 import { locateGrok } from './handoff/locate'
 import { capabilityAgentId } from '../shared/agents/config'
-import { normalizeSubagentArg, subagentTranscriptFor } from './subagent-transcript-path'
+import { isSessionTranscript, normalizeSubagentArg, subagentTranscriptFor } from './subagent-transcript-path'
 import {
   parseChatMessages,
   parseChatWindow,
@@ -200,14 +200,20 @@ async function readChatPage(
   // Thinking summaries and rich parts only when asked (the ⌘M panel asks; the phone does not), on
   // BOTH legs. Neither flag set = the bare parser, so the phone's page is byte-for-byte unchanged.
   // The ONE place a read's options reach claude's record parser, a subagent read (`q.subagent`)
-  // included: both legs and every growth re-read parse through this `parse`.
+  // included: both legs and every growth re-read parse through this `parse`. `subagentFile` is set
+  // here and nowhere else — only for the read of a subagent's own file — because the person's-message
+  // shapes it reads are a peer message in a MAIN transcript (the parser honours it only with `rich`).
   const parse =
     page.thinking || page.rich
       ? (buf: Buffer, bufStart: number) =>
           parseChatWindow(
             buf,
             bufStart,
-            claudeChatRecordParser({ thinking: page.thinking === true, rich: page.rich === true })
+            claudeChatRecordParser({
+              thinking: page.thinking === true,
+              rich: page.rich === true,
+              ...(q.subagent ? { subagentFile: true } : {})
+            })
           )
       : parseChatWindow
   const readRemotePage = deps.readRemotePage
@@ -339,7 +345,10 @@ async function localSubagentTranscript(
   pathFor?: (sessionId: string) => string | undefined
 ): Promise<string | undefined> {
   const parent = await resolveTranscript({ sessionId: q.sessionId, cwd: undefined, accountId: q.accountId }, pathFor)
-  return parent ? subagentTranscriptFor(parent, subagent.agentId) : undefined
+  // The parent must be THIS session's own file (`<sessionId>.jsonl`): a hook-fed path naming any
+  // other transcript would put another session's `subagents/` directory in reach.
+  if (!parent || !q.sessionId || !isSessionTranscript(parent, q.sessionId)) return undefined
+  return subagentTranscriptFor(parent, subagent.agentId)
 }
 
 /**

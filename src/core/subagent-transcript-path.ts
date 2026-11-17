@@ -33,6 +33,19 @@ export function normalizeSubagentArg(raw: unknown): ChatTranscriptSubagent | nul
 }
 
 /**
+ * Is `transcriptPath` the session's own transcript file — its last path segment exactly
+ * `<sessionId>.jsonl`? Checked before a subagent's path is derived from a parent, on both legs: the
+ * child is named after the parent's file, so a parent path that belongs to another session (a stale
+ * or wrong hook-fed path, a cache entry) would put that session's `subagents/` directory in reach.
+ * Separator-agnostic like `claudeSubagentTranscriptPath`: a host path is POSIX, a desktop's may use
+ * `\`.
+ */
+export function isSessionTranscript(transcriptPath: string, sessionId: string): boolean {
+  const cut = Math.max(transcriptPath.lastIndexOf('/'), transcriptPath.lastIndexOf('\\'))
+  return sessionId !== '' && transcriptPath.slice(cut + 1) === `${sessionId}.jsonl`
+}
+
+/**
  * The LOCAL subagent transcript for `agentId` beside `parentPath`, or `undefined` when there is none
  * this read may open: an unsafe id, a parent that is not a transcript, a missing file, a file that is
  * not a regular file (a symlink included), or a `<session>` / `subagents` directory that resolves

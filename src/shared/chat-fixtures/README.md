@@ -30,6 +30,8 @@ moves one byte of output fails here. After regenerating, refresh the iOS copy in
 | `expected/<case>.decision.json` | The `buildPermissionDecision` result for that case, as it is returned: `{ok:true, content, decision}` or `{ok:false, reason}`. |
 | `answer-cases.json` | `[{name, answer}]`: raw answers given to the shape check alone. |
 | `expected/<case>.answer.json` | `parsePermissionAnswer(answer)` verbatim. `null` means the shape check refuses the answer. |
+| `claude/subagent.jsonl` | A HAND-BUILT Claude subagent transcript (desktop only, see **Subagent files**). |
+| `claude/subagent.{plain,rich,subagent}.json` | Its whole-file parse without options, with `rich`, and with `rich` + `subagentFile`. |
 
 The test also requires `inputs/`, `pending/`, `expected/` and the top-level `*-cases.json` files to
 hold **exactly** the generated set.
@@ -360,6 +362,65 @@ seen and the prompt is shown, exactly as before this rule. Measured over 133 rea
 (5,886 prompts): 6 records match, and the model received none of them. A second set (306
 transcripts, 2,899 prompts) gave 9 matches before the tool-result clause, one of them the answered
 prompt above, and 8 after it.
+
+## Subagent files (`claude/`, desktop rich read only)
+
+A Claude subagent writes its own transcript at `<parent session>/subagents/agent-<agent_id>.jsonl`.
+The desktop ⌘M panel reads it with `rich` + `subagentFile` (`ChatParseOptions`, set only by the read
+that carries `subagent`). The phone never asks for this read, so the Swift port has nothing to
+reproduce here; the directory is copied with the rest and can be ignored.
+
+**What was measured** (Claude Code 2.1.326, 2026-11-17): three background subagent files from a
+controlled run (haiku model, scratch cwd, a person messaging the subagent from the TUI), plus one fork
+subagent file for its first line, and the CLI's own bundle for the wrapper strings and the identity
+rule. The shapes:
+
+- Every record of the file carries `isSidechain: true` and the subagent's `agentId`.
+- The first line of a FORK is `{type:"fork-context-ref", agentId, parentSessionId, parentLastUuid,
+  contextLength}`, then the parent's replayed `Agent` call (`parentUuid: null`) and a user record
+  `[tool_result, text]` whose text is the fork's task. A background subagent's first line is the task
+  itself: a `user` record with string content and `parentUuid: null`.
+- Next come a hidden `isMeta` reminder, many `attachment` records (`deferred_tools_delta`,
+  `environment`, `model`, `skill_listing`, `session_context`, `date`, `credential_org`,
+  `remote_session_change`, `prompt_snapshot`, `agent_listing_delta`, `mcp_instructions_delta`,
+  `total_tokens_reminder`), and request records `api-request-shape`, `api-request-blob` (a `message`
+  with `role` and text blocks) and `api-request`. None of them is drawn.
+- A person's message to a RUNNING subagent: an `attachment` record `{type:"queued_command", prompt,
+  source_uuid, origin:{kind:"human"}, isMeta:true}` (no `commandMode`), with `rendered` holding the
+  wrapped text inside a `<system-reminder>` element.
+- A person's message to a FINISHED subagent (revived): a `type:"user"` record with `isMeta:true`,
+  `origin:{kind:"human"}` and string content `HEAD + words + TAIL`, where HEAD is `The user sent a
+  new message while you were working:\n` and TAIL is `\n\nThis is how Claude Code surfaces messages
+  the user sends mid-turn — within the running turn, often alongside the next tool result, rather
+  than as a separate conversation turn. Address the message above as you continue this turn.`
+  (`SUBAGENT_MESSAGE_HEAD` / `_TAIL`, the CLI's own constants). Neither shape appears in the parent's
+  transcript.
+
+The jsonl is checked in as built; `UPDATE_CHAT_FIXTURES=1` rewrites only the three goldens.
+
+**What was edited:** every value is a placeholder (ids, uuids, timestamps, paths, text, hashes,
+model names); payload arrays are cut to one entry; the conversation is shortened to two ticks. Keys,
+nesting, key order and value types are the measured ones. The `fork-context-ref` line is PREPENDED
+to a background subagent's records (a real file has it only in a fork) to pin that it is skipped.
+
+**Rules** (`parseChatRecords`, only with `rich` + `subagentFile`; without them the output is
+byte-for-byte the `plain` / `rich` goldens, which were written before the option existed):
+
+1. The task: the first record of `type:"user"` without `isMeta:true` is consumed as the task when
+   the read holds the file's first line (a record at byte 0). If it is a sidechain record, the user
+   message it yields carries `task: true`; string content is one text part whatever it looks like.
+   A read starting later names no task.
+2. A `queued_command` attachment with `origin.kind:"human"` is a user message with its `prompt`
+   (a string, or the text blocks of an array joined by `\n`; blank = nothing). The main-transcript
+   rule (**Queued prompts**) still applies to every other attachment.
+3. A `user` record with `isMeta:true` and `origin.kind:"human"` is a user message: its text without
+   reminder markup (when the whole text is one `<system-reminder>` element its body is kept,
+   otherwise every complete element is removed), then without the wrapper (HEAD and TAIL both
+   exact, or HEAD alone). Text blocks of array content are unwrapped the same way.
+4. One bubble per message: a record's ids are its `uuid` plus an attachment's `source_uuid` or a
+   user record's `sentAsUuid` (the CLI's own identity rule). A person's message (rules 2 and 3, and
+   a queued prompt under the main-transcript rule) sharing an id with one already drawn is skipped.
+   Within one read only.
 
 ## Renderer rules that follow from these records (desktop; iOS notes)
 
