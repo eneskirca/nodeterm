@@ -103,6 +103,20 @@ describe('the covered attribute is wired to the stylesheet', () => {
     )
   })
 
+  it('pauses the sessions sidebar too: pinned, it sits UNDER the board and kept animating', () => {
+    // MEASURED (Server Edition, headless Chrome, pinned sidebar fully covered by the board, 20
+    // working agents): its spinners alone held GPU 4.5 % + renderer 5.7 %, ~0 % with them paused.
+    expect(css).toMatch(
+      /:root\[data-nt-canvas='covered'\]\s+\.sessions-sidebar\s*\{\s*--nt-anim-state:\s*paused/
+    )
+    // Every animation in it reads the variable, so the inherited override is the whole gate.
+    for (const sel of ['.ss-dot--working', '.ss-group__sig-spin', '.ss-check--unread', '.ss-bell']) {
+      const i = css.indexOf(sel + ' {')
+      expect(i, sel).toBeGreaterThanOrEqual(0)
+      expect(css.slice(i, css.indexOf('}', i)), sel).toContain('animation-play-state: var(--nt-anim-state)')
+    }
+  })
+
   it.each(['unread', 'working', 'attention'])(
     'pauses the %s glow, which is not in the variable scheme',
     (state) => {
