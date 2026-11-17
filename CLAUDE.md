@@ -9707,7 +9707,12 @@ a full-page board view is MOUNTED (mount is the signal: both board views are con
 rendered, so it cannot drift from the view state the way a recomputed `kanbanOpen` flag can, and it
 needs nothing from Canvas), and `:root[data-nt-canvas='covered'] .react-flow` overrides
 `--nt-anim-state` on that subtree alone — the variable INHERITS, so that one declaration is the
-whole gate for every animation reading it. It is not a second writer of `data-nt-window` because
+whole gate for every animation reading it. **The pinned sessions sidebar gets the same override**
+(`:root[data-nt-canvas='covered'] .sessions-sidebar`): it sits at z 12, BELOW the board, stays
+mounted and laid out there, and its working spinners and unread pulses kept the frame loop open
+under an opaque board (measured, 20 working agents: GPU 4.5 % + renderer 5.7 % → ~0 %). Anything
+else that animates under the board owes the same line; anything ABOVE it (the controls cluster,
+the pills, a pinned explorer at z 26) is on screen and must not get it. It is not a second writer of `data-nt-window` because
 the two facts are independent (a board on a focused window; an unfocused window with no board) and
 one attribute with two owners is a race over who clears it. The claim is refcounted: React can
 mount the incoming view before unmounting the outgoing one, and a plain set/clear pair would let
@@ -9717,11 +9722,27 @@ that unmount erase the live view's claim.
 not the terminals: xterm pauses only on its own GEOMETRIC IntersectionObserver, and a node under
 the board still intersects. MEASURED BEFORE the pause (dev, 12 streaming terminals): board open
 36.5 % GPU vs 0.0 % over silent terminals, and `visibility: hidden` on the canvas 35.5 % — no help.
-The number WITH the pause has not been measured. Each
+The number WITH the pause is below (a different harness, so not directly comparable). Each
 TerminalNode wraps its RenderService's `_handleIntersectionChange` so xterm is told "not
 intersecting" while `boardOpen` (Omni included) is up and the node is not the focus-mode node (the
 focus surface, z 40, sits above the board, z 25); uncovering replays the real entry through xterm's
-own resume and then `fullRepaint`. Parsing never stops, so nothing is lost. Two rules: never fold
+own resume and then `fullRepaint`. Parsing never stops, so nothing is lost. **Pausing the render
+service is not enough on its own**: three per-output xterm 5.5 paths run beside it and never ask
+whether it is paused — `CoreBrowserTerminal._syncTextArea` (every cursor move: a style/layout pass
+per frame for a hidden textarea), `Viewport.syncScrollArea` (every scroll: offsetHeight/scrollTop
+reads around writes, i.e. forced layouts) and `RenderService.handleSelectionChanged` (every scroll,
+via `SelectionService.refresh`; the DOM renderer answers it with a FULL `renderRows`, so every
+terminal without a WebGL context repainted its whole screen behind the board on every line). The
+pause holds all three while covered (an instance property shadows each, a held call is recorded)
+and replays each ONCE on uncover: the scroll area immediately, the selection with its latest range
+(RenderService keeps that range only through this call), the textarea last; a covered dispose (a
+park) replays too, the scroll area deferred. MEASURED (Server Edition, headless Chrome, 20 terminals
+streaming a status line 10×/s, board open, glass on, CSS animations held): render pause alone
+GPU 9.3 % + renderer 17.8 %, main thread 14.4 %, ~950 forced layouts per 15 s; with the three paths
+held GPU 0.4 % + renderer 3.1 %, main thread 1.5 %, zero layouts. Only the board holds them — a
+terminal that is merely off screen on the canvas still runs xterm's stock paths.
+`board-render-pause.xterm.test.ts` drives a real xterm 5.5 so a rename in an upgrade fails there
+instead of turning the hold into a silent no-op. Two rules: never fold
 the board into `reportVisible` / the WebGL budget's visibility (that verdict drives hibernation and
 the offscreen teardown — the board would put the very sessions it shows to sleep), and any other
 "is the board up" predicate must OR in `isGlobalKanbanOpen()` (`boardCoversCanvas` missed the Omni
@@ -9758,7 +9779,13 @@ infinite): an unread node stays unread until someone looks, and a wait can last 
 canvas those three kept the frame loop open indefinitely. MEASURED (46-node SSH canvas, 14 unread
 nodes, 8 waiting ropes, FOCUSED window, dev build): idle renderer+GPU **~120% → ~25%**, and pausing
 every remaining animation no longer moves it. Pausing any ONE family alone saved far less (85–104%),
-which is the first-animation step above again. Only the attention glow (and its minimap beat) and
+which is the first-animation step above again. **The board card's RUNNING chip is bounded too**
+(`.kanban-badge--running`, `nt-pulse 1.1s ease-in-out 4`, ending at the chip's own opacity 1 /
+scale 1): looping, one chip held the frame loop open for as long as its agent worked, and the
+covered gate cannot reach it because the board is what covers the canvas; under Liquid Glass every
+column's backdrop-filter ran again each frame (measured, 20 RUNNING cards, glass on: GPU 50 % →
+17.5 %). The chip mounts when the agent starts working, so each new turn pulses again;
+`settings.boardRunningPulse` off still holds it still. Only the attention glow (and its minimap beat) and
 React Flow's animated edges (working subagent and loop edges, the driven-browser rope — see the
 `dashdraw` paragraph below) stay infinite — needs-you is the one state that must keep pulling the
 eye, and an edge animates only while its work runs — and the idle and covered gates pause all of
