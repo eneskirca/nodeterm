@@ -11,7 +11,7 @@
 // server — it runs ON the host whose transcripts it is reading.
 import fsp from 'node:fs/promises'
 import { IPC } from '../shared/ipc'
-import type { ChatTranscriptResult, TranscriptLine, TranscriptPresence } from '../shared/types'
+import type { ChatTranscriptResult, ChatTranscriptSubagent, TranscriptLine, TranscriptPresence } from '../shared/types'
 import {
   CHAT_PAGE_MAX_BYTES,
   GROK_AMBIGUOUS_SESSION_MESSAGE,
@@ -29,6 +29,7 @@ import { readOpencodeChat, type OpencodeExportRun } from './opencode-chat'
 import { readCursorChat } from './cursor-chat'
 import { locateGrok } from './handoff/locate'
 import { capabilityAgentId } from '../shared/agents/config'
+import { normalizeSubagentArg, subagentTranscriptFor } from './subagent-transcript-path'
 import {
   parseChatMessages,
   parseChatWindow,
@@ -54,6 +55,10 @@ export interface TranscriptQuery {
   /** The caller KNOWS this node is remote (from its own records, not from a live pty): the local
    *  resolver must never run, even when the remote leg cannot resolve the node. */
   remoteOnly?: boolean
+  /** A paged read of this session's SUBAGENT `agentId` (validated) instead of the session itself.
+   *  Set only with `cwd` undefined: the parent is resolved strictly by session id. A remote leg
+   *  (`readRemotePage`) must read the child beside the host's parent — never the parent itself. */
+  subagent?: ChatTranscriptSubagent
 }
 
 export interface TranscriptIpcDeps {
@@ -82,7 +87,8 @@ export interface TranscriptIpcDeps {
    * = it IS remote and the host LOOKED and has no such transcript (or there is no session id to look
    * for) — a clean miss, which is `found:false` WITHOUT `unreadable`. `data` is the file's
    * bytes from absolute offset `start` (one lookbehind byte included — see `parseChatWindow`).
-   * Electron-only.
+   * With `q.subagent` it reads that subagent's file beside the host's parent transcript (see
+   * `createReadRemotePage`). Electron-only.
    */
   readRemotePage?(q: TranscriptQuery, page: ChatTranscriptPage): Promise<RemoteTranscriptPage | null>
   /**
@@ -193,6 +199,8 @@ async function readChatPage(
 ): Promise<ChatTranscriptResult> {
   // Thinking summaries and rich parts only when asked (the ⌘M panel asks; the phone does not), on
   // BOTH legs. Neither flag set = the bare parser, so the phone's page is byte-for-byte unchanged.
+  // The ONE place a read's options reach claude's record parser, a subagent read (`q.subagent`)
+  // included: both legs and every growth re-read parse through this `parse`.
   const parse =
     page.thinking || page.rich
       ? (buf: Buffer, bufStart: number) =>
@@ -224,7 +232,9 @@ async function readChatPage(
   // "the remote leg could not resolve it" is a failed read, never "take THIS machine's disk" —
   // that would answer from the wrong machine, or adopt a local transcript sharing its cwd.
   if (q.remoteOnly) return unreadablePage()
-  const p = await resolveTranscript(q, deps.pathFor)
+  const p = q.subagent
+    ? await localSubagentTranscript(q, q.subagent, deps.pathFor)
+    : await resolveTranscript(q, deps.pathFor)
   if (!p) return notFoundPage()
   const w = await readChatWindow(p, page)
   // Resolved but unreadable (deleted between resolve and read): not-found, like a failed remote.
@@ -319,6 +329,20 @@ export async function resolveTranscript(
 }
 
 /**
+ * A subagent's LOCAL transcript: the parent resolved strictly by session id (the hook-fed path, else
+ * the sessionId scan — `resolveTranscript` with its cwd leg disabled, so a missing id is not found,
+ * never the cwd's newest session), then the child beside it, jailed (`subagentTranscriptFor`).
+ */
+async function localSubagentTranscript(
+  q: Pick<TranscriptQuery, 'sessionId' | 'accountId'>,
+  subagent: ChatTranscriptSubagent,
+  pathFor?: (sessionId: string) => string | undefined
+): Promise<string | undefined> {
+  const parent = await resolveTranscript({ sessionId: q.sessionId, cwd: undefined, accountId: q.accountId }, pathFor)
+  return parent ? subagentTranscriptFor(parent, subagent.agentId) : undefined
+}
+
+/**
  * A grok node's chat read. Grok does NOT page: its `chat_history.jsonl` is rewritten in place (a
  * `.sync.tmp` + rename; `/compact`, `/rewind` and history repair replace lines), so a byte offset
  * is no stable identity for a line. A paged request therefore gets the whole capped read with
@@ -380,6 +404,10 @@ export interface ChatReadQuery {
   /** See `TranscriptQuery.remoteOnly`. Honoured by every read: paged, legacy unpaged, and grok's
    *  reader (whose remote leg is `readRemoteGrok`). */
   remoteOnly?: boolean
+  /** UNTRUSTED (IPC / WS bridge): a Claude subagent of this session to read instead of the session
+   *  — `ChatApi.readTranscript`'s trailing `subagent`. Validated here (`normalizeSubagentArg`, which
+   *  throws on a malformed value), like `rawPage`. Absent / null = the ordinary read, byte for byte. */
+  subagent?: unknown
 }
 
 /**
@@ -398,6 +426,23 @@ export async function readChatTranscript(
   // Validated FIRST: it arrived over IPC / the WS bridge, and `before` reaches a remote shell
   // line. `null` = no page asked for = the legacy read below, byte for byte.
   const page = normalizeChatPage(rawPage)
+  // Validated with it, before ANY routing or filesystem call: its agent id becomes a file name.
+  const subagent = normalizeSubagentArg(q.subagent)
+  if (subagent) {
+    // A Claude subagent's own transcript — claude's layout, so only the claude harness is served
+    // (stated: an omitted agent is not assumed to be claude here, unlike the ordinary read) and
+    // only paged (every caller pages; the legacy read has no subagent caller to keep working).
+    // `cwd` is dropped: the parent is found by session id or not at all, never as the cwd's newest
+    // transcript, whose `subagents/` directory belongs to another session.
+    if (agentId === undefined || capabilityAgentId(agentId) !== 'claude' || !page) {
+      return page ? notFoundPage() : { messages: [], found: false }
+    }
+    return readChatPage(
+      { sessionId, cwd: undefined, accountId, nodeId, subagent, ...(remoteOnly ? { remoteOnly } : {}) },
+      page,
+      deps
+    )
+  }
   // Routed by agent BEFORE anything claude-shaped runs. `resolveTranscript` below falls back to
   // the newest claude transcript for the cwd when its sessionId leg misses, and a grok id always
   // misses — so reaching that fallback with a grok node would answer with a stranger's
@@ -516,10 +561,19 @@ export function registerTranscriptIpc(deps: TranscriptIpcDeps = {}): void {
       accountId: string | undefined,
       nodeId: string | undefined,
       agentId: string | undefined,
-      rawPage?: unknown
+      rawPage?: unknown,
+      rawSubagent?: unknown
     ): Promise<ChatTranscriptResult> =>
       readChatTranscript(
-        { sessionId, cwd, accountId, nodeId, agentId, ...(isRemote(nodeId) ? { remoteOnly: true } : {}) },
+        {
+          sessionId,
+          cwd,
+          accountId,
+          nodeId,
+          agentId,
+          ...(isRemote(nodeId) ? { remoteOnly: true } : {}),
+          ...(rawSubagent !== undefined ? { subagent: rawSubagent } : {})
+        },
         rawPage,
         deps
       )

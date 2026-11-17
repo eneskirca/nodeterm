@@ -1235,9 +1235,10 @@ export function buildTranscriptApi(
 ): Pick<NodeTerminalApi, 'chat'> & { claudeReadTranscript: ClaudeApi['readTranscript'] } {
   return {
     chat: {
-      // `page` rides through untouched: the server validates it (`normalizeChatPage`) — the
-      // browser is the untrusted side of this wire, so checking it here would prove nothing.
-      readTranscript: (sessionId, cwd, accountId, nodeId, agentId, page) =>
+      // `page` and `subagent` ride through untouched: the server validates both
+      // (`normalizeChatPage`, `normalizeSubagentArg`) — the browser is the untrusted side of this
+      // wire, so checking them here would prove nothing.
+      readTranscript: (sessionId, cwd, accountId, nodeId, agentId, page, subagent) =>
         client.request(
           IPC.chatReadTranscript,
           sessionId,
@@ -1245,7 +1246,8 @@ export function buildTranscriptApi(
           accountId,
           nodeId,
           agentId,
-          page
+          page,
+          subagent
         ) as Promise<ChatTranscriptResult>,
       // A REAL implementation, not a stub: the server runs on the machine holding these
       // transcripts, so its answer is as good as the desktop's local leg. A failed request

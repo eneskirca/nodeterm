@@ -174,3 +174,17 @@ describe('preload projectLimit wiring', () => {
     expect(h.removeListener).toHaveBeenCalledWith(IPC.projectLimitChanged, handler)
   })
 })
+
+// `chat.readTranscript` grew a trailing `subagent` argument (a Claude subagent's own transcript). An
+// optional trailing argument the preload does not forward fails SILENTLY — the read then answers
+// with the parent's conversation — so the exact positional invoke is pinned here.
+describe('preload chat.readTranscript wiring', () => {
+  it('forwards every positional argument, the trailing subagent included', async () => {
+    h.invoke.mockClear()
+    const page = { maxBytes: 65536, rich: true as const }
+    await api.chat.readTranscript('sid', '/w', 'acct', 'nt-1', 'claude', page, { agentId: 'a089017271138740d' })
+    expect(h.invoke).toHaveBeenCalledWith(IPC.chatReadTranscript, 'sid', '/w', 'acct', 'nt-1', 'claude', page, {
+      agentId: 'a089017271138740d'
+    })
+  })
+})

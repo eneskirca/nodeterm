@@ -10,6 +10,8 @@ const ref = (path: string): RemoteFileRef => ({
 const cache = (): RemoteTranscriptRefCache => ({ bySession: new Map(), located: new Set() })
 const q = { sessionId: 'sid', cwd: '/w', accountId: undefined, nodeId: 'nt-1' }
 const PAGE = { before: null, maxBytes: 65536 }
+/** The remote jail for a DERIVED path, admitting everything — the cases below are about other rules. */
+const safe = () => true
 
 describe('forgetLocatedRef', () => {
   it('drops a ref WE located, and only that', () => {
@@ -34,13 +36,13 @@ describe('forgetLocatedRef', () => {
 
 describe('createReadRemotePage — the desktop remote leg of a paged chat read', () => {
   it('null when the session is not remote (core takes the local path)', async () => {
-    const read = createReadRemotePage({ cache: cache(), refFor: async () => undefined, readPage: vi.fn() })
+    const read = createReadRemotePage({ isSafePath: safe, cache: cache(), refFor: async () => undefined, readPage: vi.fn() })
     expect(await read(q, PAGE)).toBeNull()
   })
 
   it('returns the ranged window it read', async () => {
     const readPage = vi.fn(async () => ({ data: Buffer.from('xy'), start: 7, end: 9, size: 9 }))
-    const read = createReadRemotePage({ cache: cache(), refFor: async () => ref('/t.jsonl'), readPage })
+    const read = createReadRemotePage({ isSafePath: safe, cache: cache(), refFor: async () => ref('/t.jsonl'), readPage })
     const r = await read(q, { before: 9, maxBytes: 70000 })
     expect(readPage).toHaveBeenCalledWith(ref('/t.jsonl'), 9, 70000)
     expect(r).toEqual({ ok: true, data: Buffer.from('xy'), start: 7 })
@@ -50,6 +52,7 @@ describe('createReadRemotePage — the desktop remote leg of a paged chat read',
     const c = cache()
     c.bySession.set('sid', ref('/hooked'))
     const read = createReadRemotePage({
+      isSafePath: safe,
       cache: c,
       refFor: async () => c.bySession.get('sid'),
       readPage: async () => {
@@ -65,6 +68,7 @@ describe('createReadRemotePage — the desktop remote leg of a paged chat read',
     c.bySession.set('sid', ref('/located'))
     c.located.add('sid')
     const read = createReadRemotePage({
+      isSafePath: safe,
       cache: c,
       refFor: async () => c.bySession.get('sid'),
       readPage: async () => {
@@ -97,12 +101,12 @@ describe('remoteTargetForNode (which master a remote transcript read goes over)'
 describe('createReadRemotePage — a clean miss vs a failure', () => {
   it("the host looked and found nothing ('absent') is a clean miss, not a failed read", async () => {
     const readPage = vi.fn()
-    const read = createReadRemotePage({ cache: cache(), refFor: async () => 'absent', readPage })
+    const read = createReadRemotePage({ isSafePath: safe, cache: cache(), refFor: async () => 'absent', readPage })
     expect(await read(q, PAGE)).toEqual({ ok: false, absent: true })
     expect(readPage).not.toHaveBeenCalled()
   })
   it("a remote session that could not be located ('unreadable') is a failed read", async () => {
-    const read = createReadRemotePage({ cache: cache(), refFor: async () => 'unreadable', readPage: vi.fn() })
+    const read = createReadRemotePage({ isSafePath: safe, cache: cache(), refFor: async () => 'unreadable', readPage: vi.fn() })
     expect(await read(q, PAGE)).toEqual({ ok: false })
   })
 })
@@ -189,5 +193,57 @@ describe('remotePresenceFromLocate (transcriptExists on a remote node)', () => {
     )
     expect(r).toBe('absent')
     expect(run).toHaveBeenCalledWith(project, 'locate')
+  })
+})
+
+describe('createReadRemotePage — a SUBAGENT read derives the child beside the host\'s parent', () => {
+  const AGENT = 'a089017271138740d'
+  const PARENT = '/home/u/.claude/projects/-w/sid.jsonl'
+  const CHILD = `/home/u/.claude/projects/-w/sid/subagents/agent-${AGENT}.jsonl`
+  const sq = { ...q, cwd: undefined, subagent: { agentId: AGENT } }
+
+  it('reads the derived child path over the parent ref\'s master', async () => {
+    const readPage = vi.fn(async () => ({ data: Buffer.from('c'), start: 0, end: 1, size: 1 }))
+    const isSafePath = vi.fn(() => true)
+    const read = createReadRemotePage({ isSafePath, cache: cache(), refFor: async () => ref(PARENT), readPage })
+    expect(await read(sq, PAGE)).toEqual({ ok: true, data: Buffer.from('c'), start: 0 })
+    expect(readPage).toHaveBeenCalledWith(ref(CHILD), null, 65536)
+    expect(isSafePath).toHaveBeenCalledWith(CHILD, ref(PARENT))
+  })
+
+  it('a derived path the remote jail refuses is unreadable, and nothing is read', async () => {
+    const readPage = vi.fn()
+    const read = createReadRemotePage({ isSafePath: () => false, cache: cache(), refFor: async () => ref(PARENT), readPage })
+    expect(await read(sq, PAGE)).toEqual({ ok: false })
+    expect(readPage).not.toHaveBeenCalled()
+  })
+
+  it('a parent ref that is not a transcript yields no child: unreadable, nothing read', async () => {
+    const readPage = vi.fn()
+    const read = createReadRemotePage({ isSafePath: safe, cache: cache(), refFor: async () => ref('/home/u/x'), readPage })
+    expect(await read(sq, PAGE)).toEqual({ ok: false })
+    expect(readPage).not.toHaveBeenCalled()
+  })
+
+  it('a host clean miss or a failure to ask ends exactly like the parent read', async () => {
+    const readPage = vi.fn()
+    expect(await createReadRemotePage({ isSafePath: safe, cache: cache(), refFor: async () => 'absent', readPage })(sq, PAGE)).toEqual({
+      ok: false,
+      absent: true
+    })
+    expect(await createReadRemotePage({ isSafePath: safe, cache: cache(), refFor: async () => 'unreadable', readPage })(sq, PAGE)).toEqual({
+      ok: false
+    })
+    expect(await createReadRemotePage({ isSafePath: safe, cache: cache(), refFor: async () => undefined, readPage })(sq, PAGE)).toBeNull()
+    expect(readPage).not.toHaveBeenCalled()
+  })
+
+  it('without `subagent` the parent itself is read (unchanged)', async () => {
+    const readPage = vi.fn(async () => ({ data: Buffer.from('p'), start: 0, end: 1, size: 1 }))
+    const isSafePath = vi.fn(() => true)
+    const read = createReadRemotePage({ isSafePath, cache: cache(), refFor: async () => ref(PARENT), readPage })
+    await read(q, PAGE)
+    expect(readPage).toHaveBeenCalledWith(ref(PARENT), null, 65536)
+    expect(isSafePath).not.toHaveBeenCalled()
   })
 })

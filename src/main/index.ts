@@ -3331,7 +3331,10 @@ app.whenReady().then(async () => {
       // Tri-state: a clean miss on the host ('absent') and a failure to ask ('unreadable') end
       // differently — "no transcript" vs "couldn't read" — on the ⌘M panel and the phone alike.
       refFor: (q) => locateRemoteRef(q, sshTargetForNode),
-      readPage: (ref, before, maxBytes) => remoteFile.readTranscriptPage(ref, before, maxBytes)
+      readPage: (ref, before, maxBytes) => remoteFile.readTranscriptPage(ref, before, maxBytes),
+      // A subagent's file, derived from the parent ref, passes the SAME host jail the parent did.
+      isSafePath: (p, ref) =>
+        isSafeRemoteTranscriptPath(p, sshProjectManager?.remoteHomeForControlPath(ref.controlPath) ?? undefined)
     }),
     // CODEX's own two legs (`readChatTranscript` routes a codex node here, never through claude's
     // `pathFor` / `readRemotePage` above): the hint its context tail learned from a hook, and the

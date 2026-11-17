@@ -8,6 +8,7 @@ import type { ChatTranscriptPage } from '../shared/chat-page'
 import type { TranscriptPage } from '../core/remote-ssh/transcript-window'
 import type { RemoteFileRef } from './remote-ssh/remote-file'
 import { parseLocatedTranscript } from '../core/remote-transcript-locate'
+import { claudeSubagentTranscriptPath } from '../shared/agents/claude-subagents'
 import { SESSION_ID_RE } from '../core/transcript-reader'
 import type { TranscriptPresence } from '../shared/types'
 
@@ -115,6 +116,14 @@ export async function remotePresenceFromLocate(
   return r === 'absent' && SESSION_ID_RE.test(sessionId) ? 'absent' : 'unknown'
 }
 
+/**
+ * The desktop's remote leg of a paged chat read. With `q.subagent` it reads that Claude subagent's
+ * file instead of the session's: derived from the HOST's parent path (the cached or located ref —
+ * the locate is strictly by session id, never a cwd's newest) with `claudeSubagentTranscriptPath`,
+ * and jailed with the same host jail the parent passed before anything is read. A child that cannot
+ * be derived or is refused is a failed read (`{ok:false}`), never the parent and never this
+ * machine's disk.
+ */
 export function createReadRemotePage(deps: {
   cache: RemoteTranscriptRefCache
   /** The session's remote ref (cached, or located on the host), or why there is none — see
@@ -122,14 +131,23 @@ export function createReadRemotePage(deps: {
   refFor(q: TranscriptQuery): Promise<RemoteRefLookup>
   /** Strict ranged read (`RemoteFile.readTranscriptPage`): throws on any failure. */
   readPage(ref: RemoteFileRef, before: number | null, maxBytes: number): Promise<TranscriptPage>
+  /** The host jail (`isSafeRemoteTranscriptPath` against `ref`'s remote home) for a path DERIVED
+   *  from `ref` — a subagent's file. Required: a shell that forgot it must not read subagents. */
+  isSafePath(path: string, ref: RemoteFileRef): boolean
 }): (q: TranscriptQuery, page: ChatTranscriptPage) => Promise<RemoteTranscriptPage | null> {
   return async (q, page) => {
     const ref = await deps.refFor(q)
     if (ref === undefined) return null
     if (ref === 'absent') return { ok: false, absent: true }
     if (ref === 'unreadable') return { ok: false }
+    let target = ref
+    if (q.subagent) {
+      const child = claudeSubagentTranscriptPath(ref.path, q.subagent.agentId)
+      if (!child || !deps.isSafePath(child, ref)) return { ok: false }
+      target = { ...ref, path: child }
+    }
     try {
-      const w = await deps.readPage(ref, page.before, page.maxBytes)
+      const w = await deps.readPage(target, page.before, page.maxBytes)
       return { ok: true, data: w.data, start: w.start }
     } catch {
       if (q.sessionId) forgetLocatedRef(deps.cache, q.sessionId)
