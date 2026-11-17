@@ -46,6 +46,47 @@ function fake(): { term: PausableTerminal; rs: FakeRenderService } {
   return { term: { _core: { _renderService: rs as never } }, rs }
 }
 
+/**
+ * The three xterm 5.5 paths that run beside the render service and ignore its pause, as structural
+ * fakes with the methods on the PROTOTYPE (as in the real classes) and callers reaching them through
+ * the instance, so an instance property shadows them:
+ *  - `CoreBrowserTerminal._syncTextArea` — every cursor move (`onCursorMove`);
+ *  - `Viewport.syncScrollArea` — every scroll (`_onScroll`), reading and writing layout;
+ *  - `RenderService.handleSelectionChanged` — every scroll (`SelectionService.refresh`), which the
+ *    DOM renderer answers with a FULL `renderRows`, paused or not.
+ */
+class FakeSelectingRenderService extends FakeRenderService {
+  selections: Array<[unknown, unknown, unknown]> = []
+  handleSelectionChanged(start: unknown, end: unknown, columnSelectMode: unknown): void {
+    this.selections.push([start, end, columnSelectMode])
+  }
+}
+class FakeViewport {
+  syncs: Array<boolean | undefined> = []
+  syncScrollArea(immediate?: boolean): void {
+    this.syncs.push(immediate)
+  }
+}
+class FakeCore {
+  textareaSyncs = 0
+  constructor(public _renderService: FakeSelectingRenderService, public viewport: FakeViewport) {}
+  _syncTextArea(): void {
+    this.textareaSyncs++
+  }
+  /** What xterm does on a streamed line: cursor move, scroll, selection refresh. */
+  streamLine(): void {
+    this._syncTextArea()
+    this.viewport.syncScrollArea()
+    this._renderService.handleSelectionChanged(undefined, undefined, false)
+  }
+}
+function fakeCore(): { term: PausableTerminal; core: FakeCore; rs: FakeSelectingRenderService; vp: FakeViewport } {
+  const rs = new FakeSelectingRenderService()
+  const vp = new FakeViewport()
+  const core = new FakeCore(rs, vp)
+  return { term: { _core: core as never }, core, rs, vp }
+}
+
 describe('renderPaused', () => {
   it('pauses when covered, when off screen, and when both', () => {
     expect(renderPaused(false, true)).toBe(false)
@@ -190,6 +231,117 @@ describe('installBoardRenderPause', () => {
   it('returns null and changes nothing when the private method is missing', () => {
     expect(installBoardRenderPause({}, { covered: () => true })).toBeNull()
     expect(installBoardRenderPause({ _core: { _renderService: {} } }, { covered: () => true })).toBeNull()
+  })
+})
+
+describe('installBoardRenderPause — the paths beside the render service', () => {
+  it('holds the textarea sync, the scroll-area sync and the selection redraw while covered', () => {
+    const { term, core, rs, vp } = fakeCore()
+    installBoardRenderPause(term, { covered: () => true })
+    for (let i = 0; i < 50; i++) core.streamLine()
+    expect(core.textareaSyncs).toBe(0)
+    expect(vp.syncs).toEqual([])
+    expect(rs.selections).toEqual([])
+  })
+
+  it('replays each held path ONCE on uncover — the scroll area immediately, the selection with its latest range', () => {
+    const { term, core, rs, vp } = fakeCore()
+    let covered = true
+    const pause = installBoardRenderPause(term, { covered: () => covered })!
+    for (let i = 0; i < 20; i++) core.streamLine()
+    rs.handleSelectionChanged([0, 3], [10, 3], true)
+    covered = false
+    pause.sync()
+    expect(core.textareaSyncs).toBe(1)
+    expect(vp.syncs).toEqual([true])
+    expect(rs.selections).toEqual([[[0, 3], [10, 3], true]])
+  })
+
+  it('replays nothing a covered period did not owe', () => {
+    const { term, core, rs, vp } = fakeCore()
+    let covered = true
+    const pause = installBoardRenderPause(term, { covered: () => covered })!
+    covered = false
+    pause.sync()
+    expect(core.textareaSyncs).toBe(0)
+    expect(vp.syncs).toEqual([])
+    expect(rs.selections).toEqual([])
+  })
+
+  it('passes every path straight through while nothing covers it, off screen included (xterm’s own behaviour)', () => {
+    const { term, core, rs, vp } = fakeCore()
+    installBoardRenderPause(term, { covered: () => false })
+    core.streamLine()
+    rs.observe(false)
+    core.streamLine()
+    expect(core.textareaSyncs).toBe(2)
+    expect(vp.syncs).toEqual([undefined, undefined])
+    expect(rs.selections).toHaveLength(2)
+  })
+
+  it('an observer delivery that finds the board gone flushes what was held', () => {
+    const { term, core, vp } = fakeCore()
+    let covered = true
+    installBoardRenderPause(term, { covered: () => covered })
+    core.streamLine()
+    covered = false
+    core._renderService.observe(true)
+    expect(core.textareaSyncs).toBe(1)
+    expect(vp.syncs).toEqual([true])
+  })
+
+  it('dispose restores the prototype methods; a covered dispose replays what it owed, deferred', () => {
+    const { term, core, rs, vp } = fakeCore()
+    const pause = installBoardRenderPause(term, { covered: () => true })!
+    core.streamLine()
+    expect(core.textareaSyncs).toBe(0)
+    expect(vp.syncs).toEqual([])
+    pause.dispose()
+    expect(Object.prototype.hasOwnProperty.call(core, '_syncTextArea')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(vp, 'syncScrollArea')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(rs, 'handleSelectionChanged')).toBe(false)
+    expect(core.textareaSyncs).toBe(1)
+    // A park disposes into a DETACHED element: the scroll area is synced on the next frame rather
+    // than forcing a layout of a node that is not in the document.
+    expect(vp.syncs).toEqual([undefined])
+    expect(rs.selections).toHaveLength(1)
+    core.streamLine()
+    expect(core.textareaSyncs).toBe(2)
+  })
+
+  it('a second install (park re-adopt) does not stack holds', () => {
+    const { term, core } = fakeCore()
+    installBoardRenderPause(term, { covered: () => true })
+    const second = installBoardRenderPause(term, { covered: () => false })!
+    core.streamLine()
+    // A stacked hold from the first (covered) install would still swallow this.
+    expect(core.textareaSyncs).toBe(1)
+    second.dispose()
+    expect(Object.prototype.hasOwnProperty.call(core, '_syncTextArea')).toBe(false)
+  })
+
+  it('a replay that throws never escapes sync or dispose (they run in React effect cleanups)', () => {
+    const { term, core, vp } = fakeCore()
+    vp.syncScrollArea = () => {
+      throw new Error('viewport already disposed')
+    }
+    let covered = true
+    const pause = installBoardRenderPause(term, { covered: () => covered })!
+    core.streamLine()
+    covered = false
+    expect(() => pause.sync()).not.toThrow()
+    expect(core.textareaSyncs).toBe(1) // one failed replay does not cost the others
+    covered = true
+    pause.sync()
+    core.streamLine()
+    expect(() => pause.dispose()).not.toThrow()
+  })
+
+  it('a core without the three methods still gets the render pause', () => {
+    const { term, rs } = fake()
+    const pause = installBoardRenderPause(term, { covered: () => true })
+    expect(pause).not.toBeNull()
+    expect(rs._isPaused).toBe(true)
   })
 })
 

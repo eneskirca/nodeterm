@@ -679,7 +679,7 @@ export function AppearanceSection({ isActive }: { isActive: boolean }): React.JS
       <SearchableRow {...ROWS.boardRunningPulse}>
         <FieldRow
           label="Pulse RUNNING on board cards"
-          description="Fade the RUNNING chip on a board card in and out while its agent works. Off keeps the chip, held still. The node header is unchanged."
+          description="Fade the RUNNING chip on a board card in and out a few times when its agent starts working. Off keeps the chip, held still. The node header is unchanged."
           control={
             <Switch
               checked={pulseBoardRunning(boardRunningPulse)}

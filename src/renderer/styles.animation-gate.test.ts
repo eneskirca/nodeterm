@@ -190,6 +190,18 @@ describe('idle-window animation gate', () => {
     }
   })
 
+  it('the board card RUNNING chip is bounded and rests at full opacity', () => {
+    // Infinite, one chip held the compositor at display rate for as long as its agent worked,
+    // and under Liquid Glass every column's backdrop-filter ran again each frame. MEASURED (Server
+    // Edition, headless Chrome, 20 RUNNING cards, glass on, 15 s): GPU 50 % -> 17.5 % with the
+    // chips still. The covered-canvas gate cannot reach it: the board is what covers the canvas.
+    const rule = ruleBody(css, '.kanban-badge--running')
+    expect(rule).toMatch(/animation:\s*nt-pulse\s+1\.1s\s+ease-in-out\s+4\b/)
+    expect(rule).not.toMatch(/infinite/)
+    // Ends where it started, at the chip's own (unanimated) look: no snap when the fourth cycle ends.
+    expect(keyframesBody(css, 'nt-pulse')).toMatch(/0%,\s*100%\s*\{\s*opacity:\s*1;\s*transform:\s*scale\(1\)/)
+  })
+
   it('never pauses the notch HUD, whose window is never focused', () => {
     // hud.css belongs to a separate always-on-top panel window that by design never takes focus,
     // so the shared gate would freeze it permanently rather than while nobody is looking.

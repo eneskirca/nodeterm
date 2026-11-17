@@ -44,11 +44,86 @@ export interface IntersectionVerdict {
 /** The private RenderService surface this module touches. */
 export interface PausableRenderService {
   _handleIntersectionChange(entry: IntersectionVerdict): void
+  /** Selection redraw request — see "THE PATHS BESIDE THE RENDER SERVICE" below. */
+  handleSelectionChanged?(...args: unknown[]): void
 }
 
 /** Minimal xterm shape, so the unit test needs no DOM and no real Terminal. */
 export interface PausableTerminal {
-  _core?: { _renderService?: Partial<PausableRenderService> }
+  _core?: {
+    _renderService?: Partial<PausableRenderService>
+    /** CoreBrowserTerminal: repositions the hidden input textarea on every cursor move. */
+    _syncTextArea?: () => void
+    /** The DOM Viewport: scroll-area height + scrollTop, synced on every scroll. */
+    viewport?: { syncScrollArea?: (immediate?: boolean) => void }
+  }
+}
+
+/*
+ * THE PATHS BESIDE THE RENDER SERVICE. Pausing the render service stops xterm DRAWING, but three
+ * per-output paths in xterm 5.5 run beside it and never ask whether it is paused. MEASURED (Server
+ * Edition in headless Chrome, 20 terminals each printing a status line 10×/s and a full line every
+ * second, board open, Liquid Glass on, every CSS animation held, 15 s windows): with the render
+ * pause alone, GPU 9.3 % + renderer 17.8 %, main thread 14.4 % busy, ~950 forced layouts. With the
+ * three paths below also held: GPU 0.4 % + renderer 3.1 %, main thread 1.5 %, zero layouts — what
+ * is left is the parser, which must run. All three are per terminal per output, so this is the
+ * board cost that grows with the number of busy sessions.
+ *  - `CoreBrowserTerminal._syncTextArea` (every cursor move): writes the hidden textarea's
+ *    position, i.e. a style/layout pass per frame for something nobody can see.
+ *  - `Viewport.syncScrollArea` (every scroll): reads offsetHeight, writes the scroll area's height,
+ *    reads and writes scrollTop — forced layouts (our viewport-scroll-sync wraps `_innerRefresh`
+ *    with two more scrollTop reads).
+ *  - `RenderService.handleSelectionChanged` (every scroll, via `SelectionService.refresh`): calls
+ *    the renderer directly. The DOM renderer answers with a FULL `renderRows`, paused or not, so
+ *    every terminal without a WebGL context repainted its whole screen behind the board on every
+ *    line — almost all of the GPU figure above.
+ * Each is held the same way the intersection handler is: an instance property shadows the
+ * prototype method (callers reach all three through `this.`), a held call is recorded, and the
+ * uncover replays it ONCE — the scroll area immediately, so the first frame after the board is
+ * already scrolled to the right place; the selection with its LATEST range, because RenderService
+ * keeps that range only through this call and the resume repaint reads it. A covered dispose (a
+ * park) replays too, the scroll area deferred to the next frame because the element is about to be
+ * detached. A core without a method simply has nothing held for it. Only the BOARD holds them: a
+ * terminal that is merely off screen keeps xterm's stock behaviour.
+ */
+interface HeldPath {
+  /** Replay the held call once, if one is owed. `args` overrides the recorded ones. */
+  flush(args?: unknown[]): void
+  /** Put the original method back (own property or prototype, as it was). */
+  restore(): void
+}
+
+function holdWhile(target: object | undefined, name: string, held: () => boolean): HeldPath | null {
+  const obj = target as Record<string, unknown> | undefined
+  if (!obj || typeof obj[name] !== 'function') return null
+  const hadOwn = Object.prototype.hasOwnProperty.call(obj, name)
+  const ownBefore = obj[name]
+  const original = (ownBefore as (...a: unknown[]) => unknown).bind(obj)
+  let owed: unknown[] | null = null
+  obj[name] = (...args: unknown[]): unknown => {
+    if (held()) {
+      owed = args
+      return undefined
+    }
+    return original(...args)
+  }
+  return {
+    flush(args) {
+      if (!owed) return
+      const recorded = owed
+      owed = null
+      try {
+        original(...(args ?? recorded))
+      } catch {
+        // A catch-up, never worth throwing for: a dispose can run after xterm tore its own
+        // services down, and an exception here would escape a React effect cleanup.
+      }
+    },
+    restore() {
+      if (hadOwn) obj[name] = ownBefore
+      else delete obj[name]
+    }
+  }
 }
 
 /**
@@ -120,6 +195,20 @@ export function installBoardRenderPause(
 
   const apply = (): void => original(verdict(!renderPaused(covered, geometric)))
 
+  // The paths beside the render service (see the block above `holdWhile`): held exactly while
+  // covered, never merely while off screen.
+  const isHeld = (): boolean => !disposed && covered
+  const selection = holdWhile(rs, 'handleSelectionChanged', isHeld)
+  const scrollArea = holdWhile(term._core?.viewport, 'syncScrollArea', isHeld)
+  const textarea = holdWhile(term._core, '_syncTextArea', isHeld)
+  /** Replay what the covered period owed: `immediate` syncs the scroll area now (uncover), else on
+   *  the next frame (a park's dispose into an element about to be detached). */
+  const flushHeld = (immediate: boolean): void => {
+    selection?.flush()
+    scrollArea?.flush(immediate ? [true] : [])
+    textarea?.flush()
+  }
+
   const controller: BoardRenderPause = {
     sync(): void {
       if (disposed) return
@@ -127,6 +216,7 @@ export function installBoardRenderPause(
       if (now === covered) return
       covered = now
       apply()
+      if (!covered) flushHeld(true)
       if (!covered && geometric) opts.onUncover?.()
     },
     dispose(): void {
@@ -134,6 +224,9 @@ export function installBoardRenderPause(
       disposed = true
       if (hadOwn) rs._handleIntersectionChange = ownBefore
       else delete (rs as Partial<Wrapped>)._handleIntersectionChange
+      selection?.restore()
+      scrollArea?.restore()
+      textarea?.restore()
       if (rs[INSTALLED] === controller) delete rs[INSTALLED]
       // Hand xterm back the geometry it would have had all along. A no-op when nothing was
       // covered; when something was, it is xterm's own resume (flush + refresh).
@@ -142,7 +235,10 @@ export function installBoardRenderPause(
       // observer reports changes only at a rendering step) would come back on screen with
       // `_isPaused` stuck true and nothing left to clear it. The cost is a single refresh into a
       // detached element, and the WebGL dispose that follows does its own full refresh anyway.
-      if (covered) original(verdict(geometric))
+      if (covered) {
+        original(verdict(geometric))
+        flushHeld(false)
+      }
     }
   }
 
@@ -152,7 +248,11 @@ export function installBoardRenderPause(
     // The board can have opened between syncs (a node mounted under it, an observer delivery
     // racing the view switch), so the observer path re-reads rather than trusting the cache.
     covered = opts.covered()
-    if (!covered) return original(entry)
+    if (!covered) {
+      original(entry)
+      flushHeld(true)
+      return
+    }
     original(verdict(false))
   }
   rs[INSTALLED] = controller

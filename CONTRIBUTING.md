@@ -1661,6 +1661,15 @@ carrying information the user needs at a glance. A dependency's stylesheet count
 the same test scans `@xyflow/react/dist/style.css` so an upgrade that adds an infinite animation
 fails there. The full measurement table and the reasoning are in CLAUDE.md § Idle energy.
 
+**The kanban board hides things it does not unmount.** The canvas and a pinned sessions sidebar
+stay mounted under the opaque board, and so do their terminals. An animation on something under
+the board needs the covered override (`:root[data-nt-canvas='covered'] …`, pinned in
+`src/renderer/lib/canvasCovered.test.ts`), and a status animation ON a board card must be bounded
+to a few cycles, because no gate pauses what is on screen while an agent works for an hour. A
+terminal under the board keeps parsing; `terminal/board-render-pause.ts` stops it drawing and also
+holds xterm's textarea, scroll-area and selection paths, which ignore the render pause. If you add
+another per-output xterm call that touches the DOM, hold it there too.
+
 ## Pull requests
 
 - Branch from `main`. CI runs `quality`, `CodeQL` and `Dependency review`; all three are required.
