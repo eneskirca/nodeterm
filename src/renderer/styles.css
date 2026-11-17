@@ -218,12 +218,22 @@
    untouched. `styles.animation-gate.test.ts` scans xyflow's sheet too, and fails if an upgrade adds
    an infinite animation under a selector not listed here.
 
-   This covers idle and covered only. A FOCUSED window still pays the full per-edge cost for as
-   long as an edge works; a cheaper working-edge style is a separate design call, and the driven
-   rope keeps flowing while focused by decision (see CLAUDE.md § Idle energy). */
+   That covers idle and covered. A FOCUSED window is the rule below. */
 .react-flow__edge.animated path,
 .react-flow__connection .animated {
   animation-play-state: var(--nt-anim-state);
+}
+
+/* Working edges flow for ~4 s (8 × xyflow's 0.5 s), then hold the dash (issue #1454). A focused
+   window has no gate, and a working subagent or loop edge — or the driven-browser rope — kept the
+   frame loop open by itself for as long as its work ran (measured in the issue: four edges, two
+   sidebar checks and four subagent dots held a focused window at 120 frames/s, renderer 108 % and
+   GPU 38 %; 64 % / 3 % with them stopped). Only the FLOW is bounded: xyflow's `stroke-dasharray`
+   stays, so dashed still means working and solid means done, and the driven rope keeps its clay
+   colour and weight. An edge that turns `animated` again flows again. Same selector as xyflow's rule,
+   later in order, so this longhand wins. The connection line a person is dragging keeps flowing. */
+.react-flow__edge.animated path {
+  animation-iteration-count: 8;
 }
 
 /* ---- Light appearance ----------------------------------------------------------------------
@@ -8708,8 +8718,11 @@ button.group-node__setup:disabled {
   background: #d97757;
 }
 
+/* Bounded like every status indicator (issue #1454): looping, these dots held a FOCUSED window's
+   frame loop open for as long as a subagent worked. The card already says "working" in text with
+   a running timer; four pulses mark the change. nt-pulse ends at the dot's own look. */
 .subagent-node.working .subagent-node__dot {
-  animation: nt-pulse 1.1s ease-in-out infinite;
+  animation: nt-pulse 1.1s ease-in-out 4;
   animation-play-state: var(--nt-anim-state);
 }
 
@@ -8824,8 +8837,9 @@ button.group-node__setup:disabled {
   background: var(--state-automation);
 }
 
+/* Bounded for the same reason as the subagent dot above (issue #1454). */
 .loop-node.working .loop-node__dot {
-  animation: nt-pulse 1.1s ease-in-out infinite;
+  animation: nt-pulse 1.1s ease-in-out 4;
   animation-play-state: var(--nt-anim-state);
 }
 
@@ -10256,7 +10270,9 @@ button.group-node__setup:disabled {
 .ss-dot--done { background: var(--success); }
 .ss-check { color: var(--success); margin-top: 2px; flex: 0 0 auto; line-height: 0; }
 /* Unread: the same check, accent-blue and pulsing until the user visits the node. */
-.ss-check--unread { color: var(--state-unread); animation: nt-pulse 1.1s ease-in-out infinite; animation-play-state: var(--nt-anim-state); }
+/* Bounded like the node's own unread glow (issue #1454): a row stays unread until someone looks,
+   so a looping check held a focused window's frame loop open indefinitely. The check stays. */
+.ss-check--unread { color: var(--state-unread); animation: nt-pulse 1.1s ease-in-out 4; animation-play-state: var(--nt-anim-state); }
 .ss-check svg { width: 13px; height: 13px; }
 /* attention renders as a red bell (ss-bell) — "it's ringing for you". Gentle pulse,
    same cadence as the header badge dot. */
@@ -18188,6 +18204,27 @@ body.focus-mode .dock:hover {
   .minimap .mm-working,
   .minimap .mm-attention,
   .minimap .mm-unread {
+    animation: none;
+  }
+  /* Issue #1454: these kept moving for a Reduce Motion user — the working-edge flow (xyflow's
+     sheet, so no block of ours ever named it), the subagent / loop dots, the sessions sidebar's
+     unread check and needs-you bell, the RAM panel's working dot, the board card's RUNNING chip,
+     the walking mascots and the "···" loading pulses. Each rests on its own static look: edges
+     stay dashed, dots and chips lit, the mascot on its first frame. Every selector here is later
+     than the rule it stops at the same specificity, so it wins on order. Enforced by
+     styles.reduced-motion.test.ts: a new repeating animation that is not stopped here (or
+     exempted there with a reason) fails it. */
+  .react-flow__edge.animated path,
+  .subagent-node.working .subagent-node__dot,
+  .loop-node.working .loop-node__dot,
+  .ss-check--unread,
+  .ss-bell,
+  .sessmem-row__dot--working,
+  .kanban-badge--running,
+  .term-node__mascot--claude,
+  .term-node__mascot--codex,
+  .usage-pill__pulse,
+  .sysres-pill__pulse {
     animation: none;
   }
 }
