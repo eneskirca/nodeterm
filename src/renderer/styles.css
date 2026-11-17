@@ -2791,6 +2791,61 @@ body,
   border-color: var(--border);
 }
 
+/* "Add to chat" for a moment after a copy (terminal/QuotePill.tsx), on both terminal surfaces. The
+   copy receipt's corner and chrome, but a BUTTON: `pointer-events: auto`, z 7 so the hover guard
+   (z 2) and the link downloads strip (z 6) do not take its click. Opaque `--panel` in every look,
+   Liquid Glass included (it is in neither glass list, so it gets no blur, and nothing translucent
+   may float over text without one). `--raised` clears the receipt's slot (8px + its 23px + a gap)
+   for a terminal whose receipt is on, for the whole offer: the pill never moves under the pointer. */
+.term-quote-pill {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  z-index: 7;
+  pointer-events: auto;
+  display: flex;
+  align-items: stretch;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  user-select: none;
+  -webkit-user-select: none;
+  animation: nt-copy-pill-in 120ms ease-out;
+}
+.term-quote-pill--raised {
+  bottom: 36px;
+}
+.term-quote-pill button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.term-quote-pill .term-quote-pill__add {
+  padding: 5px 4px 5px 9px;
+}
+.term-quote-pill .term-quote-pill__dismiss {
+  padding: 5px 8px 5px 5px;
+  color: var(--muted);
+}
+.term-quote-pill .term-quote-pill__add:hover,
+.term-quote-pill .term-quote-pill__dismiss:hover {
+  color: var(--text-strong);
+}
+.term-quote-pill button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
 /* Hovering a terminal link names what a click opens — the resolved path + the gestures
    (terminal/link-hover.ts). Lives INSIDE the xterm element (`.xterm` is position:relative), so it
    scales with the terminal text like the copy pill; same quiet chrome as the pill's hint variant.

@@ -119,7 +119,8 @@ describe('QUOTE_REFUSAL_TEXT', () => {
       'not-agent': 'This terminal has no agent to quote to.',
       'agent-gone': 'The agent is not running in this terminal.',
       'needs-answer': 'The agent is waiting for an answer. Answer it first.',
-      dialog: 'A dialog is open in the terminal. Close it first.'
+      dialog: 'A dialog is open in the terminal. Close it first.',
+      'no-prompt': "The agent's input box is not on screen."
     }
     expect(QUOTE_REFUSAL_TEXT).toEqual(expected)
   })

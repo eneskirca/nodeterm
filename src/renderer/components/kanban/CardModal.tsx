@@ -78,6 +78,7 @@ import {
   type LocalFileTarget
 } from './LocalFilePreviewModal'
 import { ChatPanelFallback } from '../../nodes/ChatPanelFallback'
+import { chatQuoteButtonShowing } from '../../nodes/ChatQuoteButton'
 import { carryDraftToChat, carryDraftToTerminal } from '../../lib/chatDraftCarry'
 
 // Code-split exactly like the canvas node's: ChatPanel carries the markdown renderer, and the
@@ -411,6 +412,9 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !isTopDialog(id)) return
+      // The ⌘M thread's "Add to chat" button owns Esc while it shows (it hides itself). It listens
+      // on the window capture phase too, so whichever runs first, this one must not close the modal.
+      if (chatQuoteButtonShowing()) return
       // The header Color swatches own Esc first: close the menu, not the whole modal. (The menu is
       // not a dialog-stack entry, so this modal still reads as the top dialog while it is open.)
       if (colorMenuOpenRef.current) {

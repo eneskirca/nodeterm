@@ -1,5 +1,6 @@
-import { useEffect, useState, type RefObject, type SyntheticEvent } from 'react'
+import { useEffect, useRef, useState, type RefObject, type SyntheticEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { CANVAS_COVERED_ATTR, coveredByBoard } from '../lib/canvasCovered'
 
 /**
  * "Add to chat" beside a text selection in a ⌘M chat thread (`.term-chat__msgs`). Offered only for
@@ -10,10 +11,20 @@ import { createPortal } from 'react-dom'
  * Portaled to <body> and placed `position: fixed` from the selection's own client rect: the panel
  * sits inside React Flow's scaled viewport, where a fixed element would be positioned against the
  * transformed ancestor and scaled with it. Client rects are window coordinates, so nothing is
- * divided by the canvas zoom. A scroll of the thread (or of anything holding it), a wheel (it may
- * pan the canvas) and a window resize would leave the button behind, so each hides it
- * (`selectionchange` brings it back), as does Escape. Other scrollers do not: a streaming terminal
- * elsewhere scrolls its viewport all the time.
+ * divided by the canvas zoom. A scroll of the thread, of a scroller inside it (a wide code block) or
+ * of anything holding it, a wheel (it may pan the canvas) and a window resize would leave the button
+ * behind, so each hides it (`selectionchange` brings it back). Other scrollers do not: a streaming
+ * terminal elsewhere scrolls its viewport all the time.
+ *
+ * Only for a thread the person can see: not one `checkVisibility()` says is not rendered, and not
+ * one on a canvas a board covers (`coveredByBoard`) — the canvas stays mounted under the board, a
+ * selection made before the board opened outlives it, and the button is portaled ABOVE the board.
+ * Opening a board fires no selection event, so the covered attribute is watched too.
+ *
+ * Escape belongs to the button while it shows: it hides the button and goes no further — not to the
+ * card modal (which would close), not to the composer (whose Escape interrupts a running turn).
+ * Window capture is the earliest any listener can run; the card modal listens there too, so it also
+ * steps aside while `chatQuoteButtonShowing()` (their order is registration order).
  */
 
 /** Space between the end of the selection and the button. */
@@ -31,9 +42,23 @@ export interface ChatQuoteButtonProps {
   onAdd(text: string): void
 }
 
+/** The button's class — and how a listener that must yield to it finds out it shows. */
+const BUTTON_CLASS = 'chat-quote-btn'
+
+/** Is an "Add to chat" button showing anywhere? It is in the DOM exactly while it shows. */
+export function chatQuoteButtonShowing(): boolean {
+  return typeof document !== 'undefined' && document.querySelector(`.${BUTTON_CLASS}`) !== null
+}
+
+/** Can the person see `container`? (See the component's docblock.) */
+function shown(container: HTMLElement): boolean {
+  if (typeof container.checkVisibility === 'function' && !container.checkVisibility()) return false
+  return !coveredByBoard(container)
+}
+
 /** The document selection, when it is a non-empty one wholly inside `container`. */
 function selectionInside(container: HTMLElement | null): Selection | null {
-  if (!container) return null
+  if (!container || !shown(container)) return null
   const sel = document.getSelection()
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null
   if (!sel.anchorNode || !sel.focusNode) return null
@@ -73,6 +98,9 @@ function placeFor(sel: Selection, container: HTMLElement): { left: number; top: 
 
 export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuoteButtonProps) {
   const [at, setAt] = useState<{ left: number; top: number } | null>(null)
+  // For the Escape listener, registered once: does the button show right now?
+  const showingRef = useRef(false)
+  showingRef.current = at !== null
 
   useEffect(() => {
     const update = (): void => {
@@ -83,25 +111,36 @@ export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuote
     }
     const hide = (): void => setAt(null)
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') hide()
+      // An IME composition's Escape cancels the composition; it is not ours.
+      if (e.key !== 'Escape' || e.isComposing || !showingRef.current) return
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      showingRef.current = false
+      hide()
     }
-    // Capture: `scroll` does not bubble. Only a scroller that holds the thread moves the selection.
+    // Capture: `scroll` does not bubble. Only a scroller that holds the thread, or one inside it,
+    // moves the selection.
     const onScroll = (e: Event): void => {
       const t = e.target
       const container = containerRef.current
-      if (t === document || (t instanceof Node && container !== null && t.contains(container))) hide()
+      if (t === document) hide()
+      else if (t instanceof Node && container !== null && (t.contains(container) || container.contains(t))) hide()
     }
+    // A board opening over the canvas (or closing) changes what is visible without any event here.
+    const covered = new MutationObserver(update)
+    covered.observe(document.documentElement, { attributes: true, attributeFilter: [CANVAS_COVERED_ATTR] })
     document.addEventListener('selectionchange', update)
     document.addEventListener('scroll', onScroll, true)
     window.addEventListener('wheel', hide, { capture: true, passive: true })
     window.addEventListener('resize', hide)
-    document.addEventListener('keydown', onKey, true)
+    window.addEventListener('keydown', onKey, true)
     return () => {
+      covered.disconnect()
       document.removeEventListener('selectionchange', update)
       document.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('wheel', hide, { capture: true })
       window.removeEventListener('resize', hide)
-      document.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('keydown', onKey, true)
     }
   }, [containerRef])
 
@@ -112,7 +151,7 @@ export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuote
   return createPortal(
     <button
       type="button"
-      className="chat-quote-btn"
+      className={BUTTON_CLASS}
       style={{ left: at.left, top: at.top }}
       data-quote-target={targetNodeId}
       title="Add the selected text to the message as a quote"

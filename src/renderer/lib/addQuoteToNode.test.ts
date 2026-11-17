@@ -15,9 +15,18 @@ import {
 import { QUOTE_REFUSAL_TEXT } from './quoteToChat'
 import { agentStatusForApi } from '../state/agentStatus'
 import { useChatDraft } from '../state/chatDraft'
+import type { ClaudeScreen } from '@shared/agents/claude-screen'
+import { CANVAS_COVERED_ATTR } from './canvasCovered'
+
+/** A screen read of `kind` (a dialog carries its own lines). */
+function screenOf(kind: ClaudeScreen['kind']): ClaudeScreen {
+  return kind === 'dialog' ? { kind, text: 'Do you trust the files in this folder?' } : { kind }
+}
 
 /** Deps for one node, every effect recorded. Defaults: an idle claude agent, terminal showing. */
-function fakeDeps(over: { chatOpen?: boolean; node?: Partial<QuoteTargetNode>; screen?: string; sent?: unknown; draft?: string } = {}) {
+function fakeDeps(
+  over: { chatOpen?: boolean; node?: Partial<QuoteTargetNode>; screen?: ClaudeScreen['kind']; sent?: unknown; draft?: string } = {}
+) {
   let draft = over.draft ?? ''
   const node: QuoteTargetNode = { agentId: 'claude', isAgent: true, agentInPane: true, state: 'done', held: false, ...over.node }
   const deps = {
@@ -27,8 +36,8 @@ function fakeDeps(over: { chatOpen?: boolean; node?: Partial<QuoteTargetNode>; s
       draft = fn(draft)
     }),
     focusComposer: vi.fn(),
-    sendText: vi.fn(async () => (over.sent === undefined ? true : over.sent)),
-    readScreen: vi.fn(async () => ({ screen: { kind: over.screen ?? 'prompt' } })),
+    sendText: vi.fn(async (_nodeId: string, _text: string): Promise<unknown> => (over.sent === undefined ? true : over.sent)),
+    readScreen: vi.fn(async () => ({ screen: screenOf(over.screen ?? 'prompt') })),
     toast: vi.fn()
   } satisfies QuoteDeps
   return { deps, draft: () => draft }
@@ -67,10 +76,22 @@ describe('addQuoteToNode — the terminal is showing', () => {
     const f = fakeDeps()
     await expect(addQuoteToNode(f.deps, 'n1', 'a\nb')).resolves.toBe('pane')
     expect(f.deps.sendText).toHaveBeenCalledTimes(1)
-    expect(f.deps.sendText).toHaveBeenCalledWith('n1', '> a\n> b\n\n')
+    expect(f.deps.sendText).toHaveBeenCalledWith('n1', '> a\n> b')
     expect(f.deps.setDraft).not.toHaveBeenCalled()
     expect(f.deps.focusComposer).not.toHaveBeenCalled()
     expect(f.deps.toast).not.toHaveBeenCalled()
+  })
+
+  it('sends the pane no trailing newline: an app without bracketed paste would read it as Enter', async () => {
+    const f = fakeDeps()
+    await addQuoteToNode(f.deps, 'n1', 'first\n\nsecond\n\n\n')
+    const sent = f.deps.sendText.mock.calls[0][1]
+    expect(sent).toBe('> first\n> \n> second')
+    expect(sent.endsWith('\n')).toBe(false)
+    // The draft leg keeps the blank line after the quote, so what is typed next is not part of it.
+    const draft = fakeDeps({ chatOpen: true })
+    await addQuoteToNode(draft.deps, 'n1', 'first')
+    expect(draft.draft()).toBe('> first\n\n')
   })
 
   it('reads the screen first for an agent whose screen can be read', async () => {
@@ -116,10 +137,13 @@ describe('addQuoteToNode — the terminal is showing', () => {
     expect(f.deps.setDraft).not.toHaveBeenCalled()
   })
 
-  it('refuses when no input box is on screen either (nowhere to type a prompt)', async () => {
+  it('refuses, with its own reason, when no input box is on screen (nowhere to type a prompt)', async () => {
     const f = fakeDeps({ screen: 'no-prompt' })
-    await expect(addQuoteToNode(f.deps, 'n1', 'x')).resolves.toBe('dialog')
+    await expect(addQuoteToNode(f.deps, 'n1', 'x')).resolves.toBe('no-prompt')
+    expect(f.deps.toast).toHaveBeenCalledWith(QUOTE_REFUSAL_TEXT['no-prompt'])
+    expect(QUOTE_REFUSAL_TEXT['no-prompt']).toBe("The agent's input box is not on screen.")
     expect(f.deps.sendText).not.toHaveBeenCalled()
+    expect(f.deps.setDraft).not.toHaveBeenCalled()
   })
 
   it('types into a screen it could not read: an unreadable capture is not evidence', async () => {
@@ -188,6 +212,7 @@ describe('defaultQuoteDeps', () => {
 
   afterEach(() => {
     document.body.innerHTML = ''
+    document.documentElement.removeAttribute(CANVAS_COVERED_ATTR)
     useChatDraft.getState().setDraft('n1', '')
   })
 
@@ -200,6 +225,29 @@ describe('defaultQuoteDeps', () => {
     document.body.innerHTML += '<div class="term-chat" data-chat-node-id="n1"></div>'
     expect(deps.chatOpen('n1')).toBe(true)
     expect(deps.chatOpen('n2')).toBe(false)
+  })
+
+  it("counts only the card modal's chat view while a card modal is open", () => {
+    const deps = defaultQuoteDeps(fakeApi().api)
+    // The canvas stays mounted under the board: its node's open ⌘M panel is not what the person
+    // is looking at while they work in the modal.
+    document.body.innerHTML =
+      '<div class="react-flow"><div class="term-chat" data-chat-node-id="n1"></div></div>' +
+      '<div class="kanban-modal"><div class="kanban-modal__term"></div></div>'
+    expect(deps.chatOpen('n1')).toBe(false)
+    document.querySelector('.kanban-modal')!.innerHTML += '<div class="term-chat" data-chat-node-id="n1"></div>'
+    expect(deps.chatOpen('n1')).toBe(true)
+  })
+
+  it('does not count a chat view on a canvas that a board covers', () => {
+    const deps = defaultQuoteDeps(fakeApi().api)
+    document.body.innerHTML = '<div class="react-flow"><div class="term-chat" data-chat-node-id="n1"></div></div>'
+    expect(deps.chatOpen('n1')).toBe(true)
+    document.documentElement.setAttribute(CANVAS_COVERED_ATTR, 'covered')
+    expect(deps.chatOpen('n1')).toBe(false)
+    // A focus-mode node is moved out of React Flow onto a surface above the board: still visible.
+    document.body.innerHTML += '<div class="focus-surface"><div class="term-chat" data-chat-node-id="n1"></div></div>'
+    expect(deps.chatOpen('n1')).toBe(true)
   })
 
   it('escapes the node id in its selector', () => {
@@ -275,6 +323,16 @@ describe('defaultQuoteDeps', () => {
     document.body.innerHTML =
       '<div data-chat-composer-id="c1" data-chat-node-id="n1"><textarea id="canvas">abc</textarea></div>' +
       '<div class="kanban-modal"><div class="xterm"></div></div>'
+    deps.focusComposer('n1')
+    await new Promise((r) => requestAnimationFrame(() => r(undefined)))
+    expect(document.activeElement).not.toBe(document.getElementById('canvas'))
+  })
+
+  it('never focuses a composer on a canvas that a board covers', async () => {
+    const deps = defaultQuoteDeps(fakeApi().api)
+    document.body.innerHTML =
+      '<div class="react-flow"><div data-chat-composer-id="c1" data-chat-node-id="n1"><textarea id="canvas">abc</textarea></div></div>'
+    document.documentElement.setAttribute(CANVAS_COVERED_ATTR, 'covered')
     deps.focusComposer('n1')
     await new Promise((r) => requestAnimationFrame(() => r(undefined)))
     expect(document.activeElement).not.toBe(document.getElementById('canvas'))

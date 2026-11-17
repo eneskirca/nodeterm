@@ -6,7 +6,7 @@ import { ptyRefusal } from '@shared/pty-refusal'
 
 import { patchImeModeSwitch } from '../../terminal/ime-mode-switch'
 import { patchShrinkTrim } from '../../terminal/shrink-trim'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -23,7 +23,7 @@ import { useProjects } from '../../state/projects'
 import { isRemoteProjectId, useSession, useSessionStores } from '../../session/session'
 import { relayStatusGates } from '../../terminal/relay-status-gates'
 import { REMOTE_PROJECT_SPAWN_REFUSAL, spawnBelongsElsewhere, useOwningProjectId } from '../../session/owning-project'
-import { isHostedReadOnly } from '../../state/hostedTeams'
+import { isHostedReadOnly, useHostedReadOnly } from '../../state/hostedTeams'
 import { useSettings } from '../../state/settings'
 import { isMacPlatform, isWindowsPlatform } from '@shared/platform-utils'
 import {
@@ -68,6 +68,9 @@ import { parseOsc52 } from '../../terminal/osc52'
 import { createOsc52Notice, dispatchOsc52Toast, handleOsc52Write } from '../../terminal/osc52-policy'
 import { activateUnicode11 } from '../../terminal/unicode-width'
 import { useCopyFeedback } from '../../terminal/useCopyFeedback'
+import { useQuoteOffer } from '../../terminal/useQuoteOffer'
+import { QuotePill } from '../../terminal/QuotePill'
+import { addQuoteToNode, defaultQuoteDeps } from '../../lib/addQuoteToNode'
 import { pasteWithImageReceipt } from '../../terminal/image-paste-confirm'
 import { usePasteReceipt } from '../../terminal/usePasteReceipt'
 import { agentProcessInPane } from '../../terminal/live-work'
@@ -250,6 +253,28 @@ export function ModalTerminal({
     hasSelection: () => !!termRef.current?.hasSelection(),
     enabled: !reportsOwnCopy(spawn.agentId as AgentId | undefined)
   })
+  // MIRROR TerminalNode: "Add to chat" for what was just copied out of an agent's terminal, quoted
+  // to the CARD's node. Not gated on `reportsOwnCopy` (Claude takes a quote too). The modal's own
+  // ⌘M view covers this viewer, so the funnel's `chatOpen` looks only inside the modal (the
+  // canvas node's ⌘M panel under the board is not what the person is looking at).
+  const hostedReadOnly = useHostedReadOnly(session.id)
+  const quoteEnabled = !!(spawn.agentId ?? observedAgentId) && !hostedReadOnly
+  const quote = useQuoteOffer({ enabled: quoteEnabled })
+  const quoteDeps = useMemo(
+    () => defaultQuoteDeps(api, { agentIdOf: (id) => (id === nodeId ? spawn.agentId : undefined) }),
+    [api, nodeId, spawn.agentId]
+  )
+  const addQuote = useCallback(
+    (text: string): void => {
+      quote.clear()
+      void addQuoteToNode(quoteDeps, nodeId, text)
+    },
+    [quote.clear, quoteDeps, nodeId]
+  )
+  // The modal's ⌘M face laid over this viewer ends an offer made for the terminal.
+  useEffect(() => {
+    if (covered) quote.clear()
+  }, [covered, quote.clear])
   // Right-click on a URL → the canvas node's link menu, URL rows only (file rows act on the active
   // project — see the link wiring in the lifecycle effect).
   const [linkMenu, setLinkMenu] = useState<{ x: number; y: number; url: string } | null>(null)
@@ -450,6 +475,14 @@ export function ModalTerminal({
         write: (text) => window.nodeTerminal.clipboard.writeText(text, { quiet: true })
       })
     )
+    // MIRROR TerminalNode: the same release offers "Add to chat" for a selection xterm owns. No
+    // registry here: this viewer never parks, and `quote.notify` keeps one identity for its life.
+    cleanups.push(
+      attachCopyOnSelect(term, {
+        enabled: () => true,
+        write: (text) => quote.notify(text)
+      })
+    )
 
     // MIRROR TerminalNode "WRITE-ONLY — `parseOsc52` returns null" — the OSC 52 clipboard-write path.
     // tmux's mouse is ON, so a drag-select in copy-mode emits OSC 52 to this client; this handler
@@ -462,7 +495,10 @@ export function ModalTerminal({
       if (text !== null) {
         handleOsc52Write(text, session.source, {
           write: (t) => window.nodeTerminal.clipboard.writeText(t),
-          notifyCopied: (t) => copy.notifyCopy(t),
+          notifyCopied: (t) => {
+            copy.notifyCopy(t)
+            quote.notify(t)
+          },
           shouldNotify: osc52Notice,
           toast: dispatchOsc52Toast
         })
@@ -818,6 +854,14 @@ export function ModalTerminal({
         <div className={`term-copy-pill term-copy-pill--${copy.feedback.kind}`}>
           {copy.feedback.label}
         </div>
+      )}
+      {quote.offer !== null && !covered && (
+        <QuotePill
+          text={quote.offer}
+          onAdd={addQuote}
+          onDismiss={quote.clear}
+          raised={!reportsOwnCopy(spawn.agentId as AgentId | undefined)}
+        />
       )}
       {pasteReceipt.receipt && (
         <div className={`term-paste-pill${pasteReceipt.receipt.ok ? '' : ' term-paste-pill--warn'}`}>

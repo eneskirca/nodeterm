@@ -251,6 +251,9 @@ import { transcriptSessionFor } from '../lib/transcriptSession'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
 import { useCopyFeedback } from '../terminal/useCopyFeedback'
+import { useQuoteOffer } from '../terminal/useQuoteOffer'
+import { QuotePill } from '../terminal/QuotePill'
+import { addQuoteToNode, defaultQuoteDeps } from '../lib/addQuoteToNode'
 import { pasteWithImageReceipt } from '../terminal/image-paste-confirm'
 import { usePasteReceipt } from '../terminal/usePasteReceipt'
 import { createBoardPauseSlot } from '../terminal/board-render-pause'
@@ -1254,6 +1257,11 @@ export function wakeHibernatedNode(nodeId: string): void {
  */
 const copySubs = new Map<string, (text: string) => void>()
 
+/** The "Add to chat" offer's sink (`useQuoteOffer`), published for the same reason as `copySubs`:
+ *  it is fed by the OSC 52 handler and the copy-on-select release, both registered once per xterm
+ *  instance and carried across a park. */
+const quoteSubs = new Map<string, (text: string) => void>()
+
 /** The right-click link menu's sink, published for the same reason as `copySubs`: the listener
  *  (`installLinkContextMenu`) is installed once per xterm instance and survives a park. */
 const linkMenuSubs = new Map<string, (target: LinkMenuTarget, x: number, y: number) => void>()
@@ -1951,6 +1959,37 @@ export function TerminalNode({
   // Which status-driven readers this node may run (see relay-status-gates.ts): all of them on the
   // local session, none on a relay / team tab, whose status is its host's.
   const gates = relayStatusGates(session.source)
+  // "Add to chat" at the copy moment (terminal/useQuoteOffer.ts): the text just copied out of an
+  // AGENT's terminal, offered for a moment as a quote for this node. Fed through `quoteSubs` by the
+  // OSC 52 handler and the copy-on-select release in the lifecycle effect (both outlive a park). An
+  // agent node is the created agent or one a hook identified (a hand-launched CLI), the derivation
+  // the funnel's `node()` makes too. NOT gated on `reportsOwnCopy`: Claude prints its own copy line
+  // instead of the receipt, but takes a quote like any agent. Never for a hosted read-only seat.
+  const quoteEnabled = !!(agentId ?? status?.agentId) && !hostedReadOnly
+  const quote = useQuoteOffer({ enabled: quoteEnabled })
+  useEffect(() => {
+    quoteSubs.set(termKey, quote.notify)
+    return () => {
+      if (quoteSubs.get(termKey) === quote.notify) quoteSubs.delete(termKey)
+    }
+  }, [termKey, quote.notify])
+  // The session's own api: a relay tab's write goes to its host's pane.
+  const quoteDeps = useMemo(
+    () => defaultQuoteDeps(api, { agentIdOf: (nodeId) => (nodeId === id ? agentId : undefined) }),
+    [api, id, agentId]
+  )
+  const addQuote = useCallback(
+    (text: string): void => {
+      quote.clear()
+      void addQuoteToNode(quoteDeps, id, text)
+    },
+    [quote.clear, quoteDeps, id]
+  )
+  // The ⌘M face covers the terminal, and the pill would sit on top of it: an offer made for the
+  // terminal is over once the terminal is out of sight.
+  useEffect(() => {
+    if (mdMode) quote.clear()
+  }, [mdMode, quote.clear])
   /**
    * Which Claude account this node is ACTUALLY on. `data.accountId` is what nodeterm launched
    * it as and is immutable; `status.account` is what the session's hooks reported — the only
@@ -3301,8 +3340,13 @@ export function TerminalNode({
         if (text !== null) {
           handleOsc52Write(text, session.source, {
             write: (t) => window.nodeTerminal.clipboard.writeText(t),
-            // Through the registry, never a captured setState: this handler outlives a park.
-            notifyCopied: (t) => copySubs.get(termKey)?.(t),
+            // Through the registries, never a captured setState: this handler outlives a park. The
+            // copy receipt and the "Add to chat" offer both hear it — tmux has already cleared its
+            // highlight, so this is the only moment the copied text exists here.
+            notifyCopied: (t) => {
+              copySubs.get(termKey)?.(t)
+              quoteSubs.get(termKey)?.(t)
+            },
             shouldNotify: osc52Notice,
             toast: dispatchOsc52Toast
           })
@@ -3582,6 +3626,16 @@ export function TerminalNode({
         attachCopyOnSelect(term, {
           enabled: () => useSettings.getState().settings.copyOnSelect,
           write: (text) => window.nodeTerminal.clipboard.writeText(text, { quiet: true })
+        })
+      )
+      // The same gesture offers "Add to chat" for a selection xterm owns (Option/Shift drag, or a
+      // pane with no tmux): the copy-on-select helper is the one place that knows a FINISHED mouse
+      // selection from a search hit or a clear (`onSelectionChange` fires for all three). Always on
+      // here; whether this node offers a quote at all is the sink's decision, read at release time.
+      cleanups.push(
+        attachCopyOnSelect(term, {
+          enabled: () => true,
+          write: (text) => quoteSubs.get(termKey)?.(text)
         })
       )
     }
@@ -6824,6 +6878,16 @@ export function TerminalNode({
           <div className={`term-copy-pill term-copy-pill--${copy.feedback.kind}`}>
             {copy.feedback.label}
           </div>
+        )}
+        {/* "Add to chat" for what was just copied — same corner, one notch up wherever the receipt
+            can show (it is off for Claude, which prints its own copy line). */}
+        {quote.offer !== null && !mdMode && (
+          <QuotePill
+            text={quote.offer}
+            onAdd={addQuote}
+            onDismiss={quote.clear}
+            raised={!reportsOwnCopy(agentId)}
+          />
         )}
         {pasteReceipt.receipt && (
           <div className={`term-paste-pill${pasteReceipt.receipt.ok ? '' : ' term-paste-pill--warn'}`}>

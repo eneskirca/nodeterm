@@ -63,14 +63,16 @@ export function appendQuoteToDraft(draft: string, quote: string): string {
 /** Where a quote goes: the node's ⌘M chat draft, or typed unsent at the agent's prompt. */
 export type QuoteLeg = 'draft' | 'pane'
 
-/** Why a quote went nowhere. `dialog` is decided by the caller from the agent's screen. */
-export type QuoteRefusal = 'not-agent' | 'agent-gone' | 'needs-answer' | 'dialog'
+/** Why a quote went nowhere. `dialog` and `no-prompt` are decided by the caller from the agent's
+ *  screen: a dialog owns the keyboard, or no input box is on screen at all. */
+export type QuoteRefusal = 'not-agent' | 'agent-gone' | 'needs-answer' | 'dialog' | 'no-prompt'
 
 export const QUOTE_REFUSAL_TEXT: Record<QuoteRefusal, string> = {
   'not-agent': 'This terminal has no agent to quote to.',
   'agent-gone': 'The agent is not running in this terminal.',
   'needs-answer': 'The agent is waiting for an answer. Answer it first.',
-  dialog: 'A dialog is open in the terminal. Close it first.'
+  dialog: 'A dialog is open in the terminal. Close it first.',
+  'no-prompt': "The agent's input box is not on screen."
 }
 
 /**

@@ -52,6 +52,26 @@ export function markCanvasCovered(root: CoveredRoot): () => void {
   }
 }
 
+/** The slice of a DOM element `coveredByBoard` reads, so the unit test needs no DOM. */
+export interface CanvasElement {
+  readonly ownerDocument: { readonly documentElement: { getAttribute(name: string): string | null } }
+  closest(selector: string): unknown
+}
+
+/**
+ * Is `el` part of the canvas while a board covers it — mounted, laid out, and under an opaque
+ * surface nobody can see through? Nothing about the element itself says so (`checkVisibility()`
+ * answers true for it), so a surface that must act only on what the person can see asks this.
+ * A focus-mode node is reparented OUT of React Flow onto a surface above the board, and the card
+ * modal is portaled outside it, so neither counts as covered.
+ */
+export function coveredByBoard(el: CanvasElement): boolean {
+  return (
+    el.ownerDocument.documentElement.getAttribute(CANVAS_COVERED_ATTR) === 'covered' &&
+    el.closest('.react-flow') !== null
+  )
+}
+
 /** Test seam: the module-level count is a singleton, so a suite has to be able to reset it. */
 export function resetCanvasCoveredForTest(): void {
   depth = 0

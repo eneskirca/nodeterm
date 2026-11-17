@@ -6,7 +6,8 @@
 import { act, useRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ChatQuoteButton } from './ChatQuoteButton'
+import { ChatQuoteButton, chatQuoteButtonShowing } from './ChatQuoteButton'
+import { CANVAS_COVERED_ATTR } from '../lib/canvasCovered'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -14,9 +15,12 @@ function Harness({ onAdd }: { onAdd(text: string): void }) {
   const ref = useRef<HTMLDivElement>(null)
   return (
     <>
-      <div ref={ref} className="term-chat__msgs" id="thread">
-        <p id="a">first message</p>
-        <p id="b">second message</p>
+      <div className="react-flow">
+        <div ref={ref} className="term-chat__msgs" id="thread">
+          <p id="a">first message</p>
+          <p id="b">second message</p>
+          <pre id="code">a wide code block</pre>
+        </div>
       </div>
       <div id="outside">outside text</div>
       <ChatQuoteButton containerRef={ref} targetNodeId="n1" onAdd={onAdd} />
@@ -37,6 +41,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  document.documentElement.removeAttribute(CANVAS_COVERED_ATTR)
   document.getSelection()?.removeAllRanges()
   await act(async () => root.unmount())
   host.remove()
@@ -101,6 +106,73 @@ describe('ChatQuoteButton', () => {
       document.getElementById('thread')!.dispatchEvent(new Event('scroll'))
     })
     expect(button()).toBeNull()
+  })
+
+  it('hides when a scroller inside the thread moves (a wide code block, a tool output)', async () => {
+    await select('a', 0, 'a', 5)
+    expect(button()).not.toBeNull()
+    await act(async () => {
+      document.getElementById('code')!.dispatchEvent(new Event('scroll'))
+    })
+    expect(button()).toBeNull()
+  })
+
+  it('takes Escape for itself while it shows: nothing behind it (the card modal, a turn) sees it', async () => {
+    const behind = vi.fn()
+    window.addEventListener('keydown', behind)
+    try {
+      await select('a', 0, 'a', 5)
+      expect(chatQuoteButtonShowing()).toBe(true)
+      const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      await act(async () => {
+        document.body.dispatchEvent(esc)
+      })
+      expect(esc.defaultPrevented).toBe(true)
+      expect(behind).not.toHaveBeenCalled()
+      expect(button()).toBeNull()
+      expect(chatQuoteButtonShowing()).toBe(false)
+      // With no button showing, Escape is not its business.
+      const next = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      document.body.dispatchEvent(next)
+      expect(next.defaultPrevented).toBe(false)
+      expect(behind).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('keydown', behind)
+    }
+  })
+
+  it('leaves an IME composition its Escape', async () => {
+    await select('a', 0, 'a', 5)
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true })
+    document.body.dispatchEvent(esc)
+    expect(esc.defaultPrevented).toBe(false)
+  })
+
+  it('is absent for a thread on a canvas that a board covers, and goes when the board opens', async () => {
+    await select('a', 0, 'a', 5)
+    expect(button()).not.toBeNull()
+    // The board opens over a selection that is still there: no selection event fires.
+    await act(async () => {
+      document.documentElement.setAttribute(CANVAS_COVERED_ATTR, 'covered')
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(button()).toBeNull()
+    await select('a', 0, 'a', 6)
+    expect(button()).toBeNull()
+  })
+
+  it('is absent for a thread that is not rendered (checkVisibility says no)', async () => {
+    const proto = HTMLElement.prototype as unknown as { checkVisibility?: () => boolean }
+    const had = Object.prototype.hasOwnProperty.call(proto, 'checkVisibility')
+    const prev = proto.checkVisibility
+    proto.checkVisibility = () => false
+    try {
+      await select('a', 0, 'a', 5)
+      expect(button()).toBeNull()
+    } finally {
+      if (had) proto.checkVisibility = prev
+      else delete proto.checkVisibility
+    }
   })
 
   it('stays when an unrelated scroller moves (a streaming terminal elsewhere)', async () => {
