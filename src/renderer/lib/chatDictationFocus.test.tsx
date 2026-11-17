@@ -134,6 +134,20 @@ describe('shortcutDictationFocus (both shortcut paths decide with it)', () => {
     el.remove()
   })
 
+  it("leaves a READ-ONLY chat view to the ordinary rule: it lies over no pane (a subagent card's thread)", () => {
+    const panel = document.createElement('div')
+    panel.className = 'term-chat'
+    panel.setAttribute('data-chat-node-id', 'parent')
+    panel.setAttribute('data-chat-readonly', '')
+    const chip = document.createElement('summary')
+    panel.append(chip)
+    document.body.append(panel)
+    expect(shortcutDictationFocus(chip)).toBe('default')
+    panel.removeAttribute('data-chat-readonly')
+    expect(shortcutDictationFocus(chip)).toBe('refuse')
+    panel.remove()
+  })
+
   it('Canvas asks it on BOTH paths before any target is chosen (source pin)', () => {
     const src = readFileSync(resolve(__dirname, '../canvas/Canvas.tsx'), 'utf8').replace(/\r\n/g, '\n')
     const toggle = src.slice(src.indexOf('const toggleDictation = useCallback'))

@@ -131,7 +131,7 @@ interface AgentNodesState {
    * chat). `clearForParent` still takes it — the parent is gone — and the stale decay still only
    * marks it done. Closing a finished card un-pins it: it then goes at the NEXT turn boundary like
    * any finished card, except under `autoHideFinished`, where it goes at once. `tidyFanout` drops
-   * the flag too, on purpose (an explicit "reset these cards").
+   * the flag too, on purpose (an explicit "reset these cards"), by the same rule.
    */
   toggleExpanded(id: string): void
   /** Drop a card's dragged position + resized size, returning it to its laid-out spot. */
@@ -223,6 +223,9 @@ interface AgentNodesState {
    * excluded — there is only ever one per parent, so there is nothing to pack. If this is ever
    * extended to loop cards, route through `saveLoopOverrides` too, or a cleared `loop-*` entry
    * would resurrect from its localStorage mirror on reload.
+   *
+   * Dropping `expanded` un-pins the open cards; under `autoHideFinished` a FINISHED one it un-pins
+   * is dropped at once, exactly as closing it would.
    */
   tidyFanout(parentNodeId: string): void
   /**
@@ -235,7 +238,8 @@ interface AgentNodesState {
 
 // Loop-card overrides survive restarts: the loop itself is persisted (agentStatus), so its
 // dragged position/size must be too, or every launch teleports the card back to the default
-// spot. Only `loop-*` keys are stored — subagent cards are per-turn.
+// spot. Only `loop-*` keys are stored — subagent cards live in memory for this app run only (a
+// turn boundary takes a finished one unless the user opened it; see `toggleExpanded`).
 // v2: `positions` changed meaning from a canvas position to an offset from the parent agent
 // node. Reading a v1 entry as an offset would fling the card across the canvas, so the old key is
 // simply abandoned — the cost is one reset of a dragged loop card, not a mystery jump.
@@ -458,15 +462,20 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
     set((s) => {
       const ids = Object.keys(s.byId).filter((id) => s.byId[id].parentNodeId === parentNodeId)
       if (!ids.length) return s
-      const positions = { ...s.positions }
-      const sizes = { ...s.sizes }
-      const expanded = { ...s.expanded }
+      // Un-pinning a finished card under autoHideFinished drops it at once, as closing it does
+      // (`toggleExpanded`): the pin was all that kept it.
+      const drop = s.autoHideFinished ? ids.filter((id) => s.expanded[id] && s.byId[id].state === 'done') : []
+      const dropped = drop.length ? dropCards(s, drop) : {}
+      const base = { ...s, ...dropped }
+      const positions = { ...base.positions }
+      const sizes = { ...base.sizes }
+      const expanded = { ...base.expanded }
       for (const id of ids) {
         delete positions[id]
         delete sizes[id]
         delete expanded[id]
       }
-      return { positions, sizes, expanded }
+      return { ...dropped, positions, sizes, expanded }
     }),
 
   clearLoop: (parentNodeId) =>

@@ -137,10 +137,24 @@ describe('dictationTargetForNode (every mic that names a node: header, card moda
     root.remove()
   })
 
-  it('REFUSES (null) a chat view with no composer (read-only): the pane under it is hidden', () => {
+  it('REFUSES (null) a chat view with no composer: the pane under it is hidden', () => {
     const root = mk('<div class="term-chat" data-chat-node-id="n1"></div>')
     expect(dictationTargetForNode('n1', 'T', { root })).toBeNull()
     root.remove()
+  })
+
+  it("ignores a READ-ONLY chat view naming the node: a subagent card's thread carries its PARENT's id", () => {
+    // The parent's terminal is on the canvas, uncovered, while a card shows its subagent's thread.
+    const root = mk('<div class="subagent-node"><div class="term-chat" data-chat-node-id="n1" data-chat-readonly=""></div></div>')
+    expect(dictationTargetForNode('n1', 'T', { root })).toEqual({ kind: 'terminal', nodeId: 'n1', title: 'T' })
+    root.remove()
+    // …and beside the parent's own ⌘M view, the parent's view still decides.
+    const both = mk(composerBox('n1', 'c1') + '<div class="term-chat" data-chat-node-id="n1" data-chat-readonly=""></div>')
+    expect(dictationTargetForNode('n1', 'T', { root: both })).toMatchObject({ kind: 'chat-composer', composerId: 'c1' })
+    both.remove()
+    const hidden = mk('<div class="term-chat" data-chat-node-id="n1"></div><div class="term-chat" data-chat-node-id="n1" data-chat-readonly=""></div>')
+    expect(dictationTargetForNode('n1', 'T', { root: hidden })).toBeNull()
+    hidden.remove()
   })
 
   it('matches the node id literally (quotes/backslashes cannot break out of the selector)', () => {

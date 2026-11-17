@@ -290,6 +290,40 @@ describe('an opened card stays: the pin rule', () => {
     expect(useAgentNodes.getState().byId['a1']?.state).toBe('working')
   })
 
+  it('with autoHideFinished on, Tidy drops the finished cards it un-pins at once, as a collapse does', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('a-done', { parentNodeId: 'n1' })
+    s.start('a-working', { parentNodeId: 'n1' })
+    s.start('a-other', { parentNodeId: 'n2' })
+    s.toggleExpanded('a-done')
+    s.toggleExpanded('a-working')
+    s.toggleExpanded('a-other')
+    useAgentNodes.getState().finish('a-done', {})
+    useAgentNodes.getState().finish('a-other', {})
+    s.setSize('a-working', { width: 400, height: 300 })
+    s.select('a-done')
+    useAgentNodes.getState().tidyFanout('n1')
+    const st = useAgentNodes.getState()
+    expect(st.byId['a-done']).toBeUndefined()
+    expect(st.selectedId).toBeNull()
+    // A working card only loses its overrides; another parent's open card is not touched.
+    expect(st.byId['a-working']?.state).toBe('working')
+    expect(st.expanded['a-working']).toBeUndefined()
+    expect(st.sizes['a-working']).toBeUndefined()
+    expect(st.expanded['a-other']).toBe(true)
+  })
+
+  it('with autoHideFinished off, Tidy un-pins a finished card but keeps it until the boundary', () => {
+    const s = useAgentNodes.getState()
+    s.start('a1', { parentNodeId: 'n1' })
+    s.toggleExpanded('a1')
+    s.finish('a1', {})
+    useAgentNodes.getState().tidyFanout('n1')
+    expect(useAgentNodes.getState().byId['a1']?.state).toBe('done')
+    expect(useAgentNodes.getState().expanded['a1']).toBeUndefined()
+  })
+
   it('with autoHideFinished off, collapsing a done card keeps it until the boundary', () => {
     const s = useAgentNodes.getState()
     s.start('a1', { parentNodeId: 'n1' })

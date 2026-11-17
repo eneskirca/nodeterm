@@ -4024,6 +4024,25 @@ body,
   padding-top: 6px;
   border-top: 1px solid rgba(var(--tint-rgb), 0.1);
 }
+/* A subagent's TASK (ChatMessage.task): the prompt its parent wrote, heading the thread. Not the
+   person's words, so not a user bubble: the plan card's look, labelled "Task". */
+.term-chat__task {
+  align-self: stretch;
+  padding: 10px 12px;
+  background: rgba(var(--tint-rgb), 0.04);
+  border: 1px solid rgba(var(--tint-rgb), 0.08);
+  border-left: 2px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text);
+}
+.term-chat__task-title {
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
 /* Answer controls under a held Plan / Question card (nodes/ChatAnswerControls.tsx). Plain rows in
    the card's own flow: no fill of their own, so they read the same on every appearance. */
 .term-chat__answer {
@@ -8871,6 +8890,41 @@ button.group-node__setup:disabled {
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
   color: var(--muted);
+}
+
+/* An open Claude subagent card is its conversation (nodes/SubagentNode.tsx): the ⌘M panel in the
+   card's own flow (not laid over a terminal, as on a terminal node), filling what the header leaves,
+   then the report once the subagent finished. The panel root is `nodrag nowheel`, so a drag in the
+   thread selects text and the wheel scrolls it instead of the canvas. */
+.subagent-node--chat .term-chat {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.subagent-node__report {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 40%;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  overflow: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.subagent-node__report-text {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ---- Loop (ephemeral, hook-driven) node ---- */
@@ -17904,6 +17958,15 @@ body.focus-mode .dock:hover {
   background: transparent;
   border-color: var(--glass-edge);
   color: var(--text);
+}
+/* The conversation in an open card is an opaque `--panel` surface: it is in neither glass list, so
+   it gets no blur of its own, and nothing translucent may sit over the card's text without one. */
+:root[data-nt-glass='on'] .subagent-node--chat .term-chat {
+  background: var(--panel);
+  border-color: var(--glass-edge);
+}
+:root[data-nt-glass='on'] .subagent-node__report {
+  border-color: var(--glass-edge);
 }
 
 /* No per-node accent colour on a window (the sessions list and the kanban board keep them). The

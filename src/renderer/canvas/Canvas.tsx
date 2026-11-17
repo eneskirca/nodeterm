@@ -531,7 +531,7 @@ import { useTerminalFocus } from '../state/terminalFocus'
 import { useCodexIdentity, codexFallbackText } from '../state/codexIdentity'
 import { useTeamAccessEvents } from '../state/teamAccess'
 import { useAgentNodes } from '../state/agentNodes'
-import { SubagentNode } from '../nodes/SubagentNode'
+import { SubagentNode, subagentCardSize } from '../nodes/SubagentNode'
 import { LoopNode } from '../nodes/LoopNode'
 import type { NormalizedAgentEvent } from '@shared/agents/normalize'
 import {
@@ -2863,6 +2863,8 @@ export function Canvas() {
       const ROW_H = 140
       childIds.forEach((cid, i) => {
         const v = agentById[cid]
+        // A user resize wins; opened, a card showing the subagent's conversation gets room to read it.
+        const size = subagentCardSize(v, cid, !!ephExpanded[cid], ephSizes[cid])
         eNodes.push({
           id: cid,
           type: 'subagent',
@@ -2880,7 +2882,9 @@ export function Canvas() {
           draggable: true,
           selectable: false, // see the loop card above
           selected: ephSelId === cid,
-          ...dims(cid, 230, 480, 96, 340),
+          width: size.width,
+          height: size.height,
+          style: { width: size.width, height: size.height },
           data: {
             title: v.label ?? '',
             color: accent,
