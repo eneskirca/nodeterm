@@ -1,6 +1,6 @@
 import type { AgentState } from '@shared/agents/normalize'
 import { sanitizeChatText } from '@shared/mobile-chat'
-import { stripTerminalControls } from './terminalOutputMarkdown'
+import { stripTerminalControls } from './terminalControls'
 
 /**
  * "Add to chat": the pure half. Turns a selection into a markdown quote, appends it to a draft, and
@@ -16,15 +16,21 @@ export const QUOTE_MAX_CHARS = 4000
 
 /**
  * The selection as a markdown quote: terminal sequences and control characters removed (tab and
- * newline kept — the chat text rule, `sanitizeChatText`), trimmed, cut at `QUOTE_MAX_CHARS`, every
- * line prefixed `> `, ending in one blank line so what the person types next is not part of it.
- * `null` when nothing is left — the caller adds nothing.
+ * newline kept — the chat text rule, `sanitizeChatText`), leading and trailing blank lines and
+ * trailing whitespace dropped, cut at `QUOTE_MAX_CHARS`, every line prefixed `> `, ending in one
+ * blank line so what the person types next is not part of it. `null` when nothing is left — the
+ * caller adds nothing.
+ *
+ * Not a full `trim`: the first line keeps its leading indentation, so quoted code keeps its
+ * relative indent.
  *
  * Escape SEQUENCES are removed whole before the control-character rule runs: that rule drops only
  * the ESC byte, so a colour change would otherwise be quoted as `[31m`.
  */
 export function buildQuote(raw: string): { quote: string; truncated: boolean } | null {
-  const text = sanitizeChatText(stripTerminalControls(raw)).trim()
+  const text = sanitizeChatText(stripTerminalControls(raw))
+    .replace(/^(?:[^\S\n]*\n)+/, '')
+    .trimEnd()
   if (!text) return null
   const cut = cutCodePoints(text, QUOTE_MAX_CHARS)
   // A cut that lands just after a line break would end the quote on an empty `> ` line.

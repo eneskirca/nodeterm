@@ -75,6 +75,8 @@ export function ClosedTranscriptDialog({ entry, onClose }: ClosedTranscriptDialo
               readOnly
               title={entry.node.title || 'Closed session'}
               hint="Esc to close"
+              // The session is closed: there is no node to add a quote to.
+              quoteTargetNodeId={null}
             />
           </Suspense>
         ) : (

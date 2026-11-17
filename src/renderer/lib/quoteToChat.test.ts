@@ -1,4 +1,8 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { stripTerminalControls as fromLeaf } from './terminalControls'
+import { stripTerminalControls as fromMarkdown } from './terminalOutputMarkdown'
 import {
   QUOTE_MAX_CHARS,
   QUOTE_REFUSAL_TEXT,
@@ -13,8 +17,12 @@ describe('buildQuote', () => {
     expect(buildQuote('a\nb')).toEqual({ quote: '> a\n> b\n\n', truncated: false })
   })
 
-  it('trims the selection before quoting it', () => {
-    expect(buildQuote('\n  hello world  \n\n')).toEqual({ quote: '> hello world\n\n', truncated: false })
+  it('drops leading and trailing blank lines and trailing whitespace', () => {
+    expect(buildQuote('\n \t\nhello world  \n\n')).toEqual({ quote: '> hello world\n\n', truncated: false })
+  })
+
+  it("keeps the first line's indentation, so quoted code keeps its relative indent", () => {
+    expect(buildQuote('\n    if (a) {\n      b()\n    }\n')?.quote).toBe('>     if (a) {\n>       b()\n>     }\n\n')
   })
 
   it('keeps an inner blank line as a quoted line', () => {
@@ -114,5 +122,18 @@ describe('QUOTE_REFUSAL_TEXT', () => {
       dialog: 'A dialog is open in the terminal. Close it first.'
     }
     expect(QUOTE_REFUSAL_TEXT).toEqual(expected)
+  })
+})
+
+describe('imports', () => {
+  it('takes the escape-sequence rule from the leaf module, not from the markdown renderer', () => {
+    // The ⌘M output renderer pulls in marked and DOMPurify; the quote builder needs one regex set.
+    const src = readFileSync(join(__dirname, 'quoteToChat.ts'), 'utf8')
+    expect(src).toMatch(/from '\.\/terminalControls'/)
+    expect(src).not.toMatch(/terminalOutputMarkdown/)
+  })
+
+  it('keeps the markdown renderer exporting the same function for its existing callers', () => {
+    expect(fromMarkdown).toBe(fromLeaf)
   })
 })

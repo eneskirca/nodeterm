@@ -77,6 +77,8 @@ import { isTeammateMessage } from '../lib/chatTeammate'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 import { CLAUDE_INTERRUPT_LINE, chatEscInterrupts, chatInterruptRefusalText } from '../lib/chatEscInterrupt'
+import { addQuoteToNode, defaultQuoteDeps } from '../lib/addQuoteToNode'
+import { ChatQuoteButton } from './ChatQuoteButton'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -149,6 +151,12 @@ interface ChatPanelProps {
    * and never offers plan/question answer controls. Absent = a hook-confirmed id, as before.
    */
   sessionFallback?: boolean
+  /**
+   * Where "Add to chat" on a selection in this thread sends the quote (`lib/addQuoteToNode.ts`).
+   * Absent = this panel's own node; a subagent card's read-only thread names its PARENT node.
+   * `null` = no button (a closed session's transcript has no live session to quote into).
+   */
+  quoteTargetNodeId?: string | null
 }
 
 /**
@@ -238,7 +246,8 @@ export function ChatPanel({
   pathsForFiles,
   onShowTerminal,
   sshProjectId,
-  sessionFallback
+  sessionFallback,
+  quoteTargetNodeId
 }: ChatPanelProps) {
   // This node's core api (stable for the session — the chat transcript and the tmux session
   // both live on the core this panel's project belongs to).
@@ -388,6 +397,19 @@ export function ChatPanel({
     )
   }, [identity, activePendingId, activeCardKey])
   const msgsRef = useRef<HTMLDivElement>(null)
+  // "Add to chat" on a selection in the thread. The node the quote goes to runs this panel's agent
+  // when it is this panel's own node; any other target falls back to the agent its hooks reported.
+  const quoteTarget = quoteTargetNodeId === undefined ? nodeId : quoteTargetNodeId
+  const quoteDeps = useMemo(
+    () => defaultQuoteDeps(api, { agentIdOf: (id) => (id === nodeId ? agentId : undefined) }),
+    [api, nodeId, agentId]
+  )
+  const addQuote = useCallback(
+    (text: string) => {
+      if (quoteTarget !== null) void addQuoteToNode(quoteDeps, quoteTarget, text)
+    },
+    [quoteDeps, quoteTarget]
+  )
   const prevState = useRef(state)
   // Request token: only the NEWEST readTranscript may land. An older read resolving late (the
   // sessionId changed underneath it, or a ↻ raced the turn-finish reload) would otherwise paint
@@ -1272,7 +1294,9 @@ export function ChatPanel({
   return (
     // `data-chat-node-id`: which node's chat view this is — the mics that name only a node ask it
     // (lib/chatComposerDictation.ts `dictationTargetForNode`) so a take never reaches the hidden pane.
-    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId} onKeyDown={onPanelKey}>
+    // `data-chat-readonly`: no composer here, so a quote for this node does not count it as an open
+    // chat view (lib/addQuoteToNode.ts `chatOpen`).
+    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId} data-chat-readonly={readOnly ? '' : undefined} onKeyDown={onPanelKey}>
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">
@@ -1421,6 +1445,7 @@ export function ChatPanel({
             </div>
           )}
         </div>
+        {quoteTarget !== null && <ChatQuoteButton containerRef={msgsRef} targetNodeId={quoteTarget} onAdd={addQuote} />}
         {!following && messages.length > 0 && (
           // An "N new messages ↓" pill, plus a bare "↓" while nothing new has come in: the thread is
           // also read back from deep in its history.

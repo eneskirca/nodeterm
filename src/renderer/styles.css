@@ -3657,6 +3657,40 @@ body,
   background: var(--bg);
   border-color: rgba(var(--tint-rgb), 0.3);
 }
+/* "Add to chat" beside a selection in the thread (nodes/ChatQuoteButton.tsx). The copy pill's chrome
+   (.term-copy-pill), but a button: it takes the click. Portaled to <body> and placed `fixed` from the
+   selection's client rect, so the canvas zoom never applies to it. An opaque `--panel` surface in
+   every look, Liquid Glass included: it is in neither glass list, so it gets no blur, and nothing
+   translucent may float over text without one. z 62: above the card modal (55), below the
+   confirmation and palette dialogs (70+). */
+.chat-quote-btn {
+  position: fixed;
+  z-index: 62;
+  pointer-events: auto;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 5px 9px;
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  animation: nt-copy-pill-in 120ms ease-out;
+}
+.chat-quote-btn:hover {
+  color: var(--text-strong);
+  border-color: rgba(var(--tint-rgb), 0.3);
+}
+.chat-quote-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .term-chat__text a {
   color: var(--accent);
   text-decoration: underline;
