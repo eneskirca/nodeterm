@@ -9785,14 +9785,30 @@ scale 1): looping, one chip held the frame loop open for as long as its agent wo
 covered gate cannot reach it because the board is what covers the canvas; under Liquid Glass every
 column's backdrop-filter ran again each frame (measured, 20 RUNNING cards, glass on: GPU 50 % →
 17.5 %). The chip mounts when the agent starts working, so each new turn pulses again;
-`settings.boardRunningPulse` off still holds it still. Only the attention glow (and its minimap beat) and
-React Flow's animated edges (working subagent and loop edges, the driven-browser rope — see the
-`dashdraw` paragraph below) stay infinite — needs-you is the one state that must keep pulling the
-eye, and an edge animates only while its work runs — and the idle and covered gates pause all of
-them when nobody is looking. The driven-browser rope still flows (it lasts only while an agent
-drives the page).
+`settings.boardRunningPulse` off still holds it still. **So are the subagent and loop card dots,
+the sessions sidebar's unread check and the working-edge flow** (issue #1454, below). What still
+loops while focused: the attention glow, its minimap beat and the sidebar's needs-you bell
+(needs-you is the one state that must keep pulling the eye), the working node header's walking
+mascot / brand pulse (deliberate character, #1370), the sidebar's working spinner, and progress
+spinners that exist only while a task the user started runs. The idle and covered gates pause all
+of them when nobody is looking.
 `styles.animation-gate.test.ts` pins the bounded shorthands, the resting values and the keyframe
 endpoints.
+
+**Issue #1454: a focused canvas with background subagents.** Parents idle, four async subagents
+working, two unread sessions: the only running animations were four `dashdraw` edges, four
+subagent dots and two sidebar checks, and they held a FOCUSED window at ~120 frames/s (reporter:
+renderer 108 %, GPU 38 %; 64 % / 3 % with them stopped). Reproduced in the Server Edition under
+headless Chrome (4 subagents, 20 unread rows, focused): GPU 54–55 % + renderer 15–17 % on `main`,
+4–5 % + 2–3 % with the dots and check bounded and the edge flow bounded to ~4 s
+(`.react-flow__edge.animated path { animation-iteration-count: 8 }`; the dash stays, so dashed
+still means working and solid means done; the driven rope keeps its clay colour and weight).
+**Reduce Motion covered none of them** — `main` with the OS setting emulated measured 62 % + 22 %.
+It is now enforced by scan: `styles.reduced-motion.test.ts` requires every REPEATING animation in
+styles.css (infinite, or an iteration count ≥ 2) to be stopped by a
+`@media (prefers-reduced-motion: reduce)` rule that names it, or to be listed in its `EXEMPT` map
+with a reason (progress spinners, dead CSS, and four setup-tour scenes that are a stated known
+gap), and checks xyflow's edge rule separately because it lives in the vendor sheet.
 
 **React Flow's `dashdraw` is gated in `styles.css`, not by xyflow.** Every `animated` edge (working
 subagent and loop edges, the driven-browser rope) and an animated connection line run xyflow's own
@@ -9803,8 +9819,9 @@ renderer and +340 MB GPU footprint; dark 31.5 % + 29 %. With the play-state rule
 (not the shipped stylesheet) the edge fell to the no-edge baseline of that run, 0.5 % / 3.3 %; the
 shipped build has not been measured. The rule repeats xyflow's selectors verbatim (same specificity, wins on order after the
 `@import`), and `styles.animation-gate.test.ts` scans the vendor sheet for infinite animations, so an
-xyflow upgrade that adds one fails there. A FOCUSED window still pays the full per-edge cost while an
-edge works; a cheaper working-edge style is an open design call (the driven rope keeps flowing).
+xyflow upgrade that adds one fails there. A FOCUSED window used to pay the full per-edge cost for
+as long as an edge worked; since #1454 the flow runs 8 iterations (~4 s) and then holds the dash,
+and Reduce Motion stops it outright. The connection line a person is dragging keeps flowing.
 
 **The viewport is never promoted — not even while the camera moves.** A `will-change: transform`
 on `.react-flow__viewport` during pan/zoom was tried (00c9c5fc, measured 41–48% → 30–36% CPU on

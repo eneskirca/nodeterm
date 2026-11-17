@@ -1661,6 +1661,13 @@ carrying information the user needs at a glance. A dependency's stylesheet count
 the same test scans `@xyflow/react/dist/style.css` so an upgrade that adds an infinite animation
 fails there. The full measurement table and the reasoning are in CLAUDE.md § Idle energy.
 
+The gate only helps a window nobody is looking at; a FOCUSED window pays for every loop the whole
+time it runs (issue #1454: four working-subagent edges and a few dots held one at 120 frames/s). So a
+status indicator pulses a few times and settles (`ease-in-out 4`), and keeps looping only if it must
+keep pulling the eye (needs-you). And every repeating animation must stop under
+`@media (prefers-reduced-motion: reduce)`: `src/renderer/styles.reduced-motion.test.ts` fails on
+one that is neither stopped there nor listed in its `EXEMPT` map with a reason.
+
 **The kanban board hides things it does not unmount.** The canvas and a pinned sessions sidebar
 stay mounted under the opaque board, and so do their terminals. An animation on something under
 the board needs the covered override (`:root[data-nt-canvas='covered'] …`, pinned in
