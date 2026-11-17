@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SubagentViz } from '../state/agentNodes'
 import {
   openSubagentCard,
+  parentHidesFanout,
   requestOpenSubagent,
+  SUBAGENT_FANOUT_HIDDEN_TEXT,
   subagentRowsFor,
   subagentRowsSig,
   type SubagentCardStore
@@ -60,10 +62,23 @@ describe('subagentRowsSig', () => {
     expect(subagentRowsSig({ a: card('p2') }, 'p1')).toBe('')
   })
 
-  it('carries each card id and state, with what its row draws, one row per line in start order', () => {
-    expect(subagentRowsSig(base, 'p1')).toBe('a\tworking\tExplore\tMap it')
+  it('carries each card id, state, start time, type and task, length-prefixed, in store order', () => {
+    expect(subagentRowsSig(base, 'p1')).toBe('1:aw1:7:Explore6:Map it')
     const two = { ...base, b: card('p1', { type: 'Plan', startedAt: 0, state: 'done' }) }
-    expect(subagentRowsSig(two, 'p1')).toBe('b\tdone\tPlan\t\na\tworking\tExplore\tMap it')
+    expect(subagentRowsSig(two, 'p1')).toBe('1:aw1:7:Explore6:Map it1:bd0:4:Plan0:')
+  })
+
+  it('changes when the start order would change (a start time moves)', () => {
+    const two = { ...base, b: card('p1', { startedAt: 2 }) }
+    const sig = subagentRowsSig(two, 'p1')
+    expect(subagentRowsSig({ ...two, b: { ...two.b, startedAt: 0 } }, 'p1')).not.toBe(sig)
+  })
+
+  it("a field's text cannot pass for another card (no separator inside a field is trusted)", () => {
+    // One card whose task spells a second card's fields, against those two cards.
+    const one = { a: card('p1', { type: 'T', label: 'L1:bw1:1:T1:M', startedAt: 1 }) }
+    const two = { a: card('p1', { type: 'T', label: 'L', startedAt: 1 }), b: card('p1', { type: 'T', label: 'M', startedAt: 1 }) }
+    expect(subagentRowsSig(one, 'p1')).not.toBe(subagentRowsSig(two, 'p1'))
   })
 
   it("does not change for another node's card, or for anything a row does not draw", () => {
@@ -138,5 +153,28 @@ describe('openSubagentCard', () => {
       expect(s.toggles).toEqual([])
       expect(s.selected).toEqual([])
     }
+  })
+})
+
+describe('parentHidesFanout', () => {
+  it("reads the live canvas's copy of the parent when it holds it (the flag last toggled)", () => {
+    const live = [{ id: 'p1', data: { hideFanout: true } }]
+    expect(parentHidesFanout('p1', live, [{ id: 'p1' }])).toBe(true)
+    expect(parentHidesFanout('p1', [{ id: 'p1', data: {} }], [{ id: 'p1', hideFanout: true }])).toBe(false)
+  })
+
+  it("else the stored copy (the parent's project is not on screen); a parent found nowhere hides nothing", () => {
+    expect(parentHidesFanout('p1', [{ id: 'other', data: { hideFanout: true } }], [{ id: 'p1', hideFanout: true }])).toBe(true)
+    expect(parentHidesFanout('p1', [], [{ id: 'p1' }])).toBe(false)
+    expect(parentHidesFanout('p1', [], undefined)).toBe(false)
+  })
+
+  it("answers with the canvas's own test (truthy), so it says hidden exactly when no card is drawn", () => {
+    expect(parentHidesFanout('p1', [{ id: 'p1', data: { hideFanout: 'yes' } }], undefined)).toBe(true)
+    expect(parentHidesFanout('p1', [], [{ id: 'p1', hideFanout: 0 }])).toBe(false)
+  })
+
+  it('the notice names the eye by its own label', () => {
+    expect(SUBAGENT_FANOUT_HIDDEN_TEXT).toContain('Show cards & connections')
   })
 })

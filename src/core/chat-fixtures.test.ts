@@ -1046,6 +1046,17 @@ describe('subagent read rules (inline records)', () => {
     ])
   })
 
+  it('a record that unwraps to nothing does not hide the other form of the same message', () => {
+    // The ids are recorded when a bubble is DRAWN: a blank form (string or array) leaves them free.
+    expect(userTexts([task, revived(`${WRAP_HEAD}${WRAP_TAIL}`, 'S1'), queued('stop', 'S1')])).toEqual(['the task', 'stop'])
+    expect(userTexts([task, revived([{ type: 'text', text: `${WRAP_HEAD}${WRAP_TAIL}` }], 'S1'), queued('stop', 'S1')])).toEqual([
+      'the task',
+      'stop'
+    ])
+    // And the drawn form still suppresses the blank one after it (nothing to draw either way).
+    expect(userTexts([task, queued('stop', 'S1'), revived(`${WRAP_HEAD}${WRAP_TAIL}`, 'S1')])).toEqual(['the task', 'stop'])
+  })
+
   it('two messages with the same words are two bubbles', () => {
     expect(userTexts([task, queued('stop', 'S1'), queued('stop', 'S2'), revived(`${WRAP_HEAD}stop${WRAP_TAIL}`, 'S3')])).toEqual([
       'the task',

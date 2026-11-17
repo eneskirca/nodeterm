@@ -44,7 +44,17 @@ describe('subagent cards in Canvas (source pins)', () => {
     expect(open).toBeGreaterThan(travel)
     // Only when the travel happened: an open card is pinned, so a blocked travel or a declined
     // reopen must not leave one pinned on a canvas nobody went to.
-    expect(body).toMatch(/travelToNode\(d\.parentNodeId\)\.then\(\s*\(travelled\) => \{\s*if \(travelled\) openSubagentCard\(/)
+    expect(body).toMatch(/travelToNode\(d\.parentNodeId\)\.then\(\s*\(travelled\) => \{\s*if \(travelled && openSubagentCard\(/)
+    // A parent whose eye hides its cards: the flag is read before the travel (from the live canvas,
+    // else the owning project's stored copy), the card still opens, and an info strip says where it
+    // is. The flag itself is never written from here (it is persisted node data).
+    const hidden = body.indexOf('const hidden = parentHidesFanout(')
+    expect(hidden).toBeGreaterThan(-1)
+    expect(hidden).toBeLessThan(travel)
+    expect(body).toContain('nodeOwner(useProjects.getState().projects, d.parentNodeId)?.nodes')
+    expect(body).toMatch(/openSubagentCard\(useAgentNodes\.getState\(\), d\.parentNodeId, d\.cardId\) && hidden\) \{\s*setNotice\(\{ kind: 'info', text: SUBAGENT_FANOUT_HIDDEN_TEXT \}\)/)
+    expect(body).not.toContain('hideFanout')
+    expect(body).not.toContain('updateNodeData')
     expect(body).not.toContain('fitView')
     expect(body).not.toContain('toggleExpanded')
     // Registered after travelToNode exists, re-registered when it changes.

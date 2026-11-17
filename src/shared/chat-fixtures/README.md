@@ -375,7 +375,9 @@ controlled run (haiku model, scratch cwd, a person messaging the subagent from t
 subagent file for its first line, and the CLI's own bundle for the wrapper strings and the identity
 rule. The shapes:
 
-- Every record of the file carries `isSidechain: true` and the subagent's `agentId`.
+- Every record of the file carries the subagent's `agentId`. Every conversation record (`user`,
+  `assistant`, `attachment`) also carries `isSidechain: true`; the request records
+  (`api-request-shape`, `api-request-blob`, `api-request`) and a fork's `fork-context-ref` do not.
 - The first line of a FORK is `{type:"fork-context-ref", agentId, parentSessionId, parentLastUuid,
   contextLength}`, then the parent's replayed `Agent` call (`parentUuid: null`) and a user record
   `[tool_result, text]` whose text is the fork's task. A background subagent's first line is the task

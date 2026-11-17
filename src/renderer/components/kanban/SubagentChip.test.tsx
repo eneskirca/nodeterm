@@ -3,6 +3,8 @@
 // The board is the canvas's other view of the same nodes: a session card says how many subagent
 // cards its node has on the canvas (the running ones emphasized), and says nothing while it has none.
 import { act } from 'react'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionCard } from './SessionCard'
@@ -30,11 +32,19 @@ afterEach(() => {
   useAgentNodes.getState().clearForParent('n2')
 })
 
-function render(session: KanbanSession, onOpen = vi.fn()): void {
+function render(session: KanbanSession, onOpen = vi.fn(), relayProject?: boolean): void {
   const noop = (): void => {}
   act(() =>
     root.render(
-      <SessionCard session={session} onOpen={onOpen} onDragStart={noop} onDragEnd={noop} onDropAt={noop} onContext={noop} />
+      <SessionCard
+        session={session}
+        onOpen={onOpen}
+        onDragStart={noop}
+        onDragEnd={noop}
+        onDropAt={noop}
+        onContext={noop}
+        relayProject={relayProject}
+      />
     )
   )
 }
@@ -81,4 +91,24 @@ describe('SessionCard — subagent chip', () => {
     render(sticky)
     expect(chip()).toBeNull()
   })
+
+  it("a relay / team project's card never shows it: the card store is this machine's", () => {
+    useAgentNodes.getState().start('a', { parentNodeId: 'n1', type: 'Explore' })
+    render(terminal, vi.fn(), true)
+    expect(chip()).toBeNull()
+    render(terminal, vi.fn(), false)
+    expect(chip()).not.toBeNull()
+  })
+})
+
+describe('both boards tell the card whether its project is a relay / team tab', () => {
+  const src = (f: string): string => readFileSync(join(__dirname, f), 'utf8').replace(/\r\n/g, '\n')
+  for (const f of ['KanbanView.tsx', 'GlobalKanbanView.tsx']) {
+    it(f, () => {
+      const s = src(f)
+      expect(s).toContain('const relayProject = useProjects((s) => !!s.getProject(projectId)?.remote)')
+      const card = s.slice(s.indexOf('<SessionCard'), s.indexOf('/>', s.indexOf('<SessionCard')))
+      expect(card).toContain('relayProject={relayProject}')
+    })
+  }
 })

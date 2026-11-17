@@ -555,6 +555,11 @@ export interface ChatParseOptions {
    * One bubble per message: records naming the same message (`messageIds`) are drawn once. In a
    * MAIN transcript an `isMeta` queued attachment is a peer message, which is why none of this runs
    * there.
+   *
+   * Precondition: the task reading trusts offset 0 to mean the file's first line. A paged read
+   * (`parseChatWindow`) carries real byte offsets; an UNPAGED caller (`parseChatMessages`, which
+   * hands every line offset 0) must therefore hand the WHOLE file from its start, never a tail.
+   * Core's only setter is a paged read.
    */
   subagentFile?: boolean
 }
@@ -871,16 +876,19 @@ function parseChatRecords(
   // The task is still to come / the current record is it.
   let taskPending = false
   let taskRecord = false
-  // Ids of the person's messages already drawn (`messageIds`), for one bubble per message.
+  // Ids of the person's messages already drawn (`messageIds`), for one bubble per message. A
+  // record's ids are recorded when its bubble is DRAWN (`push`), never before: a form that unwraps
+  // to nothing must not hide the other form of the same message.
   const drawnIds = new Set<string>()
-  const alreadyDrawn = (o: Parameters<typeof messageIds>[0]): boolean => {
-    const ids = messageIds(o)
-    const seen = ids.some((id) => drawnIds.has(id))
-    for (const id of ids) drawnIds.add(id)
-    return seen
-  }
+  const alreadyDrawn = (o: Parameters<typeof messageIds>[0]): boolean => messageIds(o).some((id) => drawnIds.has(id))
+  // The current record when it carries a person's message: `push` records its ids.
+  let personRecord: Parameters<typeof messageIds>[0] | null = null
   const push = (m: ChatMessage, offset: number): void => {
     awaitingOutput = null
+    if (personRecord !== null && m.role === 'user') {
+      for (const id of messageIds(personRecord)) drawnIds.add(id)
+      personRecord = null
+    }
     const base = taskRecord && m.role === 'user' ? { ...m, task: true as const } : m
     // `at` rides BOTH paths (additive): the time the line was written, for the thread's relative
     // timestamp. Absent when the line states none — never a made-up time.
@@ -918,6 +926,7 @@ function parseChatRecords(
   taskPending = subagent && atFileStart
   for (const { o, offset } of parsed) {
     taskRecord = false
+    personRecord = null
     // A prompt the model never received (see `abandonedPromptUuids`). Skipped before anything else,
     // so it moves no clock and attaches to nothing.
     if (typeof o.uuid === 'string' && abandoned.has(o.uuid)) continue
@@ -963,6 +972,8 @@ function parseChatRecords(
     // The person's message to a finished subagent (see `ChatParseOptions.subagentFile`).
     if (subagent && isSubagentPersonRecord(o)) {
       if (alreadyDrawn(o)) continue
+      // Array content falls through to the user branch, whose push records the ids too.
+      personRecord = o
       content = unwrapSubagentContent(content)
       if (typeof content === 'string') {
         if (content.trim()) push({ role: 'user', parts: [{ kind: 'text', text: userTextOf(content, opts) }] }, offset)
@@ -1085,6 +1096,7 @@ function parseChatRecords(
       // (`subagentQueuedPrompt`), drawn once per message.
       const queued = subagent ? (subagentQueuedPrompt(o) ?? queuedHumanPrompt(o)) : queuedHumanPrompt(o)
       if (queued !== null && !(subagent && alreadyDrawn(o))) {
+        if (subagent) personRecord = o
         push({ role: 'user', parts: [{ kind: 'text', text: userTextOf(queued, opts) }] }, offset)
       }
     }

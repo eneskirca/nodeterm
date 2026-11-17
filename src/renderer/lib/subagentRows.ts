@@ -45,27 +45,31 @@ export function subagentRowsFor(byId: Record<string, SubagentViz>, parentNodeId:
 }
 
 /**
- * A primitive that changes exactly when `subagentRowsFor` would draw something else — what the
- * row components subscribe with, never the store's whole `byId` (whose identity changes on every
- * hook event of every node; the canvas `armedDepSig` rule). It carries more than id and state
- * because a running card is RELABELLED under its own id: Claude's lifecycle pairs a label with a
- * child by guess and corrects it later (core/claude-subagent-lifecycle.ts), and a signature blind
- * to the label would leave the sidebar showing the guess. `''` = no cards (the common case, which
- * allocates nothing).
+ * A primitive that changes whenever `subagentRowsFor` would draw something else — what the row
+ * components subscribe with, never the store's whole `byId` (whose identity changes on every hook
+ * event of every node; the canvas `armedDepSig` rule). It carries more than id and state because a
+ * running card is RELABELLED under its own id: Claude's lifecycle pairs a label with a child by
+ * guess and corrects it later (core/claude-subagent-lifecycle.ts), and a signature blind to the
+ * label would leave the sidebar showing the guess.
+ *
+ * Built from the RAW fields, in store order, with no regex and no sort: it runs on every store
+ * update for every subscribed row, so it costs one pass and one concatenation. The start time is in
+ * it, so a change of the drawn ORDER changes it too (the order is a function of store order and the
+ * start times). A raw field may change where the drawn row does not (whitespace in a task, an
+ * absent type vs `'subagent'`); that costs one redundant render, never a missed one. The free-text
+ * fields are length-prefixed, so a task holding the separators cannot read as another card. `''` =
+ * no cards (the common case, which allocates nothing).
  */
 export function subagentRowsSig(byId: Record<string, SubagentViz>, parentNodeId: string): string {
-  let any = false
+  let sig = ''
   for (const id in byId) {
-    if (byId[id].parentNodeId === parentNodeId) {
-      any = true
-      break
-    }
+    const v = byId[id]
+    if (v.parentNodeId !== parentNodeId) continue
+    const type = v.type ?? ''
+    const label = v.label ?? ''
+    sig += `${id.length}:${id}${v.state === 'working' ? 'w' : 'd'}${v.startedAt}:${type.length}:${type}${label.length}:${label}`
   }
-  if (!any) return ''
-  // Fields joined by a tab, rows by a newline: `oneLine` leaves neither inside a field.
-  return subagentRowsFor(byId, parentNodeId)
-    .map((r) => `${r.id}\t${r.state}\t${r.type}\t${r.label}`)
-    .join('\n')
+  return sig
 }
 
 /** The ask a subagent row makes: go to `parentNodeId` and open its card `cardId`. */
@@ -104,4 +108,26 @@ export function openSubagentCard(store: SubagentCardStore, parentNodeId: string,
   if (!store.expanded[cardId]) store.toggleExpanded(cardId)
   store.select(cardId)
   return true
+}
+
+/** Said when a row opens a card that the canvas does not draw (see `parentHidesFanout`). */
+export const SUBAGENT_FANOUT_HIDDEN_TEXT =
+  "Opened the subagent, but this session's cards are hidden. Click the eye in its header (Show cards & connections) to see it."
+
+/**
+ * Whether the parent hides its cards and connections (the header's eye, `data.hideFanout`): the
+ * canvas then draws none of its subagent cards, so a row that opens one must say so. The live
+ * canvas's copy wins when it holds the parent (the flag the person last toggled); otherwise the
+ * stored copy of the project that owns it. Truthy, exactly as the canvas's card merge tests it.
+ * The open never clears the flag itself: it is persisted node data, and showing the cards is the
+ * person's choice.
+ */
+export function parentHidesFanout(
+  parentNodeId: string,
+  live: ReadonlyArray<{ id: string; data?: { hideFanout?: unknown } }>,
+  stored: ReadonlyArray<{ id: string; hideFanout?: unknown }> | undefined
+): boolean {
+  const onCanvas = live.find((n) => n.id === parentNodeId)
+  if (onCanvas) return !!onCanvas.data?.hideFanout
+  return !!stored?.find((n) => n.id === parentNodeId)?.hideFanout
 }

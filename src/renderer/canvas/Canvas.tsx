@@ -531,7 +531,12 @@ import { useTerminalFocus } from '../state/terminalFocus'
 import { useCodexIdentity, codexFallbackText } from '../state/codexIdentity'
 import { useTeamAccessEvents } from '../state/teamAccess'
 import { useAgentNodes } from '../state/agentNodes'
-import { openSubagentCard, type OpenSubagentDetail } from '../lib/subagentRows'
+import {
+  openSubagentCard,
+  parentHidesFanout,
+  SUBAGENT_FANOUT_HIDDEN_TEXT,
+  type OpenSubagentDetail
+} from '../lib/subagentRows'
 import { SubagentNode, subagentCardSize } from '../nodes/SubagentNode'
 import { LoopNode } from '../nodes/LoopNode'
 import type { NormalizedAgentEvent } from '@shared/agents/normalize'
@@ -18741,14 +18746,25 @@ export function Canvas() {
   // forever. Otherwise the card opens as soon as the travel STARTED (a switch is synchronous, a
   // reopen once it was accepted), not when it lands: opening pins it, so the turn boundary cannot
   // take it on the way, and the only thing that can (the parent going away) clears its flags with
-  // it. A card that is already gone is left alone.
+  // it. A card that is already gone is left alone. A parent whose eye hides its cards
+  // (`hideFanout`) gets the card opened all the same (it shows, open, when the person shows the
+  // cards) and an info strip saying where it is; the flag is persisted node data and is never
+  // cleared from here. It is read BEFORE the travel, while the live canvas still holds the project
+  // the flag was last toggled on.
   useEffect(() => {
     const handler = (e: CustomEvent<OpenSubagentDetail>): void => {
       const d = e.detail
       if (!d || typeof d.parentNodeId !== 'string' || typeof d.cardId !== 'string') return
+      const hidden = parentHidesFanout(
+        d.parentNodeId,
+        nodesRef.current,
+        nodeOwner(useProjects.getState().projects, d.parentNodeId)?.nodes
+      )
       void travelToNode(d.parentNodeId).then(
         (travelled) => {
-          if (travelled) openSubagentCard(useAgentNodes.getState(), d.parentNodeId, d.cardId)
+          if (travelled && openSubagentCard(useAgentNodes.getState(), d.parentNodeId, d.cardId) && hidden) {
+            setNotice({ kind: 'info', text: SUBAGENT_FANOUT_HIDDEN_TEXT })
+          }
         },
         () => {}
       )
