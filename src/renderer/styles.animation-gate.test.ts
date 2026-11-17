@@ -202,6 +202,49 @@ describe('idle-window animation gate', () => {
     expect(keyframesBody(css, 'nt-pulse')).toMatch(/0%,\s*100%\s*\{\s*opacity:\s*1;\s*transform:\s*scale\(1\)/)
   })
 
+  it('the subagent and loop card dots and the sidebar unread check are bounded (issue #1454)', () => {
+    // A FOCUSED window has no gate. Issue #1454 measured a canvas whose only running animations
+    // were these, the sessions sidebar's unread checks and four working-subagent edges: renderer
+    // 108 % and GPU 38 % with the window focused, 64 % / 3 % with them stopped. The cards still
+    // say "working" in text with a running timer; the sidebar row keeps its check. Four pulses mark
+    // the change, like every other status indicator. (The needs-you bell keeps pulsing on purpose:
+    // needs-you is the one state that must keep pulling the eye.)
+    for (const sel of [
+      '.subagent-node.working .subagent-node__dot',
+      '.loop-node.working .loop-node__dot',
+      '.ss-check--unread'
+    ]) {
+      const rule = ruleBody(css, sel)
+      expect(rule, sel).toMatch(/animation:\s*nt-pulse\s+1\.1s\s+ease-in-out\s+4\b/)
+      expect(rule, sel).not.toMatch(/infinite/)
+    }
+  })
+
+  it('working edges flow for a few seconds, then hold the dash (issue #1454)', () => {
+    // React Flow's `dashdraw` (0.5 s, infinite in its own sheet) ran for as long as a subagent or
+    // loop worked, and held a focused window's frame loop open by itself. The edge keeps its dash
+    // (xyflow's `stroke-dasharray`, untouched), so "dashed = working, solid = done" still reads;
+    // only the flow stops. Same specificity as xyflow's rule and later, so the longhand wins.
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    const importAt = stripped.indexOf("@import '@xyflow/react/dist/style.css'")
+    const bounded = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(
+      (m) =>
+        (m.index ?? 0) > importAt &&
+        m[1].split(',').map((s) => s.trim()).includes('.react-flow__edge.animated path') &&
+        /animation-iteration-count:/.test(m[2])
+    )
+    expect(bounded, 'no rule bounds .react-flow__edge.animated path').toBeDefined()
+    const count = Number(bounded![2].match(/animation-iteration-count:\s*(\d+)/)?.[1])
+    const vendor = fs
+      .readFileSync(createRequire(__filename).resolve('@xyflow/react/dist/style.css'), 'utf8')
+      .replace(/\r\n/g, '\n')
+    const seconds = Number(vendor.match(/\.react-flow__edge\.animated path\s*\{[^}]*animation:\s*dashdraw\s+([\d.]+)s/)?.[1])
+    expect(seconds).toBeGreaterThan(0)
+    expect(count * seconds).toBeGreaterThanOrEqual(2)
+    expect(count * seconds).toBeLessThanOrEqual(5)
+    expect(bounded![2]).not.toMatch(/stroke-dasharray/)
+  })
+
   it('never pauses the notch HUD, whose window is never focused', () => {
     // hud.css belongs to a separate always-on-top panel window that by design never takes focus,
     // so the shared gate would freeze it permanently rather than while nobody is looking.
