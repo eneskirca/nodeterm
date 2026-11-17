@@ -13,7 +13,7 @@ import { commitLaunch } from '../terminal/launch-attempt'
 import { isLaunchShell } from '@shared/agents/pane'
 import { createLaunchWriter, deliverInitialLaunch, launchCommand, registerLaunchWriter } from '../terminal/launch-command'
 import { trustsFreshShell } from '@shared/launch-trust'
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { NODE_MIN_SIZES } from '../lib/nodeSizing'
 import {
   Handle,
@@ -251,9 +251,8 @@ import { transcriptSessionFor } from '../lib/transcriptSession'
 import { Tooltip } from '../components/Tooltip'
 import { useTerminalSearch } from '../terminal/useTerminalSearch'
 import { useCopyFeedback } from '../terminal/useCopyFeedback'
-import { useQuoteOffer } from '../terminal/useQuoteOffer'
+import { useTerminalQuote } from '../terminal/useTerminalQuote'
 import { QuotePill } from '../terminal/QuotePill'
-import { addQuoteToNode, defaultQuoteDeps } from '../lib/addQuoteToNode'
 import { pasteWithImageReceipt } from '../terminal/image-paste-confirm'
 import { usePasteReceipt } from '../terminal/usePasteReceipt'
 import { createBoardPauseSlot } from '../terminal/board-render-pause'
@@ -1257,7 +1256,7 @@ export function wakeHibernatedNode(nodeId: string): void {
  */
 const copySubs = new Map<string, (text: string) => void>()
 
-/** The "Add to chat" offer's sink (`useQuoteOffer`), published for the same reason as `copySubs`:
+/** The "Add to chat" offer's sink (`useTerminalQuote`), published for the same reason as `copySubs`:
  *  it is fed by the OSC 52 handler and the copy-on-select release, both registered once per xterm
  *  instance and carried across a park. */
 const quoteSubs = new Map<string, (text: string) => void>()
@@ -1959,37 +1958,29 @@ export function TerminalNode({
   // Which status-driven readers this node may run (see relay-status-gates.ts): all of them on the
   // local session, none on a relay / team tab, whose status is its host's.
   const gates = relayStatusGates(session.source)
-  // "Add to chat" at the copy moment (terminal/useQuoteOffer.ts): the text just copied out of an
+  // "Add to chat" at the copy moment (terminal/useTerminalQuote.ts): the text just copied out of an
   // AGENT's terminal, offered for a moment as a quote for this node. Fed through `quoteSubs` by the
   // OSC 52 handler and the copy-on-select release in the lifecycle effect (both outlive a park). An
   // agent node is the created agent or one a hook identified (a hand-launched CLI), the derivation
   // the funnel's `node()` makes too. NOT gated on `reportsOwnCopy`: Claude prints its own copy line
   // instead of the receipt, but takes a quote like any agent. Never for a hosted read-only seat.
+  // The ⌘M face covers the terminal, and the pill would sit on top of it: an offer made for the
+  // terminal is over once the terminal is out of sight.
   const quoteEnabled = !!(agentId ?? status?.agentId) && !hostedReadOnly
-  const quote = useQuoteOffer({ enabled: quoteEnabled })
+  const quote = useTerminalQuote({
+    api,
+    nodeId: id,
+    agentId,
+    enabled: quoteEnabled,
+    covered: !!mdMode,
+    readStatus: () => agentStatusStore.getState().byId[id]
+  })
   useEffect(() => {
     quoteSubs.set(termKey, quote.notify)
     return () => {
       if (quoteSubs.get(termKey) === quote.notify) quoteSubs.delete(termKey)
     }
   }, [termKey, quote.notify])
-  // The session's own api: a relay tab's write goes to its host's pane.
-  const quoteDeps = useMemo(
-    () => defaultQuoteDeps(api, { agentIdOf: (nodeId) => (nodeId === id ? agentId : undefined) }),
-    [api, id, agentId]
-  )
-  const addQuote = useCallback(
-    (text: string): void => {
-      quote.clear()
-      void addQuoteToNode(quoteDeps, id, text)
-    },
-    [quote.clear, quoteDeps, id]
-  )
-  // The ⌘M face covers the terminal, and the pill would sit on top of it: an offer made for the
-  // terminal is over once the terminal is out of sight.
-  useEffect(() => {
-    if (mdMode) quote.clear()
-  }, [mdMode, quote.clear])
   /**
    * Which Claude account this node is ACTUALLY on. `data.accountId` is what nodeterm launched
    * it as and is immutable; `status.account` is what the session's hooks reported — the only
@@ -6884,7 +6875,7 @@ export function TerminalNode({
         {quote.offer !== null && !mdMode && (
           <QuotePill
             text={quote.offer}
-            onAdd={addQuote}
+            onAdd={quote.add}
             onDismiss={quote.clear}
             raised={!reportsOwnCopy(agentId)}
           />

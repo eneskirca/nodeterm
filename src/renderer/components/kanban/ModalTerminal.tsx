@@ -6,7 +6,7 @@ import { ptyRefusal } from '@shared/pty-refusal'
 
 import { patchImeModeSwitch } from '../../terminal/ime-mode-switch'
 import { patchShrinkTrim } from '../../terminal/shrink-trim'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
@@ -68,9 +68,8 @@ import { parseOsc52 } from '../../terminal/osc52'
 import { createOsc52Notice, dispatchOsc52Toast, handleOsc52Write } from '../../terminal/osc52-policy'
 import { activateUnicode11 } from '../../terminal/unicode-width'
 import { useCopyFeedback } from '../../terminal/useCopyFeedback'
-import { useQuoteOffer } from '../../terminal/useQuoteOffer'
+import { useTerminalQuote } from '../../terminal/useTerminalQuote'
 import { QuotePill } from '../../terminal/QuotePill'
-import { addQuoteToNode, defaultQuoteDeps } from '../../lib/addQuoteToNode'
 import { pasteWithImageReceipt } from '../../terminal/image-paste-confirm'
 import { usePasteReceipt } from '../../terminal/usePasteReceipt'
 import { agentProcessInPane } from '../../terminal/live-work'
@@ -256,25 +255,18 @@ export function ModalTerminal({
   // MIRROR TerminalNode: "Add to chat" for what was just copied out of an agent's terminal, quoted
   // to the CARD's node. Not gated on `reportsOwnCopy` (Claude takes a quote too). The modal's own
   // ⌘M view covers this viewer, so the funnel's `chatOpen` looks only inside the modal (the
-  // canvas node's ⌘M panel under the board is not what the person is looking at).
+  // canvas node's ⌘M panel under the board is not what the person is looking at). The modal's ⌘M
+  // face laid over this viewer ends an offer made for the terminal.
   const hostedReadOnly = useHostedReadOnly(session.id)
   const quoteEnabled = !!(spawn.agentId ?? observedAgentId) && !hostedReadOnly
-  const quote = useQuoteOffer({ enabled: quoteEnabled })
-  const quoteDeps = useMemo(
-    () => defaultQuoteDeps(api, { agentIdOf: (id) => (id === nodeId ? spawn.agentId : undefined) }),
-    [api, nodeId, spawn.agentId]
-  )
-  const addQuote = useCallback(
-    (text: string): void => {
-      quote.clear()
-      void addQuoteToNode(quoteDeps, nodeId, text)
-    },
-    [quote.clear, quoteDeps, nodeId]
-  )
-  // The modal's ⌘M face laid over this viewer ends an offer made for the terminal.
-  useEffect(() => {
-    if (covered) quote.clear()
-  }, [covered, quote.clear])
+  const quote = useTerminalQuote({
+    api,
+    nodeId,
+    agentId: spawn.agentId,
+    enabled: quoteEnabled,
+    covered: !!covered,
+    readStatus: () => agentStatusStore.getState().byId[nodeId]
+  })
   // Right-click on a URL → the canvas node's link menu, URL rows only (file rows act on the active
   // project — see the link wiring in the lifecycle effect).
   const [linkMenu, setLinkMenu] = useState<{ x: number; y: number; url: string } | null>(null)
@@ -858,7 +850,7 @@ export function ModalTerminal({
       {quote.offer !== null && !covered && (
         <QuotePill
           text={quote.offer}
-          onAdd={addQuote}
+          onAdd={quote.add}
           onDismiss={quote.clear}
           raised={!reportsOwnCopy(spawn.agentId as AgentId | undefined)}
         />

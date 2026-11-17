@@ -88,8 +88,12 @@ export async function addQuoteToNode(
     if (claudeScreenBlocksInput(screen)) return refuse(deps, screen.kind === 'dialog' ? 'dialog' : 'no-prompt')
   }
 
-  // Without the blank line that ends the quote in a draft: an app that has not switched on
-  // bracketed paste reads a pasted newline as Enter, and the quote would be submitted.
+  // Without the blank line that ends the quote in a draft: in an app that has not asked for
+  // bracketed paste, a pasted newline reads as Enter, and a trailing one would submit the quote. That
+  // covers the END only — in such an app every inner newline still reads as Enter, so a multi-line
+  // quote is submitted at its first line break. The agent CLIs ask for bracketed paste, and tmux's
+  // `paste-buffer -p` frames the paste for an app that asked, so there it lands as one block. The
+  // cost: the person's next keys continue the quote's last line.
   const sent = await deps.sendText(nodeId, built.quote.replace(/\n+$/, '')).catch(() => false)
   if (sent !== true) {
     deps.toast(QUOTE_WRITE_FAILED_TEXT)

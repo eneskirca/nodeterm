@@ -56,9 +56,13 @@ function shown(container: HTMLElement): boolean {
   return !coveredByBoard(container)
 }
 
-/** The document selection, when it is a non-empty one wholly inside `container`. */
+/**
+ * The document selection, when it is a non-empty one wholly inside `container`. Every panel runs this
+ * on every `selectionchange` in the window (a terminal's included), so the cheap checks go first and
+ * the visibility check, which needs the element's computed style, runs only for a selection here.
+ */
 function selectionInside(container: HTMLElement | null): Selection | null {
-  if (!container || !shown(container)) return null
+  if (!container) return null
   const sel = document.getSelection()
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null
   if (!sel.anchorNode || !sel.focusNode) return null
@@ -66,6 +70,7 @@ function selectionInside(container: HTMLElement | null): Selection | null {
   // A whitespace-only selection would quote nothing; text selected inside a form field (a plan's
   // "Revise…" box) is not part of the document selection's text at all.
   if (sel.toString().trim() === '') return null
+  if (!shown(container)) return null
   return sel
 }
 

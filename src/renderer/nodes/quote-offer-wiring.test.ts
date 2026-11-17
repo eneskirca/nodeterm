@@ -18,6 +18,7 @@ const read = (rel: string): string =>
 
 const terminalNode = read('TerminalNode.tsx')
 const modalTerminal = read('../components/kanban/ModalTerminal.tsx')
+const terminalQuote = read('../terminal/useTerminalQuote.ts')
 const styles = read('../styles.css')
 
 /** The text between `start` and the first `end` after it. */
@@ -34,10 +35,13 @@ describe('both terminal surfaces offer the quote and route it through the one fu
     ['TerminalNode', terminalNode],
     ['ModalTerminal', modalTerminal]
   ] as const) {
-    it(`${name} holds an offer, renders the pill and adds through addQuoteToNode`, () => {
-      expect(src).toContain('useQuoteOffer(')
-      expect(src).toContain('addQuoteToNode(')
+    it(`${name} holds an offer through the shared glue and renders the pill that adds it`, () => {
+      expect(src).toContain('useTerminalQuote({')
       expect(src).toContain('<QuotePill')
+      expect(src).toContain('onAdd={quote.add}')
+      // The glue is the ONE place the surfaces reach the funnel: no surface keeps a second copy.
+      expect(src).not.toContain('addQuoteToNode(')
+      expect(src).not.toContain('useQuoteOffer(')
     })
 
     it(`${name} feeds the offer from the OSC 52 copy (the tmux selection)`, () => {
@@ -54,11 +58,22 @@ describe('both terminal surfaces offer the quote and route it through the one fu
     })
 
     it(`${name} does not gate the offer on reportsOwnCopy (Claude gets the pill too)`, () => {
-      expect(src).toContain('useQuoteOffer({ enabled: quoteEnabled })')
+      expect(between(src, 'useTerminalQuote({', '})')).toContain('enabled: quoteEnabled')
       const enabled = between(src, 'const quoteEnabled =', '\n')
       expect(enabled).not.toContain('reportsOwnCopy')
     })
+
+    it(`${name} gates the offer on the node's live status (a CLI that left the pane offers nothing)`, () => {
+      expect(between(src, 'useTerminalQuote({', '})')).toMatch(/readStatus: \(\) => agentStatusStore\.getState\(\)\.byId\[/)
+    })
   }
+
+  it('the shared glue holds the offer, gates it on the pane at the copy, and adds through the funnel', () => {
+    expect(terminalQuote).toContain('useQuoteOffer({ enabled })')
+    expect(terminalQuote).toContain('addQuoteToNode(')
+    const notify = between(terminalQuote, 'const notify = useCallback(', '[offerNotify]')
+    expect(notify).toContain('agentProcessInPane(')
+  })
 
   it('the canvas node publishes its offer sink through a module-level map, like copySubs', () => {
     // The OSC 52 handler is registered once per xterm and survives a park: it must look the sink
@@ -69,8 +84,10 @@ describe('both terminal surfaces offer the quote and route it through the one fu
     expect(osc).toContain('copySubs.get(termKey)')
   })
 
-  it('the card modal quotes to the CARD node', () => {
-    expect(modalTerminal).toMatch(/addQuoteToNode\(quoteDeps, nodeId,/)
+  it('each surface quotes to its own node (the card modal to the CARD node)', () => {
+    expect(between(modalTerminal, 'useTerminalQuote({', '})')).toMatch(/\n\s*nodeId,\n/)
+    expect(between(terminalNode, 'useTerminalQuote({', '})')).toContain('nodeId: id,')
+    expect(terminalQuote).toMatch(/addQuoteToNode\(quoteDeps, nodeId, text\)/)
   })
 })
 

@@ -8,6 +8,13 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectKanban } from '@shared/types'
+
+// jsdom draws nothing: the modal's imports ask a canvas for a 2D context, and jsdom prints "Not
+// implemented" for every ask. No context is what a page without canvas support gets. Hoisted: some
+// of those asks happen while the imports below load.
+vi.hoisted(() => {
+  HTMLCanvasElement.prototype.getContext = (() => null) as unknown as HTMLCanvasElement['getContext']
+})
 import { resetDialogStack } from '../dialog-stack'
 import { CardModal } from './CardModal'
 import type { KanbanSession } from './KanbanView'
