@@ -10856,7 +10856,9 @@ button.group-node__setup:disabled {
   cursor: pointer;
 }
 .subagent-row:hover { background: rgba(var(--tint-rgb), 0.08); color: var(--text); }
-.subagent-row .nt-spinner { color: var(--agent-working); font-size: 10px; border-width: 1.5px; }
+/* Working is a STATIC dot: a subagent runs for minutes, and a looping mark would keep a focused
+   window at display rate for all of them (issue #1454). */
+.subagent-row__working { flex: 0 0 auto; width: 7px; height: 7px; margin: 0 2px; border-radius: 50%; background: var(--agent-working); }
 .subagent-row__done { flex: 0 0 auto; color: var(--success); line-height: 0; }
 .subagent-row__done svg { width: 11px; height: 11px; }
 .subagent-row__type { flex: 0 1 auto; max-width: 45%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }

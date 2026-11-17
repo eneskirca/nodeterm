@@ -42,11 +42,21 @@ describe('subagent cards in Canvas (source pins)', () => {
     const open = body.indexOf('openSubagentCard(useAgentNodes.getState(), d.parentNodeId, d.cardId)')
     expect(travel).toBeGreaterThan(-1)
     expect(open).toBeGreaterThan(travel)
+    // Only when the travel happened: an open card is pinned, so a blocked travel or a declined
+    // reopen must not leave one pinned on a canvas nobody went to.
+    expect(body).toMatch(/travelToNode\(d\.parentNodeId\)\.then\(\s*\(travelled\) => \{\s*if \(travelled\) openSubagentCard\(/)
     expect(body).not.toContain('fitView')
     expect(body).not.toContain('toggleExpanded')
     // Registered after travelToNode exists, re-registered when it changes.
     const effect = between("window.addEventListener('nodeterm:open-subagent'", '\n\n')
     expect(effect).toContain('}, [travelToNode])')
     expect(src.indexOf("addEventListener('nodeterm:open-subagent'")).toBeGreaterThan(src.indexOf('const travelToNode = useCallback('))
+  })
+
+  it('travelToNode reports a travel that did not happen: false when blocked, the reopen\'s own answer', () => {
+    const fn = between('const travelToNode = useCallback(', '\n  // Published BELOW the callback')
+    expect(fn).toContain("if (travel.kind === 'blocked') return Promise.resolve(false)")
+    expect(fn).toMatch(/return reopenProject\(travel\.projectId\)\.then\(\(ok\) => \{[\s\S]*?return ok\s*\}\)/)
+    expect(fn).toMatch(/focusNodeById\(nodeId\)\s*return Promise\.resolve\(true\)/)
   })
 })

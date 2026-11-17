@@ -60,10 +60,10 @@ describe('subagentRowsSig', () => {
     expect(subagentRowsSig({ a: card('p2') }, 'p1')).toBe('')
   })
 
-  it('carries each card id and state', () => {
-    const sig = subagentRowsSig(base, 'p1')
-    expect(sig).toContain('a')
-    expect(sig).toContain('working')
+  it('carries each card id and state, with what its row draws, one row per line in start order', () => {
+    expect(subagentRowsSig(base, 'p1')).toBe('a\tworking\tExplore\tMap it')
+    const two = { ...base, b: card('p1', { type: 'Plan', startedAt: 0, state: 'done' }) }
+    expect(subagentRowsSig(two, 'p1')).toBe('b\tdone\tPlan\t\na\tworking\tExplore\tMap it')
   })
 
   it("does not change for another node's card, or for anything a row does not draw", () => {

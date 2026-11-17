@@ -27,7 +27,8 @@ vi.mock('../../session/session', async () => {
     useSession: () => ({ api: { pty: {}, shell: { openExternal: vi.fn(async () => {}) } } }),
     agentStatusForProject: () => defaultAgentStatus,
     useSessionRegistryVersion: () => 0,
-    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus }),
+    isRemoteProjectId: (id: string) => id === 'p-team'
   }
 })
 vi.mock('./BoardLogPanel', () => ({ BoardLogPanel: () => null }))
@@ -70,11 +71,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function mount(session: KanbanSession, onClose = vi.fn()): () => void {
+function mount(session: KanbanSession, onClose = vi.fn(), projectId = 'p-lane'): () => void {
   const root = createRoot(host)
   act(() =>
     root.render(
-      <CardModal projectId="p-lane" session={session} columnTitle={null} board={board} onChangeBoard={vi.fn()} onClose={onClose}
+      <CardModal projectId={projectId} session={session} columnTitle={null} board={board} onChangeBoard={vi.fn()} onClose={onClose}
         onOpenCanvas={vi.fn()} onRename={vi.fn()} onEditSticky={vi.fn()} onSetIcon={vi.fn()} onBrowserNav={vi.fn()} />
     )
   )
@@ -105,6 +106,14 @@ describe('CardModal — the subagent list', () => {
 
   it('shows no list while the node has no subagent cards', () => {
     const unmount = mount(terminal)
+    expect(document.body.querySelector('.card-subagents')).toBeNull()
+    unmount()
+  })
+
+  it("a relay / team tab's card has no list: its subagents are the host's, not the local store's", () => {
+    useAgentNodes.getState().start('a', { parentNodeId: 'orch', type: 'Explore' })
+    const unmount = mount(terminal, vi.fn(), 'p-team')
+    expect(document.body.querySelector('.kanban-modal')).not.toBeNull()
     expect(document.body.querySelector('.card-subagents')).toBeNull()
     unmount()
   })

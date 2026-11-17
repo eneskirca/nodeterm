@@ -18150,21 +18150,26 @@ export function Canvas() {
   // Jump to the node a peer is focused on. focusNodeById already handles the same-project focus and
   // the switch to another OPEN project; the closed-project case has to reopen the tab first and let
   // the active-project effect finish the focus (pendingFocusRef, same mechanism as a notification).
+  //
+  // Resolves whether it travelled: false for a project we cannot read (`blocked`) and for a reopen
+  // that was declined. Most callers ignore it; opening a subagent card does not (it must not pin a
+  // card on a canvas nobody went to).
   const travelToNode = useCallback(
-    (nodeId: string) => {
+    (nodeId: string): Promise<boolean> => {
       const { projects, activeProjectId: active } = useProjects.getState()
       const travel = nodeTravel(projects, active, nodeId)
-      if (travel.kind === 'blocked') return
+      if (travel.kind === 'blocked') return Promise.resolve(false)
       if (travel.kind === 'reopen') {
         pendingFocusRef.current = nodeId
         // Declined (a project handed to a hosted team stays closed): drop the staged focus so a
         // later reopen of that project does not jump to a node nobody asked for this time.
-        void reopenProject(travel.projectId).then((ok) => {
+        return reopenProject(travel.projectId).then((ok) => {
           if (!ok && pendingFocusRef.current === nodeId) pendingFocusRef.current = null
+          return ok
         })
-        return
       }
       focusNodeById(nodeId)
+      return Promise.resolve(true)
     },
     [focusNodeById, reopenProject]
   )
@@ -18731,15 +18736,22 @@ export function Canvas() {
   // A subagent row (sessions sidebar, the kanban card modal's list) asks for one card: go to its
   // parent node the way every "go to node" does — `travelToNode` switches to, or reopens, the
   // parent's project and frames it with setViewport, never fitView — then open (never close) and
-  // select the card. The card is opened at once rather than when the travel lands: opening pins it,
-  // so the turn boundary cannot take it on the way, and the only thing that can (the parent going
-  // away) clears its flags with it. A card that is already gone is left alone.
+  // select the card. Nothing opens when the travel did not happen (a project we cannot read, a
+  // declined reopen): an open card is pinned, and a pin on a canvas nobody went to would keep it
+  // forever. Otherwise the card opens as soon as the travel STARTED (a switch is synchronous, a
+  // reopen once it was accepted), not when it lands: opening pins it, so the turn boundary cannot
+  // take it on the way, and the only thing that can (the parent going away) clears its flags with
+  // it. A card that is already gone is left alone.
   useEffect(() => {
     const handler = (e: CustomEvent<OpenSubagentDetail>): void => {
       const d = e.detail
       if (!d || typeof d.parentNodeId !== 'string' || typeof d.cardId !== 'string') return
-      travelToNode(d.parentNodeId)
-      openSubagentCard(useAgentNodes.getState(), d.parentNodeId, d.cardId)
+      void travelToNode(d.parentNodeId).then(
+        (travelled) => {
+          if (travelled) openSubagentCard(useAgentNodes.getState(), d.parentNodeId, d.cardId)
+        },
+        () => {}
+      )
     }
     window.addEventListener('nodeterm:open-subagent' as never, handler as never)
     return () => window.removeEventListener('nodeterm:open-subagent' as never, handler as never)

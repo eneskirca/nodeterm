@@ -4,6 +4,8 @@
 // same store), a click asks the canvas to open that card, and a row re-renders only when ITS node's
 // cards change. Then the sidebar: the rows sit under the session row in both grouping modes, and a
 // node with no cards adds nothing under its row.
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { act, Profiler } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -36,7 +38,7 @@ afterEach(async () => {
 })
 
 describe('SubagentRows', () => {
-  it("renders one row per card of the node, in start order: type · task, a spinner or a done mark", async () => {
+  it("renders one row per card of the node, in start order: type · task, a working dot or a done mark", async () => {
     start('a-late', 'p1', 'Explore', 'Map the repo', 20)
     start('a-early', 'p1', 'general-purpose', 'Find the bug', 10)
     useAgentNodes.getState().finish('a-early', { result: 'found it' })
@@ -49,10 +51,29 @@ describe('SubagentRows', () => {
     expect(rows[0].querySelector('.subagent-row__done')).not.toBeNull()
     expect(rows[0].querySelector('.nt-spinner')).toBeNull()
     expect(rows[1].querySelector('.subagent-row__type')!.textContent).toBe('Explore')
-    // The app's one spinner, for the running one.
-    expect(rows[1].querySelector('.nt-spinner')).not.toBeNull()
+    // A static dot for the running one — never the spinner (see the frame-loop test below).
+    expect(rows[1].querySelector('.subagent-row__working')).not.toBeNull()
+    expect(rows[1].querySelector('.nt-spinner')).toBeNull()
     expect(rows[1].querySelector('.subagent-row__done')).toBeNull()
     expect(rows[1].getAttribute('aria-label')).toBe('Explore: Map the repo, working')
+  })
+
+  it('a working row animates nothing, in either variant: a subagent runs for minutes (issue #1454)', async () => {
+    start('a', 'p1', 'Explore', 'Map it', 1)
+    for (const variant of ['sidebar', 'list'] as const) {
+      await act(async () => root.render(<SubagentRows parentNodeId="p1" variant={variant} />))
+      const row = host.querySelector('.subagent-row--working')!
+      expect(row).not.toBeNull()
+      expect(row.querySelector('.nt-spinner')).toBeNull()
+      expect(row.querySelector('.subagent-row__working')).not.toBeNull()
+    }
+    // …and no rule these rows or the board chip match declares an animation.
+    const css = readFileSync(path.join(__dirname, '../styles.css'), 'utf8').replace(/\r\n/g, '\n')
+    const rules = [...css.matchAll(/([^{}]*)\{([^{}]*)\}/g)]
+      .map((m) => ({ selector: m[1].trim(), body: m[2] }))
+      .filter((r) => /subagent-row|ss-subagents|card-subagents|kanban-subagent-chip/.test(r.selector))
+    expect(rules.length).toBeGreaterThan(5)
+    for (const r of rules) expect(r.body, r.selector).not.toMatch(/animation/)
   })
 
   it('a node with no cards renders nothing at all', async () => {
@@ -175,6 +196,16 @@ describe('the sessions sidebar lists subagents under their session', () => {
   }
 
   for (const mode of ['project', 'status'] as const) {
+    it(`${mode} mode: a relay / team tab's node gets no rows, whatever the local store holds`, async () => {
+      // A team tab shares node ids with the SSH project handed to it; the local card store is not
+      // its host's, so nothing listed under it may come from there.
+      useProjects.setState({ projects: [{ ...project, remote: true } as Project], activeProjectId: 'proj' })
+      start('a1', 'n-agent', 'Explore', 'Map the repo', 1)
+      await mountSidebar(mode)
+      expect(host.querySelector('.ss-row')).not.toBeNull()
+      expect(host.querySelector('.ss-subagents')).toBeNull()
+    })
+
     it(`${mode} mode: the rows follow the agent's session row, and only that one`, async () => {
       start('a1', 'n-agent', 'Explore', 'Map the repo', 1)
       start('a2', 'n-agent', 'Plan', 'Plan the fix', 2)

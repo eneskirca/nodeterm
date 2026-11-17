@@ -45,7 +45,7 @@ import {
   CARD_MODAL_MIN_W,
   CARD_MODAL_MIN_H
 } from '../../state/cardModalSize'
-import { useSession, useSessionStores } from '../../session/session'
+import { isRemoteProjectId, useSession, useSessionStores } from '../../session/session'
 // The same wake trigger the canvas node's SLEEPING/PAUSED chip and mount/visibility auto-wakes
 // use — NOT a bespoke resume path, so a click here gets the same WakeInputBuffer protection and
 // retries. Importing one function out of the canvas node module is safe: TerminalNode.tsx already
@@ -760,10 +760,11 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
           />
         )}
         <CardMetaBar nodeId={session.id} board={board} onChange={onChangeBoard} />
-        {isTerminal && (
+        {isTerminal && !isRemoteProjectId(projectId) && (
           // The node's subagents (nothing while it has none). Their conversations are read on the
           // canvas, in their own cards — never a second time in here: a row closes the modal,
           // leaves the board for THIS card's project's canvas, and asks the canvas to open it.
+          // Not on a relay / team tab's card: its subagents are the host's, not the local store's.
           <SubagentRows
             parentNodeId={session.id}
             variant="list"

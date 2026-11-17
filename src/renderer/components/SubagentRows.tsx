@@ -1,14 +1,13 @@
 import { useMemo } from 'react'
 import { useAgentNodes } from '../state/agentNodes'
 import { requestOpenSubagent, subagentRowsFor, subagentRowsSig, type SubagentRow } from '../lib/subagentRows'
-import { Spinner } from './Spinner'
 import { IconCircleCheck } from './icons'
 
 export interface SubagentRowsProps {
   /** The agent node whose subagents these are. */
   parentNodeId: string
   /**
-   * `sidebar`: indented rows under the node's session row (type · task, a spinner or a done mark).
+   * `sidebar`: indented rows under the node's session row (type · task, a working dot or a done mark).
    * `list`: the kanban card modal's compact list, under a heading, with the state in words.
    */
   variant?: 'sidebar' | 'list'
@@ -53,7 +52,9 @@ export function SubagentRows({ parentNodeId, variant = 'sidebar', onBeforeOpen }
       }}
     >
       {r.state === 'working' ? (
-        <Spinner />
+        // A STATIC mark, never a spinner: a subagent can run for many minutes, and one looping
+        // animation keeps a focused window producing frames at display rate (issue #1454).
+        <span className="subagent-row__working" aria-hidden="true" />
       ) : (
         <span className="subagent-row__done" aria-hidden="true">
           <IconCircleCheck />
