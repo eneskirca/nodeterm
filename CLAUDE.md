@@ -4872,7 +4872,8 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     appended to the node's chat draft (`state/chatDraft.ts`, one blank line apart) and the composer
     focused with the caret at the end, whatever the agent is doing (a draft types nothing). The
     terminal showing → an UNSENT paste at the agent's prompt, `pty.sendText(nodeId, quote,
-    {enter:false})` (dictation's Insert path, which every backend serves), with the trailing
+    {enter:false})` (dictation's Insert path; every backend implements it, and whether the Windows
+    session host answers `true` for it is an owed device check, (a) below), with the trailing
     newlines STRIPPED: in an app that has not asked for bracketed paste a pasted newline reads as
     Enter. Residual, stated: such an app also submits at every INNER newline; the agent CLIs ask for
     bracketed paste, and tmux's `paste-buffer -p` frames it. Only a literal `true` is a landed write
@@ -4886,28 +4887,46 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     still counts). `focusComposer` uses the same match, so a composer nobody can see never takes the
     keyboard. So a quote from the card modal's terminal goes to the pane even while the canvas
     node's ⌘M view is open under the board.
-  - **The pane leg's refusals**, each one toast with nothing typed (`QUOTE_REFUSAL_TEXT`): not an
-    agent node; the CLI is not in the pane (`agentProcessInPane`: hibernated, paused, dropped,
-    exited); `blocked` / `waiting`, or a held question / approval ticket (`held` / `pendingId`),
-    because typed text would ANSWER the prompt; and, for an agent whose screen is readable
-    (`SCREEN_DIALOG_READABLE`, claude), a `readChatScreen` that the composer's own rule refuses
-    (`claudeScreenBlocksInput`: `dialog`, or `no-prompt` = no input box on screen). That read exists
-    because the agent's own dialogs (folder trust, `/model`) fire no hook, so the state says idle
-    while one owns the keyboard. An unreadable screen is not evidence and types. `working` is
-    allowed (typing into the box while a turn runs is what a person does), and so is a non-empty box
-    (the quote lands at the cursor).
+  - **The pane leg's refusals**, each one toast with nothing typed and the draft untouched
+    (`QUOTE_REFUSAL_TEXT`): not an agent node; the CLI is not in the pane by the store's flags
+    (`agentProcessInPane`: hibernated, paused, dropped, exited); `blocked` / `waiting`, or a held
+    question / approval ticket (`held` / `pendingId`), because typed text would ANSWER the prompt;
+    then **the kernel's say, for every agent** — the same `chatPaneRefusal` call
+    (`lib/chatPaneGate.ts`, `pty.paneOwner` + the settings' custom agents) the ⌘M composer and the
+    phone make before they type. The flags are a hint, not proof: Codex and opencode announce no
+    session end, so after a `/quit` the state still reads `done`, and an agent killed without its
+    SessionEnd leaves a shell in the pane under the same flags. A quote at a shell prompt is one
+    reflexive Enter from running each `> …` line as an output redirection that creates or truncates
+    a file. A pane the kernel says the agent left is `agent-gone`; one it could not read is
+    `unverified` ("Could not confirm the agent is running in this terminal.", the composer's
+    wording), never typed. Last, for an agent
+    whose screen is readable (`SCREEN_DIALOG_READABLE`, claude), a `readChatScreen` that the
+    composer's own rule refuses (`claudeScreenBlocksInput`: `dialog`, or `no-prompt` = no input box
+    on screen). That read exists because the agent's own dialogs (folder trust, `/model`) fire no
+    hook, so the state says idle while one owns the keyboard. An unreadable SCREEN is not evidence
+    and types (the kernel has already placed the agent in the pane). `working` is allowed (typing
+    into the box while a turn runs is what a person does), and so is a non-empty box (the quote lands
+    at the cursor).
   - **Triggers.** (1) The ⌘M thread: `ChatQuoteButton` (`nodes/ChatQuoteButton.tsx`) for a non-empty
     selection whose anchor AND focus are inside one `.term-chat__msgs`. It is portaled to `<body>` at
     the selection's last client rect (a fixed element inside React Flow's scaled viewport would
     scale with it), its mousedown is prevented so the selection survives, and it hides on a
     selection change, a scroll of the thread / inside it / of an ancestor (not an unrelated scroller:
-    a streaming xterm scrolls all the time), a wheel and a resize. It is not offered for a thread
-    `checkVisibility()` says is not rendered or on a board-covered canvas, and a `MutationObserver`
-    on `data-nt-canvas` hides one already shown when a board opens. **It owns Escape while it
-    shows** (window capture, `stopImmediatePropagation`): one Escape hides it and goes no further,
-    not to the composer (whose Escape interrupts a turn) and not to the card modal, which also
-    returns early on `chatQuoteButtonShowing()` because both listen in the window capture phase and
-    registration order decides. `ChatPanel.quoteTargetNodeId`: absent = the panel's own node, `null`
+    a streaming xterm scrolls all the time), a wheel, a resize, a press anywhere but on the button,
+    and a focus move to anything outside the thread (both window capture). The last two exist
+    because the selection can outlive the click that leaves it: xterm's mousedown calls
+    `preventDefault()`, so clicking into another node's terminal keeps the document selection and
+    fires no selection change, and a sloppy-focus dwell moves the keyboard with no click at all. It
+    is not offered for a thread `checkVisibility()` says is not rendered or on a board-covered
+    canvas, and a `MutationObserver` on `data-nt-canvas` hides one already shown when a board opens.
+    **It owns Escape while it shows AND the keyboard is near the thread** (`escapeInScope`: inside
+    its chat panel, on the button, on `<body>`, or on an element holding the thread — a press on the
+    thread's text focuses the nearest focusable ancestor, React Flow's node wrapper on the canvas):
+    window capture, `stopImmediatePropagation`, one Escape hides it and goes no further, not to the
+    composer (whose Escape interrupts a turn) and not to the card modal, which also returns early on
+    `chatQuoteButtonShowing()` because both listen in the window capture phase and registration
+    order decides. With focus anywhere else (another node's terminal) the key is that surface's and
+    is left alone. `ChatPanel.quoteTargetNodeId`: absent = the panel's own node, `null`
     = no button (`ClosedTranscriptDialog`). (2) The terminal: tmux clears its highlight AS it
     copies, so the only moment the text exists here is the OSC 52 copy (`handleOsc52Write`'s
     `notifyCopied`, after the write policy allowed it), plus the copy-on-select RELEASE for a
@@ -4925,23 +4944,32 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     (over a terminal, Escape interrupts the turn), and covering the terminal (⌘M face up, the modal's
     `covered`) withdraws the offer. tmux sends OSC 52 to every client of the pane, so a copy in the
     card modal also offers an invisible pill on the canvas node under the board (it expires). (3) A
-    subagent card's thread quotes to its PARENT (see **Subagent visualization**).
+    subagent card's thread quotes to its PARENT (see **Subagent visualization**). Such a quote is
+    made on another node than its target, and when it lands in the target's pane it says so: the
+    info toast "Added to the agent's terminal." (`addQuoteToNode(…, { crossNode })`, which ChatPanel
+    passes for a subagent card's thread or a named other target; no toast for a same-node quote).
+    The canvas's `nodeterm:toast` listener draws an `info` toast as its fading info strip, beside the
+    `error` banner it always drew.
   - **Surfaces.** Desktop and Server Edition: full (renderer plus the bridged `sendText` /
     `readChatScreen`). SSH projects: full (pane writes ride the master). Kanban card modal: full,
     its own ⌘M state decides the leg. Relay / team tab: the ⌘M thread reads nothing there
     (transcript reads are refused), so there is no thread button; its OSC 52 copy is refused by
     `osc52-policy`, so no copy-moment pill; an xterm-owned selection still offers one, and that
-    writes to the HOST's pane through the relay api, the place the person's own keys go (ruled).
+    writes to the HOST's pane through the relay api, the place the person's own keys go (ruled),
+    after the host answered `pty.paneOwner` (editor-only, like `sendText`).
     Mobile: N/A (follow-up: the phone's chat screen could offer a quote action).
   - **Device checklist** (jsdom only so far): (a) Windows session host: `sendText(…, {enter:false})`
     answers `true` (else every pane quote toasts a failure); (b) Claude: a multi-line pane quote
-    lands as one pasted block, nothing is submitted, and the next key continues after it; (c) select
-    in node A's ⌘M thread, click node B's tmux pane, press Escape: it reaches B (the button is gone);
-    (d) the thread button's place at a canvas zoom other than 100 % and under Liquid Glass, and its
-    drift on a middle-drag pan (no scroll or wheel event; it hides at the next selection change,
-    accepted); (e) the pill on a Codex node (receipt on, raised) and on a Claude node (receipt off);
-    (f) the card modal's terminal pill with the canvas node's ⌘M view open under the board → the
-    pane; (g) a relay tab's Option/Shift selection pill writes to the host's pane.
+    lands as one pasted block, nothing is submitted, and the next key continues after it; (c) the
+    thread button's place at a canvas zoom other than 100 % and under Liquid Glass (a middle-drag
+    pan, which fires no scroll or wheel event, no longer leaves it behind: the press hides it);
+    (d) the pill on a Codex node (receipt on, raised) and on a Claude node (receipt off); (e) the
+    card modal's terminal pill with the canvas node's ⌘M view open under the board → the pane;
+    (f) a relay tab's Option/Shift selection pill writes to the host's pane. No longer owed:
+    "select in A's thread, click B's pane, Escape reaches B" — the press hides the button whatever
+    the selection does, and an Escape with the keyboard outside the thread is never taken. A
+    selection change could still redraw the button while B has the keyboard (Chromium's selection
+    behaviour on that click is unmeasured); it would then not take B's Escape.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events drive a transient `state/agentNodes.ts` store. For Claude they come from
   **Claude's own `SubagentStart`/`SubagentStop` hooks** whenever a session sends them (2026-09,
@@ -5015,10 +5043,12 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     / `native`, set by `applyAgentEvent` from the event and the parent's FRESH status entry). The
     first recorded value wins and `native` is sticky once true, so a later resume, restart or
     account switch of the parent never repoints an open card, and a replay without the signal cannot
-    demote one. With no recorded account the card reads under the parent node's own rule
-    (`effectiveAccountId(data.accountId, observed, claudeAccounts)`, TerminalNode's
-    `accountForReads`). `core/subagent-replay.ts` now carries `subagentSignal`, so a RUNNING card
-    replayed after a reload stays native; a finished one is not replayed.
+    demote one. Two of those end the card instead: an in-place restart or an account switch quits
+    the parent's CLI, which fires SessionEnd, so `clearForParent` removes the card, pinned or not —
+    an opened card does not survive a parent restart. With no recorded account the card reads under
+    the parent node's own rule (`effectiveAccountId(data.accountId, observed, claudeAccounts)`,
+    TerminalNode's `accountForReads`). `core/subagent-replay.ts` now carries `subagentSignal`, so a
+    RUNNING card replayed after a reload stays native; a finished one is not replayed.
   - **The size is a layout default, never stored**: `subagentCardSize` lays an open chat card out at
     480 × 560 (an open text card 480 × 340, a closed one 230 × 96), and a size the person set wins.
     A stored size is also the CLOSED size, so storing 480 × 560 on open would leave a big empty frame
