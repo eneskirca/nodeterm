@@ -1,17 +1,21 @@
 import type { AgentState } from '@shared/agents/normalize'
 import { readsScreenDialogs } from '@shared/agents/config'
 import { claudeScreenBlocksInput, type ClaudeScreen } from '@shared/agents/claude-screen'
-import type { NodeTerminalApi } from '@shared/types'
+import type { PaneOwner } from '@shared/agents/pane-owner-predicate'
+import type { CustomAgent, NodeTerminalApi } from '@shared/types'
 import { agentStatusForApi } from '../state/agentStatus'
 import { useChatDraft } from '../state/chatDraft'
+import { useSettings } from '../state/settings'
 import { agentProcessInPane } from '../terminal/live-work'
 import { coveredByBoard } from './canvasCovered'
+import { chatPaneRefusal } from './chatPaneGate'
 import { QUOTE_REFUSAL_TEXT, appendQuoteToDraft, buildQuote, planQuote, type QuoteRefusal } from './quoteToChat'
 
 /**
  * "Add to chat": the one funnel every surface's button goes through (the ⌘M thread's selection
  * button, the terminal's copy-moment pill). The decisions are `quoteToChat.ts`'s; this adds the
- * effects and the screen check, behind `QuoteDeps` so the rules are testable without a pane.
+ * effects and the two checks on the pane (who owns it, what is on its screen), behind `QuoteDeps`
+ * so the rules are testable without a pane.
  *
  * Nothing here ever submits: the draft leg fills the composer, the pane leg is an unsent paste at
  * the agent's prompt (`pty.sendText(…, { enter: false })`, the path dictation's Insert uses). A
@@ -23,6 +27,9 @@ import { QUOTE_REFUSAL_TEXT, appendQuoteToDraft, buildQuote, planQuote, type Quo
 export const QUOTE_TRUNCATED_TEXT = 'Quoted the first 4,000 characters'
 /** Shown when the pane leg's write did not land (no session, a failed write). */
 export const QUOTE_WRITE_FAILED_TEXT = "Couldn't add the quote to the terminal."
+/** Shown when a quote made on ANOTHER node (a subagent card's thread) landed in the target's pane:
+ *  the person is looking at the card, not at that terminal, and would see nothing happen. */
+export const QUOTE_ADDED_TO_PANE_TEXT = "Added to the agent's terminal."
 
 /** What the funnel needs to know about the node a quote goes to. */
 export interface QuoteTargetNode {
@@ -41,10 +48,21 @@ export interface QuoteDeps {
   node(nodeId: string): QuoteTargetNode
   setDraft(nodeId: string, fn: (draft: string) => string): void
   focusComposer(nodeId: string): void
+  /** The pane's foreground process (`pty.paneOwner`), for the kernel check `chatPaneRefusal`. */
+  paneOwner(nodeId: string): Promise<PaneOwner | null>
+  /** The settings' custom agents, so the kernel check can name a custom agent's binaries. */
+  customAgents(): readonly Pick<CustomAgent, 'id' | 'launchCmd' | 'baseAgent'>[]
   /** An unsent write at the agent's prompt; only a literal `true` means it landed. */
   sendText(nodeId: string, text: string): Promise<unknown>
   readScreen(nodeId: string, agentId: string): Promise<{ screen: ClaudeScreen }>
-  toast(text: string): void
+  /** The app's toast. `kind` absent = an error. */
+  toast(text: string, kind?: 'info'): void
+}
+
+export interface QuoteOptions {
+  /** The selection was made on another node than the one the quote goes to (a subagent card's
+   *  thread quoting into its parent). A quote that lands in the target's pane then says so. */
+  crossNode?: boolean
 }
 
 /**
@@ -54,7 +72,8 @@ export interface QuoteDeps {
 export async function addQuoteToNode(
   deps: QuoteDeps,
   nodeId: string,
-  raw: string
+  raw: string,
+  opts: QuoteOptions = {}
 ): Promise<'draft' | 'pane' | 'nothing' | QuoteRefusal> {
   const built = buildQuote(raw)
   if (!built) return 'nothing'
@@ -75,14 +94,29 @@ export async function addQuoteToNode(
     return 'draft'
   }
 
+  const agentId = node.agentId
+  if (agentId === undefined) return refuse(deps, 'not-agent')
+  // The kernel's say (`chatPaneGate.ts`), the check the ⌘M composer and the phone make before they
+  // type: the store's flags are a hint, not proof. Codex and opencode announce no session end, so
+  // after a `/quit` the state still reads `done`, and an agent killed without its SessionEnd leaves a
+  // SHELL in the pane under the same flags. A quote typed at a shell prompt is one reflexive Enter
+  // from running each `> …` line as an output redirection that creates or truncates a file. An
+  // unreadable pane refuses (`unverified`), as it does for the composer.
+  const pane = await chatPaneRefusal(agentId, nodeId, {
+    paneOwner: (n) => deps.paneOwner(n),
+    customAgents: deps.customAgents()
+  })
+  if (pane) return refuse(deps, pane === 'exited' ? 'agent-gone' : 'unverified')
+
   // The agent's OWN dialogs (folder trust, `/model`, setup questions) fire no hook, so the state
   // says idle while one owns the keyboard, and typed text would land in it. Read the screen first,
   // for an agent whose screen can be read, and refuse on the rule the ⌘M composer and core's chat
   // send use (`claudeScreenBlocksInput`): a dialog, or no input box on screen at all — nowhere to
-  // type a quote. An unreadable screen is not evidence — it types, as the composer does.
-  if (node.agentId !== undefined && readsScreenDialogs(node.agentId)) {
+  // type a quote. An unreadable screen is not evidence — it types, as the composer does (the agent
+  // is known to own the pane by now).
+  if (readsScreenDialogs(agentId)) {
     const screen = await deps
-      .readScreen(nodeId, node.agentId)
+      .readScreen(nodeId, agentId)
       .then((r) => r.screen)
       .catch((): ClaudeScreen => ({ kind: 'unknown' }))
     if (claudeScreenBlocksInput(screen)) return refuse(deps, screen.kind === 'dialog' ? 'dialog' : 'no-prompt')
@@ -100,6 +134,7 @@ export async function addQuoteToNode(
     return 'nothing'
   }
   if (built.truncated) deps.toast(QUOTE_TRUNCATED_TEXT)
+  if (opts.crossNode) deps.toast(QUOTE_ADDED_TO_PANE_TEXT, 'info')
   return 'pane'
 }
 
@@ -166,8 +201,11 @@ export function defaultQuoteDeps(
         ta.scrollTop = ta.scrollHeight
       })
     },
+    paneOwner: (nodeId) => api.pty.paneOwner(nodeId),
+    customAgents: () => useSettings.getState().settings.customAgents,
     sendText: (nodeId, text) => api.pty.sendText(nodeId, text, { enter: false }),
     readScreen: (nodeId, agentId) => api.pty.readChatScreen(nodeId, agentId),
-    toast: (text) => window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: 'error', message: text } }))
+    toast: (text, kind) =>
+      window.dispatchEvent(new CustomEvent('nodeterm:toast', { detail: { kind: kind ?? 'error', message: text } }))
   }
 }

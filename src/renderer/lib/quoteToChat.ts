@@ -63,13 +63,17 @@ export function appendQuoteToDraft(draft: string, quote: string): string {
 /** Where a quote goes: the node's ⌘M chat draft, or typed unsent at the agent's prompt. */
 export type QuoteLeg = 'draft' | 'pane'
 
-/** Why a quote went nowhere. `dialog` and `no-prompt` are decided by the caller from the agent's
- *  screen: a dialog owns the keyboard, or no input box is on screen at all. */
-export type QuoteRefusal = 'not-agent' | 'agent-gone' | 'needs-answer' | 'dialog' | 'no-prompt'
+/** Why a quote went nowhere. The caller decides three of them: `unverified` from the pane's
+ *  foreground process (it could not be read — the kernel's answer that the agent is gone is
+ *  `agent-gone`), `dialog` and `no-prompt` from the agent's screen (a dialog owns the keyboard, or no
+ *  input box is on screen at all). */
+export type QuoteRefusal = 'not-agent' | 'agent-gone' | 'unverified' | 'needs-answer' | 'dialog' | 'no-prompt'
 
 export const QUOTE_REFUSAL_TEXT: Record<QuoteRefusal, string> = {
   'not-agent': 'This terminal has no agent to quote to.',
   'agent-gone': 'The agent is not running in this terminal.',
+  // The ⌘M composer's wording for the same verdict (`chatPaneRefusalToast`).
+  unverified: 'Could not confirm the agent is running in this terminal.',
   'needs-answer': 'The agent is waiting for an answer. Answer it first.',
   dialog: 'A dialog is open in the terminal. Close it first.',
   'no-prompt': "The agent's input box is not on screen."

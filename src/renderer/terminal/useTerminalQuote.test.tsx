@@ -18,7 +18,17 @@ let root: Root
 let seen: TerminalQuote[]
 let status: Status | undefined
 const sendText = vi.fn(async () => true as const)
-const api = { pty: { sendText, readChatScreen: vi.fn(async () => ({ screen: { kind: 'prompt' }, suggestion: null })) } } as unknown as NodeTerminalApi
+// The funnel asks the kernel who owns the pane before it types (lib/chatPaneGate.ts): codex's own.
+const paneOwner = vi.fn(async () => ({
+  panePid: 100,
+  tty: '/dev/pts/31',
+  command: 'node',
+  argv: ['node /usr/bin/codex', '/usr/lib/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex'],
+  pids: [201550, 201574]
+}))
+const api = {
+  pty: { sendText, paneOwner, readChatScreen: vi.fn(async () => ({ screen: { kind: 'prompt' }, suggestion: null })) }
+} as unknown as NodeTerminalApi
 
 function Probe(props: { agentId?: string; covered?: boolean }) {
   seen.push(
@@ -106,6 +116,7 @@ describe('useTerminalQuote', () => {
     act(() => latest().notify('quote me'))
     await act(async () => latest().add('quote me'))
     expect(latest().offer).toBeNull()
+    expect(paneOwner).toHaveBeenCalledWith('n1')
     expect(sendText).toHaveBeenCalledWith('n1', '> quote me', { enter: false })
   })
 })

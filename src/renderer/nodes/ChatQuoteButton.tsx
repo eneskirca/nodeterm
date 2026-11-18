@@ -16,15 +16,26 @@ import { CANVAS_COVERED_ATTR, coveredByBoard } from '../lib/canvasCovered'
  * behind, so each hides it (`selectionchange` brings it back). Other scrollers do not: a streaming
  * terminal elsewhere scrolls its viewport all the time.
  *
+ * A press anywhere but on the button, and focus moving anywhere outside the thread, hide it too.
+ * Both are needed because the selection can outlive the click that leaves it: xterm's mousedown
+ * calls `preventDefault()`, so clicking into another node's terminal keeps the document selection
+ * and fires no `selectionchange`. Window capture, so a handler that stops the press cannot hide it
+ * from us. A press inside the thread hides it as well; the selection it starts brings it back.
+ *
  * Only for a thread the person can see: not one `checkVisibility()` says is not rendered, and not
  * one on a canvas a board covers (`coveredByBoard`) — the canvas stays mounted under the board, a
  * selection made before the board opened outlives it, and the button is portaled ABOVE the board.
  * Opening a board fires no selection event, so the covered attribute is watched too.
  *
- * Escape belongs to the button while it shows: it hides the button and goes no further — not to the
- * card modal (which would close), not to the composer (whose Escape interrupts a running turn).
- * Window capture is the earliest any listener can run; the card modal listens there too, so it also
- * steps aside while `chatQuoteButtonShowing()` (their order is registration order).
+ * Escape belongs to the button while it shows AND the keyboard is near this thread (`escapeInScope`:
+ * inside the chat panel, on the button, on <body>, or on an element that holds the thread — a press
+ * on the thread's text focuses the nearest focusable ancestor, React Flow's node wrapper on the
+ * canvas). Then it hides the button and goes no further — not to the card modal (which would
+ * close), not to the composer (whose Escape interrupts a running turn). Focus anywhere else is
+ * another surface's keyboard (another node's terminal, where Escape interrupts THAT agent): the key
+ * is left alone there. Window capture is the earliest any listener can run; the card modal listens
+ * there too, so it also steps aside while `chatQuoteButtonShowing()` (their order is registration
+ * order).
  */
 
 /** Space between the end of the selection and the button. */
@@ -91,6 +102,20 @@ function endRect(sel: Selection): { left: number; top: number; right: number; bo
   return null
 }
 
+/**
+ * Is the keyboard where an Escape belongs to this thread's button? (See the component's docblock.)
+ * Nothing focused, the button itself, anything inside the chat panel that holds `container`, or an
+ * element that holds the thread. Another node's terminal is none of these.
+ */
+function escapeInScope(container: HTMLElement | null, button: HTMLElement | null): boolean {
+  const active = document.activeElement
+  if (active === null || active === document.body || active === document.documentElement) return true
+  if (button?.contains(active)) return true
+  if (!container) return false
+  const panel = container.closest('.term-chat') ?? container
+  return panel.contains(active) || active.contains(container)
+}
+
 /** Where the button goes: just under the selection's end, pushed back inside the window. */
 function placeFor(sel: Selection, container: HTMLElement): { left: number; top: number } {
   const rect = endRect(sel) ?? container.getBoundingClientRect()
@@ -106,6 +131,7 @@ export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuote
   // For the Escape listener, registered once: does the button show right now?
   const showingRef = useRef(false)
   showingRef.current = at !== null
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     const update = (): void => {
@@ -115,9 +141,11 @@ export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuote
       setAt((prev) => (prev && next && prev.left === next.left && prev.top === next.top ? prev : next))
     }
     const hide = (): void => setAt(null)
+    const onButton = (t: EventTarget | null): boolean => t instanceof Node && buttonRef.current?.contains(t) === true
     const onKey = (e: KeyboardEvent): void => {
       // An IME composition's Escape cancels the composition; it is not ours.
       if (e.key !== 'Escape' || e.isComposing || !showingRef.current) return
+      if (!escapeInScope(containerRef.current, buttonRef.current)) return
       e.preventDefault()
       e.stopImmediatePropagation()
       showingRef.current = false
@@ -131,6 +159,18 @@ export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuote
       if (t === document) hide()
       else if (t instanceof Node && container !== null && (t.contains(container) || container.contains(t))) hide()
     }
+    // A press anywhere but on the button (the button's own press keeps the selection: its mousedown
+    // is prevented below), and focus moving out of the thread.
+    const onPointerDown = (e: PointerEvent): void => {
+      if (!onButton(e.target)) hide()
+    }
+    const onFocusIn = (e: FocusEvent): void => {
+      const t = e.target
+      if (onButton(t)) return
+      const container = containerRef.current
+      if (t instanceof Node && container !== null && container.contains(t)) return
+      hide()
+    }
     // A board opening over the canvas (or closing) changes what is visible without any event here.
     const covered = new MutationObserver(update)
     covered.observe(document.documentElement, { attributes: true, attributeFilter: [CANVAS_COVERED_ATTR] })
@@ -139,6 +179,8 @@ export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuote
     window.addEventListener('wheel', hide, { capture: true, passive: true })
     window.addEventListener('resize', hide)
     window.addEventListener('keydown', onKey, true)
+    window.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('focusin', onFocusIn, true)
     return () => {
       covered.disconnect()
       document.removeEventListener('selectionchange', update)
@@ -146,6 +188,8 @@ export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuote
       window.removeEventListener('wheel', hide, { capture: true })
       window.removeEventListener('resize', hide)
       window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('focusin', onFocusIn, true)
     }
   }, [containerRef])
 
@@ -155,6 +199,7 @@ export function ChatQuoteButton({ containerRef, targetNodeId, onAdd }: ChatQuote
   const stop = (e: SyntheticEvent): void => e.stopPropagation()
   return createPortal(
     <button
+      ref={buttonRef}
       type="button"
       className={BUTTON_CLASS}
       style={{ left: at.left, top: at.top }}

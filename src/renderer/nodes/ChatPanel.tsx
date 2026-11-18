@@ -442,11 +442,16 @@ export function ChatPanel({
     () => defaultQuoteDeps(api, { agentIdOf: (id) => (id === nodeId ? agentId : undefined) }),
     [api, nodeId, agentId]
   )
+  // Is the selection on another node than the quote's target? A subagent card's thread is on the
+  // CARD while its quote goes to the parent (`nodeId` here is the parent's too), and any explicit
+  // other target is elsewhere by definition: a quote that lands in that pane lands where the person
+  // is not looking, so it says so.
+  const quoteCrossNode = subagentAgentId !== undefined || (quoteTarget !== null && quoteTarget !== nodeId)
   const addQuote = useCallback(
     (text: string) => {
-      if (quoteTarget !== null) void addQuoteToNode(quoteDeps, quoteTarget, text)
+      if (quoteTarget !== null) void addQuoteToNode(quoteDeps, quoteTarget, text, { crossNode: quoteCrossNode })
     },
-    [quoteDeps, quoteTarget]
+    [quoteDeps, quoteTarget, quoteCrossNode]
   )
   const prevState = useRef(state)
   // Request token: only the NEWEST readTranscript may land. An older read resolving late (the

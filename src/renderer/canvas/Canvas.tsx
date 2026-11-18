@@ -1847,11 +1847,14 @@ export function Canvas() {
   // what Source Control opens on (same selection source — `n.selected` — the context-menu/delete
   // paths read).
   const selectedGroupIdForScm = useMemo(() => selectedScmGroupId(nodes), [nodes])
-  // Clipboard failures reach us as a window event (the bridge stub has no React handle).
+  // Clipboard failures reach us as a window event (the bridge stub has no React handle). An `info`
+  // one is a receipt from outside Canvas (a quote added to another node's terminal,
+  // lib/addQuoteToNode.ts): the fading info strip, not the warning banner.
   useEffect(() => {
     const onToast = (e: Event): void => {
       const detail = (e as CustomEvent<{ kind: string; message: string }>).detail
       if (detail?.kind === 'error') setCopyError(detail.message)
+      else if (detail?.kind === 'info' && typeof detail.message === 'string') setNotice({ kind: 'info', text: detail.message })
     }
     window.addEventListener('nodeterm:toast', onToast)
     return () => window.removeEventListener('nodeterm:toast', onToast)

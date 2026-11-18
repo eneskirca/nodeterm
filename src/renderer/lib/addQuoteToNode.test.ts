@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { NodeTerminalApi } from '@shared/types'
 import {
+  QUOTE_ADDED_TO_PANE_TEXT,
   QUOTE_TRUNCATED_TEXT,
   QUOTE_WRITE_FAILED_TEXT,
   addQuoteToNode,
@@ -16,19 +17,41 @@ import { QUOTE_REFUSAL_TEXT } from './quoteToChat'
 import { agentStatusForApi } from '../state/agentStatus'
 import { useChatDraft } from '../state/chatDraft'
 import type { ClaudeScreen } from '@shared/agents/claude-screen'
+import type { PaneOwner } from '@shared/agents/pane-owner-predicate'
 import { CANVAS_COVERED_ATTR } from './canvasCovered'
+import { useSettings } from '../state/settings'
 
 /** A screen read of `kind` (a dialog carries its own lines). */
 function screenOf(kind: ClaudeScreen['kind']): ClaudeScreen {
   return kind === 'dialog' ? { kind, text: 'Do you trust the files in this folder?' } : { kind }
 }
 
-/** Deps for one node, every effect recorded. Defaults: an idle claude agent, terminal showing. */
+// Pane owners as `pty.paneOwner` reports them (fixture shapes from `chatPaneGate.test.ts`).
+const CLAUDE_PANE: PaneOwner = { panePid: 100, tty: '/dev/pts/31', command: 'claude', argv: ['claude'], pids: [201600] }
+const CODEX_PANE: PaneOwner = {
+  panePid: 100,
+  tty: '/dev/pts/31',
+  command: 'node',
+  argv: ['node /usr/bin/codex', '/usr/lib/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex'],
+  pids: [201550, 201574]
+}
+const SHELL_PANE: PaneOwner = { panePid: 100, tty: '/dev/pts/31', command: 'bash', argv: ['-bash'], pids: [100] }
+
+/** Deps for one node, every effect recorded. Defaults: an idle claude agent that owns its pane,
+ *  terminal showing. */
 function fakeDeps(
-  over: { chatOpen?: boolean; node?: Partial<QuoteTargetNode>; screen?: ClaudeScreen['kind']; sent?: unknown; draft?: string } = {}
+  over: {
+    chatOpen?: boolean
+    node?: Partial<QuoteTargetNode>
+    screen?: ClaudeScreen['kind']
+    sent?: unknown
+    draft?: string
+    pane?: PaneOwner | null
+  } = {}
 ) {
   let draft = over.draft ?? ''
   const node: QuoteTargetNode = { agentId: 'claude', isAgent: true, agentInPane: true, state: 'done', held: false, ...over.node }
+  const pane = over.pane === undefined ? (node.agentId === 'codex' ? CODEX_PANE : CLAUDE_PANE) : over.pane
   const deps = {
     chatOpen: vi.fn(() => over.chatOpen ?? false),
     node: vi.fn(() => node),
@@ -36,6 +59,8 @@ function fakeDeps(
       draft = fn(draft)
     }),
     focusComposer: vi.fn(),
+    paneOwner: vi.fn(async (_nodeId: string): Promise<PaneOwner | null> => pane),
+    customAgents: vi.fn(() => []),
     sendText: vi.fn(async (_nodeId: string, _text: string): Promise<unknown> => (over.sent === undefined ? true : over.sent)),
     readScreen: vi.fn(async () => ({ screen: screenOf(over.screen ?? 'prompt') })),
     toast: vi.fn()
@@ -166,6 +191,78 @@ describe('addQuoteToNode — the terminal is showing', () => {
     expect(gone.deps.sendText).not.toHaveBeenCalled()
   })
 
+  it("asks the kernel who owns the pane first, and types into an agent's own pane", async () => {
+    for (const agentId of ['claude', 'codex']) {
+      const f = fakeDeps({ node: { agentId } })
+      await expect(addQuoteToNode(f.deps, 'n1', 'x')).resolves.toBe('pane')
+      expect(f.deps.paneOwner).toHaveBeenCalledWith('n1')
+      expect(f.deps.paneOwner.mock.invocationCallOrder[0]).toBeLessThan(f.deps.sendText.mock.invocationCallOrder[0])
+      expect(f.deps.sendText).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('refuses a pane a SHELL owns: codex announces no quit, so the store still says done', async () => {
+    // After `/quit` in Codex the last hook state is `done` and no flag is set: only the kernel knows.
+    const f = fakeDeps({ node: { agentId: 'codex', state: 'done' }, pane: SHELL_PANE })
+    await expect(addQuoteToNode(f.deps, 'n1', 'x')).resolves.toBe('agent-gone')
+    expect(f.deps.toast).toHaveBeenCalledWith(QUOTE_REFUSAL_TEXT['agent-gone'])
+    expect(f.deps.sendText).not.toHaveBeenCalled()
+    expect(f.deps.setDraft).not.toHaveBeenCalled()
+    expect(f.deps.readScreen).not.toHaveBeenCalled()
+    // A claude killed without its SessionEnd leaves the same evidence.
+    const claude = fakeDeps({ pane: SHELL_PANE })
+    await expect(addQuoteToNode(claude.deps, 'n1', 'x')).resolves.toBe('agent-gone')
+    expect(claude.deps.sendText).not.toHaveBeenCalled()
+  })
+
+  it('refuses a pane it could not read, with the composer’s wording', async () => {
+    const unread = fakeDeps({ pane: null })
+    await expect(addQuoteToNode(unread.deps, 'n1', 'x')).resolves.toBe('unverified')
+    expect(unread.deps.toast).toHaveBeenCalledWith(QUOTE_REFUSAL_TEXT.unverified)
+    expect(QUOTE_REFUSAL_TEXT.unverified).toBe('Could not confirm the agent is running in this terminal.')
+    expect(unread.deps.sendText).not.toHaveBeenCalled()
+    expect(unread.deps.setDraft).not.toHaveBeenCalled()
+    const failed = fakeDeps()
+    failed.deps.paneOwner.mockRejectedValueOnce(new Error('ssh'))
+    await expect(addQuoteToNode(failed.deps, 'n1', 'x')).resolves.toBe('unverified')
+    expect(failed.deps.sendText).not.toHaveBeenCalled()
+  })
+
+  it("names a custom agent's binaries from the settings", async () => {
+    const f = fakeDeps({ node: { agentId: 'custom:cx' }, pane: CODEX_PANE })
+    f.deps.customAgents.mockReturnValue([{ id: 'custom:cx', launchCmd: 'codex', baseAgent: 'codex' }] as never)
+    await expect(addQuoteToNode(f.deps, 'n1', 'x')).resolves.toBe('pane')
+    expect(f.deps.customAgents).toHaveBeenCalled()
+  })
+
+  it('asks nothing of the pane on the draft leg (a draft types nothing)', async () => {
+    const f = fakeDeps({ chatOpen: true, pane: SHELL_PANE })
+    await expect(addQuoteToNode(f.deps, 'n1', 'x')).resolves.toBe('draft')
+    expect(f.deps.paneOwner).not.toHaveBeenCalled()
+  })
+
+  it('says where the quote went when it was made on another node, and only then', async () => {
+    const cross = fakeDeps()
+    await expect(addQuoteToNode(cross.deps, 'n1', 'x', { crossNode: true })).resolves.toBe('pane')
+    expect(cross.deps.toast).toHaveBeenCalledWith(QUOTE_ADDED_TO_PANE_TEXT, 'info')
+    expect(QUOTE_ADDED_TO_PANE_TEXT).toBe("Added to the agent's terminal.")
+    const same = fakeDeps()
+    await addQuoteToNode(same.deps, 'n1', 'x')
+    expect(same.deps.toast).not.toHaveBeenCalled()
+    // Not for a draft, a refusal or a write that did not land.
+    const draft = fakeDeps({ chatOpen: true })
+    await addQuoteToNode(draft.deps, 'n1', 'x', { crossNode: true })
+    expect(draft.deps.toast).not.toHaveBeenCalled()
+    const refused = fakeDeps({ pane: SHELL_PANE })
+    await addQuoteToNode(refused.deps, 'n1', 'x', { crossNode: true })
+    expect(refused.deps.toast).toHaveBeenCalledTimes(1)
+    expect(refused.deps.toast).toHaveBeenCalledWith(QUOTE_REFUSAL_TEXT['agent-gone'])
+    const failed = fakeDeps({ sent: false })
+    await addQuoteToNode(failed.deps, 'n1', 'x', { crossNode: true })
+    expect(failed.deps.toast).toHaveBeenCalledTimes(1)
+    expect(failed.deps.toast).toHaveBeenCalledWith(QUOTE_WRITE_FAILED_TEXT)
+  })
+
   it('says so when the write did not land, and never falls back to the draft', async () => {
     for (const sent of [false, 'pasted-not-submitted']) {
       const f = fakeDeps({ sent })
@@ -206,8 +303,9 @@ describe('defaultQuoteDeps', () => {
   function fakeApi() {
     const sendText = vi.fn(async () => true)
     const readChatScreen = vi.fn(async () => ({ screen: { kind: 'prompt' as const }, suggestion: null }))
-    const api = { pty: { sendText, readChatScreen } } as unknown as NodeTerminalApi
-    return { api, sendText, readChatScreen }
+    const paneOwner = vi.fn(async () => CLAUDE_PANE)
+    const api = { pty: { sendText, readChatScreen, paneOwner } } as unknown as NodeTerminalApi
+    return { api, sendText, readChatScreen, paneOwner }
   }
 
   afterEach(() => {
@@ -278,13 +376,28 @@ describe('defaultQuoteDeps', () => {
     expect(deps.node('plain')).toEqual({ agentId: undefined, isAgent: false, agentInPane: false, state: undefined, held: false })
   })
 
-  it('writes the pane without Enter, and reads the screen through the same api', async () => {
-    const { api, sendText, readChatScreen } = fakeApi()
+  it('writes the pane without Enter, and reads the screen and the pane owner through the same api', async () => {
+    const { api, sendText, readChatScreen, paneOwner } = fakeApi()
     const deps = defaultQuoteDeps(api)
     await deps.sendText('n1', '> q\n\n')
     expect(sendText).toHaveBeenCalledWith('n1', '> q\n\n', { enter: false })
     await deps.readScreen('n1', 'claude')
     expect(readChatScreen).toHaveBeenCalledWith('n1', 'claude')
+    // The composer's own call (`ChatPanel.send`): the live-only path, no options.
+    await expect(deps.paneOwner('n1')).resolves.toBe(CLAUDE_PANE)
+    expect(paneOwner).toHaveBeenCalledWith('n1')
+  })
+
+  it("reads the custom agents from the settings at the call, not at construction", () => {
+    const deps = defaultQuoteDeps(fakeApi().api)
+    const prev = useSettings.getState().settings
+    const custom = [{ id: 'custom:cx', label: 'CX', launchCmd: 'codex', baseAgent: 'codex' as const }]
+    try {
+      useSettings.setState({ settings: { ...prev, customAgents: custom } })
+      expect(deps.customAgents()).toBe(custom)
+    } finally {
+      useSettings.setState({ settings: prev })
+    }
   })
 
   it("writes the node's chat draft", () => {
@@ -301,8 +414,12 @@ describe('defaultQuoteDeps', () => {
     }
     window.addEventListener('nodeterm:toast', on)
     deps.toast('hello')
+    deps.toast('landed', 'info')
     window.removeEventListener('nodeterm:toast', on)
-    expect(seen).toEqual([{ kind: 'error', message: 'hello' }])
+    expect(seen).toEqual([
+      { kind: 'error', message: 'hello' },
+      { kind: 'info', message: 'landed' }
+    ])
   })
 
   it("focuses the node's composer with the caret at the end, preferring the card modal's", async () => {

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 //
 // The "Add to chat" button beside a selection in a ⌘M chat thread: it is offered only for a
-// selection wholly inside ONE thread, it hands over exactly the selected text, and it does not
-// take the selection away on mousedown.
+// selection wholly inside ONE thread, it hands over exactly the selected text, it does not take the
+// selection away on mousedown, and it goes — and leaves Escape alone — once the press or the
+// keyboard moves to another surface.
 import { act, useRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -13,13 +14,23 @@ import { CANVAS_COVERED_ATTR } from '../lib/canvasCovered'
 
 function Harness({ onAdd }: { onAdd(text: string): void }) {
   const ref = useRef<HTMLDivElement>(null)
+  // Node A holds the thread inside its chat panel (beside the panel's composer); node B holds
+  // another terminal's keyboard target. React Flow's node wrappers are focusable.
   return (
     <>
       <div className="react-flow">
-        <div ref={ref} className="term-chat__msgs" id="thread">
-          <p id="a">first message</p>
-          <p id="b">second message</p>
-          <pre id="code">a wide code block</pre>
+        <div className="react-flow__node" id="node-a" tabIndex={0}>
+          <div className="term-chat">
+            <div ref={ref} className="term-chat__msgs" id="thread">
+              <p id="a">first message</p>
+              <p id="b">second message</p>
+              <pre id="code">a wide code block</pre>
+            </div>
+            <textarea id="composer" />
+          </div>
+        </div>
+        <div className="react-flow__node" id="node-b" tabIndex={0}>
+          <textarea id="other-term" className="xterm-helper-textarea" />
         </div>
       </div>
       <div id="outside">outside text</div>
@@ -41,6 +52,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  ;(document.activeElement as HTMLElement | null)?.blur?.()
   document.documentElement.removeAttribute(CANVAS_COVERED_ATTR)
   document.getSelection()?.removeAllRanges()
   await act(async () => root.unmount())
@@ -63,6 +75,24 @@ async function select(startId: string, startOffset: number, endId: string, endOf
 }
 
 const button = (): HTMLButtonElement | null => document.body.querySelector('.chat-quote-btn')
+
+/** Escape on `target` (the focused element, as the browser dispatches it); answers whether a
+ *  listener behind the button's — the terminal, the card modal — still saw it. */
+async function escapeOn(target: Element): Promise<{ prevented: boolean; reachedBehind: boolean }> {
+  const behind = vi.fn()
+  window.addEventListener('keydown', behind)
+  try {
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    await act(async () => {
+      target.dispatchEvent(esc)
+    })
+    return { prevented: esc.defaultPrevented, reachedBehind: behind.mock.calls.length > 0 }
+  } finally {
+    window.removeEventListener('keydown', behind)
+  }
+}
+
+const el = (id: string): HTMLElement => document.getElementById(id)!
 
 describe('ChatQuoteButton', () => {
   it('appears for a selection inside the thread', async () => {
@@ -181,6 +211,81 @@ describe('ChatQuoteButton', () => {
       document.getElementById('outside')!.dispatchEvent(new Event('scroll'))
     })
     expect(button()).not.toBeNull()
+  })
+
+  it('hides on a press anywhere but on itself, while the selection stays', async () => {
+    await select('a', 0, 'a', 5)
+    // xterm prevents its mousedown, so a click into another node's terminal keeps the selection and
+    // fires no selection change: the press itself must take the button away.
+    await act(async () => {
+      el('other-term').dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    })
+    expect(button()).toBeNull()
+    expect(document.getSelection()!.toString()).toBe('first')
+  })
+
+  it('stays, and still adds, through a press on itself', async () => {
+    await select('a', 0, 'a', 5)
+    await act(async () => {
+      button()!.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    })
+    expect(button()).not.toBeNull()
+    await act(async () => {
+      button()!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(onAdd).toHaveBeenCalledWith('first')
+  })
+
+  it('hides when focus moves to an element outside the thread, while the selection stays', async () => {
+    // Dispatched rather than `.focus()`: jsdom moves the document selection into whatever takes
+    // focus (and fires a selection change), so a real focus would hide the button by that route and
+    // prove nothing about this one. In the app the selection can survive the move (sloppy focus: a
+    // dwell gives another node's terminal the keyboard with no click at all).
+    const focusIn = async (id: string): Promise<void> => {
+      await act(async () => {
+        el(id).dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      })
+    }
+    await select('a', 0, 'a', 5)
+    await focusIn('other-term')
+    expect(button()).toBeNull()
+    expect(document.getSelection()!.toString()).toBe('first')
+    await select('a', 0, 'a', 5)
+    await focusIn('composer')
+    expect(button()).toBeNull()
+    // Not for a focus inside the thread (a link, a code block's Copy), nor onto the button itself.
+    await select('a', 0, 'a', 5)
+    await focusIn('code')
+    expect(button()).not.toBeNull()
+    await act(async () => {
+      button()!.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    })
+    expect(button()).not.toBeNull()
+  })
+
+  it("leaves Escape to another surface's keyboard: it reaches that terminal", async () => {
+    // The keyboard is in node B's terminal while a selection in A's thread shows the button (made
+    // without a press, so nothing hid it).
+    await act(async () => {
+      el('other-term').focus()
+    })
+    await select('a', 0, 'a', 5)
+    expect(button()).not.toBeNull()
+    expect(document.activeElement).toBe(el('other-term'))
+    expect(await escapeOn(el('other-term'))).toEqual({ prevented: false, reachedBehind: true })
+  })
+
+  it('takes Escape with the keyboard in its own panel, or on the node that holds it', async () => {
+    for (const id of ['composer', 'node-a']) {
+      await act(async () => {
+        el(id).focus()
+      })
+      await select('a', 0, 'a', 5)
+      expect(button()).not.toBeNull()
+      expect(await escapeOn(el(id))).toEqual({ prevented: true, reachedBehind: false })
+      expect(button()).toBeNull()
+    }
   })
 
   it('keeps the selection on mousedown', async () => {

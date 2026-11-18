@@ -91,6 +91,16 @@ describe('both terminal surfaces offer the quote and route it through the one fu
   })
 })
 
+describe("a cross-node quote's receipt has somewhere to show", () => {
+  it('the canvas turns an info `nodeterm:toast` into its info strip (it used to render errors only)', () => {
+    // `addQuoteToNode` raises `Added to the agent's terminal.` as an info toast; without this branch
+    // the event reaches no listener that draws it.
+    const canvas = read('../canvas/Canvas.tsx')
+    const listener = between(canvas, 'const onToast = (e: Event): void => {', "window.addEventListener('nodeterm:toast', onToast)")
+    expect(listener).toMatch(/detail\?\.kind === 'info'[^\n]*setNotice\(\{ kind: 'info', text: detail\.message \}\)/)
+  })
+})
+
 describe('the pill is a clickable chip in the bottom-right corner', () => {
   const rule = between(styles, '.term-quote-pill {', '}')
 
