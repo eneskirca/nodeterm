@@ -531,7 +531,13 @@ import { useTerminalFocus } from '../state/terminalFocus'
 import { useCodexIdentity, codexFallbackText } from '../state/codexIdentity'
 import { useTeamAccessEvents } from '../state/teamAccess'
 import { useAgentNodes } from '../state/agentNodes'
-import { SubagentNode } from '../nodes/SubagentNode'
+import {
+  openSubagentCard,
+  parentHidesFanout,
+  SUBAGENT_FANOUT_HIDDEN_TEXT,
+  type OpenSubagentDetail
+} from '../lib/subagentRows'
+import { SubagentNode, subagentCardSize } from '../nodes/SubagentNode'
 import { LoopNode } from '../nodes/LoopNode'
 import type { NormalizedAgentEvent } from '@shared/agents/normalize'
 import {
@@ -1841,11 +1847,14 @@ export function Canvas() {
   // what Source Control opens on (same selection source — `n.selected` — the context-menu/delete
   // paths read).
   const selectedGroupIdForScm = useMemo(() => selectedScmGroupId(nodes), [nodes])
-  // Clipboard failures reach us as a window event (the bridge stub has no React handle).
+  // Clipboard failures reach us as a window event (the bridge stub has no React handle). An `info`
+  // one is a receipt from outside Canvas (a quote added to another node's terminal,
+  // lib/addQuoteToNode.ts): the fading info strip, not the warning banner.
   useEffect(() => {
     const onToast = (e: Event): void => {
       const detail = (e as CustomEvent<{ kind: string; message: string }>).detail
       if (detail?.kind === 'error') setCopyError(detail.message)
+      else if (detail?.kind === 'info' && typeof detail.message === 'string') setNotice({ kind: 'info', text: detail.message })
     }
     window.addEventListener('nodeterm:toast', onToast)
     return () => window.removeEventListener('nodeterm:toast', onToast)
@@ -2863,6 +2872,8 @@ export function Canvas() {
       const ROW_H = 140
       childIds.forEach((cid, i) => {
         const v = agentById[cid]
+        // A user resize wins; opened, a card showing the subagent's conversation gets room to read it.
+        const size = subagentCardSize(v, cid, !!ephExpanded[cid], ephSizes[cid])
         eNodes.push({
           id: cid,
           type: 'subagent',
@@ -2880,7 +2891,9 @@ export function Canvas() {
           draggable: true,
           selectable: false, // see the loop card above
           selected: ephSelId === cid,
-          ...dims(cid, 230, 480, 96, 340),
+          width: size.width,
+          height: size.height,
+          style: { width: size.width, height: size.height },
           data: {
             title: v.label ?? '',
             color: accent,
@@ -18145,21 +18158,26 @@ export function Canvas() {
   // Jump to the node a peer is focused on. focusNodeById already handles the same-project focus and
   // the switch to another OPEN project; the closed-project case has to reopen the tab first and let
   // the active-project effect finish the focus (pendingFocusRef, same mechanism as a notification).
+  //
+  // Resolves whether it travelled: false for a project we cannot read (`blocked`) and for a reopen
+  // that was declined. Most callers ignore it; opening a subagent card does not (it must not pin a
+  // card on a canvas nobody went to).
   const travelToNode = useCallback(
-    (nodeId: string) => {
+    (nodeId: string): Promise<boolean> => {
       const { projects, activeProjectId: active } = useProjects.getState()
       const travel = nodeTravel(projects, active, nodeId)
-      if (travel.kind === 'blocked') return
+      if (travel.kind === 'blocked') return Promise.resolve(false)
       if (travel.kind === 'reopen') {
         pendingFocusRef.current = nodeId
         // Declined (a project handed to a hosted team stays closed): drop the staged focus so a
         // later reopen of that project does not jump to a node nobody asked for this time.
-        void reopenProject(travel.projectId).then((ok) => {
+        return reopenProject(travel.projectId).then((ok) => {
           if (!ok && pendingFocusRef.current === nodeId) pendingFocusRef.current = null
+          return ok
         })
-        return
       }
       focusNodeById(nodeId)
+      return Promise.resolve(true)
     },
     [focusNodeById, reopenProject]
   )
@@ -18722,6 +18740,41 @@ export function Canvas() {
   // OS-notification click → focus the originating node (see the note beside focusNodeById:
   // travelToNode, not focusNodeById, so a closed project's tab is reopened first).
   useEffect(() => window.nodeTerminal.onFocusNode(travelToNode), [travelToNode])
+
+  // A subagent row (sessions sidebar, the kanban card modal's list) asks for one card: go to its
+  // parent node the way every "go to node" does — `travelToNode` switches to, or reopens, the
+  // parent's project and frames it with setViewport, never fitView — then open (never close) and
+  // select the card. Nothing opens when the travel did not happen (a project we cannot read, a
+  // declined reopen): an open card is pinned, and a pin on a canvas nobody went to would keep it
+  // forever. Otherwise the card opens as soon as the travel STARTED (a switch is synchronous, a
+  // reopen once it was accepted), not when it lands: opening pins it, so the turn boundary cannot
+  // take it on the way, and the only thing that can (the parent going away) clears its flags with
+  // it. A card that is already gone is left alone. A parent whose eye hides its cards
+  // (`hideFanout`) gets the card opened all the same (it shows, open, when the person shows the
+  // cards) and an info strip saying where it is; the flag is persisted node data and is never
+  // cleared from here. It is read BEFORE the travel, while the live canvas still holds the project
+  // the flag was last toggled on.
+  useEffect(() => {
+    const handler = (e: CustomEvent<OpenSubagentDetail>): void => {
+      const d = e.detail
+      if (!d || typeof d.parentNodeId !== 'string' || typeof d.cardId !== 'string') return
+      const hidden = parentHidesFanout(
+        d.parentNodeId,
+        nodesRef.current,
+        nodeOwner(useProjects.getState().projects, d.parentNodeId)?.nodes
+      )
+      void travelToNode(d.parentNodeId).then(
+        (travelled) => {
+          if (travelled && openSubagentCard(useAgentNodes.getState(), d.parentNodeId, d.cardId) && hidden) {
+            setNotice({ kind: 'info', text: SUBAGENT_FANOUT_HIDDEN_TEXT })
+          }
+        },
+        () => {}
+      )
+    }
+    window.addEventListener('nodeterm:open-subagent' as never, handler as never)
+    return () => window.removeEventListener('nodeterm:open-subagent' as never, handler as never)
+  }, [travelToNode])
 
   // Memory pressure (core/memory-pressure.ts, pushed by the shell): run the renderer's reclaim
   // levers. Both are idempotent and cost only warmth — a reclaimed hidden context re-grants on its

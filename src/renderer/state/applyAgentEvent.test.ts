@@ -105,6 +105,81 @@ describe('applyAgentEvent', () => {
     })
   })
 
+  it('a native start records the agent, the native flag and the parent session it started under', () => {
+    const account = { configDir: '/home/u/.nodeterm/claude-accounts/acct-2', accountId: 'acct-2', known: true }
+    applyAgentEvent(status, useAgentNodes, ev({ state: 'working', newTurn: true, sessionId: 'sess-1', account }), LOCAL)
+    applyAgentEvent(
+      status,
+      useAgentNodes,
+      ev({ kind: 'subagent-start', toolUseId: 'a4809888b14b29608', subagentSignal: 'native', sessionId: 'sess-1' }),
+      LOCAL
+    )
+    expect(useAgentNodes.getState().byId['a4809888b14b29608']).toMatchObject({
+      parentNodeId: N,
+      agent: 'claude',
+      native: true,
+      sessionId: 'sess-1',
+      accountId: 'acct-2'
+    })
+  })
+
+  it('a tool-path start is not native', () => {
+    applyAgentEvent(
+      status,
+      useAgentNodes,
+      ev({ kind: 'subagent-start', toolUseId: 'toolu_1', subagentSignal: 'tool', sessionId: 'sess-1' }),
+      LOCAL
+    )
+    expect(useAgentNodes.getState().byId['toolu_1']).toMatchObject({ agent: 'claude', native: false })
+  })
+
+  it('a start of an agent with no subagent signal is not native', () => {
+    applyAgentEvent(status, useAgentNodes, ev({ agentId: 'grok', kind: 'subagent-start', toolUseId: 'g1' }), LOCAL)
+    expect(useAgentNodes.getState().byId['g1']).toMatchObject({ agent: 'grok', native: false })
+  })
+
+  it('a start that names no session takes the parent’s recorded one (a reload replay)', () => {
+    applyAgentEvent(status, useAgentNodes, ev({ state: 'working', newTurn: true, sessionId: 'sess-9' }), LOCAL)
+    applyAgentEvent(status, useAgentNodes, ev({ kind: 'subagent-start', toolUseId: 'a1', subagentSignal: 'native' }), LOCAL)
+    expect(useAgentNodes.getState().byId['a1']).toMatchObject({ sessionId: 'sess-9', native: true })
+    // A system-account parent records no account id.
+    expect(useAgentNodes.getState().byId['a1'].accountId).toBeUndefined()
+  })
+
+  it('a later resume of the parent does not repoint a card already started', () => {
+    applyAgentEvent(status, useAgentNodes, ev({ kind: 'subagent-start', toolUseId: 'a1', subagentSignal: 'native', sessionId: 'sess-1' }), LOCAL)
+    applyAgentEvent(status, useAgentNodes, ev({ state: 'working', newTurn: true, sessionId: 'sess-2' }), LOCAL)
+    expect(useAgentNodes.getState().byId['a1'].sessionId).toBe('sess-1')
+  })
+
+  it('a superseding native start is native and keeps the opened card open', () => {
+    applyAgentEvent(status, useAgentNodes, ev({ kind: 'subagent-start', toolUseId: 'toolu_1', subagentSignal: 'tool', sessionId: 's' }), LOCAL)
+    useAgentNodes.getState().toggleExpanded('toolu_1')
+    applyAgentEvent(
+      status,
+      useAgentNodes,
+      ev({ kind: 'subagent-start', toolUseId: 'a1', subagentSignal: 'native', sessionId: 's', supersedes: 'toolu_1' }),
+      LOCAL
+    )
+    const st = useAgentNodes.getState()
+    expect(Object.keys(st.byId)).toEqual(['a1'])
+    expect(st.byId['a1']).toMatchObject({ native: true, agent: 'claude' })
+    expect(st.expanded).toEqual({ a1: true })
+  })
+
+  it('an opened finished card survives the new turn, and the next done is not quiet', () => {
+    applyAgentEvent(status, useAgentNodes, ev({ state: 'working', newTurn: true }), LOCAL)
+    applyAgentEvent(status, useAgentNodes, ev({ kind: 'subagent-start', toolUseId: 'a1', subagentSignal: 'native' }), LOCAL)
+    useAgentNodes.getState().toggleExpanded('a1')
+    applyAgentEvent(status, useAgentNodes, ev({ kind: 'subagent-end', toolUseId: 'a1', subagentSignal: 'native' }), LOCAL)
+    applyAgentEvent(status, useAgentNodes, ev({ state: 'working', newTurn: true }), LOCAL)
+    expect(useAgentNodes.getState().byId['a1']?.state).toBe('done')
+    expect(applyAgentEvent(status, useAgentNodes, ev({ state: 'done' }), LOCAL).alert).toEqual({
+      kind: 'finished',
+      quiet: false
+    })
+  })
+
   it('a /loop prompt sets the loop and a done bumps it', () => {
     applyAgentEvent(status, useAgentNodes, ev({ state: 'working', newTurn: true, task: '/loop watch CI' }), LOCAL)
     expect(entry().loop).toMatchObject({ kind: 'loop', count: 0, task: '/loop watch CI' })

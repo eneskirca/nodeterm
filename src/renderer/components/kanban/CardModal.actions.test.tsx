@@ -21,7 +21,9 @@ vi.mock('../../session/session', async () => {
     useSession: () => ({ api: { pty: { generateName }, shell: { openExternal: vi.fn() } } }),
     agentStatusForProject: () => defaultAgentStatus,
     useSessionRegistryVersion: () => 0,
-    useSessionStores: () => ({ agentStatus: defaultAgentStatus })
+    useSessionStores: () => ({ agentStatus: defaultAgentStatus }),
+    // The modal's subagent list is gated off for a relay / team tab; none of these cards is one.
+    isRemoteProjectId: () => false
   }
 })
 vi.mock('./BoardLogPanel', () => ({ BoardLogPanel: () => null }))

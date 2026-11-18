@@ -331,6 +331,9 @@ export const KanbanView = memo(function KanbanView({
   // the dev-port scanner covers. Stable identities, because SessionCard is memoized.
   const portsRemote = useProjects((s) => !!s.getProject(projectId)?.ssh)
   const cardPorts = useMemo(() => ({ projectId, remote: portsRemote }), [projectId, portsRemote])
+  // A relay / team tab's cards show no subagent chip (SessionCard's `relayProject`). The board
+  // renders a project the store holds, where this is `isRemoteProjectId`'s answer.
+  const relayProject = useProjects((s) => !!s.getProject(projectId)?.remote)
   const openPort = useCallback(
     (nodeId: string, url: string) => {
       // Same hand-over as the card modal's chip: the browser node is placed beside the node ON THE
@@ -999,6 +1002,7 @@ export const KanbanView = memo(function KanbanView({
             onOpenPort={openPort}
             onRunQueued={onRunQueued}
             statusStore={statusStore}
+            relayProject={relayProject}
           />
         ))
       })

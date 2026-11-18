@@ -21,12 +21,14 @@ import {
 } from '../lib/sessionList'
 import { sidebarEmptyState, sidebarFilterKeyAction } from '../lib/sidebarFilter'
 import { SessionRow } from './SessionRow'
+import { SubagentRows } from './SubagentRows'
 import { ProjectGlyph } from './ProjectGlyph'
 import { ClosedHistorySection } from './ClosedHistorySection'
 import { IconBellFilled, IconCircleCheck, IconClose, IconPin } from './icons'
 import { useProjects } from '../state/projects'
 import { useSettings } from '../state/settings'
 import { useAgentStatusLookup } from '../session/agent-status-lookup'
+import { isRemoteProjectId } from '../session/session'
 import { useSessionNaming } from '../state/sessionNaming'
 import { ProjectBranch } from './ProjectBranch'
 import { useDragAutoScroll } from '../lib/dragAutoScroll'
@@ -324,6 +326,10 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
             setDropKey(null)
           }}
         />
+        {/* The node's subagents, the same cards the canvas draws for it (nothing for a node with
+            none). Never for a relay / team tab's node: its subagents are the host's, and the
+            local card store does not describe them. */}
+        {!isRemoteProjectId(projectId) && <SubagentRows parentNodeId={row.id} />}
       </div>
     )
   }
@@ -517,6 +523,7 @@ export function SessionsSidebar(props: SessionsSidebarProps): JSX.Element | null
         onDragEnd={() => {}}
         stateAgeLabel={sessionStateAgeLabel(row.statusUpdatedAt, statusNow, row.statusClock)}
       />
+      {!isRemoteProjectId(row.projectId!) && <SubagentRows parentNodeId={row.id} />}
     </div>
   )
 

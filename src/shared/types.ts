@@ -3780,6 +3780,12 @@ export interface ChatMessage {
    * divider at each local day's first stamped message.
    */
   at?: number
+  /**
+   * This user message is a Claude subagent's TASK — its transcript's first user record, the prompt
+   * the parent wrote — so the panel can label it. Set only by a rich read of a subagent's own file
+   * (`ChatParseOptions.subagentFile`); absent everywhere else, the phone's read included.
+   */
+  task?: true
 }
 
 /** A `tool_result` whose `tool_use` was not in the same page (it lives in an OLDER one). */
@@ -3850,6 +3856,12 @@ export interface ChatTranscriptResult {
  */
 export type TranscriptPresence = 'present' | 'absent' | 'unknown'
 
+/** Which subagent of a session a chat read is for: a native Claude subagent's `agent_id`
+ *  (`isClaudeAgentId`), the key its card carries. */
+export interface ChatTranscriptSubagent {
+  agentId: string
+}
+
 export interface ChatApi {
   /**
    * Reads an agent session transcript as structured chat messages.
@@ -3866,6 +3878,13 @@ export interface ChatApi {
    * `shared/chat-page.ts`. Absent = the legacy read, byte for byte. Present = a result carrying
    * `olderCursor`, per-message `key`s, tool-part `id`s and `unmatchedResults`. An invalid
    * `before` rejects.
+   *
+   * `subagent` (optional, trailing) reads a Claude SUBAGENT's own transcript instead of the
+   * session's: the parent is resolved strictly by `sessionId` (never the cwd fallback, which would
+   * answer with another session) and the file read is the one beside it,
+   * `<parent without .jsonl>/subagents/agent-<agentId>.jsonl`, jailed to that directory. Only for `agentId` naming the claude harness (stated, not
+   * omitted) and only with a `page`; anything else answers not found. An `agentId` inside
+   * `subagent` that is not a plain token rejects. A remote (SSH) node is read on its host.
    */
   readTranscript(
     sessionId: string | undefined,
@@ -3873,7 +3892,8 @@ export interface ChatApi {
     accountId?: string,
     nodeId?: string,
     agentId?: string,
-    page?: ChatTranscriptPageRequest
+    page?: ChatTranscriptPageRequest,
+    subagent?: ChatTranscriptSubagent
   ): Promise<ChatTranscriptResult>
 
   /**

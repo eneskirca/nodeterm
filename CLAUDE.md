@@ -4734,11 +4734,14 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   highlight or fill its "Other" field (the overlay types with `enter: false`, so nothing submits).
   **Every mic that names only a NODE** — the terminal header mic, the card modal's header mic, the
   Dock mic and the shortcut fallback (selected terminal / open card) — goes through
-  `dictationTargetForNode`: while that node's chat view is up (`.term-chat[data-chat-node-id]`) the
-  take goes to its mounted composer (the card modal's own when the modal is open for that node, so
-  a modal showing the LIVE terminal still targets it), a chat view with no composer refuses, and
-  otherwise it is the terminal as before. Every refusal says so in one `nodeterm:toast`
-  (`announceChatDictationRefusal`, naming the composer mic) instead of a silent dead key.
+  `dictationTargetForNode`: while that node's LIVE chat view is up (`LIVE_CHAT_VIEW`,
+  `.term-chat:not([data-chat-readonly])`: a read-only view never counts, here or in
+  `shortcutDictationFocus`, since a subagent card's thread carries its PARENT's id and a closed
+  transcript lies over no pane) the take goes to its mounted composer (the card modal's own when
+  the modal is open for that node, so a modal showing the LIVE terminal still targets it), a chat
+  view with no composer refuses, and otherwise it is the terminal as before. Every refusal says so
+  in one `nodeterm:toast` (`announceChatDictationRefusal`, naming the composer mic) instead of a
+  silent dead key.
 - **The composer completes `/` and `@` (2026-09-30).** Typing `/` at the START of the message (after
   optional whitespace) opens a menu of the node's CATALOG, and so does a `/` after whitespace anywhere
   in the message once a character follows it (2026-11-05, matching Claude Code 2.1.318's TUI, which
@@ -4852,6 +4855,121 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
     remote (`workspaceStore.sshProjectIdForNode`), so it answers built-ins + `partial` there instead of
     reading the server's own `~/.claude`. Adopting it in nodeterm mobile is an iOS
     follow-up.
+- **Quote to chat — "Add to chat" on a selection (2026-11).** A selection in an agent's terminal or
+  ⌘M thread becomes a markdown quote for THAT agent, and nothing is ever sent: the person presses
+  Enter. Pure rules in `renderer/lib/quoteToChat.ts` (`buildQuote`, `planQuote`), effects in ONE
+  funnel, `addQuoteToNode` (`renderer/lib/addQuoteToNode.ts`, deps behind `QuoteDeps` /
+  `defaultQuoteDeps`). Every trigger goes through it, and a new place that quotes into a node must
+  too. Rules a refactor must keep:
+  - **The quote**: `stripTerminalControls` first (escape SEQUENCES whole; `sanitizeChatText` alone
+    drops only the ESC byte and would quote a colour change as `[31m`), then `sanitizeChatText`,
+    leading blank lines and trailing whitespace dropped. Not a full trim: the first line keeps its
+    indentation, so quoted code keeps its relative indent. Cut at `QUOTE_MAX_CHARS` (4,000 code
+    points; the "Quoted the first 4,000 characters" toast fires only once the quote LANDED, because
+    the app has one toast slot and a refusal must not be hidden by it), every line `> `, ending in
+    one blank line.
+  - **The leg follows what the person is looking at** (`planQuote`). The node's ⌘M view open →
+    appended to the node's chat draft (`state/chatDraft.ts`, one blank line apart) and the composer
+    focused with the caret at the end, whatever the agent is doing (a draft types nothing). The
+    terminal showing → an UNSENT paste at the agent's prompt, `pty.sendText(nodeId, quote,
+    {enter:false})` (dictation's Insert path; every backend implements it, and whether the Windows
+    session host answers `true` for it is an owed device check, (a) below), with the trailing
+    newlines STRIPPED: in an app that has not asked for bracketed paste a pasted newline reads as
+    Enter. Residual, stated: such an app also submits at every INNER newline; the agent CLIs ask for
+    bracketed paste, and tmux's `paste-buffer -p` frames it. Only a literal `true` is a landed write
+    (`pasted-not-submitted` and a rejection toast "Couldn't add the quote to the terminal."), and a
+    refused pane leg is NEVER redirected to the hidden draft: the person would not know where it went.
+  - **"Open" means a view the person can see.** `chatOpen` counts a `.term-chat` for the node that is
+    NOT `[data-chat-readonly]` (a subagent card's thread carries its parent's id; a closed
+    transcript has no composer). While a card modal is open it looks only inside `.kanban-modal`;
+    otherwise it takes the first match not on a board-covered canvas (`coveredByBoard`,
+    `lib/canvasCovered.ts`: the canvas stays mounted under the board, and a focus-mode node above it
+    still counts). `focusComposer` uses the same match, so a composer nobody can see never takes the
+    keyboard. So a quote from the card modal's terminal goes to the pane even while the canvas
+    node's ⌘M view is open under the board.
+  - **The pane leg's refusals**, each one toast with nothing typed and the draft untouched
+    (`QUOTE_REFUSAL_TEXT`): not an agent node; the CLI is not in the pane by the store's flags
+    (`agentProcessInPane`: hibernated, paused, dropped, exited); `blocked` / `waiting`, or a held
+    question / approval ticket (`held` / `pendingId`), because typed text would ANSWER the prompt;
+    then **the kernel's say, for every agent** — the same `chatPaneRefusal` call
+    (`lib/chatPaneGate.ts`, `pty.paneOwner` + the settings' custom agents) the ⌘M composer and the
+    phone make before they type. The flags are a hint, not proof: Codex and opencode announce no
+    session end, so after a `/quit` the state still reads `done`, and an agent killed without its
+    SessionEnd leaves a shell in the pane under the same flags. A quote at a shell prompt is one
+    reflexive Enter from running each `> …` line as an output redirection that creates or truncates
+    a file. A pane the kernel says the agent left is `agent-gone`; one it could not read is
+    `unverified` ("Could not confirm the agent is running in this terminal.", the composer's
+    wording), never typed. Last, for an agent
+    whose screen is readable (`SCREEN_DIALOG_READABLE`, claude), a `readChatScreen` that the
+    composer's own rule refuses (`claudeScreenBlocksInput`: `dialog`, or `no-prompt` = no input box
+    on screen). That read exists because the agent's own dialogs (folder trust, `/model`) fire no
+    hook, so the state says idle while one owns the keyboard. An unreadable SCREEN is not evidence
+    and types (the kernel has already placed the agent in the pane). `working` is allowed (typing
+    into the box while a turn runs is what a person does), and so is a non-empty box (the quote lands
+    at the cursor).
+  - **Triggers.** (1) The ⌘M thread: `ChatQuoteButton` (`nodes/ChatQuoteButton.tsx`) for a non-empty
+    selection whose anchor AND focus are inside one `.term-chat__msgs`. It is portaled to `<body>` at
+    the selection's last client rect (a fixed element inside React Flow's scaled viewport would
+    scale with it), its mousedown is prevented so the selection survives, and it hides on a
+    selection change, a scroll of the thread / inside it / of an ancestor (not an unrelated scroller:
+    a streaming xterm scrolls all the time), a wheel, a resize, a press anywhere but on the button,
+    and a focus move to anything outside the thread (both window capture). The last two exist
+    because the selection can outlive the click that leaves it: xterm's mousedown calls
+    `preventDefault()`, so clicking into another node's terminal keeps the document selection and
+    fires no selection change, and a sloppy-focus dwell moves the keyboard with no click at all. It
+    is not offered for a thread `checkVisibility()` says is not rendered or on a board-covered
+    canvas, and a `MutationObserver` on `data-nt-canvas` hides one already shown when a board opens.
+    **It owns Escape while it shows AND the keyboard is near the thread** (`escapeInScope`: inside
+    its chat panel, on the button, on `<body>`, or on an element holding the thread — a press on the
+    thread's text focuses the nearest focusable ancestor, React Flow's node wrapper on the canvas):
+    window capture, `stopImmediatePropagation`, one Escape hides it and goes no further, not to the
+    composer (whose Escape interrupts a turn) and not to the card modal, which also returns early on
+    `chatQuoteButtonShowing()` because both listen in the window capture phase and registration
+    order decides. With focus anywhere else (another node's terminal) the key is that surface's and
+    is left alone. `ChatPanel.quoteTargetNodeId`: absent = the panel's own node, `null`
+    = no button (`ClosedTranscriptDialog`). (2) The terminal: tmux clears its highlight AS it
+    copies, so the only moment the text exists here is the OSC 52 copy (`handleOsc52Write`'s
+    `notifyCopied`, after the write policy allowed it), plus the copy-on-select RELEASE for a
+    selection xterm owns (Option/Shift drag, a pane with no tmux), never `onSelectionChange` (search
+    hits and clears fire it too). Both feed `useTerminalQuote` (`terminal/useTerminalQuote.ts`), the
+    ONE glue the canvas node and the card modal's `ModalTerminal` share; TerminalNode publishes its
+    sink in a module-level `quoteSubs` beside `copySubs`, because those handlers outlive a park. It
+    offers a `QuotePill` for `QUOTE_OFFER_MS` (6 s; a newer copy replaces it) bottom-right, never on
+    the agent's bottom-left input line, clickable unlike the copy receipt, with mousedown prevented
+    so the terminal keeps the keyboard. The offer is gated AT THE COPY on `agentProcessInPane`,
+    enabled only for an agent node (the created agent, or one a hook identified) and never for a
+    hosted read-only seat, and NOT gated on `reportsOwnCopy` (claude takes a quote; only its receipt
+    stays off). `raised` is static per terminal (one notch up wherever the receipt can show), so the
+    pill never drops under the pointer when the 1.6 s receipt ends. The pill does NOT take Escape
+    (over a terminal, Escape interrupts the turn), and covering the terminal (⌘M face up, the modal's
+    `covered`) withdraws the offer. tmux sends OSC 52 to every client of the pane, so a copy in the
+    card modal also offers an invisible pill on the canvas node under the board (it expires). (3) A
+    subagent card's thread quotes to its PARENT (see **Subagent visualization**). Such a quote is
+    made on another node than its target, and when it lands in the target's pane it says so: the
+    info toast "Added to the agent's terminal." (`addQuoteToNode(…, { crossNode })`, which ChatPanel
+    passes for a subagent card's thread or a named other target; no toast for a same-node quote).
+    The canvas's `nodeterm:toast` listener draws an `info` toast as its fading info strip, beside the
+    `error` banner it always drew.
+  - **Surfaces.** Desktop and Server Edition: full (renderer plus the bridged `sendText` /
+    `readChatScreen`). SSH projects: full (pane writes ride the master). Kanban card modal: full,
+    its own ⌘M state decides the leg. Relay / team tab: the ⌘M thread reads nothing there
+    (transcript reads are refused), so there is no thread button; its OSC 52 copy is refused by
+    `osc52-policy`, so no copy-moment pill; an xterm-owned selection still offers one, and that
+    writes to the HOST's pane through the relay api, the place the person's own keys go (ruled),
+    after the host answered `pty.paneOwner` (editor-only, like `sendText`).
+    Mobile: N/A (follow-up: the phone's chat screen could offer a quote action).
+  - **Device checklist** (jsdom only so far): (a) Windows session host: `sendText(…, {enter:false})`
+    answers `true` (else every pane quote toasts a failure); (b) Claude: a multi-line pane quote
+    lands as one pasted block, nothing is submitted, and the next key continues after it; (c) the
+    thread button's place at a canvas zoom other than 100 % and under Liquid Glass (a middle-drag
+    pan, which fires no scroll or wheel event, no longer leaves it behind: the press hides it);
+    (d) the pill on a Codex node (receipt on, raised) and on a Claude node (receipt off); (e) the
+    card modal's terminal pill with the canvas node's ⌘M view open under the board → the pane;
+    (f) a relay tab's Option/Shift selection pill writes to the host's pane. No longer owed:
+    "select in A's thread, click B's pane, Escape reaches B" — the press hides the button whatever
+    the selection does, and an Escape with the keyboard outside the thread is never taken. A
+    selection change could still redraw the button while B has the keyboard (Chromium's selection
+    behaviour on that click is unmeasured); it would then not take B's Escape.
 - **Subagent visualization** (agents in `SUBAGENT_CAPABLE`) — `subagent-start`/`subagent-end`
   normalized events drive a transient `state/agentNodes.ts` store. For Claude they come from
   **Claude's own `SubagentStart`/`SubagentStop` hooks** whenever a session sends them (2026-09,
@@ -4893,6 +5011,17 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   saying one was ever launched. It costs Eco nothing either way, since an absent card and a `done`
   card are the same answer to `liveSubagents`. Renderer only: Desktop and Server Edition identical,
   Mobile N/A.
+  **An OPEN card is pinned (2026-11).** Expanding a card is reading it, so the turn boundary
+  (`clearFinishedForParent`) and `finish()`'s `autoHideFinished` drop both skip an expanded card,
+  which only turns done. Collapsing a finished card un-pins it: it goes at the NEXT boundary, or at
+  once under `autoHideFinished` (`toggleExpanded` drops it, a card the stale decay marked done
+  included, since the store cannot tell the two dones apart). Tidy (`tidyFanout`) drops every
+  `expanded` flag on purpose and follows the same rule. `clearForParent` (the parent is gone or its
+  session ended) still takes a pinned card, and `sweepStaleWorking` still only marks it done. Eco is
+  unaffected: a pinned card is `done`, and `liveSubagents` is "any card NOT done"
+  (`lib/hibernationCandidates.ts`); the bulk idle restart never reads the card store (it reads agent
+  state and `backgroundTaskAt`). The pin lives in memory like the cards: a renderer reload or an app
+  restart loses an open card. There is no cap on pinned cards: only an expanded card mounts a panel.
   (Subagents share the parent's process — no PTY.) Each card shows
   duration/tokens/tool-uses and **expands** (click) to a **live transcript**:
   `core/subagent-tail.ts` tails the subagent's own transcript file
@@ -4900,6 +5029,127 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   parent's transcript and the `agent_id`, `claudeSubagentTranscriptPath`; for a tool-path card
   matched by `tool_use_id` via the sibling `.meta.json`), read-only, formats each line (assistant
   text + tool calls + results), and streams chunks over `agent:subagent-activity` into the store.
+  That text stream is what every card but a native Claude one shows when expanded.
+  **A native Claude card reads as a conversation (2026-11).** Expanded and `chatReadable` (its
+  `agent` is the claude harness by `capabilityAgentId`, it is `native` — drawn from `SubagentStart`
+  with `subagentSignal === 'native'`, so its key IS the child's `agent_id`, a safe file-name token
+  (`isClaudeAgentId`) — and it recorded the parent's `sessionId`), the card's body is the ⌘M
+  `ChatPanel`, read-only, pointed at the subagent's own file: `subagent={{agentId: cardId,
+  working}}`, with `nodeId` / `sessionId` / `accountId` the PARENT's and `quoteTargetNodeId` the
+  parent (a selection in the thread offers "Add to chat" to the parent; the subagent has no message
+  box). Every other card (Codex, Grok, a tool-path card, no recorded session, a closed card) keeps
+  the text stream above, unchanged. Rules a refactor must keep:
+  - **The parent's identity is recorded at START** (`SubagentViz.sessionId` / `accountId` / `agent`
+    / `native`, set by `applyAgentEvent` from the event and the parent's FRESH status entry). The
+    first recorded value wins and `native` is sticky once true, so a later resume, restart or
+    account switch of the parent never repoints an open card, and a replay without the signal cannot
+    demote one. Two of those end the card instead: an in-place restart or an account switch quits
+    the parent's CLI, which fires SessionEnd, so `clearForParent` removes the card, pinned or not —
+    an opened card does not survive a parent restart. With no recorded account the card reads under
+    the parent node's own rule (`effectiveAccountId(data.accountId, observed, claudeAccounts)`,
+    TerminalNode's `accountForReads`). `core/subagent-replay.ts` now carries `subagentSignal`, so a
+    RUNNING card replayed after a reload stays native; a finished one is not replayed.
+  - **The size is a layout default, never stored**: `subagentCardSize` lays an open chat card out at
+    480 × 560 (an open text card 480 × 340, a closed one 230 × 96), and a size the person set wins.
+    A stored size is also the CLOSED size, so storing 480 × 560 on open would leave a big empty frame
+    around a closed header.
+  - **Live reads come from the CARD, never the parent.** `useSubagentReloadNonce` bumps ChatPanel's
+    `reloadNonce` when the card's `lastActivityAt` advances (subscribed outside render; at most once
+    per `CHAT_LIVE_RELOAD_MIN_MS`, with a trailing bump, through the panel's own throttle, single
+    flight and hidden-document hold), and on the working → done edge at 0 ms and at
+    `TURN_END_RELOAD_DELAYS_MS` (a stop can precede the last record). The panel skips the parent's
+    `onHookEvent` and turn-end reloads (its `nodeId` is the parent), its `liveTurn` follows
+    `subagent.working`, and as a read-only panel it does not subscribe to the parent's draft. The
+    transcript identity gains the subagent id, so the thread never merges with the parent's.
+  - The file's first record renders as a labelled **Task** block (`ChatMessage.task`), not as the
+    person's bubble. A finished card puts its report (result, then the stats line) under the thread;
+    the stats line is NOT `nodrag`, because it is the one strip left to drag the card by.
+  - Read-only views never count as an open chat view: not for a quote's `chatOpen`, not for
+    dictation (`LIVE_CHAT_VIEW`, see the ⌘M composer bullet).
+  **The read: `chat.readTranscript`'s optional 7th argument `subagent: {agentId}`** (preload,
+  ws-bridge `buildTranscriptApi`, the core handler; the relay stub still refuses). Core
+  (`readChatTranscript`) validates it first (`normalizeSubagentArg`: absent / `null` = the ordinary
+  read; anything else must carry an `isClaudeAgentId` token, or the call THROWS `Invalid subagent`)
+  and serves it only PAGED and only when the parent's agent is STATED and resolves to the claude
+  harness (`capabilityAgentId`; omitted is not assumed claude here); anything else is not found. The
+  PARENT is resolved strictly by session id (`resolveTranscript` with no cwd, so never the cwd's
+  newest session) and must be the session's OWN file (`isSessionTranscript`: the last segment is
+  `<sessionId>.jsonl`, separator-agnostic), because a stale hook-fed path naming another session
+  would put that session's `subagents/` directory in reach. The child is derived
+  (`claudeSubagentTranscriptPath`), then jailed. Locally (`core/subagent-transcript-path.ts`
+  `subagentTranscriptFor`): the child directory's realpath must equal the parent directory's
+  realpath plus `<session>/subagents`, and `lstat(child).isFile()` (no symlinked file or directory;
+  a `~/.claude` that is itself a symlink still works). Remotely (`main/remote-transcript-page.ts`):
+  the same derivation from the HOST's parent ref, jailed by the parent's own host jail (`isSafePath`
+  = `isSafeRemoteTranscriptPath` against that master's remote home, a REQUIRED dep, so a shell that
+  forgot it reads no subagent), and read with the ranged SSH reader. A remote failure is unreadable,
+  never this machine's disk, and a failed SUBAGENT read keeps the located parent ref (the child may
+  simply not exist yet). Limits, stated: the remote jail is LEXICAL (a symlink at the derived host
+  path would be followed, and planting one needs the host user's own `~/.claude`); locally the
+  `lstat` → `open` window is a same-user race (`readChatWindow` opens without `O_NOFOLLOW`).
+  **The parser** (`ChatParseOptions.subagentFile`, honoured only with `rich`, set by core in ONE
+  place: the `parse` of a read that carries `subagent`; the phone's `chat.page` never sets it, so
+  the wire format is unchanged). MEASURED on Claude Code **2.1.326** (three background subagent
+  files from a controlled run, one fork's first line, and the CLI bundle's own strings and identity
+  rule; fixture `src/shared/chat-fixtures/claude/subagent.jsonl`, hand-built from those shapes with
+  every value replaced, README "Subagent files"): every record carries `agentId`, and every
+  conversation record (`user` / `assistant` / `attachment`) also `isSidechain: true` (the
+  `api-request*` records and a fork's `fork-context-ref` do not). A background subagent's first line
+  is its task (a `user` record with string content, `parentUuid: null`); a fork's is
+  `fork-context-ref`, then the parent's replayed `Agent` call and a `[tool_result, text]` user
+  record. A person's message to a RUNNING subagent is an `attachment` `{type:'queued_command',
+  prompt, source_uuid, origin:{kind:'human'}, isMeta:true}`; to a FINISHED (revived) one it is a
+  `user` record with `isMeta:true` and `origin.kind:'human'`, wrapped in the CLI's
+  `SUBAGENT_MESSAGE_HEAD` / `_TAIL`. Neither shape reaches the parent's transcript. Readings: the
+  file's first non-meta `user` record is the task (`task: true`) when it is a sidechain record, and
+  only when the read holds byte 0 (so an unpaged caller must hand the WHOLE file); both person
+  shapes become the person's bubble, with reminder markup and the wrapper removed (head and tail
+  both exact, the CLI's own unwrap, the head alone as a fallback); one bubble per message by the
+  CLI's identity rule (`uuid`, an attachment's `source_uuid`, a user record's `sentAsUuid`), with a
+  record's ids recorded only when its bubble is DRAWN, so a form that unwraps to nothing cannot hide
+  the other form. These readings apply only to a subagent read: in a MAIN transcript an `isMeta`
+  queued attachment is a peer message. NOT measured: both forms of one message in one file (the
+  dedupe is tested on inline records only), array-content person messages (mirrored from the CLI's
+  rendering), and a duplicate split across two pages (drawn twice). A fork's replayed parent `Agent`
+  call still shows as a tool chip before the task (ruled: left in v1).
+  **Listed under the parent (2026-11).** The sessions sidebar draws one indented row per card under
+  the agent's session row, in both modes (`components/SubagentRows.tsx`: type · task on one line, a
+  working dot or a done mark); the kanban session card shows "N subagents · M working"
+  (`kanban/SubagentChip.tsx`), and the card modal a compact list. All read the same `useAgentNodes`
+  store through `subagentRowsSig` (`lib/subagentRows.ts`), never `byId`: a primitive built from the
+  raw fields in store order (id, state, start time, and the length-prefixed type and task; no regex,
+  no sort), which carries the label because the lifecycle relabels a running card under its own id.
+  The working mark is a STATIC dot, never a spinner: one infinite animation per row keeps a focused
+  window's frame loop open (#1454, **Idle energy**), and `SubagentRows.test.tsx` fails on an
+  `animation` in any rule for these rows. A row click (or a list click in the card modal, which first
+  closes the modal and `showCanvas`es; the conversation is never drawn inside the board) dispatches
+  `nodeterm:open-subagent`. Canvas's ONE listener `travelToNode`s the PARENT, which now answers
+  whether it travelled (`false` when blocked or when a reopen was declined), and only then opens
+  (never toggles shut) and selects the card, at once rather than when the travel lands, since opening
+  pins it. The camera frames the parent; on a parent that fills the screen the card can sit just out
+  of view. A parent whose eye hides its fan-out (`hideFanout`) still gets the card opened, plus an
+  info strip naming the eye (`SUBAGENT_FANOUT_HIDDEN_TEXT`, `parentHidesFanout` read before the
+  travel from the live canvas, else the owning project's stored copy); the flag is persisted node
+  data and is never written from there. **Never for a relay / team project** (sidebar rows and the
+  modal list ask `isRemoteProjectId`; the board chip gets `SessionCard.relayProject` from
+  `project.remote`): the card store is this machine's and keyed by node id, a relay tab draws no
+  cards at all (`wireRelayAgentStatus` passes `nodes = null`), and a team tab shares its node ids
+  with the handed-off SSH project. Surfaces: Desktop and Server Edition identical (renderer plus the
+  core read; the Server Edition reads locally, since it runs on its host); SSH projects read the
+  card's file on the host; Mobile N/A (no subagent cards). `src/shared/chat-fixtures/claude/` is a
+  new fixture directory the iOS repo's copy will see, with nothing to implement there (the phone
+  never sets `subagentFile`).
+  **Device checklist** (jsdom only so far): (a) the 480 × 560 chat card in dark, light and Liquid
+  Glass; (b) a wheel over the thread scrolls it, not the canvas; (c) "Add to chat" from a card's
+  thread into the parent, both legs; (d) a working subagent's thread grows in the open card; (e) an
+  SSH node's card reads on the host; (f) the Server Edition forwards the 7th argument (pinned at
+  source level only); (g) one person's message written in BOTH forms draws one bubble; (h) sidebar
+  row spacing in dark, light and Liquid Glass, the chip in a crowded card title row, the modal
+  list's place; (i) dragging a finished chat card by its stats line; (j) on the Omni board, a list
+  click for a background lane switches project and frames the parent (the synchronous modal →
+  canvas hand-off is unverified); (k) a row click on a parent with hidden cards shows the info strip,
+  and the card is open once the cards are shown; (l) after a reload an open card is gone, and a
+  running one comes back native through the replay.
   **Claude's native subagent hooks** (2026-09; `CLAUDE_HOOK_EVENTS` subscribes `SubagentStart` +
   `SubagentStop` for every installer — local, managed account dirs, SSH host). MEASURED on Claude
   Code **2.1.284** in a throwaway `CLAUDE_CONFIG_DIR` (nine scenarios, print mode and the
@@ -5016,6 +5266,25 @@ command-bearing opens; this does not add a human-confirm dialog or change mobile
   `src/shared/agents/__fixtures__/grok/hook-payloads.json`, pinned by
   `normalize.grok.capture.test.ts`. Remote (SSH) grok nodes get cards from the hook but no
   live tail yet (the child dir is on the host; same gap as codex).
+- **Messaging a subagent (MEASURED, not built).** On Claude Code 2.1.326 (haiku, a private tmux
+  socket, a scratch cwd, `NODETERM_*` unset, 2026-11-17) a person can message a running background
+  subagent from the TUI. With the prompt EMPTY: Down (focus enters the `⏺ main` / `◯ <type>` list
+  the footer's `↓ to manage` announces), Down again (the subagent row: "enter to view · x to stop"),
+  Enter (its view, with the composer placeholder `Message @<type>…`, the agent TYPE, not its
+  description), type, Enter. Back: Down (main) + Enter; Up from the top row only leaves the list. A
+  FINISHED subagent whose row is still listed is revived by a message (`revivedAt` in its
+  `meta.json`); the row is gone once the main turn ends. Plain Agent-tool subagents accept messages,
+  not only teammates; a foreground one could not be made (an Agent call without
+  `run_in_background` was still backgrounded, meta `requestShape:"background"`). The message is
+  recorded ONLY in the subagent's file (the two shapes the card's parser reads, above), fires NO hook
+  (not even `UserPromptSubmit`), and the main agent never learns of it: it sees only the handback
+  ("Message from @<type>") and a task notification, each costing it a turn. Hazards for anyone who
+  drives this with keys: `x` in the list STOPS the selected agent; a running subagent's view says
+  `esc to stop` (Esc likely stops it, untested); ← on an empty main prompt opens a NEW-session
+  composer (text + Enter starts a session); rows are positional and not unique (two can read
+  `general-purpose`), and their status text goes stale. So a future "Message @agent…" box in the
+  card would need a screen read before EVERY key and works only while the row is listed. The read
+  side, the person's message drawn in the card's thread, already exists.
 - **/loop, /schedule & /cron node** (agents in `RECURRING_CAPABLE`) — detected from the **tools**
   the agent invokes (robust; users often phrase it in natural language so the prompt rarely starts
   with the slash): `PreToolUse` for `Skill` (skill ∈ loop/schedule/cron), `CronCreate` (→ cron,

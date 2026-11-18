@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { useAgentNodes } from './agentNodes'
+import { WORKING_STALE_MS } from '@shared/agents/stale'
+import { setCustomAgentBaseResolver } from '@shared/agents/config'
+import { chatReadable, useAgentNodes, type SubagentViz } from './agentNodes'
 
 describe('loop node overrides vs per-turn fan-out', () => {
   beforeEach(() => {
@@ -210,5 +212,223 @@ describe('loop card override persistence', () => {
     expect(fresh.getState().positions['loop-n2']).toEqual({ x: 9, y: 8 })
     expect(fresh.getState().expanded['loop-n2']).toBe(true)
     vi.unstubAllGlobals()
+  })
+})
+
+describe('an opened card stays: the pin rule', () => {
+  // A card the user expanded is reading material (its chat). The turn boundary and the
+  // `autoHideFinished` drop both skip it; only "the parent is gone" (`clearForParent`) or the
+  // user's own collapse takes it.
+  beforeEach(() => {
+    useAgentNodes.setState({
+      byId: {},
+      activityById: {},
+      lastActivityAt: {},
+      positions: {},
+      sizes: {},
+      expanded: {},
+      selectedId: null,
+      autoHideFinished: false
+    })
+  })
+
+  it('an expanded done card survives the turn boundary; a collapsed one is removed', () => {
+    const s = useAgentNodes.getState()
+    s.start('a-open', { parentNodeId: 'n1' })
+    s.start('a-closed', { parentNodeId: 'n1' })
+    s.finish('a-open', {})
+    s.finish('a-closed', {})
+    s.toggleExpanded('a-open')
+    s.clearFinishedForParent('n1')
+    const st = useAgentNodes.getState()
+    expect(Object.keys(st.byId)).toEqual(['a-open'])
+    expect(st.expanded['a-open']).toBe(true)
+  })
+
+  it('collapsing a pinned done card leaves it for the NEXT boundary, not an immediate delete', () => {
+    const s = useAgentNodes.getState()
+    s.start('a1', { parentNodeId: 'n1' })
+    s.toggleExpanded('a1')
+    s.finish('a1', {})
+    s.clearFinishedForParent('n1') // a turn boundary while it is open
+    useAgentNodes.getState().toggleExpanded('a1') // the user closes it
+    expect(useAgentNodes.getState().byId['a1']?.state).toBe('done')
+    useAgentNodes.getState().clearFinishedForParent('n1')
+    expect(useAgentNodes.getState().byId['a1']).toBeUndefined()
+  })
+
+  it('with autoHideFinished on, an expanded card survives its finish() with its result', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('a1', { parentNodeId: 'n1' })
+    s.toggleExpanded('a1')
+    useAgentNodes.getState().finish('a1', { tokens: 5, result: 'ok' })
+    expect(useAgentNodes.getState().byId['a1']).toMatchObject({ state: 'done', tokens: 5, result: 'ok' })
+  })
+
+  it('with autoHideFinished on, collapsing a done card removes it at once', () => {
+    // That setting's promise is "finished cards do not linger"; the pin only lasted while open.
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('a1', { parentNodeId: 'n1' })
+    s.toggleExpanded('a1')
+    useAgentNodes.getState().finish('a1', {})
+    s.select('a1')
+    useAgentNodes.getState().toggleExpanded('a1')
+    const st = useAgentNodes.getState()
+    expect(st.byId['a1']).toBeUndefined()
+    expect(st.expanded['a1']).toBeUndefined()
+    expect(st.selectedId).toBeNull()
+  })
+
+  it('with autoHideFinished on, collapsing a WORKING card keeps it', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('a1', { parentNodeId: 'n1' })
+    s.toggleExpanded('a1')
+    useAgentNodes.getState().toggleExpanded('a1')
+    expect(useAgentNodes.getState().byId['a1']?.state).toBe('working')
+  })
+
+  it('with autoHideFinished on, Tidy drops the finished cards it un-pins at once, as a collapse does', () => {
+    const s = useAgentNodes.getState()
+    s.setAutoHideFinished(true)
+    s.start('a-done', { parentNodeId: 'n1' })
+    s.start('a-working', { parentNodeId: 'n1' })
+    s.start('a-other', { parentNodeId: 'n2' })
+    s.toggleExpanded('a-done')
+    s.toggleExpanded('a-working')
+    s.toggleExpanded('a-other')
+    useAgentNodes.getState().finish('a-done', {})
+    useAgentNodes.getState().finish('a-other', {})
+    s.setSize('a-working', { width: 400, height: 300 })
+    s.select('a-done')
+    useAgentNodes.getState().tidyFanout('n1')
+    const st = useAgentNodes.getState()
+    expect(st.byId['a-done']).toBeUndefined()
+    expect(st.selectedId).toBeNull()
+    // A working card only loses its overrides; another parent's open card is not touched.
+    expect(st.byId['a-working']?.state).toBe('working')
+    expect(st.expanded['a-working']).toBeUndefined()
+    expect(st.sizes['a-working']).toBeUndefined()
+    expect(st.expanded['a-other']).toBe(true)
+  })
+
+  it('with autoHideFinished off, Tidy un-pins a finished card but keeps it until the boundary', () => {
+    const s = useAgentNodes.getState()
+    s.start('a1', { parentNodeId: 'n1' })
+    s.toggleExpanded('a1')
+    s.finish('a1', {})
+    useAgentNodes.getState().tidyFanout('n1')
+    expect(useAgentNodes.getState().byId['a1']?.state).toBe('done')
+    expect(useAgentNodes.getState().expanded['a1']).toBeUndefined()
+  })
+
+  it('with autoHideFinished off, collapsing a done card keeps it until the boundary', () => {
+    const s = useAgentNodes.getState()
+    s.start('a1', { parentNodeId: 'n1' })
+    s.toggleExpanded('a1')
+    s.finish('a1', {})
+    useAgentNodes.getState().toggleExpanded('a1')
+    expect(useAgentNodes.getState().byId['a1']?.state).toBe('done')
+  })
+
+  it('clearForParent removes pinned and unpinned cards alike', () => {
+    const s = useAgentNodes.getState()
+    s.start('a-open', { parentNodeId: 'n1' })
+    s.start('a-closed', { parentNodeId: 'n1' })
+    s.finish('a-open', {})
+    s.toggleExpanded('a-open')
+    s.clearForParent('n1')
+    const st = useAgentNodes.getState()
+    expect(st.byId).toEqual({})
+    expect(st.expanded['a-open']).toBeUndefined()
+  })
+
+  it('the stale decay still only marks a pinned card done, and the boundary then keeps it', () => {
+    const s = useAgentNodes.getState()
+    s.start('a1', { parentNodeId: 'n1' })
+    s.toggleExpanded('a1')
+    const startedAt = useAgentNodes.getState().byId['a1'].startedAt
+    s.sweepStaleWorking(startedAt + WORKING_STALE_MS + 1)
+    expect(useAgentNodes.getState().byId['a1'].state).toBe('done')
+    useAgentNodes.getState().clearFinishedForParent('n1')
+    expect(useAgentNodes.getState().byId['a1']).toBeDefined()
+  })
+})
+
+describe('card identity: what a card was started under', () => {
+  beforeEach(() => {
+    useAgentNodes.setState({ byId: {}, activityById: {}, lastActivityAt: {}, positions: {}, sizes: {}, expanded: {} })
+  })
+
+  it('start stores the parent session, account, agent and native flag', () => {
+    useAgentNodes.getState().start('a1', {
+      parentNodeId: 'n1',
+      sessionId: 'sess-1',
+      accountId: 'acct-1',
+      agent: 'claude',
+      native: true
+    })
+    expect(useAgentNodes.getState().byId['a1']).toMatchObject({
+      sessionId: 'sess-1',
+      accountId: 'acct-1',
+      agent: 'claude',
+      native: true
+    })
+  })
+
+  it('a repeated start that names no session or account keeps the ones it started under', () => {
+    const s = useAgentNodes.getState()
+    s.start('a1', { parentNodeId: 'n1', sessionId: 'sess-1', accountId: 'acct-1', agent: 'claude', native: true })
+    s.start('a1', { parentNodeId: 'n1', agent: 'claude', native: true })
+    expect(useAgentNodes.getState().byId['a1']).toMatchObject({ sessionId: 'sess-1', accountId: 'acct-1' })
+  })
+
+  it('a superseding native start is native and keeps the replaced card’s session', () => {
+    const s = useAgentNodes.getState()
+    s.start('toolu_1', { parentNodeId: 'n1', sessionId: 'sess-1', agent: 'claude', native: false })
+    s.toggleExpanded('toolu_1')
+    s.start('a1', { parentNodeId: 'n1', agent: 'claude', native: true }, 'toolu_1')
+    const st = useAgentNodes.getState()
+    expect(st.byId['a1']).toMatchObject({ native: true, sessionId: 'sess-1' })
+    expect(st.expanded).toEqual({ a1: true })
+  })
+})
+
+describe('chatReadable', () => {
+  const card = (over: Partial<SubagentViz> = {}): SubagentViz => ({
+    parentNodeId: 'n1',
+    state: 'working',
+    startedAt: 1,
+    agent: 'claude',
+    native: true,
+    sessionId: 'sess-1',
+    ...over
+  })
+
+  it('a native Claude card with a session and a safe id is readable', () => {
+    expect(chatReadable(card(), 'a4809888b14b29608')).toBe(true)
+  })
+
+  it('refuses a tool-path card, another agent, a missing session or an unsafe id', () => {
+    expect(chatReadable(card({ native: false }), 'a1')).toBe(false)
+    expect(chatReadable(card({ native: undefined }), 'a1')).toBe(false)
+    expect(chatReadable(card({ agent: 'codex' }), 'a1')).toBe(false)
+    expect(chatReadable(card({ agent: undefined }), 'a1')).toBe(false)
+    expect(chatReadable(card({ sessionId: undefined }), 'a1')).toBe(false)
+    expect(chatReadable(card({ sessionId: '' }), 'a1')).toBe(false)
+    expect(chatReadable(card(), '../a1')).toBe(false)
+    expect(chatReadable(card(), '')).toBe(false)
+  })
+
+  it('a custom agent built on claude is readable', () => {
+    setCustomAgentBaseResolver((id) => (id === 'custom:x' ? 'claude' : undefined))
+    try {
+      expect(chatReadable(card({ agent: 'custom:x' }), 'a1')).toBe(true)
+      expect(chatReadable(card({ agent: 'custom:y' }), 'a1')).toBe(false)
+    } finally {
+      setCustomAgentBaseResolver(null)
+    }
   })
 })

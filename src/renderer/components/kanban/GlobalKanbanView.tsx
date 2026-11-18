@@ -124,6 +124,9 @@ const Swimlane = memo(function Swimlane({
   // The card face's Ports chip, for the active project's lane only: the dev-port scanner covers the
   // project on the canvas and nothing else, so a background lane would show a stale or empty list.
   const portsRemote = useProjects((s) => !!s.getProject(projectId)?.ssh)
+  // A relay / team lane's cards show no subagent chip (SessionCard's `relayProject`). A lane is a
+  // project the store holds, where this is `isRemoteProjectId`'s answer.
+  const relayProject = useProjects((s) => !!s.getProject(projectId)?.remote)
   const cardPorts = useMemo(
     () => (projectId === activePortsProjectId ? { projectId, remote: portsRemote } : undefined),
     [projectId, activePortsProjectId, portsRemote]
@@ -305,6 +308,7 @@ const Swimlane = memo(function Swimlane({
           onOpenPort={openPort}
           onRunQueued={runQueued}
           statusStore={statusStore}
+          relayProject={relayProject}
         />
       ))
     }]

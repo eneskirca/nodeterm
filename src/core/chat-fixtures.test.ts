@@ -15,7 +15,14 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
-import { parseChatWindow, readChatWindow, type ChatWindowParse } from './transcript-reader'
+import {
+  claudeChatRecordParser,
+  parseChatMessages,
+  parseChatWindow,
+  readChatWindow,
+  type ChatParseOptions,
+  type ChatWindowParse
+} from './transcript-reader'
 import { readChatTranscript } from './transcript-ipc'
 import {
   buildPermissionDecision,
@@ -903,5 +910,246 @@ describe('chat golden fixtures', () => {
     expect(tail.parse.noCompleteLine).toBe(false)
     expect(tail.parse.olderCursor).not.toBeNull()
     expect(JSON.stringify(tail.parse.messages.at(-1))).toContain('What is wrong in this screenshot?')
+  })
+})
+
+// ── A Claude subagent's own transcript (desktop rich read only) ──────────────────────────────────
+// `claude/subagent.jsonl` is HAND-BUILT from the record shapes of real subagent files (Claude Code
+// 2.1.326; see the fixtures README for what was measured and what was edited) — every value is a
+// placeholder. It is read whole (one window from byte 0), not through the phone's pager: the shapes
+// below are drawn only by the desktop ⌘M panel's `rich` read of a subagent file (`subagentFile`),
+// which the phone never asks for. The `plain` and `rich` goldens were written by the parser BEFORE
+// `subagentFile` existed: they pin that a read without it is byte-for-byte what it was.
+describe('claude subagent file (rich + subagentFile)', () => {
+  const FILE = fixture('claude/subagent.jsonl')
+  const buf = (): Buffer => fs.readFileSync(FILE)
+  const parseWhole = (opts?: ChatParseOptions): Omit<ChatWindowParse, 'noCompleteLine'> => {
+    const { noCompleteLine: _n, ...rest } = opts
+      ? parseChatWindow(buf(), 0, claudeChatRecordParser(opts))
+      : parseChatWindow(buf(), 0)
+    return rest
+  }
+  const SUBAGENT: ChatParseOptions = { rich: true, subagentFile: true }
+  /** Absolute byte offset of line `i` of the fixture (a message's `key`). */
+  const lineOffset = (i: number): number => {
+    const lines = buf().toString('utf8').split('\n')
+    return Buffer.byteLength(lines.slice(0, i).map((l) => l + '\n').join(''))
+  }
+  const textOf = (m: { parts: Array<{ kind: string; text?: unknown }> }): string =>
+    m.parts.map((p) => (p.kind === 'text' ? String(p.text) : '')).join('')
+
+  it('without `rich` and `subagentFile` the output is what it was (pre-change snapshots)', () => {
+    golden('claude/subagent.plain.json', serialize(parseWhole()))
+    golden('claude/subagent.rich.json', serialize(parseWhole({ rich: true })))
+    // `subagentFile` is honoured only together with `rich`.
+    expect(parseWhole({ subagentFile: true })).toStrictEqual(parseWhole())
+    expect(parseWhole({ thinking: true, subagentFile: true })).toStrictEqual(parseWhole({ thinking: true }))
+  })
+
+  it('the subagent read matches claude/subagent.subagent.json', () => {
+    golden('claude/subagent.subagent.json', serialize(parseWhole(SUBAGENT)))
+  })
+
+  it("the subagent's first user record is the task, flagged; nothing else is", () => {
+    const { messages } = parseWhole(SUBAGENT)
+    expect(messages[0]).toMatchObject({ role: 'user', task: true, key: lineOffset(1) })
+    expect(textOf(messages[0])).toBe('Run `echo tick` three times, one Bash call per step, then report the count.')
+    expect(messages.filter((m) => m.task === true)).toHaveLength(1)
+    // Off the subagent read the same record is an ordinary user message.
+    for (const opts of [undefined, { rich: true }] as const) {
+      expect(parseWhole(opts).messages.some((m) => 'task' in m)).toBe(false)
+    }
+  })
+
+  it('the fork-context-ref first line yields nothing', () => {
+    const { messages } = parseWhole(SUBAGENT)
+    expect(JSON.parse(buf().toString('utf8').split('\n')[0]).type).toBe('fork-context-ref')
+    expect(messages.some((m) => m.key === 0)).toBe(false)
+  })
+
+  it("the person's queued message to the running subagent is a user message with its prompt", () => {
+    const { messages } = parseWhole(SUBAGENT)
+    const queued = messages.find((m) => m.key === lineOffset(27))
+    const record = JSON.parse(buf().toString('utf8').split('\n')[27])
+    expect(record.attachment).toMatchObject({ type: 'queued_command', origin: { kind: 'human' }, isMeta: true })
+    expect(queued).toMatchObject({ role: 'user', at: Date.parse(record.timestamp) })
+    expect(textOf(queued!)).toBe('Stop ticking and reply with the word DONE.')
+    // A main transcript's rule is untouched: there an `isMeta` queued attachment is a peer message,
+    // and the rich read without `subagentFile` draws nothing for it.
+    expect(parseWhole({ rich: true }).messages.some((m) => m.key === lineOffset(27))).toBe(false)
+  })
+
+  it("the person's message to the finished subagent is a user message without the CLI's wrapper", () => {
+    const { messages } = parseWhole(SUBAGENT)
+    const revived = messages.find((m) => m.key === lineOffset(34))
+    const record = JSON.parse(buf().toString('utf8').split('\n')[34])
+    expect(record).toMatchObject({ type: 'user', isMeta: true, origin: { kind: 'human' } })
+    expect(record.message.content.startsWith('The user sent a new message while you were working:\n')).toBe(true)
+    expect(revived?.role).toBe('user')
+    expect(textOf(revived!)).toBe('Reply with the word AGAIN.')
+  })
+
+  it('no harness text reaches the thread: reminders, wrappers, request blobs, attachments', () => {
+    const all = JSON.stringify(parseWhole(SUBAGENT).messages)
+    for (const s of ['system-reminder', 'The user sent a new message', 'This is how Claude Code', 'Placeholder', 'total_tokens']) {
+      expect(all).not.toContain(s)
+    }
+    expect(parseWhole(SUBAGENT).messages.map((m) => m.role)).toEqual([
+      'user', // the task
+      'assistant', // Bash 1
+      'assistant', // "Tick 1 done."
+      'assistant', // Bash 2
+      'user', // queued: DONE
+      'assistant', // handback
+      'user', // revived: AGAIN
+      'assistant' // handback
+    ])
+  })
+
+  // Last in the block: an UPDATE run writes the goldens above before this looks.
+  it('the directory holds exactly the hand-built input and its three goldens', () => {
+    expect(fs.readdirSync(fixture('claude')).sort()).toEqual([
+      'subagent.jsonl',
+      'subagent.plain.json',
+      'subagent.rich.json',
+      'subagent.subagent.json'
+    ])
+  })
+})
+
+describe('subagent read rules (inline records)', () => {
+  const SUBAGENT: ChatParseOptions = { rich: true, subagentFile: true }
+  const WRAP_HEAD = 'The user sent a new message while you were working:\n'
+  const WRAP_TAIL =
+    '\n\nThis is how Claude Code surfaces messages the user sends mid-turn \u2014 within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.'
+  const side = (r: Rec): Rec => ({ isSidechain: true, ...r })
+  const task = side({ type: 'user', uuid: 't', parentUuid: null, message: { role: 'user', content: 'the task' } })
+  const queued = (prompt: unknown, sourceUuid: string, uuid = `q-${sourceUuid}`): Rec =>
+    side({ type: 'attachment', uuid, attachment: { type: 'queued_command', prompt, source_uuid: sourceUuid, origin: { kind: 'human' }, isMeta: true } })
+  const revived = (content: unknown, uuid: string, extra: Rec = {}): Rec =>
+    side({ type: 'user', uuid, isMeta: true, origin: { kind: 'human' }, message: { role: 'user', content }, ...extra })
+  const parse = (recs: Rec[], opts: ChatParseOptions = SUBAGENT) =>
+    parseChatMessages(recs.map((r) => JSON.stringify(r)), opts)
+  const userTexts = (recs: Rec[], opts?: ChatParseOptions): string[] =>
+    parse(recs, opts)
+      .filter((m) => m.role === 'user')
+      .map((m) => m.parts.map((p) => (p.kind === 'text' ? p.text : '')).join(''))
+
+  it('one bubble per message: an attachment and a user record naming the same message (source_uuid = uuid)', () => {
+    expect(userTexts([task, queued('stop', 'S1'), revived(`${WRAP_HEAD}stop${WRAP_TAIL}`, 'S1')])).toEqual(['the task', 'stop'])
+    // Either order: the user record first, the attachment after it.
+    expect(userTexts([task, revived(`${WRAP_HEAD}stop${WRAP_TAIL}`, 'S1'), queued('stop', 'S1')])).toEqual(['the task', 'stop'])
+    // `sentAsUuid` names the message too (the CLI reads it as a record's identity).
+    expect(userTexts([task, queued('stop', 'S2'), revived(`${WRAP_HEAD}stop${WRAP_TAIL}`, 'u9', { sentAsUuid: 'S2' })])).toEqual([
+      'the task',
+      'stop'
+    ])
+  })
+
+  it('a record that unwraps to nothing does not hide the other form of the same message', () => {
+    // The ids are recorded when a bubble is DRAWN: a blank form (string or array) leaves them free.
+    expect(userTexts([task, revived(`${WRAP_HEAD}${WRAP_TAIL}`, 'S1'), queued('stop', 'S1')])).toEqual(['the task', 'stop'])
+    expect(userTexts([task, revived([{ type: 'text', text: `${WRAP_HEAD}${WRAP_TAIL}` }], 'S1'), queued('stop', 'S1')])).toEqual([
+      'the task',
+      'stop'
+    ])
+    // And the drawn form still suppresses the blank one after it (nothing to draw either way).
+    expect(userTexts([task, queued('stop', 'S1'), revived(`${WRAP_HEAD}${WRAP_TAIL}`, 'S1')])).toEqual(['the task', 'stop'])
+  })
+
+  it('two messages with the same words are two bubbles', () => {
+    expect(userTexts([task, queued('stop', 'S1'), queued('stop', 'S2'), revived(`${WRAP_HEAD}stop${WRAP_TAIL}`, 'S3')])).toEqual([
+      'the task',
+      'stop',
+      'stop',
+      'stop'
+    ])
+  })
+
+  it('strips the system-reminder envelope, appended reminder blocks, and the wrapper', () => {
+    const cases: Array<[string, string]> = [
+      [`<system-reminder>\n${WRAP_HEAD}one${WRAP_TAIL}\n</system-reminder>`, 'one'],
+      [`${WRAP_HEAD}two${WRAP_TAIL}\n<system-reminder>\nharness note\n</system-reminder>`, 'two'],
+      [`${WRAP_HEAD}three\nlines`, 'three\nlines'], // the prefix alone (a changed trailer) still goes
+      ['no wrapper at all', 'no wrapper at all']
+    ]
+    cases.forEach(([content, want], i) => {
+      expect(userTexts([task, revived(content, `r${i}`)])).toEqual(['the task', want])
+    })
+  })
+
+  it('an open reminder tag with no close is left as text, never read as an envelope', () => {
+    // 17 characters: one short of the close tag, where a bare offset compare read "not found" as "at the end".
+    for (const content of ['<system-reminder>', '<system-reminder>half a note']) {
+      expect(userTexts([task, revived(content, 'r1')])).toEqual(['the task', content])
+    }
+  })
+
+  it('an array-content message to the subagent is unwrapped the same way', () => {
+    const msgs = parse([task, revived([{ type: 'text', text: `${WRAP_HEAD}with an image${WRAP_TAIL}` }], 'r1')])
+    expect(msgs[1]).toMatchObject({ role: 'user', parts: [{ kind: 'text', text: 'with an image' }] })
+  })
+
+  it('a queued attachment with an array prompt reads its text blocks', () => {
+    expect(userTexts([task, queued([{ type: 'text', text: 'a' }, { type: 'image' }, { type: 'text', text: 'b' }], 'S1')])).toEqual([
+      'the task',
+      'a\nb'
+    ])
+  })
+
+  it("a fork: the task is the text beside the replayed Agent call's result", () => {
+    const msgs = parse([
+      { type: 'fork-context-ref', agentId: 'a1b2c3d4e5f6a7b8c', parentSessionId: 's', parentLastUuid: 'p', contextLength: 3 },
+      side({
+        type: 'assistant',
+        uuid: 'x',
+        parentUuid: null,
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_f', name: 'Agent', input: { prompt: 'p' } }] }
+      }),
+      side({
+        type: 'user',
+        uuid: 'y',
+        parentUuid: 'x',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_f', content: [{ type: 'text', text: 'Fork started.' }] },
+            { type: 'text', text: 'the fork task' }
+          ]
+        }
+      })
+    ])
+    expect(msgs.map((m) => m.role)).toEqual(['assistant', 'user'])
+    expect(msgs[1]).toMatchObject({ task: true, parts: [{ kind: 'text', text: 'the fork task' }] })
+    expect(msgs[0].parts[0]).toMatchObject({ kind: 'tool', name: 'Agent', result: 'Fork started.' })
+  })
+
+  it('the task is named only when the read holds the file start, and only on a sidechain record', () => {
+    const body = jsonl([task, side({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }), side({ type: 'user', message: { content: 'later' } })])
+    const b = Buffer.from(body)
+    const whole = parseChatWindow(b, 0, claudeChatRecordParser(SUBAGENT)).messages
+    expect(whole.filter((m) => m.task).length).toBe(1)
+    // A window that starts after the first line: its first user record is not the file's first.
+    const from = b.indexOf(0x0a) // the lookbehind byte: the window starts at line 1
+    const tail = parseChatWindow(b.subarray(from), from, claudeChatRecordParser(SUBAGENT)).messages
+    expect(tail.map((m) => m.role)).toEqual(['assistant', 'user'])
+    expect(tail.some((m) => 'task' in m)).toBe(false)
+    // Not a sidechain (not a subagent's record): no task.
+    expect(parse([{ type: 'user', message: { content: 'main prompt' } }]).some((m) => 'task' in m)).toBe(false)
+  })
+
+  it('the first user record is the task whatever it looks like (a task-notification-shaped prompt included)', () => {
+    const msgs = parse([side({ type: 'user', message: { content: '<task-notification><summary>x</summary></task-notification>' } })])
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]).toMatchObject({ role: 'user', task: true })
+  })
+
+  it('a meta record is never the task, and a hidden meta first record leaves the task to the next', () => {
+    const msgs = parse([
+      side({ type: 'user', isMeta: true, message: { content: '<system-reminder>\nx\n</system-reminder>' } }),
+      task
+    ])
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]).toMatchObject({ role: 'user', task: true })
   })
 })

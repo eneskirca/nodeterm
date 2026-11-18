@@ -1,14 +1,32 @@
 import { create } from 'zustand'
 import { WORKING_STALE_MS } from '@shared/agents/stale'
+import { capabilityAgentId, type AgentId } from '@shared/agents/config'
+import { isClaudeAgentId } from '@shared/agents/claude-subagents'
 
 /**
- * Transient visualization of subagents a Claude node spawns (Task/Agent tool), keyed by the
- * tool_use_id from the hooks. These render as ephemeral nodes + edges on the canvas; they are
- * never persisted to workspace.json and never enter undo/redo (see Canvas).
+ * Transient visualization of subagents an agent node spawns, keyed by the id its hooks name: the
+ * tool_use_id of a Task/Agent tool call, or — for Claude's native `SubagentStart` — the child's own
+ * `agent_id` (core/claude-subagent-lifecycle.ts). These render as ephemeral nodes + edges on the
+ * canvas; they are never persisted to workspace.json and never enter undo/redo (see Canvas).
  */
 export interface SubagentViz {
   /** The Claude terminal node that spawned this subagent. */
   parentNodeId: string
+  /**
+   * The PARENT's agent session and Claude account at the moment the card started — what a reader of
+   * the subagent's own transcript must resolve the parent by. Recorded once, so a later resume,
+   * restart or account switch of the parent does not repoint a card that is already on the canvas.
+   */
+  sessionId?: string
+  accountId?: string
+  /** The agent that spawned it (the event's `agentId`, e.g. 'claude' or a custom id). */
+  agent?: AgentId
+  /**
+   * Drawn from Claude's native `SubagentStart` (`subagentSignal === 'native'`), so the card's key IS
+   * the child's `agent_id` and its transcript can be derived from the parent's. A tool-path card's
+   * key is a tool_use_id, which names no file.
+   */
+  native?: boolean
   /** Subagent type, e.g. 'general-purpose'. */
   type?: string
   /** The task description/prompt. */
@@ -22,6 +40,22 @@ export interface SubagentViz {
   toolUses?: number
   /** What the subagent produced (shown when the node is expanded). */
   result?: string
+}
+
+/**
+ * Whether a card can show the subagent's own conversation: a native Claude card (its key is the
+ * child's `agent_id`, a safe file-name token) that knows the parent session to resolve it by. Every
+ * other card has only the streamed text.
+ */
+export function chatReadable(v: SubagentViz, cardId: string): boolean {
+  return (
+    v.agent !== undefined &&
+    capabilityAgentId(v.agent) === 'claude' &&
+    v.native === true &&
+    typeof v.sessionId === 'string' &&
+    v.sessionId.length > 0 &&
+    isClaudeAgentId(cardId)
+  )
 }
 
 export interface SubagentResult {
@@ -72,6 +106,10 @@ interface AgentNodesState {
    * is ever dropped, so #547's rule (a new turn must keep the cards of subagents that are still
    * running) and Eco's `liveSubagents` are untouched.
    *
+   * An EXPANDED card is the exception (the pin rule, see `toggleExpanded`): the user is reading it,
+   * so its finish only marks it done. Collapsing it then drops it at once, which is this setting's
+   * promise ("finished cards do not linger") applied the moment the pin is gone.
+   *
    * **`sweepStaleWorking`'s decay is deliberately NOT gated on this.** That sweep fires precisely
    * because the end never ARRIVED (crashed CLI, killed pane, slept machine), which is the opposite
    * of the setting's promise, and it is the one case where a visible card carries the most
@@ -87,6 +125,14 @@ interface AgentNodesState {
   select(id: string | null): void
   setPosition(id: string, offset: { x: number; y: number }): void
   setSize(id: string, size: { width: number; height: number }): void
+  /**
+   * Open or close a card. An OPEN card is pinned: the turn boundary (`clearFinishedForParent`) and
+   * the `autoHideFinished` drop in `finish()` both skip it, because the user is reading it (its
+   * chat). `clearForParent` still takes it — the parent is gone — and the stale decay still only
+   * marks it done. Closing a finished card un-pins it: it then goes at the NEXT turn boundary like
+   * any finished card, except under `autoHideFinished`, where it goes at once. `tidyFanout` drops
+   * the flag too, on purpose (an explicit "reset these cards"), by the same rule.
+   */
   toggleExpanded(id: string): void
   /** Drop a card's dragged position + resized size, returning it to its laid-out spot. */
   resetPlacement(id: string): void
@@ -101,6 +147,11 @@ interface AgentNodesState {
    * `lastActivityAt` seeds the sweep's clock for a card replayed after a reload; it is kept out of
    * `byId` like every activity time. A superseded card's clock is carried too (it is a time, not
    * text, so it cannot double) — the new key must not look older than the card it replaces.
+   *
+   * The parent session and account are the ones the card FIRST started under (this key's earlier
+   * start, else the card it replaces, else this start's): a repeated start — a resumed child, a
+   * reload replay — never repoints a card to another session. A card once native stays native, so
+   * a replay from a host that does not carry the signal cannot swap an open chat for the text.
    */
   start(
     toolUseId: string,
@@ -142,6 +193,9 @@ interface AgentNodesState {
    *
    * `state` already draws the line the fix needs (`'working' | 'done'`, `finish()` idempotent), so
    * this needs no new concept. What it does need is the decay: see `sweepStaleWorking`.
+   *
+   * An EXPANDED finished card is kept (the pin rule, see `toggleExpanded`): it is `done`, so it
+   * pins nothing for Eco.
    */
   clearFinishedForParent(parentNodeId: string): void
   /**
@@ -169,6 +223,9 @@ interface AgentNodesState {
    * excluded — there is only ever one per parent, so there is nothing to pack. If this is ever
    * extended to loop cards, route through `saveLoopOverrides` too, or a cleared `loop-*` entry
    * would resurrect from its localStorage mirror on reload.
+   *
+   * Dropping `expanded` un-pins the open cards; under `autoHideFinished` a FINISHED one it un-pins
+   * is dropped at once, exactly as closing it would.
    */
   tidyFanout(parentNodeId: string): void
   /**
@@ -181,7 +238,8 @@ interface AgentNodesState {
 
 // Loop-card overrides survive restarts: the loop itself is persisted (agentStatus), so its
 // dragged position/size must be too, or every launch teleports the card back to the default
-// spot. Only `loop-*` keys are stored — subagent cards are per-turn.
+// spot. Only `loop-*` keys are stored — subagent cards live in memory for this app run only (a
+// turn boundary takes a finished one unless the user opened it; see `toggleExpanded`).
 // v2: `positions` changed meaning from a canvas position to an offset from the parent agent
 // node. Reading a v1 entry as an offset would fling the card across the canvas, so the old key is
 // simply abandoned — the cost is one reset of a dragged loop card, not a mystery jump.
@@ -233,6 +291,24 @@ function dropCards(s: AgentNodesState, ids: string[]): Partial<AgentNodesState> 
   return { byId, activityById, lastActivityAt, positions, sizes, expanded, selectedId }
 }
 
+/**
+ * The identity a (re)start records: the parent session and account the card first started under,
+ * and a native flag that never goes back to false. See `start`.
+ */
+function firstIdentity(
+  viz: Pick<SubagentViz, 'sessionId' | 'accountId' | 'native'>,
+  first: SubagentViz | undefined
+): Pick<SubagentViz, 'sessionId' | 'accountId' | 'native'> {
+  const sessionId = first?.sessionId ?? viz.sessionId
+  const accountId = first?.accountId ?? viz.accountId
+  const native = first?.native === true ? true : viz.native
+  return {
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(accountId !== undefined ? { accountId } : {}),
+    ...(native !== undefined ? { native } : {})
+  }
+}
+
 function saveLoopOverrides(s: Overrides): void {
   try {
     const pick = <T>(m: Record<string, T>): Record<string, T> =>
@@ -273,6 +349,8 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
     }),
   toggleExpanded: (id) =>
     set((s) => {
+      // Closing a finished card under autoHideFinished: the pin was all that kept it.
+      if (s.expanded[id] && s.autoHideFinished && s.byId[id]?.state === 'done') return dropCards(s, [id])
       const next = { expanded: { ...s.expanded, [id]: !s.expanded[id] } }
       if (id.startsWith('loop-')) saveLoopOverrides({ ...s, ...next })
       return next
@@ -293,7 +371,7 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
     set((s) => {
       const old = supersedes && supersedes !== toolUseId ? s.byId[supersedes] : undefined
       const startedAt = viz.startedAt ?? s.byId[toolUseId]?.startedAt ?? old?.startedAt ?? Date.now()
-      const card: SubagentViz = { ...viz, state: 'working', startedAt }
+      const card: SubagentViz = { ...viz, ...firstIdentity(viz, s.byId[toolUseId] ?? old), state: 'working', startedAt }
       // The sweep's clock: the newest of the replayed seed, this key's own and the replaced card's.
       const clocks = [seed, s.lastActivityAt[toolUseId], old && supersedes ? s.lastActivityAt[supersedes] : undefined]
         .filter((t): t is number => t !== undefined)
@@ -331,7 +409,8 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
         }
         return { byId: { ...s.byId, [toolUseId]: { ...prev, ...stats } } }
       }
-      if (s.autoHideFinished) return dropCards(s, [toolUseId])
+      // An open card is pinned (see `toggleExpanded`): it only turns done.
+      if (s.autoHideFinished && !s.expanded[toolUseId]) return dropCards(s, [toolUseId])
       // Async subagents end via a <task-notification> that carries no timing stats — fall
       // back to the card's own elapsed time so the duration doesn't vanish on completion.
       const durationMs = result.durationMs ?? Date.now() - prev.startedAt
@@ -351,7 +430,9 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
   clearForParent: (parentNodeId) => set((s) => dropCards(s, cardsOf(s, parentNodeId))),
 
   clearFinishedForParent: (parentNodeId) =>
-    set((s) => dropCards(s, cardsOf(s, parentNodeId).filter((id) => s.byId[id].state === 'done'))),
+    set((s) =>
+      dropCards(s, cardsOf(s, parentNodeId).filter((id) => s.byId[id].state === 'done' && !s.expanded[id]))
+    ),
 
   sweepStaleWorking: (now = Date.now(), staleMs = WORKING_STALE_MS) =>
     set((s) => {
@@ -381,15 +462,20 @@ export const useAgentNodes = create<AgentNodesState>((set) => ({
     set((s) => {
       const ids = Object.keys(s.byId).filter((id) => s.byId[id].parentNodeId === parentNodeId)
       if (!ids.length) return s
-      const positions = { ...s.positions }
-      const sizes = { ...s.sizes }
-      const expanded = { ...s.expanded }
+      // Un-pinning a finished card under autoHideFinished drops it at once, as closing it does
+      // (`toggleExpanded`): the pin was all that kept it.
+      const drop = s.autoHideFinished ? ids.filter((id) => s.expanded[id] && s.byId[id].state === 'done') : []
+      const dropped = drop.length ? dropCards(s, drop) : {}
+      const base = { ...s, ...dropped }
+      const positions = { ...base.positions }
+      const sizes = { ...base.sizes }
+      const expanded = { ...base.expanded }
       for (const id of ids) {
         delete positions[id]
         delete sizes[id]
         delete expanded[id]
       }
-      return { positions, sizes, expanded }
+      return { ...dropped, positions, sizes, expanded }
     }),
 
   clearLoop: (parentNodeId) =>

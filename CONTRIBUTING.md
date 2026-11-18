@@ -334,6 +334,12 @@ anything else. Board-level fields survive every transform — `pullLinks` is one
   permission dialog. Emptiness is read off the screen (`readClaudeComposer`), so an agent without a
   measured composer reader gets no note — and a skipped note is named in a notice, never silent.
 
+- **A quote into an agent goes through `addQuoteToNode`** (`renderer/lib/addQuoteToNode.ts`),
+  never a `sendText` or a draft write of its own. The funnel picks the draft or the pane by what the
+  person can see, never presses Enter, refuses a pane that shows a prompt, a dialog or no CLI
+  (typed text would answer it), and never moves a refused quote into the hidden draft. See "Quote
+  to chat" in `CLAUDE.md`.
+
 - **A GitHub issue reaches a pane only as a validated reference.** Issue titles and bodies are
   written by strangers on public repositories, and a launch line is typed into a shell. Anything
   that starts or instructs an agent about an issue goes through `@shared/github-issue-ref`:
@@ -1664,7 +1670,9 @@ fails there. The full measurement table and the reasoning are in CLAUDE.md § Id
 The gate only helps a window nobody is looking at; a FOCUSED window pays for every loop the whole
 time it runs (issue #1454: four working-subagent edges and a few dots held one at 120 frames/s). So a
 status indicator pulses a few times and settles (`ease-in-out 4`), and keeps looping only if it must
-keep pulling the eye (needs-you). And every repeating animation must stop under
+keep pulling the eye (needs-you). A mark repeated per row of a list (the sidebar's subagent rows,
+the board's subagent chip) is static, never a spinner: a fan-out is dozens of rows
+(`SubagentRows.test.tsx` fails on an animation there). And every repeating animation must stop under
 `@media (prefers-reduced-motion: reduce)`: `src/renderer/styles.reduced-motion.test.ts` fails on
 one that is neither stopped there nor listed in its `EXEMPT` map with a reason.
 

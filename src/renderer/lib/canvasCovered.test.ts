@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   CANVAS_COVERED_ATTR,
   canvasCoveredDepth,
+  coveredByBoard,
   markCanvasCovered,
   resetCanvasCoveredForTest,
   type CoveredRoot
@@ -71,6 +72,27 @@ describe('markCanvasCovered', () => {
     expect(h.value()).toBe('covered')
     again()
     expect(h.value()).toBeUndefined()
+  })
+})
+
+describe('coveredByBoard', () => {
+  /** An element `inFlow` of React Flow (or not), in a document whose root says `covered` (or not). */
+  function el(covered: boolean, inFlow: boolean) {
+    return {
+      ownerDocument: {
+        documentElement: { getAttribute: (n: string) => (covered && n === CANVAS_COVERED_ATTR ? 'covered' : null) }
+      },
+      closest: (sel: string) => (inFlow && sel === '.react-flow' ? {} : null)
+    }
+  }
+
+  it('is true only for part of the canvas while a board covers it', () => {
+    expect(coveredByBoard(el(true, true))).toBe(true)
+    expect(coveredByBoard(el(false, true))).toBe(false)
+  })
+
+  it('is false outside the canvas: the card modal, a focus-mode node lifted above the board', () => {
+    expect(coveredByBoard(el(true, false))).toBe(false)
   })
 })
 

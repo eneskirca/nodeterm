@@ -75,6 +75,11 @@ export function composerFromElement(el: Element | null | undefined): { nodeId: s
   return composerId && nodeId ? { nodeId, composerId } : null
 }
 
+/** A ⌘M chat view over a node's pane. A read-only one (`data-chat-readonly`) is not: a subagent
+ *  card's thread names its PARENT node but sits in the card, and a closed session's transcript is a
+ *  dialog — neither hides that node's pane. */
+const LIVE_CHAT_VIEW = '.term-chat:not([data-chat-readonly])'
+
 /**
  * What a SHORTCUT dictation press (keyed chord or hold-to-talk) may do given where focus is.
  * `composer`: fill that composer's draft. `refuse`: focus is inside a ⌘M chat view but not in its
@@ -85,10 +90,14 @@ export function composerFromElement(el: Element | null | undefined): { nodeId: s
  * characters themselves landing in a select dialog (moving its highlight) or in its "Other" field.
  * `default`: the ordinary rule (card modal, selected terminal) — which then asks
  * `dictationTargetForNode` whether THAT node's chat view is up.
+ *
+ * A READ-ONLY chat view (`data-chat-readonly`: a subagent card's thread, a closed session's
+ * transcript) is not one: it lies over no pane and has no answer controls, so focus in it is the
+ * ordinary case.
  */
 export function shortcutDictationFocus(el: Element | null | undefined): 'composer' | 'refuse' | 'default' {
   if (composerFromElement(el)) return 'composer'
-  if (el?.closest?.('.term-chat')) return 'refuse'
+  if (el?.closest?.(LIVE_CHAT_VIEW)) return 'refuse'
   return 'default'
 }
 
@@ -101,8 +110,10 @@ const attrValue = (v: string): string => v.replace(/["\\]/g, '\\$&')
  * or the open card's node). While that node's ⌘M chat view is up its pane is HIDDEN and may hold a
  * select dialog, so:
  *   - a mounted composer for the node → that composer's draft;
- *   - the chat view up with no composer (read-only) → null = refuse;
+ *   - the chat view up with no composer → null = refuse;
  *   - otherwise → the terminal, exactly as before.
+ * A read-only view naming the node (`LIVE_CHAT_VIEW`) does not count: a subagent card's thread
+ * carries its PARENT's id, and the parent's terminal is still right there on the canvas.
  * `inCardModal`: the card modal is open for this node — only its own view counts, so a modal showing
  * the LIVE terminal targets it even while the canvas node underneath is in chat view, and a modal in
  * chat view targets the modal's composer rather than the canvas one.
@@ -118,7 +129,7 @@ export function dictationTargetForNode(
   const box = scope.querySelector(`[data-chat-composer-id][data-chat-node-id="${id}"]`)
   const composerId = box?.getAttribute('data-chat-composer-id')
   if (composerId) return { kind: 'chat-composer', nodeId, composerId, title }
-  if (scope.querySelector(`.term-chat[data-chat-node-id="${id}"]`)) return null
+  if (scope.querySelector(`${LIVE_CHAT_VIEW}[data-chat-node-id="${id}"]`)) return null
   return { kind: 'terminal', nodeId, title }
 }
 

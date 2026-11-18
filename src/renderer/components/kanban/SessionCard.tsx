@@ -21,6 +21,7 @@ import type { TeamStation } from '../../lib/teamProgress'
 import { cardShowsOverdue, sessionNameRepeatsTitle } from '../../lib/cardRedundancy'
 import { PortsChip } from '../PortsChip'
 import { QueuedLaunchChip } from './QueuedLaunchChip'
+import { SubagentChip } from './SubagentChip'
 import type { SelectMods } from '../../lib/cardSelection'
 
 const PRIO_COLOR = Object.fromEntries(PRIORITIES.map((p) => [p.id, p.color])) as Record<KanbanPriority, string>
@@ -66,6 +67,12 @@ interface SessionCardProps {
    *  project's too, so the default store would show that project's state on this card. Absent =
    *  the default store. A stable reference per board (SessionCard is memoized). */
   statusStore?: AgentStatusSession['store']
+  /** The card's project is a relay / team tab (`project.remote`): no subagent chip. The subagent
+   *  card store is THIS machine's and keyed by node id, while a team tab's node ids are the host's
+   *  (after Share with team the handed-off SSH project holds the same ids), so a chip there would
+   *  count another project's cards. The sessions sidebar and the card modal's list gate the same
+   *  way. A boolean, so the memo holds. */
+  relayProject?: boolean
   /** This card is part of the board's multi-selection. */
   selected?: boolean
   /** Every click is offered to the board's selection first (⌘/Ctrl-click, Shift-click, or any
@@ -77,7 +84,7 @@ interface SessionCardProps {
 export const SessionCard = memo(function SessionCard({
   session, meta, labels = [], onOpen, onDragStart, onDragEnd, onDropAt, onContext, pulls,
   pullFreshness = 'fresh', onOpenIssue, team, onTravel, columnCategory, ports, onOpenPort, onRunQueued,
-  statusStore, selected = false, onSelectClick
+  statusStore, relayProject = false, selected = false, onSelectClick
 }: SessionCardProps) {
   // THIS card's agent status, subscribed per card rather than threaded down from the board.
   // KanbanView used to hold `useAgentStatus((s) => s.byId)` and pass the map through the column:
@@ -184,6 +191,8 @@ export const SessionCard = memo(function SessionCard({
         {session.kind === 'terminal' && team && team.length > 0 && onTravel && (
           <TeamProgressChip stations={team} onTravel={onTravel} statusStore={statusStore} />
         )}
+        {/* The node's subagent cards, counted (nothing while it has none); the modal lists them. */}
+        {session.kind === 'terminal' && !relayProject && <SubagentChip nodeId={session.id} />}
         {session.kind === 'terminal' && session.pendingLaunch && (
           <QueuedLaunchChip
             nodeId={session.id}

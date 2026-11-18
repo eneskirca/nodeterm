@@ -45,7 +45,7 @@ import {
   CARD_MODAL_MIN_W,
   CARD_MODAL_MIN_H
 } from '../../state/cardModalSize'
-import { useSession, useSessionStores } from '../../session/session'
+import { isRemoteProjectId, useSession, useSessionStores } from '../../session/session'
 // The same wake trigger the canvas node's SLEEPING/PAUSED chip and mount/visibility auto-wakes
 // use — NOT a bespoke resume path, so a click here gets the same WakeInputBuffer protection and
 // retries. Importing one function out of the canvas node module is safe: TerminalNode.tsx already
@@ -62,6 +62,8 @@ import { BoardLogPanel } from './BoardLogPanel'
 import type { MentionCandidate } from '../../lib/boardMentions'
 import { CardMetaBar } from './CardMetaBar'
 import { CardPullRequests } from './CardPullRequests'
+import { SubagentRows } from '../SubagentRows'
+import { showCanvas } from '../../state/viewMode'
 import { ModalTerminal } from './ModalTerminal'
 import { BrowserSurface } from '../../nodes/BrowserSurface'
 import { BrowserDrivingIndicator } from '../../nodes/BrowserDrivingChip'
@@ -78,6 +80,7 @@ import {
   type LocalFileTarget
 } from './LocalFilePreviewModal'
 import { ChatPanelFallback } from '../../nodes/ChatPanelFallback'
+import { chatQuoteButtonShowing } from '../../nodes/ChatQuoteButton'
 import { carryDraftToChat, carryDraftToTerminal } from '../../lib/chatDraftCarry'
 
 // Code-split exactly like the canvas node's: ChatPanel carries the markdown renderer, and the
@@ -411,6 +414,9 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || !isTopDialog(id)) return
+      // The ⌘M thread's "Add to chat" button owns Esc while it shows (it hides itself). It listens
+      // on the window capture phase too, so whichever runs first, this one must not close the modal.
+      if (chatQuoteButtonShowing()) return
       // The header Color swatches own Esc first: close the menu, not the whole modal. (The menu is
       // not a dialog-stack entry, so this modal still reads as the top dialog while it is open.)
       if (colorMenuOpenRef.current) {
@@ -754,6 +760,20 @@ export function CardModal({ session, projectId, projectName, projectColor, colum
           />
         )}
         <CardMetaBar nodeId={session.id} board={board} onChange={onChangeBoard} />
+        {isTerminal && !isRemoteProjectId(projectId) && (
+          // The node's subagents (nothing while it has none). Their conversations are read on the
+          // canvas, in their own cards — never a second time in here: a row closes the modal,
+          // leaves the board for THIS card's project's canvas, and asks the canvas to open it.
+          // Not on a relay / team tab's card: its subagents are the host's, not the local store's.
+          <SubagentRows
+            parentNodeId={session.id}
+            variant="list"
+            onBeforeOpen={() => {
+              onClose()
+              showCanvas(projectId)
+            }}
+          />
+        )}
         <CardPullRequests session={session} board={board} onChangeBoard={onChangeBoard} />
         <div className="kanban-modal__body">
           {/* Body is a flex row: the card's own pane (2/3) + the board-log panel (1/3, all kinds). */}

@@ -16,6 +16,7 @@ import {
   type ScreenBlock
 } from '../lib/chatSendGate'
 import type { ChatMessage, ChatPart } from '@shared/types'
+import type { ChatTranscriptPageRequest } from '@shared/chat-page'
 import { forgetQueuedSend, queuedSendsFor, rememberQueuedSend } from '../state/chatQueued'
 import { uuid } from '../lib/uuid'
 import { chatPaneRefusal, chatPaneRefusalToast } from '../lib/chatPaneGate'
@@ -77,6 +78,8 @@ import { isTeammateMessage } from '../lib/chatTeammate'
 import { FALLBACK_SESSION_NOTE, transcriptReadCwd } from '../lib/transcriptSession'
 import { chatPageDirection, pageChatThread } from '../lib/chatPageKeys'
 import { CLAUDE_INTERRUPT_LINE, chatEscInterrupts, chatInterruptRefusalText } from '../lib/chatEscInterrupt'
+import { addQuoteToNode, defaultQuoteDeps } from '../lib/addQuoteToNode'
+import { ChatQuoteButton } from './ChatQuoteButton'
 
 // Memoized bubble: marked+DOMPurify re-ran for EVERY message on each ChatPanel render (each
 // turn-finish reload, each keystroke re-render). Text is stable per message, so cache per text.
@@ -149,6 +152,29 @@ interface ChatPanelProps {
    * and never offers plan/question answer controls. Absent = a hook-confirmed id, as before.
    */
   sessionFallback?: boolean
+  /**
+   * Where "Add to chat" on a selection in this thread sends the quote (`lib/addQuoteToNode.ts`).
+   * Absent = this panel's own node; a subagent card's read-only thread names its PARENT node.
+   * `null` = no button (a closed session's transcript has no live session to quote into).
+   */
+  quoteTargetNodeId?: string | null
+  /**
+   * Read a Claude SUBAGENT's own transcript instead of the session's (a subagent card's body,
+   * `nodes/SubagentNode.tsx`): every `chat.readTranscript` call carries `{ agentId }`, core derives
+   * the child file from the parent session and jails it. Implies `readOnly` (a subagent has no pane
+   * of its own to send into). `nodeId`, `sessionId` and `accountId` are the PARENT's.
+   *
+   * The parent's hook events and turn ends say nothing about the subagent's file, so they drive no
+   * read here: the mount site does (`reloadNonce`). `working` = the subagent still runs (its card's
+   * state), which keeps the thread's last run of tool calls open, as a live turn's is.
+   */
+  subagent?: { agentId: string; working?: boolean }
+  /**
+   * A tail re-read the mount site asks for: each change of the value re-reads the newest window
+   * (throttled by `CHAT_LIVE_RELOAD_MIN_MS`, single-flight, held while the panel or the document is
+   * hidden — the live reads' own plan). The first value read on mount is the initial load.
+   */
+  reloadNonce?: number
 }
 
 /**
@@ -238,16 +264,35 @@ export function ChatPanel({
   pathsForFiles,
   onShowTerminal,
   sshProjectId,
-  sessionFallback
+  sessionFallback,
+  quoteTargetNodeId,
+  subagent,
+  reloadNonce
 }: ChatPanelProps) {
   // This node's core api (stable for the session — the chat transcript and the tmux session
   // both live on the core this panel's project belongs to).
   const { api, source } = useSession()
+  // A subagent's thread is read-only: there is no pane of its own to send into.
+  const subagentAgentId = subagent?.agentId
+  const readOnlyPanel = readOnly === true || subagentAgentId !== undefined
   // Which transcript this panel reads. Keys are byte offsets into ONE file, so a thread is only
   // ever merged with a read of the same identity (see lib/chatPaging.ts).
   // The cwd a transcript read carries: none while reading the fallback id (the composer keeps `cwd`).
   const readCwd = transcriptReadCwd(cwd, sessionFallback === true)
-  const identity = JSON.stringify([nodeId, sessionId ?? null, readCwd ?? null, accountId ?? null, agentId])
+  const identity = JSON.stringify(
+    subagentAgentId === undefined
+      ? [nodeId, sessionId ?? null, readCwd ?? null, accountId ?? null, agentId]
+      : [nodeId, sessionId ?? null, readCwd ?? null, accountId ?? null, agentId, subagentAgentId]
+  )
+  // ONE read for every window this panel asks for. The subagent argument rides only when there is
+  // one, so a session's own read is the call it always was.
+  const readPage = useCallback(
+    (page: ChatTranscriptPageRequest) =>
+      subagentAgentId === undefined
+        ? api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, page)
+        : api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, page, { agentId: subagentAgentId }),
+    [api, sessionId, readCwd, accountId, nodeId, agentId, subagentAgentId]
+  )
   const [thread, setThread] = useState<ChatThread>(() => emptyThread(identity))
   const messages = thread.messages
   // For the "scroll to latest" pill's count, read from a stable callback (markFollowing, below).
@@ -290,8 +335,10 @@ export function ChatPanel({
   const olderStateRef = useRef(olderState)
   olderStateRef.current = olderState
   // The draft lives in a store keyed by node (state/chatDraft.ts): this panel unmounts on every
-  // project switch, and a draft in component state was lost with it.
-  const input = useChatDraft((s) => s.drafts[nodeId] ?? '')
+  // project switch, and a draft in component state was lost with it. A read-only panel has no
+  // composer: it does not follow the draft (a subagent card's `nodeId` is its parent, whose composer
+  // would re-render every open card of that parent at each keystroke).
+  const input = useChatDraft((s) => (readOnlyPanel ? '' : (s.drafts[nodeId] ?? '')))
   const setInput = useCallback(
     (next: SetStateAction<string>) => useChatDraft.getState().setDraft(nodeId, next),
     [nodeId]
@@ -325,7 +372,7 @@ export function ChatPanel({
   )
   const pollScreen = shouldPollScreen({
     readable: readsScreenDialogs(agentId),
-    readOnly: readOnly === true,
+    readOnly: readOnlyPanel,
     // An SSH node's tmux is on its host (`sshProjectId` is set exactly for those); a relay tab's
     // is on the peer. Either way each read is a network round trip.
     remote: sshProjectId !== undefined || source !== 'local',
@@ -338,12 +385,12 @@ export function ChatPanel({
   // An SSH node, read after each turn instead of polled (`REMOTE_SUGGESTION_READ_DELAYS_MS`). Not a
   // relay tab: that pane is on the peer, and it has its own composer there.
   const readsRemoteSuggestion =
-    readsScreenDialogs(agentId) && readOnly !== true && sshProjectId !== undefined && source === 'local'
+    readsScreenDialogs(agentId) && !readOnlyPanel && sshProjectId !== undefined && source === 'local'
   const agentLabel = chatAgentLabel(agentId, customAgents)
   // What the row closing the thread says (lib/chatLive.ts). `optimistic` covers the gap between a
   // send and the first hook event: set by `send`, retired by the next state change (the real state
   // takes over) or, for an agent whose hooks never report, after a bounded timeout.
-  const activity = chatActivity({ refusal, optimistic, readOnly: !!readOnly })
+  const activity = chatActivity({ refusal, optimistic, readOnly: readOnlyPanel })
   // The one Plan / Question card that gets answer controls (lib/chatAnswer.ts): only while the pane
   // holds a TUI dialog (`dialog` — the CLI is in the pane and waiting) and only on the card the held
   // ticket belongs to. A host whose hook script predates structured answers never sends `held`, so
@@ -366,10 +413,10 @@ export function ChatPanel({
     // Never on a fallback id: an answer is a WRITE bound to the live `held` ticket, and a thread read
     // from the node's launch id may not be the conversation that ticket belongs to.
     () =>
-      !readOnly && !sessionFallback && refusal === 'dialog'
+      !readOnlyPanel && !sessionFallback && refusal === 'dialog'
         ? answerCardState(messages, held, threadHeldFor, previousBound)
         : null,
-    [readOnly, sessionFallback, refusal, messages, held, threadHeldFor, previousBound]
+    [readOnlyPanel, sessionFallback, refusal, messages, held, threadHeldFor, previousBound]
   )
   const answerCard = cardState?.kind === 'active' ? cardState : null
   const updatingCard = cardState?.kind === 'updating' ? cardState.card : null
@@ -388,6 +435,24 @@ export function ChatPanel({
     )
   }, [identity, activePendingId, activeCardKey])
   const msgsRef = useRef<HTMLDivElement>(null)
+  // "Add to chat" on a selection in the thread. The node the quote goes to runs this panel's agent
+  // when it is this panel's own node; any other target falls back to the agent its hooks reported.
+  const quoteTarget = quoteTargetNodeId === undefined ? nodeId : quoteTargetNodeId
+  const quoteDeps = useMemo(
+    () => defaultQuoteDeps(api, { agentIdOf: (id) => (id === nodeId ? agentId : undefined) }),
+    [api, nodeId, agentId]
+  )
+  // Is the selection on another node than the quote's target? A subagent card's thread is on the
+  // CARD while its quote goes to the parent (`nodeId` here is the parent's too), and any explicit
+  // other target is elsewhere by definition: a quote that lands in that pane lands where the person
+  // is not looking, so it says so.
+  const quoteCrossNode = subagentAgentId !== undefined || (quoteTarget !== null && quoteTarget !== nodeId)
+  const addQuote = useCallback(
+    (text: string) => {
+      if (quoteTarget !== null) void addQuoteToNode(quoteDeps, quoteTarget, text, { crossNode: quoteCrossNode })
+    },
+    [quoteDeps, quoteTarget, quoteCrossNode]
+  )
   const prevState = useRef(state)
   // Request token: only the NEWEST readTranscript may land. An older read resolving late (the
   // sessionId changed underneath it, or a ↻ raced the turn-finish reload) would otherwise paint
@@ -434,6 +499,9 @@ export function ChatPanel({
   const tailInFlightRef = useRef(false)
   const lastTailStartRef = useRef<number | null>(null)
   const livePendingRef = useRef(false)
+  // The pending live read was asked for by the mount site (`reloadNonce`): live by its word, not by
+  // this node's state (a subagent's card is working while its parent may be idle).
+  const nonceLiveRef = useRef(false)
   const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const attemptLiveRef = useRef<() => void>(() => {})
   // A held-request reload asked for while a tail read was in flight: run when that read settles
@@ -490,7 +558,7 @@ export function ChatPanel({
     // keeps a surface that cannot read transcripts (Server Edition, relay tab) from silently
     // presenting itself as an empty conversation. Only the newest TAIL window is read — older
     // history pages in on scroll-up, and a reload merges by key instead of discarding it.
-    void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
+    void readPage({
       maxBytes: CHAT_TAIL_PAGE_BYTES,
       thinking: true,
       rich: true,
@@ -583,7 +651,7 @@ export function ChatPanel({
         settleHeldReload(threadHeldForRef.current)
       }
     )
-  }, [api, sessionId, readCwd, accountId, nodeId, agentId, identity])
+  }, [readPage, nodeId, agentId, identity])
   loadRef.current = load
 
   // Fetch the next OLDER page and prepend it. One in flight at a time; a result that arrives
@@ -611,7 +679,7 @@ export function ChatPanel({
         })
       }
     }
-    void api.chat.readTranscript(sessionId, readCwd, accountId, nodeId, agentId, {
+    void readPage({
       before,
       maxBytes: CHAT_OLDER_PAGE_BYTES,
       thinking: true,
@@ -635,7 +703,7 @@ export function ChatPanel({
         setOlderState('error')
       }
     )
-  }, [api, sessionId, readCwd, accountId, nodeId, agentId, identity, thread.olderCursor, thread.identity])
+  }, [readPage, identity, thread.olderCursor, thread.identity])
 
   // Initial load.
   useEffect(() => {
@@ -698,11 +766,12 @@ export function ChatPanel({
     // This surface cannot read transcripts at all (relay tab): every live read would be refused.
     if (loadStateRef.current === 'unsupported' || loadStateRef.current === 'remoteUnsupported') {
       livePendingRef.current = false
+      nonceLiveRef.current = false
       return
     }
     const el = msgsRef.current
     const plan = planLiveReload({
-      working: useAgentStatus.getState().byId[nodeId]?.state === 'working',
+      working: nonceLiveRef.current || useAgentStatus.getState().byId[nodeId]?.state === 'working',
       // No layout box (collapsed node, display:none) = the paging gate; a hidden document too.
       visible: !!el && el.clientHeight > 0 && !document.hidden,
       // An older page in flight counts too: `load` cancels it, and a live read every interval
@@ -714,6 +783,7 @@ export function ChatPanel({
     switch (plan.kind) {
       case 'skip':
         livePendingRef.current = false
+        nonceLiveRef.current = false
         return
       case 'hold':
         return
@@ -727,21 +797,33 @@ export function ChatPanel({
         return
       case 'run':
         livePendingRef.current = false
+        nonceLiveRef.current = false
         load(true)
     }
   }
 
   // Every hook event for this node — same-state ones included, which no zustand selector sees (the
   // store refreshes `stateAt` in place without notifying; see `onHookEvent`). While the agent is
-  // working each one may have written to the transcript, so each asks for a tail refresh.
-  useEffect(
-    () =>
-      useAgentStatus.getState().onHookEvent(nodeId, () => {
-        livePendingRef.current = true
-        attemptLiveRef.current()
-      }),
-    [nodeId]
-  )
+  // working each one may have written to the transcript, so each asks for a tail refresh. Not for a
+  // subagent's thread: `nodeId` is its PARENT, whose events say nothing about the subagent's file.
+  useEffect(() => {
+    if (subagentAgentId !== undefined) return
+    return useAgentStatus.getState().onHookEvent(nodeId, () => {
+      livePendingRef.current = true
+      attemptLiveRef.current()
+    })
+  }, [nodeId, subagentAgentId])
+
+  // The mount site's own "the transcript grew" (`reloadNonce`): a live read, through the same plan.
+  // The value read on mount is the initial load's, so only a CHANGE asks.
+  const nonceSeenRef = useRef(reloadNonce)
+  useEffect(() => {
+    if (reloadNonce === nonceSeenRef.current) return
+    nonceSeenRef.current = reloadNonce
+    livePendingRef.current = true
+    nonceLiveRef.current = true
+    attemptLiveRef.current()
+  }, [reloadNonce])
 
   // A tab that comes back into view serves what was held while it was hidden.
   useEffect(() => {
@@ -755,9 +837,9 @@ export function ChatPanel({
   // at the edge usually misses it. A new turn does NOT cancel the schedule: a prompt sent the moment
   // the turn ended starts one at once, and cancelling there would hide the finished turn's reply
   // until the next one ended. Sessions whose hooks never report `working` never take this path —
-  // the bar's ↻ is their reload.
+  // the bar's ↻ is their reload. A subagent's thread does not either: the turn is its parent's.
   useEffect(() => {
-    if (prevState.current === 'working' && state !== 'working') {
+    if (prevState.current === 'working' && state !== 'working' && subagentAgentId === undefined) {
       load(false, false, true)
       for (const t of settleTimersRef.current) clearTimeout(t)
       const last = TURN_END_RELOAD_DELAYS_MS.length - 1
@@ -769,7 +851,7 @@ export function ChatPanel({
       )
     }
     prevState.current = state
-  }, [state, load, nodeId])
+  }, [state, load, nodeId, subagentAgentId])
 
   // Any state change retires the optimistic working row: from here the real state speaks. And a
   // suggestion belongs to the turn that ended: the next read brings the new one.
@@ -975,7 +1057,7 @@ export function ChatPanel({
         agentId,
         state: useAgentStatus.getState().byId[nodeId]?.state,
         draft: input,
-        readOnly: readOnly === true || readonly
+        readOnly: readOnlyPanel || readonly
       })
     ) {
       e.preventDefault()
@@ -1158,7 +1240,8 @@ export function ChatPanel({
   // request or question lands MID-turn, and folding on it would close the run on every prompt).
   // A prompt queued meanwhile is drawn at the very end, but is not the turn's output: the tail is
   // measured before it (`isQueued`; the set gains a send before the thread does, so it is current).
-  const liveTurn = refusal === 'working' || refusal === 'dialog'
+  // A subagent's thread is live while the SUBAGENT runs; its parent's state says nothing about it.
+  const liveTurn = subagent !== undefined ? subagent.working === true : refusal === 'working' || refusal === 'dialog'
   const toolGroups = useMemo(
     () => groupToolCalls(messages, { foldTail: !liveTurn, isQueued: (m) => queuedRef.current.has(m) }),
     [messages, liveTurn]
@@ -1272,7 +1355,9 @@ export function ChatPanel({
   return (
     // `data-chat-node-id`: which node's chat view this is — the mics that name only a node ask it
     // (lib/chatComposerDictation.ts `dictationTargetForNode`) so a take never reaches the hidden pane.
-    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId} onKeyDown={onPanelKey}>
+    // `data-chat-readonly`: no composer here, so a quote for this node does not count it as an open
+    // chat view (lib/addQuoteToNode.ts `chatOpen`).
+    <div className="term-chat nodrag nowheel" data-chat-node-id={nodeId} data-chat-readonly={readOnlyPanel ? '' : undefined} onKeyDown={onPanelKey}>
       <div className="term-chat__bar">
         <span>{title ?? 'Chat'}</span>
         <span className="term-chat__bar-end">
@@ -1361,6 +1446,19 @@ export function ChatPanel({
                 </Fragment>
               )
             }
+            if (m.task) {
+              // A subagent's TASK — the prompt its parent wrote, the first record of its file. Not the
+              // person's words, so not their bubble: a labelled block heading the thread.
+              return (
+                <Fragment key={key}>
+                  {divider}
+                  <div className="term-chat__msg term-chat__task">
+                    <div className="term-chat__task-title">Task</div>
+                    {m.parts.map((p, j) => (drawsAt(i, j) ? renderPart(p, i, j) : null))}
+                  </div>
+                </Fragment>
+              )
+            }
             const queued = queuedRef.current.has(m)
             return (
               <Fragment key={key}>
@@ -1421,6 +1519,7 @@ export function ChatPanel({
             </div>
           )}
         </div>
+        {quoteTarget !== null && <ChatQuoteButton containerRef={msgsRef} targetNodeId={quoteTarget} onAdd={addQuote} />}
         {!following && messages.length > 0 && (
           // An "N new messages ↓" pill, plus a bare "↓" while nothing new has come in: the thread is
           // also read back from deep in its history.
@@ -1437,7 +1536,7 @@ export function ChatPanel({
           </button>
         )}
       </div>
-      {!readOnly && (
+      {!readOnlyPanel && (
         <ChatComposer
           nodeId={nodeId}
           sessionId={sessionId}
