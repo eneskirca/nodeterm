@@ -1078,6 +1078,13 @@ describe('subagent read rules (inline records)', () => {
     })
   })
 
+  it('an open reminder tag with no close is left as text, never read as an envelope', () => {
+    // 17 characters: one short of the close tag, where a bare offset compare read "not found" as "at the end".
+    for (const content of ['<system-reminder>', '<system-reminder>half a note']) {
+      expect(userTexts([task, revived(content, 'r1')])).toEqual(['the task', content])
+    }
+  })
+
   it('an array-content message to the subagent is unwrapped the same way', () => {
     const msgs = parse([task, revived([{ type: 'text', text: `${WRAP_HEAD}with an image${WRAP_TAIL}` }], 'r1')])
     expect(msgs[1]).toMatchObject({ role: 'user', parts: [{ kind: 'text', text: 'with an image' }] })

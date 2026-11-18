@@ -217,7 +217,8 @@ function withoutReminders(text: string): string {
   if (
     t.startsWith(REMINDER_OPEN) &&
     t.indexOf(REMINDER_OPEN, REMINDER_OPEN.length) < 0 &&
-    t.indexOf(REMINDER_CLOSE) === t.length - REMINDER_CLOSE.length
+    t.endsWith(REMINDER_CLOSE) &&
+    t.indexOf(REMINDER_CLOSE) === t.lastIndexOf(REMINDER_CLOSE)
   ) {
     let inner = t.slice(REMINDER_OPEN.length, t.length - REMINDER_CLOSE.length)
     if (inner.startsWith('\n')) inner = inner.slice(1)
