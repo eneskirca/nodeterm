@@ -41,6 +41,7 @@ import {
   pasteHasText,
   pastedFiles
 } from '../../terminal/file-drop'
+import { startUploadNote, uploadingLabel, useUploadNotes } from '../../state/uploadNotes'
 import { guardMiddleClickPaste } from '../../terminal/middle-click'
 import { attachCopyOnSelect } from '../../terminal/copy-on-select'
 import {
@@ -78,6 +79,7 @@ import {
   cursorPlacementSeq,
   seedPaint,
   stripTrailingNewline,
+  terminalKey,
   terminalKeyAction,
   toXtermText,
   applyLiveOptions,
@@ -243,7 +245,18 @@ export function ModalTerminal({
   const glassRef = useRef(glass)
   glassRef.current = glass
   const [dropping, setDropping] = useState(false)
-  const [uploading, setUploading] = useState(false)
+  // The SAME note the canvas node shows (state/uploadNotes.ts): keyed by the session-scoped
+  // terminal key, so an upload started on either view is visible on both and survives this modal
+  // closing mid-transfer.
+  const uploadKey = terminalKey(session.id, nodeId)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+  const uploadNote = useUploadNotes((s) => s.byKey[uploadKey])
   const pasteReceipt = usePasteReceipt()
   // Same copy feedback as the canvas node — a copy here is the same act as a copy there, including
   // the agent gate: a claude card stays silent because claude prints its own copy line.
@@ -764,32 +777,37 @@ export function ModalTerminal({
       localDesktop: session.source === 'local' && !isBrowserRuntime(),
       viewerWindows: isWindowsPlatform()
     })
+    // MIRROR TerminalNode.insertFiles: raise at the DROP, so the window is focused while the
+    // upload runs — an unfocused window holds the spinner still (the idle animation gate).
+    if (opts.raiseWindow) window.nodeTerminal.focusWindow()
     let paths: string[]
     if (spawn.sshRemoteTmux) {
       // Uploads go over the master this card's PTY runs on — its scope, not the project's.
       const projectId = nodeUploadScope(spawn.ssh)
-      setUploading(true)
-      try {
-        paths = await droppedPaths(files, { sshRemoteTmux: true, projectId })
-      } finally {
-        setUploading(false)
-      }
+      const note = startUploadNote(uploadKey, uploadingLabel(files))
+      paths = await droppedPaths(files, { sshRemoteTmux: true, projectId }).catch(() => [])
+      if (paths.length) note.done()
+      else note.fail('Upload failed')
     } else if (needsWrite) {
-      setUploading(true)
-      try {
-        paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '', dialect })
-      } finally {
-        setUploading(false)
-      }
+      const note = startUploadNote(uploadKey, 'Saving pasted file…')
+      paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '', dialect }).catch(
+        () => []
+      )
+      if (paths.length) note.done()
+      else note.fail('Could not save the pasted file')
     } else {
       paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '', dialect })
     }
     if (!paths.length) return
-    // A drag-drop from another OS app doesn't bring our window forward (esp. macOS), so the
-    // drag-source keeps keyboard focus — the user's next keystrokes would land in the wrong app.
-    // Raise our window FIRST, then focus the terminal, so typing after the drop reaches it.
-    // A paste came from this window, which already has focus.
-    if (opts.raiseWindow) window.nodeTerminal.focusWindow()
+    if (!mountedRef.current) {
+      const text = paths.join(' ') + ' '
+      // The modal was closed while the upload ran, and its viewer (this xterm) went with it. The
+      // session itself is untouched, so the path still goes in — through tmux.
+      void api.pty.sendText(nodeId, text, { enter: false }).catch(() => {})
+      return
+    }
+    // (The window was already raised at the drop, above — otherwise the drag source would keep
+    // keyboard focus and the user's next keystrokes would land in the wrong app.)
     term.focus()
     // Same receipt as the canvas node (TerminalNode.insertFiles): attached only once the pane
     // shows it.
@@ -839,7 +857,12 @@ export function ModalTerminal({
       onDrop={onDrop}
       onPasteCapture={onPaste}
     >
-      {uploading && <div className="kanban-modal__upload">Uploading…</div>}
+      {uploadNote && (
+        <div className={`term-node__upload kanban-modal__upload${uploadNote.failed ? ' failed' : ''}`}>
+          {!uploadNote.failed && <span className="term-node__upload-spin" />}
+          {uploadNote.text}
+        </div>
+      )}
       {/* Same pill, same class, same corner as the canvas node — one session seen twice should
           not speak in two different voices. */}
       {copy.feedback && (
