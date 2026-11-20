@@ -60,6 +60,7 @@ import { SettingsSection } from '../SettingsSection'
 import { SearchableRow } from '../SearchableRow'
 import { FieldRow } from '../FieldRow'
 import { IntegrationSettings } from '../IntegrationConsent'
+import { AGENT_TERMINAL_LINK_CHOICES, AGENT_TERMINAL_LINK_LABELS, resolveAgentTerminalLinks } from '@shared/canvas-link'
 
 const ROWS = {
   integrations: {
@@ -112,6 +113,10 @@ const ROWS = {
   messagingDefault: {
     title: 'Agent messaging in projects that do not set it',
     keywords: ['agent', 'message', 'messaging', 'default', 'project', 'send', 'reply', 'orchestration']
+  },
+  terminalLinks: {
+    title: 'Agents may link to terminals',
+    keywords: ['agent', 'terminal', 'link', 'read', 'screen', 'pane', 'context', 'security', 'orchestration']
   },
   permissionMode: {
     title: 'Permission mode',
@@ -785,6 +790,25 @@ export function AgentsSection({ isActive }: { isActive: boolean }): React.JSX.El
               ariaLabel={ROWS.messagingDefault.title}
               onChange={(on) => update({ agentMessagingDefault: on })}
             />
+          }
+        />
+      </SearchableRow>
+      <SearchableRow {...ROWS.terminalLinks}>
+        <FieldRow
+          label={ROWS.terminalLinks.title}
+          description="An agent linked to a plain terminal can read that terminal's screen, and a screen can show anything you ran there. This limits the links an agent makes itself; terminals it opens are linked to it automatically, and links you draw on the canvas are never limited. Stored on this computer only, and agents cannot change it."
+          control={
+            <Select
+              aria-label={ROWS.terminalLinks.title}
+              value={resolveAgentTerminalLinks(settings.agentTerminalLinks)}
+              onChange={(e) => update({ agentTerminalLinks: resolveAgentTerminalLinks(e.target.value) })}
+            >
+              {AGENT_TERMINAL_LINK_CHOICES.map((m) => (
+                <option key={m} value={m}>
+                  {AGENT_TERMINAL_LINK_LABELS[m]}
+                </option>
+              ))}
+            </Select>
           }
         />
       </SearchableRow>

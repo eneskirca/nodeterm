@@ -1,7 +1,7 @@
 // Issue #852: a context link may be one-way. These pin the pure "who reads whom" rule that both
 // shells (desktop renderer, Server Edition) derive the read-authorization map from.
 import { describe, it, expect } from 'vitest'
-import { gainedReaders, linkReadPairs, planBridges, withLinkReader } from './canvas-link'
+import { AGENT_TERMINAL_LINKS_DEFAULT, agentTerminalLinkVerdict, gainedReaders, linkReadPairs, planBridges, resolveAgentTerminalLinks, withLinkReader } from './canvas-link'
 
 describe('linkReadPairs', () => {
   it('a link without a reader is bidirectional (every link persisted before #852)', () => {
@@ -89,5 +89,32 @@ describe('planBridges oneWay', () => {
   it('note links are one-way by nature and never carry a reader', () => {
     const plan = planBridges('n1', ['s1'], lookup, [], { oneWay: true })
     expect(plan.edges).toEqual([{ id: 'bridge-s1-n1', source: 's1', target: 'n1' }])
+  })
+})
+
+describe('agentTerminalLinks: which terminals an agent may link itself to', () => {
+  it('reads anything but a known value as the safe default, own', () => {
+    expect(AGENT_TERMINAL_LINKS_DEFAULT).toBe('own')
+    for (const v of ['own', 'confirm', 'any'] as const) expect(resolveAgentTerminalLinks(v)).toBe(v)
+    for (const v of [undefined, null, '', 'ANY', 'all', 1, true, {}]) expect(resolveAgentTerminalLinks(v)).toBe('own')
+  })
+
+  it('own: only a terminal whose recorded opener is exactly the caller', () => {
+    expect(agentTerminalLinkVerdict('own', 'agent-1', 'agent-1')).toBe('allow')
+    expect(agentTerminalLinkVerdict('own', 'agent-1', 'agent-2')).toBe('refuse')
+    expect(agentTerminalLinkVerdict('own', 'agent-1', undefined)).toBe('refuse')
+    expect(agentTerminalLinkVerdict('own', 'agent-1', '')).toBe('refuse')
+    expect(agentTerminalLinkVerdict('own', 'agent-1', ['agent-1'])).toBe('refuse')
+  })
+
+  it('confirm: its own terminal needs no question, any other asks', () => {
+    expect(agentTerminalLinkVerdict('confirm', 'agent-1', 'agent-1')).toBe('allow')
+    expect(agentTerminalLinkVerdict('confirm', 'agent-1', 'agent-2')).toBe('confirm')
+    expect(agentTerminalLinkVerdict('confirm', 'agent-1', undefined)).toBe('confirm')
+  })
+
+  it('any: no limit', () => {
+    expect(agentTerminalLinkVerdict('any', 'agent-1', 'agent-2')).toBe('allow')
+    expect(agentTerminalLinkVerdict('any', 'agent-1', undefined)).toBe('allow')
   })
 })
