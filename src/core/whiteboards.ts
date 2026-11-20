@@ -145,7 +145,7 @@ async function candidateDirs(loc: WhiteboardLocation, write: boolean): Promise<s
 }
 
 /** The revision of this node's OWN board — the file `readWhiteboard` would answer for it — or null
- *  when it has none. Stat only: the scene is not read. */
+ *  when it has none. The scene is hashed, not kept. */
 async function ownRev(dirs: string[], nodeId: string): Promise<string | null> {
   for (const dir of dirs) {
     const st = await readRegularFileBytesNoFollow(join(dir, `${nodeId}.excalidraw`), WHITEBOARD_SCENE_MAX_BYTES, {
