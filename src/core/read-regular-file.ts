@@ -14,9 +14,12 @@
  * Resolves `null` for anything that is not a readable regular file within `maxBytes` (absent,
  * a link, a directory, a FIFO, too large). Never throws.
  */
+import { createHash } from 'crypto'
 import { promises as fs, constants as fsConstants } from 'fs'
 
 export const READ_REGULAR_FILE_DEFAULT_MAX = 1024 * 1024
+/** The buffer a `read: false` call hashes the file through, so a 64 MB scene is never held whole. */
+const HASH_CHUNK_BYTES = 1024 * 1024
 
 export async function readRegularFileNoFollow(
   file: string,
@@ -51,13 +54,15 @@ export async function readRegularFileNoFollow(
  * `readRegularFileNoFollow`'s rules for binary or large files: the same single-descriptor open →
  * fstat → lstat-identity check, but the buffer is sized from the fstat (not `maxBytes`, which for a
  * whiteboard scene is 64 MB), the bytes come back raw, and `read: false` answers only the file's
- * mtime and stamp — so a caller can learn a file's revision without reading it. Resolves `null` for
- * anything that is not a readable regular file within `maxBytes`. Never throws.
+ * mtime and stamp — so a caller can learn a file's revision without holding the file in memory.
+ * Resolves `null` for anything that is not a readable regular file within `maxBytes`. Never throws.
  *
- * `stamp` is `dev:ino:size:mtimeNs` of the descriptor actually read: it changes whenever the file is
- * rewritten — and on a coarse-mtime filesystem too, as long as writers publish by rename (a new
- * inode each time), which is how every writer of ours publishes (the rule `WorkspaceStore.save`
- * relies on for workspace.json).
+ * `stamp` is `dev:ino:size:mtimeNs:sha256` of the descriptor actually read. The stat part alone is
+ * not enough: a publish by rename frees the old inode, ext4 hands it straight to the next file, and
+ * mtime moves in coarse ticks — so two same-size rewrites in one tick had the same stamp, and a stale
+ * compare-and-set from another process passed. The content hash closes that; what is left (same
+ * inode, size, tick AND bytes) is the very file the caller saw. So `read: false` still reads the
+ * file, a chunk at a time, to hash it.
  */
 export async function readRegularFileBytesNoFollow(
   file: string,
@@ -71,20 +76,24 @@ export async function readRegularFileBytesNoFollow(
     if (!st.isFile() || st.size > BigInt(maxBytes)) return null
     const named = await fs.lstat(file, { bigint: true })
     if (!named.isFile() || (st.ino !== 0n && (named.dev !== st.dev || named.ino !== st.ino))) return null
-    const mtimeMs = Number(st.mtimeMs)
-    const stamp = `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}`
-    if (opts.read === false) return { mtimeMs, stamp }
-    // One byte past what fstat reported, from the SAME handle: a file that grew since is refused.
-    const want = Number(st.size) + 1
-    const buf = Buffer.alloc(want)
+    // Up to one byte past what fstat reported, from the SAME handle: a file that grew since is
+    // refused. `read: false` reuses one chunk-sized buffer and keeps only the hash.
+    const size = Number(st.size)
+    const keep = opts.read !== false
+    const buf = Buffer.alloc(keep ? size + 1 : Math.min(size + 1, HASH_CHUNK_BYTES))
+    const hash = createHash('sha256')
     let total = 0
-    while (total < want) {
-      const { bytesRead } = await fh.read(buf, total, want - total, total)
+    for (;;) {
+      const at = keep ? total : 0
+      const { bytesRead } = await fh.read(buf, at, buf.length - at, total)
       if (bytesRead === 0) break
+      hash.update(buf.subarray(at, at + bytesRead))
       total += bytesRead
+      if (total > size) return null
     }
-    if (total > Number(st.size) || total > maxBytes) return null
-    return { bytes: buf.subarray(0, total), mtimeMs, stamp }
+    const mtimeMs = Number(st.mtimeMs)
+    const stamp = `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${hash.digest('hex')}`
+    return keep ? { bytes: buf.subarray(0, total), mtimeMs, stamp } : { mtimeMs, stamp }
   } catch {
     return null
   } finally {
