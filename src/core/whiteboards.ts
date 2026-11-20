@@ -160,7 +160,8 @@ async function ownRev(dirs: string[], nodeId: string): Promise<string | null> {
  * One save at a time per board in this process, so a compare-and-set can never interleave with
  * another save of the same board in the same core. Two CORES writing one folder (a desktop and a
  * Server Edition on the same project) can still interleave between the check and the rename; that
- * window is a stat and a rename long.
+ * window is a read-and-hash of the whole scene (the revision is a content hash — tens of ms for a
+ * board near the cap) plus the temp write and the rename.
  */
 const savesInFlight = new Map<string, Promise<unknown>>()
 function oneSaveAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {

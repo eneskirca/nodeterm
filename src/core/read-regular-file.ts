@@ -18,6 +18,8 @@ import { createHash } from 'crypto'
 import { promises as fs, constants as fsConstants } from 'fs'
 
 export const READ_REGULAR_FILE_DEFAULT_MAX = 1024 * 1024
+/** The buffer a `read: false` call hashes the file through, so a 64 MB scene is never held whole. */
+const HASH_CHUNK_BYTES = 1024 * 1024
 
 export async function readRegularFileNoFollow(
   file: string,
@@ -78,7 +80,7 @@ export async function readRegularFileBytesNoFollow(
     // refused. `read: false` reuses one chunk-sized buffer and keeps only the hash.
     const size = Number(st.size)
     const keep = opts.read !== false
-    const buf = Buffer.alloc(keep ? size + 1 : Math.min(size + 1, 1024 * 1024))
+    const buf = Buffer.alloc(keep ? size + 1 : Math.min(size + 1, HASH_CHUNK_BYTES))
     const hash = createHash('sha256')
     let total = 0
     for (;;) {
