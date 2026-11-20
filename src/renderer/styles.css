@@ -16364,18 +16364,11 @@ button.pull-checks__name {
   pointer-events: none;
   z-index: 3;
 }
+/* The card modal's upload note IS the canvas node's (`.term-node__upload`, spinner included): one
+   session seen twice shows one upload, in one voice. Only the stacking differs — it must stay
+   under the modal's ⌘M face (see styles.kanban.test.ts), where the node's z 30 would cover it. */
 .kanban-modal__upload {
-  position: absolute;
-  left: 50%;
-  bottom: 14px;
-  transform: translateX(-50%);
   z-index: 4;
-  font-size: 12px;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.75);
-  border: 1px solid rgba(var(--tint-rgb), 0.15);
-  border-radius: 8px;
-  padding: 6px 12px;
 }
 
 /* Shared browser surface (canvas node + kanban card modal): toolbar on top, webview fills. */

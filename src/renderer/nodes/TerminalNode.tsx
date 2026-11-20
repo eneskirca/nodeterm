@@ -44,6 +44,7 @@ import {
   pastedFiles,
   type DropDialect
 } from '../terminal/file-drop'
+import { startUploadNote, uploadingLabel, useUploadNotes } from '../state/uploadNotes'
 import type { TerminalTransport } from '../terminal/transport'
 import { guardMiddleClickPaste } from '../terminal/middle-click'
 import { attachCopyOnSelect } from '../terminal/copy-on-select'
@@ -1603,11 +1604,18 @@ export function TerminalNode({
   const [dropping, setDropping] = useState(false)
   // Overlay while dropped files upload to an SSH host (scp is seconds-long with zero feedback);
   // doubles as a brief "Upload failed" flash when nothing made it.
-  const [uploadNote, setUploadNote] = useState<{ text: string; failed?: boolean } | null>(null)
+  // In a store, not component state: a project switch unmounts this node while the scp keeps
+  // running, and the overlay has to still be there on the way back (see state/uploadNotes.ts).
+  const uploadNote = useUploadNotes((s) => s.byKey[termKey])
   const pasteReceipt = usePasteReceipt()
-  const uploadNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => {
-    if (uploadNoteTimer.current) clearTimeout(uploadNoteTimer.current)
+  // Is THIS instance still on screen? An upload started here can finish after a project switch
+  // unmounted it; `insertFiles` then delivers the path without touching focus.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
   }, [])
   const [naming, setNaming] = useState(false)
   // Is a glyph grid attached RIGHT NOW? Drives the `term-node--glyphgrid` class on the node ROOT,
@@ -5971,48 +5979,53 @@ export function TerminalNode({
     const agentPane = agentProcessInPane(paneAgent, st)
     const dialect = dropDialectFor(agentPane)
 
+    // A drag from another OS app leaves OUR window unfocused (esp. macOS), and an unfocused window
+    // holds every infinite animation still (the idle gate in styles.css) — so the upload spinner
+    // sat frozen for the whole transfer, which read as "nothing is happening". Raise the window at
+    // the drop, not after the upload: the user just dropped onto it, and a minutes-long scp that
+    // yanks focus back when it finishes is worse than one that takes it when asked.
+    if (opts.raiseWindow) window.nodeTerminal.focusWindow()
+
     let paths: string[]
     if (data.sshRemoteTmux) {
       // Remote terminal: uploading over the ControlMaster takes seconds and pastes nothing until
       // it's done, so show an overlay while it runs — without it a drop looks like it silently did
       // nothing. (The upload + REMOTE-path resolution itself lives in the shared droppedPaths.)
       const projectId = dropProjectId()
-      if (uploadNoteTimer.current) clearTimeout(uploadNoteTimer.current)
-      setUploadNote({
-        text: `Uploading ${files.length === 1 ? files[0].name : `${files.length} files`}…`,
-      })
-      try {
-        paths = await droppedPaths(files, { sshRemoteTmux: true, projectId })
-      } finally {
-        setUploadNote(null)
-      }
-      if (!paths.length) {
-        setUploadNote({ text: 'Upload failed', failed: true })
-        uploadNoteTimer.current = setTimeout(() => setUploadNote(null), 2500)
-      }
+      const note = startUploadNote(termKey, uploadingLabel(files))
+      paths = await droppedPaths(files, { sshRemoteTmux: true, projectId }).catch(() => [])
+      if (paths.length) note.done()
+      else note.fail('Upload failed')
     } else if (needsWrite) {
-      if (uploadNoteTimer.current) clearTimeout(uploadNoteTimer.current)
-      setUploadNote({ text: 'Saving pasted file…' })
-      try {
-        paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '', dialect })
-      } finally {
-        setUploadNote(null)
-      }
-      if (!paths.length) {
-        setUploadNote({ text: 'Could not save the pasted file', failed: true })
-        uploadNoteTimer.current = setTimeout(() => setUploadNote(null), 2500)
-      }
+      const note = startUploadNote(termKey, 'Saving pasted file…')
+      paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '', dialect }).catch(
+        () => []
+      )
+      if (paths.length) note.done()
+      else note.fail('Could not save the pasted file')
     } else {
       paths = await droppedPaths(files, { sshRemoteTmux: false, projectId: '', dialect })
     }
     if (!paths.length) return
+    if (!mountedRef.current) {
+      const text = paths.join(' ') + ' '
+      // The user switched projects while the upload ran. Deliver the path anyway — it is what they
+      // dropped the file for — but leave focus, the hover guard and presence alone: none of them
+      // belong to a node that is not on screen. A parked terminal still holds its PTY, so the
+      // ordinary paste works; once the park has expired the xterm is disposed and the path goes
+      // through tmux instead.
+      if (parkedTerminals.get(termKey)?.term === term) {
+        // No receipt: its pill belongs to an instance that is gone.
+        pasteWithImageReceipt(term, text, paths, undefined, () => {})
+      } else {
+        void api.pty.sendText(id, text, { enter: false }).catch(() => {})
+      }
+      return
+    }
     // Enter the terminal and paste the path(s) like a real drop (trailing space to continue).
     if (dwellRef.current) clearTimeout(dwellRef.current)
     setArmed(false)
-    // A drag-drop from another OS app doesn't bring our window forward (esp. macOS), so raise it
-    // FIRST — otherwise the drag-source keeps keyboard focus and the user types into the wrong app.
-    // A paste came from THIS window, which already has it.
-    if (opts.raiseWindow) window.nodeTerminal.focusWindow()
+    // (The window was already raised at the drop, above — a paste came from THIS window.)
     term.focus()
     useTerminalFocus.getState().remember(id)
     // A pasted image is only reported as attached once the agent's own pane shows it (claude's
