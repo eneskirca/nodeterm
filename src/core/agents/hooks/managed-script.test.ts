@@ -53,7 +53,7 @@ describe('buildManagedScript', () => {
   it('never names a credential header on curl\'s command line, in any POST block', () => {
     expect(s).not.toContain('-H "X-Nodeterm-Hook-Token')
     expect(s).not.toContain('-H "X-Nodeterm-Node-Token')
-    expect((s.match(/\n *curl -sS/g) ?? []).length).toBe(4)
+    expect((s.match(/\n *LC_ALL=C curl -sS/g) ?? []).length).toBe(4)
     // The two answered POSTs are wrapped in a `{ … ; rm … } &` group that self-deletes the payload
     // temp file, so `nt_hook_headers |` there is preceded by `{ ` — match either form.
     expect((s.match(/\n *(\{ |nt_code=\$\()?nt_hook_headers \|/g) ?? []).length).toBe(4)

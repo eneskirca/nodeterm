@@ -196,28 +196,28 @@ describe('the managed script for antigravity', () => {
       // hook (`$CLAUDE_PID`, foreground, tty — claude-pane-origin.ts). Recomputed from this
       // branch's builder; the other five are untouched, which is what this test still proves.
       claude: [
-        '0e3e1e0d89e7b3ca269effe57067047f9321897c79bf53a3edeadf2bb30ca992',
-        '84a8fc82dede3cf252138376b209e6469a22bfdc9b72f953eb35cb94ccd4fbe3'
+        '53c1c47ad9fe6d7391abe911f7f86d1e2bffe2b0fa1dec186f85ac0a46b3d624',
+        'fcfa2ad72580ebdb25d3ea36980eb61584091bbc303abe3751f9e344cd40f8df'
       ],
       codex: [
-        '592fe88ee069db002c9f5c385a2e0465f9659bade3f0bd18c86b5b51f7644e59',
-        '0399f289c489544c377f90b747437621e6f7b8fe813bb2c46a364975bc8c6bbe'
+        '053908a6ad05ad4c87af0baef58a4271959946b5bc3f958df1561a0923a15441',
+        '8c411341109faf32c72d4d9ab876887567e1f12fc1883210cde01620ababd21a'
       ],
       gemini: [
-        'c3fb01424ff2a78012ffd6e87200430badfe60b05f603731bf205ee3b791f988',
-        '9e984e142b62c2a5d158f3ecefbd77fc5e775f20522bfe2b3e52807df781dd7a'
+        'ff55978a373961e77959ee1325e326ec7bd8b256e0a2f370f716f17dffb0fdfa',
+        '13471898c33f7b30ab42cfe1624fda8d41e7a352f7e5d5f0c9533632e3d19962'
       ],
       opencode: [
-        '910dc7bc71c9af9043f05509d72584c633a790c0dee66d621baeee1db671845f',
-        '19ba31a1dfaa981678e87bcc92417a473c3a98720fb86287e9ca285f01e96500'
+        'a00a9905d8f6bc66e20dbe16b91e1ccbc45f2435f6f5f7d63fc7a2cc0c05eeaf',
+        'd44dabebdec27333608657ac622cd12bcebee37da1c163738dcbe1b15659808c'
       ],
       grok: [
-        'fe9636e0e6e961109a3d96079a5f10d0304d77e751a6d1de57aa2810b2075b6c',
-        'd2e66a9386d62eb56c5d520fd695545b447c0facc77bb0948bfb2a0e4240be56'
+        '18201b71d85135d31e18a16c59921df62926346de6cd3f8b9587cac5fb0482ab',
+        '39d3f375c88ed837cd3256eeb66637f1766ef0ce88eb3a95eeda2d7c8f1a0181'
       ],
       copilot: [
-        '8907ee6ac3274cc92f3aa44f55119cc3d42b5a2446fcbd4a847fe42064c1f015',
-        '101b2d44c3fb11126cb8d487a425951b63f8f0c1262ed1aa2d6241bce060ec55'
+        '1c87a1d31a93acb2d007a64ed6a077942d1322f62fa75d42a1c55e938960de0a',
+        '3e2094ffa446582f81883f40a9cf099563fbacf73a30e83a7966eb76d131cbce'
       ]
     }
     const sha = (s: string): string => createHash('sha256').update(s).digest('hex')

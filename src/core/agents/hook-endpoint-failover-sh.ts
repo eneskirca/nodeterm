@@ -236,10 +236,10 @@ nt_probe_endpoint() {
   nt_pc=""
   if [ -n "$NODETERM_HOOK_SOCK" ]; then
     nt_pc=$(nt_hook_headers |
-      curl -s -o "$nt_out" -w '%{http_code}' -X POST --config - --connect-timeout 0.5 --max-time 1.5 --unix-socket "$NODETERM_HOOK_SOCK" "http://localhost/hook/verify" --data '' 2>/dev/null)
+      LC_ALL=C curl -s -o "$nt_out" -w '%{http_code}' -X POST --config - --connect-timeout 0.5 --max-time 1.5 --unix-socket "$NODETERM_HOOK_SOCK" "http://localhost/hook/verify" --data '' 2>/dev/null)
   elif [ -n "$NODETERM_HOOK_PORT" ]; then
     nt_pc=$(nt_hook_headers |
-      curl -s -o "$nt_out" -w '%{http_code}' -X POST --config - --connect-timeout 0.5 --max-time 1.5 "http://127.0.0.1:$NODETERM_HOOK_PORT/hook/verify" --data '' 2>/dev/null)
+      LC_ALL=C curl -s -o "$nt_out" -w '%{http_code}' -X POST --config - --connect-timeout 0.5 --max-time 1.5 "http://127.0.0.1:$NODETERM_HOOK_PORT/hook/verify" --data '' 2>/dev/null)
   else
     nt_code=""
     return 1
