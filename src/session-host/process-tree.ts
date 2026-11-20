@@ -1,6 +1,7 @@
 import { execFile } from 'child_process'
 import { isShellCommand } from '../shared/agents/pane'
 import { powershellArgs, powershellExe } from '../core/win32-powershell'
+import { WINDOWS_ONESHOT_PROBE_TIMEOUT_MS } from './windows-probe-budget'
 import { getWindowsProbeWorker, type WindowsProbeWorker } from './windows-probe-worker'
 
 /**
@@ -79,7 +80,7 @@ export function readWin32OneShot(
     run(
       powershellExe(env),
       powershellArgs(WIN32_PANE_TABLE_SCRIPT),
-      { timeout: 5000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+      { timeout: WINDOWS_ONESHOT_PROBE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
       (err, stdout) => {
         if (err || !stdout) return resolve([])
         try {

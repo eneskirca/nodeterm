@@ -13,12 +13,18 @@ import {
   type SessionHostSpawnOptions
 } from '../session-host/protocol'
 import {
+  MESSAGE_ENVELOPE_REQUEST_TIMEOUT_MS,
+  PROBE_REQUEST_TIMEOUT_MS,
   SESSION_HOST_REQUEST_TIMEOUT_MS,
   SessionHostClient,
   SessionHostProtocolCompatibilityError,
   TERMINATE_OWNER_REQUEST_TIMEOUT_MS,
   type SessionSubscriber
 } from './session-host-client'
+import {
+  PROBE_FIRST_REQUEST_TIMEOUT_MS,
+  WINDOWS_ONESHOT_PROBE_TIMEOUT_MS
+} from '../session-host/windows-probe-budget'
 import { WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS } from '../session-host/windows-process-tree'
 
 const openServers = new Set<net.Server>()
@@ -265,21 +271,48 @@ describe('SessionHostClient handshake transition', () => {
     expect(commands).toEqual(['hello', 'terminateOwnerV1', 'terminateOwnerV1'])
   })
 
-  it('gives terminateOwnerV1 a deadline covering the host probe plus the whole tree-kill budget', async () => {
+  it('gives terminateOwnerV1 and probe-backed requests deadlines covering the worker + one-shot fallback budget', async () => {
+    const fullProbeBudget = PROBE_FIRST_REQUEST_TIMEOUT_MS + WINDOWS_ONESHOT_PROBE_TIMEOUT_MS
     // A deadline shorter than the host's own work reports `false` for a kill that may have landed
     // (the caller then skips the recycle) and retires the socket for every other session.
-    expect(TERMINATE_OWNER_REQUEST_TIMEOUT_MS).toBeGreaterThan(4_000 + WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS)
+    expect(PROBE_REQUEST_TIMEOUT_MS).toBeGreaterThan(fullProbeBudget)
+    expect(PROBE_REQUEST_TIMEOUT_MS).toBeGreaterThan(SESSION_HOST_REQUEST_TIMEOUT_MS)
+    expect(MESSAGE_ENVELOPE_REQUEST_TIMEOUT_MS).toBeGreaterThan(2 * fullProbeBudget)
+    expect(TERMINATE_OWNER_REQUEST_TIMEOUT_MS).toBeGreaterThan(
+      fullProbeBudget + WINDOWS_PROCESS_TREE_TERMINATION_TIMEOUT_MS
+    )
     expect(TERMINATE_OWNER_REQUEST_TIMEOUT_MS).toBeGreaterThan(SESSION_HOST_REQUEST_TIMEOUT_MS)
     const client = new SessionHostClient({ userDataDir: os.tmpdir(), repoRoot: os.tmpdir() })
     const request = vi
       .spyOn(client as unknown as { request: (...args: unknown[]) => Promise<unknown> }, 'request')
-      .mockResolvedValue({ terminated: true })
+      .mockResolvedValue({ terminated: true, command: 'pwsh.exe' })
     expect(await client.terminateOwner('nt-a', WIN_OWNER)).toBe(true)
     expect(request).toHaveBeenCalledWith(
       expect.objectContaining({ cmd: 'terminateOwnerV1' }),
       undefined,
       undefined,
       TERMINATE_OWNER_REQUEST_TIMEOUT_MS
+    )
+    await client.paneCommand('nt-a')
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'paneCommand' }),
+      undefined,
+      undefined,
+      PROBE_REQUEST_TIMEOUT_MS
+    )
+    await client.messageOwner('nt-a')
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'messageOwnerV1' }),
+      undefined,
+      undefined,
+      PROBE_REQUEST_TIMEOUT_MS
+    )
+    await client.messageEnvelope('nt-a', '[env]', WIN_OWNER)
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ cmd: 'messageEnvelopeV1' }),
+      undefined,
+      undefined,
+      MESSAGE_ENVELOPE_REQUEST_TIMEOUT_MS
     )
   })
 
@@ -1443,6 +1476,46 @@ describe('SessionHostClient confirmed kill barrier', () => {
     })
     expect(replacementSpawns).toBe(1)
     expect(replacementTokens).toEqual([operationId, operationId])
+  })
+
+  it('retries an initial cold attach when the socket drops before the reply arrives', async () => {
+    const { userDataDir, paths } = createUserData()
+    let attachAttempts = 0
+    await serve(paths.endpoint, (request, socket) => {
+      if (request.cmd === 'hello') {
+        socket.write(acceptedHello(request.id))
+      } else if (request.cmd === 'attach') {
+        attachAttempts++
+        if (attachAttempts === 1) {
+          socket.destroy()
+          return
+        }
+        socket.write(
+          encodeFrame({
+            id: request.id,
+            ok: true,
+            result: {
+              fresh: true,
+              generation: 'generation-cold-retry',
+              launchDialect: 'pwsh'
+            }
+          })
+        )
+      }
+    })
+
+    const client = new SessionHostClient({ userDataDir })
+    await expect(
+      within(
+        client.attach('nt-cold-retry', spawnOptions(userDataDir), 1_000, subscriber()),
+        2_000
+      )
+    ).resolves.toMatchObject({
+      fresh: true,
+      generation: 'generation-cold-retry',
+      launchDialect: 'pwsh'
+    })
+    expect(attachAttempts).toBe(2)
   })
 
   it('keeps generic deletion token-free and probes the current generation before killing', async () => {
