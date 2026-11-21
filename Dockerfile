@@ -5,7 +5,10 @@
 # server runs under plain `node`, which would crash at boot with a NODE_MODULE_VERSION mismatch.
 # So every npm install below uses --ignore-scripts and the deps stage compiles node-pty against
 # Node's own ABI with an explicit `npm rebuild node-pty`. Keep the deps and runtime stages on the
-# SAME Node major (the compiled binary must match the runtime ABI).
+# SAME Node major (the compiled binary must match the runtime ABI). smart-whisper is the second
+# addon with the same problem and one difference: --ignore-scripts skips its build too, and
+# without it local dictation is dead ("the smart-whisper module is not installed"), so it is
+# rebuilt beside node-pty.
 #
 # TLS is terminated by the reverse proxy in front (Dokploy/Traefik, nginx, Caddy…): the server
 # speaks plain HTTP inside the Docker network, which is why CMD passes --insecure-http (the
@@ -26,7 +29,7 @@ RUN npm run build && npm run server:build
 FROM node:22-bookworm AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts && npm rebuild node-pty
+RUN npm ci --omit=dev --ignore-scripts && npm rebuild node-pty smart-whisper
 
 # ---- runtime: slim image, no compilers ----
 FROM node:22-bookworm-slim
