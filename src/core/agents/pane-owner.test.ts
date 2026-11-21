@@ -280,7 +280,9 @@ describe.skipIf(!tmuxBin)('against a real tmux pane', () => {
         const pgid = foregroundPgid(out)
         if (pgid !== null) argv = parseForegroundArgv(out, pgid)
       }
-      if (argv.length > 0) break
+      // `tmux new-session ... sh` runs `$SHELL -c sh` (`bash -c sh`), which then execs `sh`;
+      // wait until the wrapper finishes execing so we don't catch `bash -c sh` mid-spawn.
+      if (argv.length === 1 && /(^|\/)-?sh$/.test(argv[0])) break
     }
     expect(argv).toHaveLength(1)
     expect(argv[0]).toMatch(/(^|\/)-?sh$/)
