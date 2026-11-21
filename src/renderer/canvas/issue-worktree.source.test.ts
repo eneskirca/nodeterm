@@ -32,7 +32,10 @@ describe('one create-and-bind for every way the app makes a worktree', () => {
     const body = code(src)
     expect(body.match(/\.worktreeAdd\(/g) ?? []).toHaveLength(1)
     const deps = between('const worktreeCreateDeps = useCallback(', 'const createWorktreeAndGroup = useCallback(')
-    expect(deps).toContain('api.git.worktreeAdd(repoPath, wtPath, branch, baseRef, isNew)')
+    // `gitApi` defaults to this canvas's `api.git`; the off-screen `open-worktree` passes the
+    // owning project's session git. Still the one call site.
+    expect(deps).toContain('gitApi: GitApi = api.git')
+    expect(deps).toContain('gitApi.worktreeAdd(repoPath, wtPath, branch, baseRef, isNew)')
   })
 
   it('the dialog creates through it WITH the project-changed refusal', () => {
