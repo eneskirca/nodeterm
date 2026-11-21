@@ -36,6 +36,7 @@ import { ensureCodexHooksCurrent, ensureCodexHooksForAccounts } from './agents/h
 import { copilotHomeDir } from './agents/hooks/copilot'
 import { managedHookScriptPath } from './agents/hooks/install-helper'
 import { opencodeConfigDir } from './agents/hooks/opencode'
+import { ompSkillsDir } from './agents/hooks/omp'
 import { grokHomeDir } from './agents/grok-paths'
 import { buildCanvasSkillBody } from './canvas-control-core'
 import { buildContextLinkSkillBody } from './context-link-core'
@@ -202,6 +203,9 @@ export function skillRootsFor(
     // its long-skill-list truncation drops.
     case 'cursor':
       return [path.join(home, '.cursor', 'skills')]
+    case 'omp':
+      // omp discovers skills in its OWN agent dir (PI_CODING_AGENT_DIR-aware, hooks/omp.ts).
+      return [ompSkillsDir()]
     default:
       return []
   }

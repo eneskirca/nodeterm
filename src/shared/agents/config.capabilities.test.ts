@@ -157,6 +157,62 @@ describe('opencode capabilities', () => {
   })
 })
 
+/**
+ * omp's leaves: the hook pair (AGENT_HOOK_TARGETS + the shared opencode normalizer), the ⌘M chat
+ * reader (core/omp-chat.ts, located strictly by session id), the context-link locator + parser,
+ * canvas control through its own skills dir, and the brand icon. Status is the opencode dialect;
+ * everything below pins the boundaries omp must NOT cross yet.
+ */
+describe('omp capabilities', () => {
+  it('is offered right beside opencode wherever agents are listed (BUILTIN_AGENT_IDS is display order)', () => {
+    expect(Math.abs(BUILTIN_AGENT_IDS.indexOf('omp') - BUILTIN_AGENT_IDS.indexOf('opencode'))).toBe(1)
+  })
+
+  it('is a builtin that launches `omp`, the prompt as a positional argv message', () => {
+    expect(BUILTIN_AGENT_IDS).toContain('omp')
+    expect(AGENT_CONFIG.omp).toEqual({
+      label: 'OMP',
+      color: '#f59e0b',
+      launchCmd: 'omp',
+      promptInjectionMode: 'argv',
+      expectedProcess: 'omp'
+    })
+  })
+
+  it('reports status through the SHARED opencode dialect', () => {
+    expect(hasHooks('omp')).toBe(true)
+    expect(
+      normalizeFor('omp', { nodeId: 'n1', agentId: 'omp', payload: { event: 'session.idle', sessionID: 's1' } })
+    ).toMatchObject({ kind: 'state', state: 'done', sessionId: 's1' })
+    expect(
+      normalizeFor('omp', { nodeId: 'n1', agentId: 'omp', payload: { event: 'permission.asked', sessionID: 's1' } })
+    ).toMatchObject({ state: 'blocked' })
+    expect(
+      normalizeFor('omp', { nodeId: 'n1', agentId: 'omp', payload: { event: 'message.updated', role: 'user', sessionID: 's1' } })
+    ).toMatchObject({ state: 'working', newTurn: true })
+  })
+
+  it("reads its own conversation — chat, context link and canvas control, never claude's resolver", () => {
+    // The transcript lives under ~/.omp/agent/sessions/<cwd-slug>/<ts>_<id>.jsonl and is found
+    // strictly by the session id (core/omp-chat.ts); claude's resolver must never be asked.
+    expect(canChat('omp')).toBe(true)
+    expect(canContextLink('omp')).toBe(true)
+    expect(canControlCanvas('omp')).toBe(true)
+    // No remote leg exists: an SSH-project omp node has no reader on its host.
+    expect(chatReadsLocalOnly('omp')).toBe(true)
+    expect(readsClaudeShapedTranscript('omp')).toBe(false)
+  })
+
+  it('does not claim the capabilities whose per-agent leaf is unwritten', () => {
+    // No usage meter (omp states no window), no transfer reader wired, no permission/model
+    // grammar measured, no mint (omp mints its own ids, no caller-chosen-id flag measured),
+    // no resume, and no subagent events in omp's hook API.
+    for (const can of [hasUsage, canTransferFrom, hasPermissionMode, canSwitchModel, reportsSessionEnd, mintsSessionId, canResume, canSubagent, canRecur, canBranch, canRename, canReadTitle]) {
+      expect(can('omp'), can.name).toBe(false)
+    }
+  })
+})
+
 describe('createdAgentId', () => {
   it('reads data.agentId, with the legacy tags fallback', () => {
     expect(createdAgentId({ agentId: 'codex' })).toBe('codex')

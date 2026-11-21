@@ -18,7 +18,8 @@ import {
   skillsFor,
   detectExistingIntegrations,
   FRESH_INSTALL_MARKER,
-  resolveIntegrationConsentAtBoot
+  resolveIntegrationConsentAtBoot,
+  skillRootsFor,
 } from './agent-integrations'
 import { buildCanvasSkillBody, frameCanvasControlBlock } from './canvas-control-core'
 import { buildContextLinkSkillBody, frameInstructionsBlock } from './context-link-core'
@@ -381,7 +382,7 @@ describe('skillsFor — the invocation follows the host and the agent\'s tool sh
   const shims = { canvas: 'C:\\nt\\canvas-control\\nodeterm.sh', context: 'C:\\nt\\context-links\\context.sh' }
 
   it('win32: a PowerShell-run agent is told to run the .cmd launcher', () => {
-    for (const agent of ['codex', 'gemini', 'grok', 'opencode'] as const) {
+    for (const agent of ['codex', 'gemini', 'grok', 'opencode', 'omp'] as const) {
       const skills = skillsFor(agent, shims, 'win32')
       expect(skills.get(CANVAS_SKILL), agent).toContain('& "C:\\nt\\canvas-control\\nodeterm.cmd" <verb> [args]')
       expect(skills.get(CONTEXT_SKILL), agent).toContain('& "C:\\nt\\context-links\\context.cmd" <command>')
@@ -398,12 +399,27 @@ describe('skillsFor — the invocation follows the host and the agent\'s tool sh
 
   it('every non-win32 host gets the byte-identical POSIX bodies for every agent', () => {
     for (const host of ['darwin', 'linux']) {
-      for (const agent of ['claude', 'codex', 'gemini', 'grok', 'opencode'] as const) {
+      for (const agent of ['claude', 'codex', 'gemini', 'grok', 'opencode', 'omp'] as const) {
         const skills = skillsFor(agent, { canvas: '/u/nodeterm.sh', context: '/u/context.sh' }, host)
         expect(skills.get(CANVAS_SKILL)).toBe(buildCanvasSkillBody('/u/nodeterm.sh'))
         expect(skills.get(CONTEXT_SKILL)).toBe(buildContextLinkSkillBody('/u/context.sh'))
       }
     }
+  })
+})
+
+describe('omp — skills root and skill bodies', () => {
+  it("writes both skills into omp's OWN agent dir, PI_CODING_AGENT_DIR-aware", () => {
+    process.env.PI_CODING_AGENT_DIR = path.join(home, 'omp-home')
+    expect(skillRootsFor('omp', DEFAULT_SETTINGS, userData)).toEqual([path.join(home, 'omp-home', 'skills')])
+    delete process.env.PI_CODING_AGENT_DIR
+    expect(skillRootsFor('omp', DEFAULT_SETTINGS, userData)).toEqual([path.join(home, '.omp', 'agent', 'skills')])
+  })
+
+  it('gets the byte-identical POSIX skill bodies on darwin', () => {
+    const skills = skillsFor('omp', { canvas: '/u/nodeterm.sh', context: '/u/context.sh' }, 'darwin')
+    expect(skills.get(CANVAS_SKILL)).toBe(buildCanvasSkillBody('/u/nodeterm.sh'))
+    expect(skills.get(CONTEXT_SKILL)).toBe(buildContextLinkSkillBody('/u/context.sh'))
   })
 })
 
