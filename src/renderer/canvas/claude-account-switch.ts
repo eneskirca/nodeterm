@@ -221,3 +221,107 @@ export function summarizeBulkSwitch(
   if (skipped) parts.push(`${skipped} skipped (busy, not attached or without a conversation yet)`)
   return { kind: stayed || skipped ? 'error' : 'info', text: `${parts.join(' · ')}.` }
 }
+
+/** A node of a multi-selection, as the selection move needs to see it. */
+export type SelectionSwitchNode = ClaudeSwitchNode & {
+  id: string
+  /** `working` / `blocked`: skipped, never interrupted (a switch types `/exit`). */
+  busy: boolean
+}
+
+export interface SelectionSwitchSkips {
+  /** Not a Claude agent session: Codex and the other agents, and any selected node that is no
+   *  session at all (a sticky, an editor, a frame). */
+  otherAgent: number
+  /** Already on the target account. */
+  alreadyThere: number
+  /** The target account is not on this node's machine (another host's account, or a local one for an SSH node). */
+  otherMachine: number
+  /** A relay session, or a remote node whose host could not be identified. */
+  unswitchable: number
+  /** No conversation id reported yet. */
+  noSession: number
+}
+
+export interface SelectionSwitchPlan {
+  move: string[]
+  busy: string[]
+  skipped: SelectionSwitchSkips
+}
+
+/**
+ * Split a selection for ONE target account: what moves, what is busy, and what is left alone and
+ * why. Every node lands in exactly one bucket, so the summary accounts for the whole selection.
+ * Validity is the single-node planner's (`planClaudeAccountSwitch`), never a second copy of it.
+ */
+export function planSelectionSwitch(
+  nodes: readonly SelectionSwitchNode[],
+  targetAccountId: string | undefined,
+  accounts: readonly ClaudeAccount[],
+  /** Selected nodes that are not sessions and so never reached `nodes` — counted as `otherAgent`. */
+  notSessions = 0
+): SelectionSwitchPlan {
+  const plan: SelectionSwitchPlan = {
+    move: [],
+    busy: [],
+    skipped: { otherAgent: notSessions, alreadyThere: 0, otherMachine: 0, unswitchable: 0, noSession: 0 }
+  }
+  for (const n of nodes) {
+    const d = planClaudeAccountSwitch(n, targetAccountId, accounts)
+    if (!d.ok) {
+      if (d.reason === 'not-claude') plan.skipped.otherAgent++
+      else if (d.reason === 'same-account') plan.skipped.alreadyThere++
+      else if (d.reason === 'unavailable') plan.skipped.otherMachine++
+      else if (d.reason === 'remote') plan.skipped.unswitchable++
+      else plan.skipped.noSession++
+    } else if (n.busy) plan.busy.push(n.id)
+    else plan.move.push(n.id)
+  }
+  return plan
+}
+
+/**
+ * The accounts the selection menu offers: those of every machine a selected CLAUDE node runs on,
+ * once each. A pick is then applied only to the nodes whose machine holds that account
+ * (`planSelectionSwitch`); the system account (always offered by the caller) is valid everywhere.
+ */
+export function selectionSwitchTargets(
+  nodes: readonly Pick<SelectionSwitchNode, 'agentId' | 'hostKey'>[],
+  accounts: readonly ClaudeAccount[]
+): ClaudeAccount[] {
+  const hosts = new Set<string | undefined>(
+    nodes.filter((n) => n.agentId === 'claude').map((n) => n.hostKey || undefined)
+  )
+  return accounts.filter(
+    (a) => !a.pending && hosts.has(a.host || undefined)
+  )
+}
+
+/** The selection move's one line: what moved, what failed or was busy, what was left alone. */
+export function summarizeSelectionSwitch(
+  outcomes: readonly ClaudeSwitchOutcome[],
+  busySkipped: number,
+  skipped: SelectionSwitchSkips,
+  targetLabel: string
+): { kind: 'info' | 'error'; text: string } {
+  const moved = outcomes.filter((o) => o.kind === 'switched').length
+  const stayed = outcomes.filter((o) => o.kind === 'copy-failed').length
+  const failed =
+    busySkipped +
+    skipped.noSession +
+    outcomes.filter((o) => o.kind === 'not-restarted' || o.kind === 'refused').length
+  // A node rebound to the target between the plan and its run comes back `same-account`: it is
+  // already where it was asked to go, so it is left alone, not lost from the count.
+  const leftAlone =
+    skipped.otherAgent +
+    skipped.alreadyThere +
+    skipped.otherMachine +
+    skipped.unswitchable +
+    outcomes.filter((o) => o.kind === 'same-account').length
+  const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
+  const parts = [`Moved ${plural(moved, 'session', 'sessions')} to ${targetLabel}`]
+  if (stayed) parts.push(`${stayed} resumed on their old account (the conversation could not be copied)`)
+  if (failed) parts.push(`${failed} skipped (busy, not attached or without a conversation yet)`)
+  if (leftAlone) parts.push(`${leftAlone} left alone (other agent or machine)`)
+  return { kind: stayed || failed ? 'error' : 'info', text: `${parts.join(' · ')}.` }
+}

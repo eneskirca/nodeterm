@@ -75,6 +75,7 @@ const GOLDEN_STRINGS = [
   'Switch Claude account',
   'Switch Codex account',
   'Switch model',
+  'System account (each machine)',
   'This account is no longer available.',
   'This account lives on a host that is not connected.',
   'This node already runs on this account.',
@@ -89,10 +90,13 @@ const GOLDEN_STRINGS = [
 const GOLDEN_TEMPLATES = [
   "Add selection to ${targetGroup.data.title || 'group'}",
   'Pause ${agents.length} sessions',
+  'Quits each matching Claude session, moves its conversation to ${label} and resumes it there. Others in the selection are left alone.',
   'Quits this CLI and resumes the same session as ${variant.label}.',
   'Restarts the terminal session and resumes this conversation with ${model.id}.',
+  'Switch ${claude.length} Claude sessions',
   'Switch model (${currentModel})',
-  'System account (${hostKey})'
+  'System account (${hostKey})',
+  'System account (${onlyHost})'
 ]
 
 const GOLDEN_HIDE_IDS = [
