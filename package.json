@@ -210,9 +210,9 @@
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
     "@excalidraw/excalidraw": "^0.18.1",
-    "@tailwindcss/vite": "^4.3.3",
+    "@tailwindcss/vite": "^4.3.5",
     "@types/css-tree": "^3.2.0",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
@@ -235,7 +235,7 @@
     "tailwindcss": "^4.3.1",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.1"
   },
   "overrides": {
     "monaco-editor": {
