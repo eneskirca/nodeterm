@@ -10,6 +10,7 @@ import { ensureGrokHomeProbed, grokHomeDir, grokHomeFallbackWasSilent } from '..
 import { installCopilotHooks, removeCopilotHooks } from './copilot'
 import { installAntigravityHooksWithProbe, removeAntigravityHooks } from './antigravity'
 import { installCursorHooks, removeCursorHooks } from './cursor'
+import { installOmpHooks, removeOmpHooks } from './omp'
 
 type HookInstaller = readonly [string, () => void]
 
@@ -18,6 +19,7 @@ export const MANAGED_HOOK_INSTALLERS: readonly HookInstaller[] = [
   ['codex', installCodexHooks],
   ['gemini', installGeminiHooks],
   ['opencode', installOpencodeHooks],
+  ['omp', installOmpHooks],
   ['grok', installGrokHooks],
   ['copilot', installCopilotHooks],
   // Writes the GLOBAL ~/.gemini/config/hooks.json: a synchronous gate in front of every agy tool
@@ -34,6 +36,7 @@ export const MANAGED_HOOK_REMOVERS: readonly HookInstaller[] = [
   ['codex', removeCodexHooks],
   ['gemini', removeGeminiHooks],
   ['opencode', removeOpencodeHooks],
+  ['omp', () => removeOmpHooks()],
   ['grok', removeGrokHooks],
   ['copilot', removeCopilotHooks],
   ['antigravity', () => removeAntigravityHooks()],

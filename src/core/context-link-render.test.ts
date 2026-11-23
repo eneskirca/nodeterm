@@ -14,7 +14,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import path from 'path'
-import { linesFromGrok, renderTranscriptLines } from './context-link-render'
+import { linesFromGrok, linesFromOmp, renderTranscriptLines } from './context-link-render'
 
 const buf = readFileSync(path.join(__dirname, '__fixtures__/grok/chat_history.jsonl'), 'utf8')
 
@@ -104,5 +104,58 @@ describe('linesFromGrok over a real chat_history.jsonl', () => {
 
   it('is routed by agent id, with no call-site comparison', () => {
     expect(renderTranscriptLines('grok', buf)).toEqual(linesFromGrok(buf))
+  })
+})
+
+describe('linesFromOmp over a measured session file', () => {
+  const SID = '01a19d62-d3d4-736d-b20f-9996a848a75a'
+  const ompBuf = [
+    JSON.stringify({ type: 'title', v: 1, title: 't', updatedAt: '2026-11-02T17:52:45.134Z' }),
+    JSON.stringify({ type: 'session', version: 3, id: SID, cwd: '/tmp/x' }),
+    JSON.stringify({ type: 'message', id: 'a', timestamp: '2026-11-02T17:51:02.150Z', message: { role: 'user', content: [{ type: 'text', text: 'start the work' }] } }),
+    JSON.stringify({ type: 'message', id: 'b', timestamp: '2026-11-02T17:51:02.151Z', message: { role: 'developer', content: [{ type: 'text', text: 'Plan approved.' }] } }),
+    JSON.stringify({
+      type: 'message',
+      id: 'c',
+      timestamp: '2026-11-02T17:51:12.258Z',
+      message: {
+        role: 'assistant',
+        model: 'zai/glm-4.7',
+        content: [
+          { type: 'thinking', thinking: 'secret reasoning' },
+          { type: 'text', text: 'doing it' },
+          { type: 'toolCall', id: 'call_1', name: 'read', arguments: { path: '/a' } }
+        ]
+      }
+    }),
+    JSON.stringify({ type: 'message', id: 'd', timestamp: '2026-11-02T17:51:12.261Z', message: { role: 'toolResult', toolCallId: 'call_1', toolName: 'read', content: [{ type: 'text', text: 'body\nline2' }], isError: false } }),
+    'garbage {'
+  ].join('\n')
+
+  it('renders roles in file order, labelling the harness-injected developer role', () => {
+    const lines = linesFromOmp(ompBuf)
+    expect(lines[0]).toBe('user: start the work')
+    expect(lines[1]).toBe('developer: Plan approved.')
+    expect(lines[2]).toBe('assistant: doing it')
+  })
+
+  it('renders tool calls and results with the shared indentation grammar', () => {
+    const lines = linesFromOmp(ompBuf)
+    expect(lines.some((l) => l.startsWith('  $ read {"path":"/a"}'))).toBe(true)
+    expect(lines.some((l) => l.startsWith('  = body line2'))).toBe(true)
+  })
+
+  it('never emits thinking parts, and meta lines render nothing', () => {
+    const joined = linesFromOmp(ompBuf).join('\n')
+    expect(joined).not.toContain('secret reasoning')
+    expect(joined).not.toContain('current title')
+  })
+
+  it('counts malformed lines instead of dropping them silently', () => {
+    expect(linesFromOmp.skipped(ompBuf)).toBe(1)
+  })
+
+  it('is routed by agent id, with no call-site comparison', () => {
+    expect(renderTranscriptLines('omp', ompBuf)).toEqual(linesFromOmp(ompBuf))
   })
 })

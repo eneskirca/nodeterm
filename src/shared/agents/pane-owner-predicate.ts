@@ -67,6 +67,7 @@ export const AGENT_BINARIES: Record<string, readonly string[]> = {
   copilot: ['copilot'],
   gemini: ['gemini'],
   opencode: ['opencode'],
+  omp: ['omp'],
   grok: ['grok'],
   // `agy-bin` (issue #1373): on Linux `agy` is commonly a shell wrapper that ends in
   // `exec …/agy-bin "$@"`, so after the exec the foreground group holds `agy-bin` and no `agy` at
