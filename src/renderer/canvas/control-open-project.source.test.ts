@@ -114,7 +114,8 @@ describe('the --project targeted-opens block (source pins)', () => {
     for (const refusal of [
       'projectTargetFlagRefusal(args)',
       'resolveProjectTarget(',
-      "if (tgResolved.kind === 'refused') {"
+      "if (tgResolved.kind === 'refused') {",
+      'controlAgentRefusal(verb, tgAgentId,'
     ]) {
       const at = body.indexOf(refusal)
       expect(at, refusal).toBeGreaterThan(-1)

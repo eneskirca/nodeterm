@@ -116,12 +116,16 @@ describe('the cold-open dispatch block (source pins)', () => {
       'source node is not a control-capable agent',
       'coldGroup.error',
       'coldAfter.error',
-      '--prompt-file not found'
+      '--prompt-file not found',
+      'controlAgentRefusal(verb, coldAgentId,'
     ]) {
       const at = body.indexOf(refusal)
       expect(at, refusal).toBeGreaterThan(-1)
       expect(at, `${refusal} after a write`).toBeLessThan(firstWrite)
     }
+    expect(body.indexOf('controlAgentRefusal(verb, coldAgentId,')).toBeLessThan(
+      body.indexOf('if (dryRun) {')
+    )
   })
 
   it('keeps cecb4dfe’s fix: the refusal is the capability sentence, not a new rejection', () => {
