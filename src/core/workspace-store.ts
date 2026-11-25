@@ -467,7 +467,15 @@ export class WorkspaceStore {
     try {
       raw = await fs.readFile(this.indexPath, 'utf-8')
     } catch (err) {
-      this.indexReadState = (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'unreadable'
+      const absent = (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      this.indexReadState = absent ? 'absent' : 'unreadable'
+      // A failed read is never evidence of absence (#385). Answering EMPTY_WORKSPACE here for an
+      // EACCES/EIO/EMFILE made the renderer hydrate zero projects and its unconditional boot save
+      // then wrote an EMPTY index over the populated one (Server Edition field report 2026-11-25:
+      // a browser refresh erased every project ref; the guard in `saveNow` only covers a store that
+      // never read the index). Throw instead, like an index `loadV3` cannot build: the renderer's
+      // load rejects, its boot save never runs, and the file is left exactly as it was.
+      if (!absent) throw err
       // No index. Usually a first run — but it is also what a crash BETWEEN the sideline rename
       // below and the next index write leaves behind, and that case owes the user the note. Only
       // this branch pays for the readdir, and only for a load that may touch disk anyway.
@@ -1418,6 +1426,27 @@ export class WorkspaceStore {
     return true
   }
 
+  /**
+   * A save that empties a POPULATED index keeps the old one as `workspace.json.pre-empty-<ts>`.
+   * The `!this.index` guard in `saveNow` only protects a store that never read the index; once it
+   * has (a Server Edition runs for weeks), any client holding zero projects — a stale tab, a
+   * renderer whose load failed — rebuilds the index from nothing, and the machine-local half of
+   * every entry (project ids, viewports, closed-sessions ledger, settings overlay) existed nowhere
+   * else. Deleting the last project on purpose still works; it only leaves this copy behind.
+   * A COPY, never a rename: a rename would leave a window with no index at all. Best effort — a
+   * failed backup never blocks the save.
+   */
+  private async backupBeforeEmptying(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.indexPath, 'utf-8')
+      const disk = JSON.parse(raw) as { entries?: unknown[]; projects?: unknown[] }
+      if ((disk.entries?.length ?? 0) === 0 && (disk.projects?.length ?? 0) === 0) return
+      const backup = path.join(platform().userDataDir, `${path.basename(this.indexPath)}.pre-empty-${Date.now()}`)
+      await writeFileAtomic(backup, raw)
+      console.warn(`[workspace] a save emptied a populated index; previous index kept at ${backup}`)
+    } catch { /* absent, unparsable or unwritable — nothing to keep, never block the save */ }
+  }
+
   private async saveNow(workspace: Workspace, localOnly = false): Promise<void> {
     if (!workspace.projects.length && !this.index) {
       // A store that never read the index may not replace a populated one with "no projects":
@@ -1430,6 +1459,7 @@ export class WorkspaceStore {
         if ((disk.entries?.length ?? 0) > 0 || (disk.projects?.length ?? 0) > 0) return
       } catch { /* absent or unparsable (loadInner sidelines corruption) — an empty write is fresh */ }
     }
+    if (!workspace.projects.length && this.index) await this.backupBeforeEmptying()
     // A governed project's content comes from the content authority, never from this (possibly
     // stale) copy of it. Applied BEFORE the split, so every leg below — the project file, the data
     // file, the index cache — writes the overlaid content. The authority reads the current content
@@ -1764,6 +1794,11 @@ export class WorkspaceStore {
     folderFilesWritten: ReadonlySet<string>
   ): Promise<void> {
     if (!previous) return
+    // A save that EMPTIES a populated index deletes nothing. It is far more often a client that
+    // holds no projects (a stale tab, a renderer whose load failed) than a user who deleted every
+    // project, and these data files are the ONLY copy of a cwd-less canvas. Litter is the right
+    // side to err on; `backupBeforeEmptying` has kept the index that references them.
+    if (!next.entries.length && previous.entries.length) return
     // Ids whose entry still keeps its content in a data file. An id that is live but no longer a
     // data ref left that storage — "Set folder…" bound it to a folder, or a folder-data-ref moved
     // its canvas back into the folder (issue #1145) — and its file is deleted too: same id, same

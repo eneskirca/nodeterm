@@ -532,8 +532,12 @@ describe('deleting a folder project kept in app data', () => {
     const side = path.join(userData, 'project-files', 'project-p1')
     await fs.writeFile(path.join(side, '.nodeterm', 'board-log.jsonl'), '{}\n')
     await fs.writeFile(path.join(folder, 'README.md'), 'mine')
+    // Another project stays open: a save that empties the WHOLE index deletes nothing by design
+    // (workspace-store.empty-index.test.ts), so the sweep is exercised by a partial delete.
+    const keep: Project = { id: 'project-keep', name: 'keep', color: '#fff', viewport: { x: 0, y: 0, zoom: 1 }, nodes: [] }
+    await store.save(ws([project(), keep]))
 
-    await store.save(ws([]))
+    await store.save(ws([keep]))
 
     expect(await exists(dataFile('project-p1'))).toBe(false)
     expect(await exists(side)).toBe(false)
