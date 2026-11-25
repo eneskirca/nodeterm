@@ -1,7 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useAgentNodes } from '../state/agentNodes'
 import { requestOpenSubagent, subagentRowsFor, subagentRowsSig, type SubagentRow } from '../lib/subagentRows'
-import { IconCircleCheck } from './icons'
+import { IconChevronDown, IconChevronRight, IconCircleCheck } from './icons'
 
 export interface SubagentRowsProps {
   /** The agent node whose subagents these are. */
@@ -19,6 +19,12 @@ function rowTitle(r: SubagentRow): string {
   return `${r.type}${r.label ? ` — ${r.label}` : ''} (${r.state}). Open its card on the canvas.`
 }
 
+function countLabel(rows: SubagentRow[]): string {
+  const working = rows.filter((r) => r.state === 'working').length
+  const done = rows.length - working
+  return [working && `${working} working`, done && `${done} done`].filter(Boolean).join(' · ')
+}
+
 /**
  * The subagents of one agent node, one row per card the canvas draws for it (`useAgentNodes`, the
  * DEFAULT store: a relay tab's nodes have no cards there, so they get no rows). A click asks the
@@ -30,6 +36,7 @@ function rowTitle(r: SubagentRow): string {
  */
 export function SubagentRows({ parentNodeId, variant = 'sidebar', onBeforeOpen }: SubagentRowsProps): JSX.Element | null {
   const sig = useAgentNodes((s) => subagentRowsSig(s.byId, parentNodeId))
+  const [collapsed, setCollapsed] = useState(false)
   // The signature carries everything a row draws, so reading the store again here is exact.
   const rows = useMemo(
     () => (sig ? subagentRowsFor(useAgentNodes.getState().byId, parentNodeId) : []),
@@ -75,9 +82,25 @@ export function SubagentRows({ parentNodeId, variant = 'sidebar', onBeforeOpen }
 
   if (variant === 'list') {
     return (
+      // A long run fans out dozens of subagents: the list scrolls inside a capped height (CSS) so it
+      // never pushes the card's own body off the modal, and the heading folds it away entirely.
       <section className="card-subagents" aria-label="Subagents">
-        <span className="card-subagents__title">Subagents</span>
-        {items}
+        <button
+          type="button"
+          className="card-subagents__header"
+          aria-expanded={!collapsed}
+          onClick={(e) => {
+            e.stopPropagation()
+            setCollapsed((c) => !c)
+          }}
+        >
+          <span className="card-subagents__chevron" aria-hidden="true">
+            {collapsed ? <IconChevronRight /> : <IconChevronDown />}
+          </span>
+          <span className="card-subagents__title">Subagents</span>
+          <span className="card-subagents__count">{countLabel(rows)}</span>
+        </button>
+        {!collapsed && <div className="card-subagents__list">{items}</div>}
       </section>
     )
   }

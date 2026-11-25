@@ -12635,11 +12635,35 @@ button.pull-checks__name {
   padding: 6px 16px 8px;
   border-bottom: 1px solid rgba(var(--tint-rgb), 0.08);
 }
-.card-subagents__title {
+.card-subagents__header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
   margin-bottom: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: rgba(var(--tint-rgb), 0.6);
+  font: inherit;
   font-size: 11px;
-  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.card-subagents__header:hover { color: var(--text); }
+.card-subagents__chevron { flex: 0 0 auto; line-height: 0; }
+.card-subagents__chevron svg { width: 11px; height: 11px; }
+.card-subagents__title { font-weight: 600; }
+.card-subagents__count { margin-left: auto; font-size: 10px; font-weight: 600; letter-spacing: 0.02em; }
+/* Capped at ~5 rows: a run with dozens of subagents scrolls here instead of taking the modal's
+   whole height and squeezing the card body out of view. */
+.card-subagents__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 132px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .card-subagents .subagent-row { padding: 3px 6px; font-size: 12px; }
 .github-issue-source {

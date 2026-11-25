@@ -143,6 +143,26 @@ describe('SubagentRows', () => {
     await act(async () => root.render(<SubagentRows parentNodeId="p1" />))
     expect(host.querySelector('.subagent-row__state')).toBeNull()
   })
+
+  it("the card modal's list sums its states in the heading and folds away from it", async () => {
+    start('a', 'p1', 'Explore', 'Map it', 1)
+    start('b', 'p1', 'Plan', 'Plan it', 2)
+    start('c', 'p1', 'Plan', 'Plan more', 3)
+    useAgentNodes.getState().finish('b', {})
+    useAgentNodes.getState().finish('c', {})
+    await act(async () => root.render(<SubagentRows parentNodeId="p1" variant="list" />))
+    const header = host.querySelector<HTMLButtonElement>('.card-subagents__header')!
+    expect(host.querySelector('.card-subagents__count')!.textContent).toBe('1 working · 2 done')
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    // The rows sit in their own (height-capped, scrolling) list, not straight in the section.
+    expect(host.querySelectorAll('.card-subagents__list .subagent-row')).toHaveLength(3)
+    await act(async () => header.click())
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    expect(host.querySelector('.card-subagents__list')).toBeNull()
+    expect(host.querySelector('.card-subagents__count')!.textContent).toBe('1 working · 2 done')
+    await act(async () => header.click())
+    expect(host.querySelectorAll('.subagent-row')).toHaveLength(3)
+  })
 })
 
 describe('the sessions sidebar lists subagents under their session', () => {
