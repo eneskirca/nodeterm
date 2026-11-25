@@ -3321,6 +3321,11 @@ export function Canvas() {
       // Upgrade the on-disk format (e.g. v1 -> v2 migration) right away. Reported like every
       // other save: a `void` here used to make the very first write of the session the one write
       // that could fail with no signal at all — including the format migration.
+      // Nothing loaded means nothing to migrate, and the boot save would only write "no projects"
+      // back. That write is what erased every project ref on a long-running Server Edition: its
+      // store had read the index long ago, so `saveNow`'s never-read guard no longer applied.
+      // A genuinely fresh install has nothing to save either; its first real edit saves.
+      if (!ws.projects.length) return
       api.workspace.save(useProjects.getState().toWorkspace()).catch((err: unknown) => {
         console.warn('[canvas] initial workspace save failed', err)
         setSaveDelivery((prev) => nextSaveDelivery(prev, Date.now()))
