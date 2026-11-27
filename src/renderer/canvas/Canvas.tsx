@@ -220,6 +220,9 @@ import {
   autosaveDelay,
   shouldFlushOnQuit,
   nextSaveDelivery,
+  canSendWorkspaceSave,
+  workspaceLoadRetryDelay,
+  WORKSPACE_LOAD_RETRY_TEXT,
   type SaveDelivery
 } from '../lib/savePersistence'
 import { SaveFailureBar } from '../components/SaveFailureBar'
@@ -3271,8 +3274,12 @@ export function Canvas() {
 
   // 1) Load the whole workspace once and hydrate the projects store.
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false)
+  // Set the instant the boot load has hydrated the projects store (a ref, so a save path reads it
+  // synchronously). Until then every whole-workspace save is refused: see `canSendWorkspaceSave`.
+  const hydratedRef = useRef(false)
   useEffect(() => {
     let cancelled = false
+    let loadRetry: ReturnType<typeof setTimeout> | undefined
     // Pull the current license status: the main process broadcasts it on launch, but that
     // broadcast races renderer load and is dropped if it fires first — without this pull a
     // Pro user can start (and stay) gated as free until the next restart.
@@ -3300,39 +3307,55 @@ export function Canvas() {
           markMobileLaunchSeen()
         }
       })
-    api.workspace.load().then((ws) => {
-      if (cancelled) return
-      // One-time unification: fold legacy free-text node `tags` into board labels (idempotent —
-      // a project with no tagged nodes is returned unchanged). The unconditional save below then
-      // persists the conversion, so the next load is a no-op.
-      const projects = ws.projects.map(migrateProjectTags)
-      useProjects.getState().hydrate({ ...ws, projects })
-      // The free-project limit state, read only now: core records the first-launch open count on
-      // the first read it answers with the workspace index loaded, which this load has guaranteed.
-      // Never rejects (a failed read stays dormant), and nothing here waits on it.
-      void useProjectLimit.getState().hydrate()
-      // Drop status entries whose node is in no project (past a grace window) — the table is
-      // persisted and otherwise grows forever. `orphanStatusIds` refuses to judge an incomplete
-      // load (no projects, or an unreadable one), so a bad index read never costs a live node its
-      // resume id.
-      const status = useAgentStatus.getState()
-      status.removeMany(orphanStatusIds(status.byId, useProjects.getState().projects, Date.now()))
-      setWorkspaceLoaded(true)
-      // Upgrade the on-disk format (e.g. v1 -> v2 migration) right away. Reported like every
-      // other save: a `void` here used to make the very first write of the session the one write
-      // that could fail with no signal at all — including the format migration.
-      // Nothing loaded means nothing to migrate, and the boot save would only write "no projects"
-      // back. That write is what erased every project ref on a long-running Server Edition: its
-      // store had read the index long ago, so `saveNow`'s never-read guard no longer applied.
-      // A genuinely fresh install has nothing to save either; its first real edit saves.
-      if (!ws.projects.length) return
-      api.workspace.save(useProjects.getState().toWorkspace()).catch((err: unknown) => {
-        console.warn('[canvas] initial workspace save failed', err)
-        setSaveDelivery((prev) => nextSaveDelivery(prev, Date.now()))
+    const loadWorkspace = (attempts: number): void => {
+      api.workspace.load().then((ws) => {
+        if (cancelled) return
+        setNotice((n) => (n?.text === WORKSPACE_LOAD_RETRY_TEXT ? null : n))
+        // One-time unification: fold legacy free-text node `tags` into board labels (idempotent —
+        // a project with no tagged nodes is returned unchanged). The unconditional save below then
+        // persists the conversion, so the next load is a no-op.
+        const projects = ws.projects.map(migrateProjectTags)
+        useProjects.getState().hydrate({ ...ws, projects })
+        // The free-project limit state, read only now: core records the first-launch open count on
+        // the first read it answers with the workspace index loaded, which this load has guaranteed.
+        // Never rejects (a failed read stays dormant), and nothing here waits on it.
+        hydratedRef.current = true
+        // An edit marked dirty before this point had nothing to save (the store was empty) and its
+        // save was refused; re-arm the debounce so the hydrated workspace is written as usual.
+        if (dirtyRef.current) setResaveTick((v) => v + 1)
+        void useProjectLimit.getState().hydrate()
+        // Drop status entries whose node is in no project (past a grace window) — the table is
+        // persisted and otherwise grows forever. `orphanStatusIds` refuses to judge an incomplete
+        // load (no projects, or an unreadable one), so a bad index read never costs a live node its
+        // resume id.
+        const status = useAgentStatus.getState()
+        status.removeMany(orphanStatusIds(status.byId, useProjects.getState().projects, Date.now()))
+        setWorkspaceLoaded(true)
+        // Upgrade the on-disk format (e.g. v1 -> v2 migration) right away. Reported like every
+        // other save: a `void` here used to make the very first write of the session the one write
+        // that could fail with no signal at all — including the format migration.
+        // Nothing loaded means nothing to migrate, and the boot save would only write "no projects"
+        // back. That write is what erased every project ref on a long-running Server Edition: its
+        // store had read the index long ago, so `saveNow`'s never-read guard no longer applied.
+        // A genuinely fresh install has nothing to save either; its first real edit saves.
+        if (!ws.projects.length) return
+        api.workspace.save(useProjects.getState().toWorkspace()).catch((err: unknown) => {
+          console.warn('[canvas] initial workspace save failed', err)
+          setSaveDelivery((prev) => nextSaveDelivery(prev, Date.now()))
+        })
+      }, (err: unknown) => {
+        // A rejected load used to leave the tab on the welcome screen for good, with an empty store
+        // whose first save would erase the index. Say so and ask again; nothing is saved meanwhile.
+        if (cancelled) return
+        console.warn('[canvas] workspace load failed; retrying', err)
+        setNotice({ kind: 'error', text: WORKSPACE_LOAD_RETRY_TEXT, sticky: true })
+        loadRetry = setTimeout(() => loadWorkspace(attempts + 1), workspaceLoadRetryDelay(attempts + 1))
       })
-    })
+    }
+    loadWorkspace(0)
     return () => {
       cancelled = true
+      if (loadRetry) clearTimeout(loadRetry)
     }
   }, [])
 
@@ -3765,6 +3788,10 @@ export function Canvas() {
     // takes seconds — and clearing `dirty` unconditionally afterwards marked edits made DURING the
     // await as saved, which let the watcher's not-dirty branch clobber them (field bug 2026-08-10).
     const gen = dirtyGenRef.current
+    // Nothing loaded yet means nothing to save: the store is empty, and this whole-workspace save
+    // would ask the core to drop every project. Not a failure — no strip, no backoff; the boot
+    // load re-arms the debounce when it lands.
+    if (!canSendWorkspaceSave(hydratedRef.current)) return false
     try {
       await api.workspace.save(useProjects.getState().toWorkspace())
     } catch (err) {
@@ -3827,6 +3854,7 @@ export function Canvas() {
       // `markDirty` above already owes the SSH mirror to the next ordinary save. Awaiting the
       // mirror here held every new agent on an SSH project on QUEUED for its round trips.
       save: async () => {
+        if (!canSendWorkspaceSave(hydratedRef.current)) throw new Error('the workspace has not loaded yet')
         await api.workspace.save(useProjects.getState().toWorkspace(), { localOnly: true })
       }
     })
