@@ -108,3 +108,25 @@ export function saveFailureMessage(delivery: SaveDelivery | undefined): string |
     'Cards opened since then will be gone on reload; your terminals keep running either way.'
   )
 }
+
+/**
+ * Whether a whole-workspace save may be SENT at all: only once this renderer has hydrated its
+ * projects from the boot load. Before that the store is empty, and every save is the whole
+ * workspace — so a debounce or a `writeDisk()` that fired while a reloaded tab's load was still in
+ * flight (or after it failed) sent `projects: []`, which the core used to read as "delete every
+ * project" (issue #1468 follow-up: several Server Edition tabs emptied the index five times in two
+ * days). The core now refuses to drop a project its client never loaded; this keeps the renderer
+ * from asking in the first place. Nothing is lost by waiting: an edit cannot predate the canvas.
+ */
+export function canSendWorkspaceSave(hydrated: boolean): boolean {
+  return hydrated
+}
+
+/** Retry delay for a boot `workspace.load()` that rejected, by attempts already made: 1 s doubling
+ *  to a 10 s cap, without end. Unlike a save a load writes nothing, and a tab with no projects is
+ *  useless, so it keeps asking until it gets an answer. */
+export function workspaceLoadRetryDelay(attemptsMade: number): number {
+  return Math.min(1000 * 2 ** Math.max(0, attemptsMade - 1), 10_000)
+}
+
+export const WORKSPACE_LOAD_RETRY_TEXT = 'Could not load your projects — retrying…'

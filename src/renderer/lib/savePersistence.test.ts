@@ -3,6 +3,8 @@ import path from 'path'
 import { describe, expect, it } from 'vitest'
 import {
   autosaveDelay,
+  canSendWorkspaceSave,
+  workspaceLoadRetryDelay,
   nextSaveDelivery,
   saveFailureMessage,
   saveRetryDelay,
@@ -150,5 +152,18 @@ describe('shouldFlushOnQuit', () => {
     expect(shouldFlushOnQuit(false, false)).toBe(false)
     expect(shouldFlushOnQuit(true, true)).toBe(false)
     expect(shouldFlushOnQuit(false, true)).toBe(false)
+  })
+})
+
+describe('canSendWorkspaceSave (issue #1468 follow-up)', () => {
+  it('refuses every whole-workspace save until the boot load has hydrated the store', () => {
+    expect(canSendWorkspaceSave(false)).toBe(false)
+    expect(canSendWorkspaceSave(true)).toBe(true)
+  })
+})
+
+describe('workspaceLoadRetryDelay', () => {
+  it('backs off 1 s doubling to a 10 s cap and never gives up', () => {
+    expect([1, 2, 3, 4, 5, 6, 50].map(workspaceLoadRetryDelay)).toEqual([1000, 2000, 4000, 8000, 10_000, 10_000, 10_000])
   })
 })
