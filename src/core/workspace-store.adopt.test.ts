@@ -189,7 +189,7 @@ describe('WorkspaceStore.adoptFolder', () => {
   })
 
   describe('a renderer that loaded before the adoption', () => {
-    const save = (ws: Workspace): Promise<unknown> => Promise.resolve(fake.handlers[IPC.workspaceSave](ws))
+    const save = (ws: Workspace, sender = 1): Promise<unknown> => Promise.resolve(fake.handlers[IPC.workspaceSave](sender, ws))
     // The load handler takes the caller's client id first (it is registered with its sender).
     const OWNER = 1
     const load = (sender = OWNER): Promise<Workspace> =>

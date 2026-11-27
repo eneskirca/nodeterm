@@ -108,6 +108,8 @@ const projectFilePath = (cwd: string): string => {
  *  hand-editable, so an id read back out of it is input and may not reach a path unchecked. */
 /** Per-project side files (the board log) of a folder project kept in app data, under userData. */
 const PROJECT_SIDE_FILES_DIR = 'project-files'
+/** How many renderers' `knownBySender` sets are kept (browser tabs over a server's lifetime). */
+const KNOWN_SENDERS_MAX = 64
 
 /**
  * The directory whose `.nodeterm/` holds a local project's own files — settings.json and the board
@@ -376,6 +378,18 @@ export class WorkspaceStore {
    * hands it out (a client that cannot save cannot be the one whose save would drop it).
    */
   private pendingAdoptions = new Set<string>()
+  /**
+   * The project ids each renderer (by sender id) can speak for: what its last load handed it plus
+   * every id one of its saves carried. A renderer's save is its WHOLE workspace, so an id missing
+   * from it reads as "deleted" — but only a renderer that held the project can have deleted it.
+   * Several browser tabs share one Server Edition store (issue #1468, follow-up): a tab saving
+   * before its boot load landed, a tab whose load failed, a tab that loaded during another tab's
+   * empty window, and a tab that never saw a project another tab created all sent saves that
+   * dropped projects they never had. `saveFromRenderer` keeps every such entry instead. Bounded
+   * (`KNOWN_SENDERS_MAX`, least recently used out): an evicted sender is treated as one that
+   * knows nothing, which only ever keeps entries.
+   */
+  private knownBySender = new Map<number, Set<string>>()
   /** Exactly-once claim of renderer-delivered held launches across viewers (#1173). */
   private readonly launchClaims = createLaunchClaimLedger()
   /** The content authority, when this process runs one (Server Edition hosting a team). */
@@ -396,7 +410,13 @@ export class WorkspaceStore {
 
   registerIpc(): void {
     platform().handleWithSender(IPC.workspaceLoad, async (senderId: number) => {
+      // A load starts this renderer over (a page reload keeps its sender id on the desktop): until
+      // it answers, the renderer holds nothing, and a save it sends meanwhile speaks for nothing.
+      this.knownBySender.delete(senderId)
       const workspace = await this.load()
+      if (platform().isOwnerClient?.(senderId) !== false) {
+        this.rememberKnown(senderId, workspace.projects.map((p) => p.id))
+      }
       // The renderer now holds these, so from here on its saves speak for them. Only the ids this
       // load actually returned: an adoption that landed while the load was in flight stays pending.
       // And only for a client that CAN save: a relay peer or a hosted-team guest reaches this same
@@ -408,8 +428,8 @@ export class WorkspaceStore {
       }
       return workspace
     })
-    platform().handle(IPC.workspaceSave, (workspace: Workspace, opts?: WorkspaceSaveOptions) =>
-      this.saveFromRenderer(workspace, opts?.localOnly === true))
+    platform().handleWithSender(IPC.workspaceSave, (senderId: number, workspace: Workspace, opts?: WorkspaceSaveOptions) =>
+      this.saveFromRenderer(workspace, opts?.localOnly === true, senderId))
     platform().handleWithSender(IPC.workspaceClaimLaunch,
       (senderId: number, nodeId: unknown, command: unknown, manual: unknown) =>
         this.launchClaims.claim(nodeId as string, command as string, manual === true, senderId))
@@ -1246,24 +1266,59 @@ export class WorkspaceStore {
    * pending-adoption rule (see `pendingAdoptions`). The merge runs inside the chain step, never
    * before the enqueue: an await ahead of it would let a later save overtake this one.
    */
-  private saveFromRenderer(workspace: Workspace, localOnly: boolean): Promise<void> {
+  private saveFromRenderer(workspace: Workspace, localOnly: boolean, senderId?: number): Promise<void> {
+    // What this renderer can speak for is read NOW, at receipt, never inside the chain step: a save
+    // sent before the renderer's boot load landed may only run after that load has answered, and
+    // by then the load has handed it everything — its `[]` would read as "delete them all".
+    const known = new Set(senderId === undefined ? [] : this.knownBySender.get(senderId) ?? [])
+    for (const p of workspace.projects) known.add(p.id)
+    if (senderId !== undefined) this.rememberKnown(senderId, known)
     const run = this.saveChain.then(async () =>
-      this.saveNow(this.pendingAdoptions.size ? await this.withPendingAdoptions(workspace) : workspace, localOnly))
+      this.saveNow(await this.withUnspokenProjects(workspace, known, senderId), localOnly))
     this.saveChain = run.catch(() => {})
     return run
   }
 
-  /** `workspace` plus the store's own copy of every pending adoption it does not carry. Runs on
-   *  `saveChain`. An entry whose file cannot be read right now is left out, as before this rule. */
-  private async withPendingAdoptions(workspace: Workspace): Promise<Workspace> {
-    const carried = new Set(workspace.projects.map((p) => p.id))
-    const missing: Project[] = []
-    for (const id of this.pendingAdoptions) {
-      if (carried.has(id)) continue
-      const own = await this.readLocalRef(id)
-      if (own) missing.push(own)
+  private rememberKnown(senderId: number, ids: Iterable<string>): void {
+    const set = new Set(ids)
+    this.knownBySender.delete(senderId)
+    this.knownBySender.set(senderId, set)
+    while (this.knownBySender.size > KNOWN_SENDERS_MAX) {
+      this.knownBySender.delete(this.knownBySender.keys().next().value as number)
     }
-    return missing.length ? { ...workspace, projects: [...workspace.projects, ...missing] } : workspace
+  }
+
+  /**
+   * `workspace` plus the store's own copy of every indexed project the save omits but could not
+   * have deleted: one its sender never held (`knownBySender`), or a pending adoption no owner has
+   * loaded. Runs on `saveChain`. The copies come from a read-only load (no sideline, no overlay —
+   * `saveNow` overlays the whole result), so a data-ref keeps its data file's canvas and a folder
+   * ref its file's. An entry that cannot be read right now is left out, as before this rule.
+   */
+  private async withUnspokenProjects(workspace: Workspace, known: Set<string>, senderId?: number): Promise<Workspace> {
+    const carried = new Set(workspace.projects.map((p) => p.id))
+    const unspoken = (this.index?.entries ?? [])
+      .map((e) => e.id)
+      .filter((id) => !carried.has(id) && (!known.has(id) || this.pendingAdoptions.has(id)))
+    if (!unspoken.length) return workspace
+    let stored: Workspace
+    try {
+      stored = await this.loadInner(false)
+    } catch (err) {
+      // The index cannot be read, so nothing can be carried — and nothing may be dropped either.
+      throw Object.assign(new Error(`a save omitted projects its client never loaded, and the index could not be re-read to keep them: ${String(err)}`), { code: 'E_SAVE_UNSPOKEN' })
+    }
+    const want = new Set(unspoken)
+    const missing = stored.projects.filter((p) => want.has(p.id))
+    const kept = missing.filter((p) => !known.has(p.id))
+    if (kept.length) {
+      console.warn(`[workspace] save from client ${senderId ?? '?'} omitted ${kept.length} project(s) it never loaded (${kept.map((p) => p.id).join(', ')}); kept`)
+    }
+    if (!missing.length) return workspace
+    // A client holding none of the projects (or none it names as active) has no camera to keep:
+    // its `''` would leave every later load with no active tab.
+    const activeProjectId = carried.has(workspace.activeProjectId) ? workspace.activeProjectId : stored.activeProjectId
+    return { ...workspace, activeProjectId, projects: [...workspace.projects, ...missing] }
   }
 
   /** The parse of `lastWritten.get(file)`, cached per raw string (see `lastWrittenParsed`). Throws
